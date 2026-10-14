@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OriEra · 03 Physics</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+         background:#0b0d12; color:#e6e8ee; height:100vh; display:flex; flex-direction:column;}
+  header { padding:14px 20px; border-bottom:1px solid #222633;
+           display:flex; justify-content:space-between; align-items:center;}
+  header h1 { font-size:14px; margin:0; }
+  header .tag { font-size:11px; color:#8a90a6; }
+  #toolbar { padding:10px 16px; border-bottom:1px solid #222633; display:flex; gap:8px;}
+  button { background:#1f2a44; color:#cfe0ff; border:1px solid #2a3040;
+           padding:8px 14px; border-radius:6px; font:inherit; font-size:12px; cursor:pointer;}
+  button:hover { background:#2a3a5a; }
+  button.primary { background:#5b8def; border-color:#5b8def; color:white;}
+  #hud { margin-left:auto; font-size:11px; color:#8a90a6; align-self:center;}
+  canvas { flex:1; display:block; background:#0a0d14; cursor:grab;}
+  canvas:active { cursor:grabbing; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OriEra · L6 Physics — 2D Sandbox</h1>
+  <span class="tag">example/03-physics</span>
+</header>
+<div id="toolbar">
+  <button class="primary" id="add-box">+ 放一个方块</button>
+  <button id="add-ball">+ 放一个球</button>
+  <button id="clear">清空</button>
+  <div id="hud">bodies: 0 · fps: --</div>
+</div>
+<canvas id="canvas"></canvas>
+
+<script type="module">
+// ============================================================
+//  L6 物理子系统 — 最小参考实现（2D）
+//  重力 + 圆/方块碰撞 + 地面反弹 + 鼠标拖拽
+//  未来 Rust 侧用 Jolt，这里是 Web 参考
+// ============================================================
+const GRAVITY = 0.3;
+const RESTITUTION = 0.4;   // 弹性
+const FRICTION = 0.98;
+
+class Body {
+  constructor(x, y, r, type="box") {
+    this.x = x; this.y = y;
+    this.vx = 0; this.vy = 0;
+    this.r = r;
+    this.type = type;   // "box" | "ball"
+    this.mass = r * r;
+    this.dragging = false;
+    this.color = `hsl(${Math.random()*360}, 70%, 60%)`;
+  }
+}
+
+class World {
+  constructor() { this.bodies = []; }
+  add(b) { this.bodies.push(b); }
+  clear() { this.bodies = []; }
+
+  step(w, h, dt) {
+    for (const b of this.bodies) {
+      if (b.dragging) continue;
+      b.vy += GRAVITY * dt;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+
+      // 地面
+      if (b.y + b.r > h) {
+        b.y = h - b.r;
+        b.vy *= -RESTITUTION;
+        b.vx *= FRICTION;
+      }
+      // 左右墙
+      if (b.x - b.r < 0) { b.x = b.r; b.vx *= -RESTITUTION; }
+      if (b.x + b.r > w) { b.x = w - b.r; b.vx *= -RESTITUTION; }
+    }
+
+    // 简单的圆-圆碰撞
+    for (let i = 0; i < this.bodies.length; i++) {
+      for (let j = i+1; j < this.bodies.length; j++) {
+        const a = this.bodies[i], b = this.bodies[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy);
+        const min = a.r + b.r;
+        if (dist < min && dist > 0) {
+          const nx = dx / dist, ny = dy / dist;
+          const overlap = (min - dist) / 2;
+          a.x -= nx * overlap; a.y -= ny * overlap;
+          b.x += nx * overlap; b.y += ny * overlap;
+          // 简易冲量
+          const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
+          const dot = dvx * nx + dvy * ny;
+          if (dot < 0) {
+            const imp = -dot * RESTITUTION;
+            a.vx -= imp * nx; a.vy -= imp * ny;
+            b.vx += imp * nx; b.vy += imp * ny;
+          }
+        }
+      }
+    }
+  }
+
+  render(ctx) {
+    for (const b of this.bodies) {
+      ctx.fillStyle = b.color;
+      if (b.type === "box") {
+        ctx.fillRect(b.x - b.r, b.y - b.r, b.r*2, b.r*2);
+      } else {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+  }
+
+  hitTest(mx, my) {
+    for (let i = this.bodies.length - 1; i >= 0; i--) {
+      const b = this.bodies[i];
+      if (Math.hypot(mx - b.x, my - b.y) < b.r) return b;
+    }
+    return null;
+  }
+}
+
+// ============================================================
+//  Boot
+// ============================================================
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const hud = document.getElementById("hud");
+const world = new World();
+let W = window.innerWidth, H = window.innerHeight - 120;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = window.innerWidth * dpr;
+  canvas.height = (window.innerHeight - 100) * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  W = window.innerWidth;
+  H = window.innerHeight - 100;
+}
+window.addEventListener("resize", resize);
+resize();
+
+// 工具栏
+document.getElementById("add-box").onclick = () => {
+  world.add(new Body(W/2 + (Math.random()-0.5)*100, 50, 20 + Math.random()*15, "box"));
+};
+document.getElementById("add-ball").onclick = () => {
+  world.add(new Body(W/2 + (Math.random()-0.5)*100, 50, 15 + Math.random()*10, "ball"));
+};
+document.getElementById("clear").onclick = () => world.clear();
+
+// 鼠标拖拽
+let dragged = null, dragOff = {x:0, y:0};
+canvas.addEventListener("mousedown", e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX, my = e.clientY - rect.top;
+  dragged = world.hitTest(mx, my);
+  if (dragged) {
+    dragged.dragging = true;
+    dragged.vx = dragged.vy = 0;
+    dragOff.x = dragged.x - mx;
+    dragOff.y = dragged.y - my;
+  }
+});
+canvas.addEventListener("mousemove", e => {
+  if (!dragged) return;
+  const rect = canvas.getBoundingClientRect();
+  dragged.x = e.clientX + dragOff.x;
+  dragged.y = e.clientY - rect.top + dragOff.y;
+});
+window.addEventListener("mouseup", () => {
+  if (dragged) { dragged.dragging = false; dragged = null; }
+});
+
+// 帧循环
+let last = performance.now(), frames = 0, fpsT = 0;
+function frame(now) {
+  const dt = Math.min((now - last) / 16.666, 2);
+  last = now;
+
+  world.step(W, H, dt);
+  ctx.fillStyle = "#0a0d14";
+  ctx.fillRect(0, 0, W, H);
+  // 地面线
+  ctx.strokeStyle = "#2a3040";
+  ctx.beginPath(); ctx.moveTo(0, H-1); ctx.lineTo(W, H-1); ctx.stroke();
+  world.render(ctx);
+
+  frames++; fpsT += now - (frame._l || now);
+  frame._l = now;
+  if (fpsT > 500) {
+    hud.textContent = `bodies: ${world.bodies.length} · fps: ${Math.round(frames / (fpsT/1000))}`;
+    frames = 0; fpsT = 0;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// 初始放几个
+for (let i = 0; i < 5; i++) {
+  setTimeout(() => world.add(new Body(W/2 + (Math.random()-0.5)*200, 50 + i*40, 20, i%2 ? "box" : "ball")), i*300);
+}
+</script>
+</body>
+</html>
