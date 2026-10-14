@@ -5,6 +5,7 @@
 **AI 原生、虚实融合、可自演化的开放数字世界运行时**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![CI](https://github.com/OriEra-engine/engine/actions/workflows/ci.yml/badge.svg)](https://github.com/OriEra-engine/engine/actions/workflows/ci.yml)
 [![Live Demo](https://img.shields.io/badge/demo-live-ff7a3d.svg)](https://oriera-engine.github.io/engine/)
 [![Discussions](https://img.shields.io/badge/discussions-join-5b8def.svg)](https://github.com/OriEra-engine/engine/discussions)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
