@@ -1,0 +1,7 @@
+packages:
+  - "sdk/oriera-sdk-ts"
+  - "editor/app"
+  - "platforms/web"
+  - "tools/contract-gen"
+
+onlyBuiltDependencies: []

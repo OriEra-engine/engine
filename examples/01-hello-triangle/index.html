@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OriEra · 01 Hello Triangle</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+         background:#0b0d12; color:#e6e8ee; }
+  header { padding:14px 20px; border-bottom:1px solid #222633;
+           display:flex; justify-content:space-between; align-items:center;}
+  header h1 { font-size:14px; font-weight:600; margin:0; }
+  header .tag { font-size:11px; color:#8a90a6; }
+  main { display:grid; grid-template-columns: 320px 1fr; gap:16px; padding:16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background:#12151c; border:1px solid #222633; border-radius:8px; padding:14px; }
+  .panel h2 { font-size:12px; color:#8a90a6; margin:0 0 10px; text-transform:uppercase; letter-spacing:.08em;}
+  button.target { display:block; width:100%; text-align:left; margin:4px 0; padding:8px 10px;
+                  background:#1a1f2a; color:#e6e8ee; border:1px solid #2a3040; border-radius:6px;
+                  font:inherit; cursor:pointer; }
+  button.target.active { border-color:#5b8def; background:#1f2a44; }
+  button.target small { color:#8a90a6; display:block; font-size:11px; margin-top:2px;}
+  #report { font-size:12px; line-height:1.7; color:#c8cddb; }
+  #report b { color:#7fd18a; }
+  #report .warn { color:#e8b85b; }
+  #report .off { color:#555b6e; }
+  canvas { width:100%; height:520px; background:#000; border-radius:6px; display:block; }
+  .footer { padding:0 20px 20px; color:#555b6e; font-size:11px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>OriEra World Engine · L1 PAL Bootstrap</h1>
+  <span class="tag">example/01-hello-triangle</span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>接入端 (Platform Family)</h2>
+    <div id="targets"></div>
+    <h2 style="margin-top:18px">Capability Report</h2>
+    <pre id="report">detecting…</pre>
+  </section>
+
+  <section class="panel">
+    <h2>WebGPU Surface</h2>
+    <canvas id="canvas"></canvas>
+    <div class="footer" id="gpuinfo">WebGPU 检测中…</div>
+  </section>
+</main>
+
+<script type="module">
+// ============================================================
+//  Capability bitmap — mirrors crates/oriera-pal/src/capability.rs
+//  Upper layers read this bitmap; they never branch on UA string.
+// ============================================================
+const BIT = {
+  GFX_WGPU: 1n<<0n, GFX_VK: 1n<<1n, GFX_DX12: 1n<<2n, GFX_METAL: 1n<<3n,
+  GFX_WEBGPU: 1n<<4n, RT: 1n<<5n, GS3D: 1n<<6n, FOVEATED: 1n<<7n,
+  VST: 1n<<8n, OST: 1n<<9n,
+  KM: 1n<<10n, TOUCH: 1n<<11n, PAD: 1n<<12n, HAND: 1n<<13n,
+  EYE: 1n<<14n, VOICE: 1n<<15n, ANCHOR: 1n<<16n, BODY: 1n<<17n,
+  NPU35: 1n<<20n, NPU48: 1n<<21n, NPU160: 1n<<22n,
+  VRAM8: 1n<<23n, VRAM16: 1n<<24n, VRAM32: 1n<<25n, UMEM: 1n<<26n,
+  NET_WT: 1n<<30n, NET_QUIC: 1n<<31n,
+  BCI_EEG: 1n<<40n, BCI_NONINV: 1n<<41n,
+};
+
+// Five first-class targets. BCI is a stub (bits 40+ always 0).
+const PLATFORMS = {
+  pc: { label:"PC", sub:"Win / macOS / Linux", frame_us:16666, vram_mb:8192,
+        caps: BIT.GFX_WGPU|BIT.GFX_VK|BIT.GFX_DX12|BIT.GFX_METAL|BIT.KM|BIT.PAD|BIT.NET_QUIC|BIT.VRAM16 },
+  mobile: { label:"Mobile", sub:"iOS / Android", frame_us:16666, vram_mb:4096,
+        caps: BIT.GFX_WGPU|BIT.GFX_METAL|BIT.GFX_VK|BIT.TOUCH|BIT.VOICE|BIT.NPU48|BIT.VRAM8|BIT.UMEM },
+  web: { label:"Web", sub:"Wasm + WebGPU", frame_us:16666, vram_mb:4096,
+        caps: BIT.GFX_WEBGPU|BIT.KM|BIT.TOUCH|BIT.NET_WT },
+  ar: { label:"AR 眼镜", sub:"visionOS / 骁龙 / WebXR", frame_us:11111, vram_mb:3072,
+        caps: BIT.GFX_WGPU|BIT.GFX_WEBGPU|BIT.HAND|BIT.EYE|BIT.VOICE|BIT.ANCHOR|BIT.FOVEATED|BIT.VST|BIT.NPU48|BIT.VRAM8|BIT.UMEM },
+  bci: { label:"脑机接口（预留）", sub:"v1 stub — bits 40+ always 0", frame_us:16666, vram_mb:4096,
+        caps: 0n /* 永不设置 BCI_EEG */ },
+};
+
+// Build the platform picker UI
+const targetsEl = document.getElementById("targets");
+const reportEl = document.getElementById("report");
+let current = "web";
+
+function render() {
+  targetsEl.innerHTML = "";
+  for (const [key, p] of Object.entries(PLATFORMS)) {
+    const b = document.createElement("button");
+    b.className = "target" + (key===current ? " active" : "");
+    b.innerHTML = `${p.label}<small>${p.sub}</small>`;
+    b.onclick = () => { current = key; render(); draw(); };
+    targetsEl.appendChild(b);
+  }
+  reportEl.innerHTML = renderReport(PLATFORMS[current]);
+}
+
+function renderReport(p) {
+  const lines = [];
+  lines.push(`family        : <b>${p.label}</b>`);
+  lines.push(`frame_budget  : <b>${p.frame_us} µs</b> (${(1e6/p.frame_us).toFixed(1)} fps)`);
+  lines.push(`vram_budget   : <b>${(p.vram_mb/1024).toFixed(1)} GB</b>`);
+  lines.push(``);
+  lines.push(`-- graphics --`);
+  for (const [k,v] of Object.entries(BIT)) {
+    if (p.caps & v) lines.push(`  <b>✔ ${k}</b>`);
+  }
+  lines.push(``);
+  lines.push(`-- reserved bits (must stay off) --`);
+  for (const k of ["BCI_EEG","BCI_NONINV"]) {
+    lines.push(p.caps & BIT[k]
+      ? `  <span class="warn">✘ ${k} leaked (BUG!)</span>`
+      : `  <span class="off">· ${k} (off)</span>`);
+  }
+  return lines.join("\n");
+}
+
+// ============================================================
+//  WebGPU minimal triangle
+// ============================================================
+const canvas = document.getElementById("canvas");
+const gpuinfo = document.getElementById("gpuinfo");
+
+async function draw() {
+  if (!navigator.gpu) {
+    gpuinfo.innerHTML = "<span class='warn'>当前浏览器不支持 WebGPU。请用 Chrome/Edge 113+ 并开启 chrome://flags/#enable-unsafe-webgpu（如需要）。</span>";
+    return;
+  }
+  const adapter = await navigator.gpu.requestAdapter();
+  const device = await adapter.requestDevice();
+  const ctx = canvas.getContext("webgpu");
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: "opaque" });
+
+  const module = device.createShaderModule({ code: `
+    @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+      var pos = array<vec2f, 3>(
+        vec2f( 0.0,  0.6),
+        vec2f(-0.6, -0.5),
+        vec2f( 0.6, -0.5)
+      );
+      return vec4f(pos[i], 0.0, 1.0);
+    }
+    @fragment fn fs() -> @location(0) vec4f {
+      // Hue shifts with selected platform to prove the frame loop sees state.
+      return vec4f(0.36, 0.56, 0.93, 1.0);
+    }
+  `});
+  const pipeline = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module, entryPoint: "vs" },
+    fragment: { module, entryPoint: "fs", targets: [{ format }] },
+    primitive: { topology: "triangle-list" },
+  });
+
+  const encoder = device.createCommandEncoder();
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{
+      view: ctx.getCurrentTexture().createView(),
+      loadOp: "clear", storeOp: "store",
+      clearValue: { r:0.04, g:0.05, b:0.08, a:1 },
+    }],
+  });
+  pass.setPipeline(pipeline);
+  pass.draw(3);
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+
+  const info = await adapter.requestAdapterInfo?.() ?? {};
+  gpuinfo.innerHTML = `WebGPU OK · adapter: <b>${info.description || "unknown"}</b> · limits: ` +
+    `${adapter.limits.maxComputeWorkgroupsPerDimension} workgroups`;
+}
+
+render();
+draw();
+</script>
+</body>
+</html>

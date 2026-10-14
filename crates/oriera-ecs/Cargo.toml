@@ -1,0 +1,16 @@
+[package]
+name = "oriera-ecs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OriEra oriera-ecs"
+
+[lib]
+name = "oriera_ecs"
+path = "src/lib.rs"
+
+[dependencies]
+oriera-pal = { path = "../oriera-pal" }
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true

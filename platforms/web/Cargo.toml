@@ -1,0 +1,14 @@
+[package]
+name = "oriera-web"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+oriera-pal = { path = "../../crates/oriera-pal" }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElement"] }
+tracing.workspace = true

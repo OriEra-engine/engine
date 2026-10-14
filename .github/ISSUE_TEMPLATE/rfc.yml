@@ -1,0 +1,40 @@
+name: 📜 RFC
+description: 跨层改动 / 动契约 / 新平台——必须走 RFC
+title: "[RFC] "
+labels: ["rfc", "needs-comment"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        RFC 会公开评论至少 7 天，Core Team 多数同意后才动代码。
+  - type: input
+    id: author
+    attributes:
+      label: RFC 作者
+    validations:
+      required: true
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 提案
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的替代方案
+  - type: textarea
+    id: impact
+    attributes:
+      label: 影响面
+      description: 动到哪些层？哪些契约？是否 breaking change？
+    validations:
+      required: true
+  - type: textarea
+    id: migration
+    attributes:
+      label: 迁移路径（如 breaking）

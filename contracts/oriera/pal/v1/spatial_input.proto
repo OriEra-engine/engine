@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package oriera.pal.v1;
+
+// Unified spatial input event. Every input source — keyboard, touch,
+// hand tracking, eye gaze, voice, BCI (reserved) — normalizes into this.
+
+message SpatialInputEvent {
+  uint64 timestamp_us = 1;
+  oneof body {
+    KeyEvent    key = 10;
+    PointerEvent pointer = 11;
+    HandPoseEvent hand = 12;
+    EyeGazeEvent  gaze = 13;
+    VoiceEvent    voice = 14;
+    SpatialAnchorEvent anchor = 15;
+    // Reserved for stage 3. v1 never emits this.
+    BciIntentEvent bci = 16 [deprecated = true];
+  }
+}
+
+message KeyEvent { uint32 code = 1; bool pressed = 2; }
+message PointerEvent { float x = 1; float y = 2; uint32 buttons = 3; }
+message HandPoseEvent { uint32 hand = 1; repeated float joints = 2; }
+message EyeGazeEvent  { float x = 1; float y = 2; float confidence = 3; }
+message VoiceEvent    { string transcript = 1; float confidence = 2; }
+message SpatialAnchorEvent { string anchor_id = 1; float px = 2; float py = 3; float pz = 4; }
+
+// DEPRECATED in v1. Placeholder only.
+message BciIntentEvent { string intent = 1; float confidence = 2; }

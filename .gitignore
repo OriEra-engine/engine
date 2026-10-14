@@ -1,0 +1,30 @@
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+
+# Node / Wasm
+node_modules/
+dist/
+.pnpm-store/
+*.wasm
+oriera-wasm/pkg/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+out/
+build/
+*.log

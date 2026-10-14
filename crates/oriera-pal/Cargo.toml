@@ -1,0 +1,16 @@
+[package]
+name = "oriera-pal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "L1 Platform Abstraction Layer: hardware-agnostic surface for OriEra engine"
+
+[lib]
+name = "oriera_pal"
+path = "src/lib.rs"
+
+[dependencies]
+bitflags.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

@@ -1,0 +1,59 @@
+apiVersion: oriera.dev/v1
+kind: LayerManifest
+metadata:
+  layer: L1
+  name: platform-abstraction
+  owner: platform-team
+spec:
+  provides:
+    - id: oriera.pal.capability.v1
+      contract: proto/oriera/pal/v1/capability.proto
+      stability: stable
+    - id: oriera.pal.gfx.v1
+      contract: proto/oriera/pal/v1/gfx_backend.proto
+      stability: stable
+    - id: oriera.pal.input.v1
+      contract: proto/oriera/pal/v1/spatial_input.proto
+      stability: stable
+    - id: oriera.pal.storage.v1
+      contract: proto/oriera/pal/v1/storage.proto
+      stability: stable
+    - id: oriera.pal.net.v1
+      contract: proto/oriera/pal/v1/net.proto
+      stability: stable
+
+  requires: []   # L1 is the bottom; nothing below it.
+
+  budgets:
+    frame_time_p99_us: 16666        # 60fps desktop
+    vram_peak_mb: 8192
+    abstraction_overhead_pct: 5     # PAL overhead must be <=5% vs direct backend
+
+  degrade:
+    - when: abstraction_overhead_pct > 5
+      action: bypass_pal_direct_backend
+      cooldown_ms: 1000
+    - when: gfx_backend_lost
+      action: fallback_wgpu_software
+      cooldown_ms: 500
+
+  observability:
+    traces: true
+    metrics_prefix: oriera_pal_
+
+  platforms:
+    - family: pc
+      os: [windows, macos, linux]
+      frame_budget_us: 16666
+    - family: mobile
+      os: [ios, android]
+      frame_budget_us: 16666
+    - family: web
+      os: [browser]
+      frame_budget_us: 16666
+    - family: ar_glasses
+      os: [visionos, android_spatial, webxr]
+      frame_budget_us: 11111        # 90fps
+    - family: bci_reserved
+      status: stub
+      note: "v1 only trait, no hardware; bits 40+ always 0"

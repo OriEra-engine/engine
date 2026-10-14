@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package oriera.pal.v1;
+
+// Capability bitmap — mirrors crates/oriera-pal/src/capability.rs
+// Upper layers read this once at boot and never branch on OS.
+
+message CapabilityReport {
+  string platform_family = 1;   // pc | mobile | web | ar_glasses | bci_reserved | unknown
+  string os_name = 2;
+  uint64 bitmap = 3;             // bitflags as defined in capability.rs
+  uint32 frame_budget_us = 4;
+  uint32 vram_budget_mb = 5;
+}
+
+message CapabilityRequest {}
+
+service PlatformAbstraction {
+  rpc QueryCapabilities(CapabilityRequest) returns (CapabilityReport);
+}

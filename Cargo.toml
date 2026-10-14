@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/oriera-common",
+    "crates/oriera-pal",
+    "crates/oriera-core",
+    "crates/oriera-ecs",
+    "crates/oriera-asset",
+    "crates/oriera-render",
+    "crates/oriera-subsys",
+    "crates/oriera-infer",
+    "platforms/pc",
+    "platforms/web",
+    "platforms/ar_glasses/android_spatial",
+    "platforms/bci_reserved",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["OriEra Contributors"]
+repository = "https://github.com/oriera/oriera"
+
+[workspace.dependencies]
+# 异步与并行
+tokio = { version = "1.40", features = ["full"] }
+rayon = "1.10"
+crossbeam = "0.8"
+# 内存
+mimalloc = "0.1"
+slotmap = "1.0"
+# 数据结构
+bitflags = "2.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = "1"
+# 日志与观测
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 数学与确定性
+glam = { version = "0.29", features = ["serde"] }
+fixed = "1.24"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3

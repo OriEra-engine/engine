@@ -1,0 +1,58 @@
+name: 🐛 Bug 报告
+description: 报告一个可复现的 bug
+title: "[Bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢帮 OriEra 找 bug！请尽量填全下面的信息，我们好复现。
+  - type: textarea
+    id: description
+    attributes:
+      label: 现象描述
+      description: 发生了什么？期望发生什么？
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 运行端
+      options:
+        - PC (Windows)
+        - PC (macOS)
+        - PC (Linux)
+        - Mobile (iOS)
+        - Mobile (Android)
+        - Web (Chrome/Edge)
+        - Web (Firefox/Safari)
+        - AR 眼镜 (visionOS)
+        - AR 眼镜 (Android Spatial)
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开 '...'
+        2. 点击 '...'
+        3. 看到报错
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / trace
+      description: 粘贴控制台输出、AI Trace、截图等
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 自检
+      options:
+        - label: 我已经搜过 existing issues，没有重复
+          required: true
+        - label: 我用的是最新 main 分支
+          required: true

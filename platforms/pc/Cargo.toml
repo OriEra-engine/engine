@@ -1,0 +1,13 @@
+[package]
+name = "oriera-pc"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "oriera-pc"
+path = "src/main.rs"
+
+[dependencies]
+oriera-pal = { path = "../../crates/oriera-pal" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
