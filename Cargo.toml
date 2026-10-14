@@ -10,6 +10,8 @@ members = [
     "crates/oriera-subsys",
     "crates/oriera-infer",
     "platforms/pc",
+]
+exclude = [
     "platforms/web",
     "platforms/ar_glasses/android_spatial",
     "platforms/bci_reserved",
