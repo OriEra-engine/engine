@@ -53,14 +53,13 @@ impl World {
         let table_key = 1u64;
         let table = self.tables.entry(table_key).or_default();
         let col = table.columns.entry(type_id).or_insert_with(|| Column {
-            data: Box::new(Vec::<T>::new()),
+            data: Box::new(Vec::<Option<T>>::new()),
         });
-        let vec = col.data.downcast_mut::<Vec<T>>().unwrap();
-        while vec.len() < self.next_id as usize {
-            // SAFETY: we only read slots that have been written.
-            vec.push(unsafe { std::mem::zeroed() });
+        let vec = col.data.downcast_mut::<Vec<Option<T>>>().unwrap();
+        while vec.len() <= entity.0 as usize {
+            vec.push(None);
         }
-        vec[entity.0 as usize] = component;
+        vec[entity.0 as usize] = Some(component);
         table.len = table.len.max(entity.0 as usize + 1);
     }
 
@@ -69,10 +68,10 @@ impl World {
         let type_id = TypeId::of::<T>();
         self.tables.values().flat_map(move |table| {
             table.columns.get(&type_id).into_iter().flat_map(move |col| {
-                let vec = col.data.downcast_ref::<Vec<T>>().unwrap();
+                let vec = col.data.downcast_ref::<Vec<Option<T>>>().unwrap();
                 vec.iter()
                     .enumerate()
-                    .map(move |(i, v)| (Entity(i as u32), v))
+                    .filter_map(|(i, v)| v.as_ref().map(|v| (Entity(i as u32), v)))
             })
         })
     }

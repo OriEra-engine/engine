@@ -24,22 +24,40 @@ pub use capability::{Capabilities, PlatformProfile};
 /// Called exactly once at startup; the result is immutable thereafter.
 pub fn detect_platform() -> PlatformProfile {
     #[cfg(target_os = "windows")]
-    { PlatformProfile::pc("windows") }
+    {
+        PlatformProfile::pc("windows")
+    }
     #[cfg(target_os = "macos")]
-    { PlatformProfile::pc("macos") }
+    {
+        PlatformProfile::pc("macos")
+    }
     #[cfg(target_os = "linux")]
-    { PlatformProfile::pc("linux") }
+    {
+        PlatformProfile::pc("linux")
+    }
     #[cfg(target_os = "ios")]
-    { PlatformProfile::mobile("ios") }
+    {
+        PlatformProfile::mobile("ios")
+    }
     #[cfg(target_os = "android")]
-    { PlatformProfile::mobile("android") }
+    {
+        PlatformProfile::mobile("android")
+    }
     #[cfg(target_arch = "wasm32")]
-    { PlatformProfile::web() }
+    {
+        PlatformProfile::web()
+    }
     #[cfg(all(target_os = "visionos"))]
-    { PlatformProfile::ar_glasses("visionos") }
+    {
+        PlatformProfile::ar_glasses("visionos")
+    }
     #[cfg(not(any(
-        target_os = "windows", target_os = "macos", target_os = "linux",
-        target_os = "ios", target_os = "android", target_arch = "wasm32",
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "ios",
+        target_os = "android",
+        target_arch = "wasm32",
         target_os = "visionos"
     )))]
     {
