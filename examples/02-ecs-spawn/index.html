@@ -35,7 +35,7 @@
     <h2>World Settings</h2>
 
     <label>实体数量 (entities)</label>
-    <input id="count" type="range" min="100" max="100000" value="10000" step="100" />
+    <input id="count" type="range" min="100" max="200000" value="10000" step="100" />
     <div class="stat"><span>当前</span><b id="count-label">10,000</b></div>
 
     <label>系统步进速度 (dt scale)</label>
@@ -72,44 +72,33 @@
 // ============================================================
 
 class World {
-  constructor() {
-    // 每个 component 是一个 TypedArray，按 entity index 排列
-    this.positions = new Float32Array(0);   // x, y  交错
-    this.velocities = new Float32Array(0);  // vx, vy 交错
-    this.colors = new Uint8Array(0);        // r, g, b 交错
+  constructor(maxEntities = 200_000) {
+    // 预分配最大容量，运行时绝不重新分配 —— 拖滑块只改 alive 计数
+    this.capacity = maxEntities;
+    this.positions = new Float32Array(maxEntities * 2);   // x, y  交错
+    this.velocities = new Float32Array(maxEntities * 2);  // vx, vy 交错
+    this.colors = new Uint8Array(maxEntities * 3);        // r, g, b 交错
     this.alive = 0;
   }
 
   spawn(n, w, h) {
+    n = Math.min(n, this.capacity);
     const old = this.alive;
-    if (n <= old) { this.alive = n; return; }
+    if (n === old) return;
 
-    // 扩容（2x 策略，避免每次重新分配）
-    const need = Math.max(n, this.positions.length / 2 * 2);
-    if (need > this.positions.length / 2) {
-      const newPos = new Float32Array(need * 2);
-      newPos.set(this.positions);
-      this.positions = newPos;
-
-      const newVel = new Float32Array(need * 2);
-      newVel.set(this.velocities);
-      this.velocities = newVel;
-
-      const newCol = new Uint8Array(need * 3);
-      newCol.set(this.colors);
-      this.colors = newCol;
+    if (n > old) {
+      // 只填充新增的部分
+      for (let i = old; i < n; i++) {
+        this.positions[i*2]   = Math.random() * w;
+        this.positions[i*2+1] = Math.random() * h;
+        this.velocities[i*2]   = (Math.random() - 0.5) * 2;
+        this.velocities[i*2+1] = (Math.random() - 0.5) * 2;
+        this.colors[i*3]   = 180 + Math.random() * 75;
+        this.colors[i*3+1] = 80  + Math.random() * 60;
+        this.colors[i*3+2] = 200 + Math.random() * 55;
+      }
     }
-
-    // 填充新实体
-    for (let i = old; i < n; i++) {
-      this.positions[i*2]   = Math.random() * w;
-      this.positions[i*2+1] = Math.random() * h;
-      this.velocities[i*2]   = (Math.random() - 0.5) * 2;
-      this.velocities[i*2+1] = (Math.random() - 0.5) * 2;
-      this.colors[i*3]   = 180 + Math.random() * 75;  // R 偏暖
-      this.colors[i*3+1] = 80  + Math.random() * 60;
-      this.colors[i*3+2] = 200 + Math.random() * 55;  // B 偏冷
-    }
+    // n < old 直接截断，不回收内存（预分配的 buffer 不动）
     this.alive = n;
   }
 
@@ -183,6 +172,7 @@ window.addEventListener("resize", resize);
 let W = 800, H = 500;
 requestAnimationFrame(() => { resize(); });
 
+// 预分配 buffer 后，spawn 只是写 TypedArray，无内存分配，拖滑块流畅
 countSlider.oninput = () => {
   countLabel.textContent = (+countSlider.value).toLocaleString();
   world.spawn(+countSlider.value, W, H);
@@ -220,8 +210,8 @@ function frame(now) {
   }
   frame._samples = (frame._samples || 0) + 1;
 
-  entEl.textContent = world.alive.toLocaleString();
-  memEl.textContent = (world.positions.byteLength / 1024).toFixed(0) + " KB";
+  entEl.textContent = world.alive.toLocaleString() + " / " + world.capacity.toLocaleString();
+  memEl.textContent = (world.positions.byteLength / 1024 / 1024).toFixed(1) + " MB (预分配)";
 
   requestAnimationFrame(frame);
 }
