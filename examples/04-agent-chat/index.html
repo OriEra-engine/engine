@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OriEra · 04 Agent Chat</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+         background:#0b0d12; color:#e6e8ee; height:100vh; display:flex; flex-direction:column;}
+  header { padding:14px 20px; border-bottom:1px solid #222633;
+           display:flex; justify-content:space-between; align-items:center;}
+  header h1 { font-size:14px; margin:0; }
+  header .tag { font-size:11px; color:#8a90a6; }
+  main { flex:1; display:grid; grid-template-columns: 380px 1fr; gap:0; overflow:hidden;}
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  /* Chat panel */
+  #chat { border-right:1px solid #222633; display:flex; flex-direction:column; }
+  #messages { flex:1; overflow-y:auto; padding:16px; }
+  .msg { margin-bottom:14px; max-width:90%; }
+  .msg.user { margin-left:auto; }
+  .msg .who { font-size:10px; color:#8a90a6; margin-bottom:4px; text-transform:uppercase;}
+  .msg .bubble { padding:8px 12px; border-radius:8px; font-size:13px; line-height:1.5;}
+  .msg.user .bubble { background:#1f2a44; color:#cfe0ff; }
+  .msg.agent .bubble { background:#1a1f2a; }
+  .msg.tool .bubble { background:#14291c; color:#7fd18a; font-family: ui-monospace, monospace; font-size:12px;}
+  #input-row { padding:12px; border-top:1px solid #222633; display:flex; gap:8px;}
+  #input { flex:1; background:#12151c; border:1px solid #2a3040; color:#e6e8ee;
+           padding:10px; border-radius:6px; font:inherit; font-size:13px;}
+  #send { background:#5b8def; border:none; color:white; padding:0 16px; border-radius:6px;
+          font:inherit; cursor:pointer;}
+  #send:hover { background:#6b9dff; }
+
+  /* Scene panel */
+  #scene { position:relative; }
+  canvas { width:100%; height:100%; background:#0a0d14; display:block;}
+  #hud { position:absolute; top:12px; left:12px; font-size:11px; color:#8a90a6;
+         background:rgba(0,0,0,0.6); padding:6px 10px; border-radius:4px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>OriEra · L9 Agent Chat — 用自然语言控制世界</h1>
+  <span class="tag">example/04-agent-chat</span>
+</header>
+
+<main>
+  <section id="chat">
+    <div id="messages"></div>
+    <div id="input-row">
+      <input id="input" placeholder="试试：放 500 个粒子 / 清空 / 加速 2 倍 / 变慢" />
+      <button id="send">发送</button>
+    </div>
+  </section>
+  <section id="scene">
+    <canvas id="canvas"></canvas>
+    <div id="hud">entities: 0 · fps: --</div>
+  </section>
+</main>
+
+<script type="module">
+// ============================================================
+//  L3 ECS World（复用 02 的 SoA 设计）
+// ============================================================
+class World {
+  constructor(max = 50_000) {
+    this.capacity = max;
+    this.pos = new Float32Array(max * 2);
+    this.vel = new Float32Array(max * 2);
+    this.alive = 0;
+  }
+  spawn(n, w, h) {
+    n = Math.min(n, this.capacity);
+    const old = this.alive;
+    for (let i = old; i < n; i++) {
+      this.pos[i*2]   = Math.random() * w;
+      this.pos[i*2+1] = Math.random() * h;
+      this.vel[i*2]   = (Math.random() - 0.5) * 3;
+      this.vel[i*2+1] = (Math.random() - 0.5) * 3;
+    }
+    this.alive = n;
+  }
+  clear() { this.alive = 0; }
+  step(dt, w, h) {
+    const p = this.pos, v = this.vel, n = this.alive;
+    for (let i = 0; i < n; i++) {
+      p[i*2]   += v[i*2]   * dt;
+      p[i*2+1] += v[i*2+1] * dt;
+      if (p[i*2] < 0 || p[i*2] > w)   v[i*2]   *= -1;
+      if (p[i*2+1] < 0 || p[i*2+1] > h) v[i*2+1] *= -1;
+    }
+  }
+  render(ctx, w, h) {
+    const p = this.pos, n = this.alive;
+    ctx.fillStyle = "#ff7a3d";
+    for (let i = 0; i < n; i++) ctx.fillRect(p[i*2], p[i*2+1], 2, 2);
+  }
+}
+
+// ============================================================
+//  L9 MCP 工具注册表 — Agent 能调的工具都在这里
+//  未来接真 LLM 时，把这些工具的 JSON Schema 传给 OpenAI 即可
+// ============================================================
+const tools = {
+  spawn_particles: {
+    description: "在场景里生成指定数量的粒子",
+    parameters: { count: "number", w: "number", h: "number" },
+    handler: ({count, w, h}) => { world.spawn(count, w, h); return `已生成 ${count} 个粒子`; }
+  },
+  clear_world: {
+    description: "清空场景里所有粒子",
+    parameters: {},
+    handler: () => { world.clear(); return "场景已清空"; }
+  },
+  set_speed: {
+    description: "设置全局速度倍率",
+    parameters: { factor: "number" },
+    handler: ({factor}) => { state.speed = factor; return `速度倍率设为 ${factor}x`; }
+  }
+};
+
+// ============================================================
+//  L9 意图解析 — v1 用规则匹配，未来换成 LLM function calling
+// ============================================================
+function parseIntent(text) {
+  const t = text.toLowerCase();
+
+  // 放 N 个粒子
+  let m = t.match(/(\d+)\s*(个|个粒子|粒子)/);
+  if (m && (t.includes("放") || t.includes("生成") || t.includes("加") || t.includes("spawn"))) {
+    return { tool: "spawn_particles", args: { count: +m[1] } };
+  }
+  if (t.includes("清空") || t.includes("clear") || t.includes("清屏")) {
+    return { tool: "clear_world", args: {} };
+  }
+  m = t.match(/(加速|加快|变快|减速|变慢|慢一点|快一点)\s*(\d*\.?\d+)?\s*[倍x]?/);
+  if (m) {
+    let f = m[2] ? +m[2] : 1;
+    if (m[1].includes("减速") || m[1].includes("慢")) f = 1/f;
+    return { tool: "set_speed", args: { factor: f } };
+  }
+  return null;
+}
+
+// ============================================================
+//  Chat UI
+// ============================================================
+const messagesEl = document.getElementById("messages");
+const inputEl = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+
+function addMsg(who, text, type="normal") {
+  const div = document.createElement("div");
+  div.className = `msg ${who} ${type === "tool" ? "tool" : ""}`;
+  div.innerHTML = `<div class="who">${who}</div><div class="bubble"></div>`;
+  div.querySelector(".bubble").textContent = text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+// 欢迎消息
+addMsg("agent", "你好！我是 OriEra Agent。你可以跟我说：\n• 放 500 个粒子\n• 清空场景\n• 加速 2 倍 / 减速一半");
+
+function send() {
+  const text = inputEl.value.trim();
+  if (!text) return;
+  addMsg("user", text);
+  inputEl.value = "";
+
+  const intent = parseIntent(text);
+  if (!intent) {
+    addMsg("agent", "我还听不懂这句话。试试：放 N 个粒子 / 清空 / 加速 N 倍。");
+    return;
+  }
+
+  // 调工具
+  const tool = tools[intent.tool];
+  const args = { ...intent.args, w: W, h: H };
+  const result = tool.handler(args);
+  addMsg("tool", `→ ${intent.tool}(${JSON.stringify(args)})\n← ${result}`, "tool");
+  addMsg("agent", result);
+}
+sendBtn.onclick = send;
+inputEl.onkeydown = e => { if (e.key === "Enter") send(); };
+
+// ============================================================
+//  Frame loop
+// ============================================================
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d", { alpha: false });
+const hud = document.getElementById("hud");
+const world = new World();
+const state = { speed: 1 };
+let W = 800, H = 600;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  canvas.width = r.width * dpr;
+  canvas.height = r.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  W = canvas.clientWidth; H = canvas.clientHeight;
+}
+window.addEventListener("resize", resize);
+requestAnimationFrame(() => { resize(); world.spawn(200, W, H); });
+
+let last = performance.now(), frames = 0, fpsT = 0;
+function frame(now) {
+  const dt = (now - last) / 16.666 * state.speed;
+  last = now;
+  world.step(dt, W, H);
+  ctx.fillStyle = "#0a0d14";
+  ctx.fillRect(0, 0, W, H);
+  world.render(ctx, W, H);
+
+  frames++; fpsT += now - (frame._l || now);
+  frame._l = now;
+  if (fpsT > 500) {
+    hud.textContent = `entities: ${world.alive.toLocaleString()} · speed: ${state.speed}x · fps: ${Math.round(frames / (fpsT/1000))}`;
+    frames = 0; fpsT = 0;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
