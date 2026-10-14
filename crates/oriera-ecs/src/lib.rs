@@ -129,7 +129,13 @@ mod tests {
         let mut world = World::new();
         for i in 0..10_000 {
             let e = world.spawn();
-            world.insert(e, Position { x: i as f32, y: 0.0 });
+            world.insert(
+                e,
+                Position {
+                    x: i as f32,
+                    y: 0.0,
+                },
+            );
             world.insert(e, Velocity { vx: 0.01, vy: 0.0 });
         }
         assert_eq!(world.len(), 10_000);

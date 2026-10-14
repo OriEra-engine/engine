@@ -12,10 +12,10 @@
 //!   * BCI reserved  (EEG/LSL, v1 only a trait — see `platforms/bci_reserved`)
 
 pub mod capability;
-pub mod input;
 pub mod gfx;
-pub mod storage;
+pub mod input;
 pub mod net;
+pub mod storage;
 pub mod xr;
 
 pub use capability::{Capabilities, PlatformProfile};
@@ -47,7 +47,7 @@ pub fn detect_platform() -> PlatformProfile {
     {
         PlatformProfile::web()
     }
-    #[cfg(all(target_os = "visionos"))]
+    #[cfg(target_os = "visionos")]
     {
         PlatformProfile::ar_glasses("visionos")
     }
