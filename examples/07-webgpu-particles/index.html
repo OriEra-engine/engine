@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OriEra · 07 WebGPU 1M Particles</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+         background:#0b0d12; color:#e6e8ee; height:100vh; display:flex; flex-direction:column;}
+  header { padding:12px 20px; border-bottom:1px solid #222633;
+           display:flex; justify-content:space-between; align-items:center;}
+  header h1 { font-size:14px; margin:0; }
+  header .tag { font-size:11px; color:#ff7a3d; }
+  #stats { padding:10px 16px; border-bottom:1px solid #222633; display:flex; gap:24px;
+           font-size:12px; color:#8a90a6;}
+  #stats b { color:#7fd18a; font-size:14px;}
+  canvas { flex:1; display:block; }
+  #err { padding:20px; color:#e8b85b; font-size:13px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>OriEra · WebGPU Compute Particles — 1,000,000 entities on GPU</h1>
+  <span class="tag">example/07-webgpu-particles</span>
+</header>
+<div id="stats">
+  <span>Particles: <b id="count">--</b></span>
+  <span>FPS: <b id="fps">--</b></span>
+  <span>Frame: <b id="frame">--</b></span>
+  <span>Sim: <b id="sim">GPU</b></span>
+</div>
+<canvas id="canvas"></canvas>
+<div id="err"></div>
+
+<script type="module">
+const err = document.getElementById("err");
+const canvas = document.getElementById("canvas");
+const stats = {
+  count: document.getElementById("count"),
+  fps: document.getElementById("fps"),
+  frame: document.getElementById("frame"),
+};
+
+const COUNT = 1_000_000;
+
+if (!navigator.gpu) {
+  err.textContent = "❌ 当前浏览器不支持 WebGPU。请用 Chrome/Edge 113+。";
+  throw new Error("no webgpu");
+}
+
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const context = canvas.getContext("webgpu");
+const format = navigator.gpu.getPreferredCanvasFormat();
+context.configure({ device, format, alphaMode: "opaque" });
+
+// ============================================================
+//  Buffers: position + velocity, stored as vec4 each
+//  Layout: [x, y, vx, vy] per particle, packed as f32x4
+// ============================================================
+const STRIDE = 4 * 4;  // 4 floats = 16 bytes per particle
+const particleBuffer = device.createBuffer({
+  size: COUNT * STRIDE,
+  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX,
+});
+
+// Initialize particles on CPU side (one-time)
+const init = new Float32Array(COUNT * 4);
+for (let i = 0; i < COUNT; i++) {
+  init[i*4]   = Math.random() * 2 - 1;      // x
+  init[i*4+1] = Math.random() * 2 - 1;      // y
+  init[i*4+2] = (Math.random() - 0.5) * 0.01; // vx
+  init[i*4+3] = (Math.random() - 0.5) * 0.01; // vy
+}
+device.queue.writeBuffer(particleBuffer, 0, init);
+
+// ============================================================
+//  Compute shader: update all particles in parallel on GPU
+// ============================================================
+const computeModule = device.createShaderModule({
+  code: `
+    struct Particle { pos : vec4<f32> };
+    @group(0) @binding(0) var<storage, read_write> particles : array<Particle>;
+
+    @compute @workgroup_size(256)
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+      let i = gid.x;
+      if (i >= ${COUNT}u) { return; }
+      var p = particles[i].pos;
+      // Simple motion
+      p.x += p.z;
+      p.y += p.w;
+      // Wrap around [-1, 1]
+      if (p.x > 1.0) { p.x = -1.0; }
+      if (p.x < -1.0) { p.x = 1.0; }
+      if (p.y > 1.0) { p.y = -1.0; }
+      if (p.y < -1.0) { p.y = 1.0; }
+      particles[i].pos = p;
+    }
+  `,
+});
+
+const computePipeline = device.createComputePipeline({
+  layout: "auto",
+  compute: { module: computeModule, entryPoint: "main" },
+});
+const computeBind = device.createBindGroup({
+  layout: computePipeline.getBindGroupLayout(0),
+  entries: [{ binding: 0, resource: { buffer: particleBuffer } }],
+});
+
+// ============================================================
+//  Render pipeline: draw point list
+// ============================================================
+const renderModule = device.createShaderModule({
+  code: `
+    struct Particle { pos : vec4<f32> };
+    @group(0) @binding(0) var<storage, read> particles : array<Particle>;
+
+    struct VSOut {
+      @builtin(position) pos : vec4<f32>,
+      @location(0) color : vec4<f32>,
+    };
+
+    @vertex
+    fn vs(@builtin(vertex_index) i : u32) -> VSOut {
+      var out : VSOut;
+      let p = particles[i].pos.xy;
+      out.pos = vec4<f32>(p, 0.0, 1.0);
+      // Color by speed
+      let speed = length(particles[i].pos.zw);
+      out.color = vec4<f32>(0.36 + speed * 20.0, 0.48, 0.93, 1.0);
+      return out;
+    }
+
+    @fragment
+    fn fs(@location(0) color : vec4<f32>) -> @location(0) vec4<f32> {
+      return color;
+    }
+  `,
+});
+
+const renderPipeline = device.createRenderPipeline({
+  layout: "auto",
+  vertex: { module: renderModule, entryPoint: "vs" },
+  fragment: { module: renderModule, entryPoint: "fs", targets: [{ format }] },
+  primitive: { topology: "point-list" },
+});
+const renderBind = device.createBindGroup({
+  layout: renderPipeline.getBindGroupLayout(0),
+  entries: [{ binding: 0, resource: { buffer: particleBuffer } }],
+});
+
+// ============================================================
+//  Resize + frame loop
+// ============================================================
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = window.innerWidth * dpr;
+  canvas.height = (window.innerHeight - 90) * dpr;
+}
+window.addEventListener("resize", resize);
+resize();
+
+stats.count.textContent = (COUNT / 1_000_000).toFixed(0) + "M";
+
+let frames = 0, fpsTime = 0, last = performance.now();
+function frame(now) {
+  const t0 = performance.now();
+
+  const encoder = device.createCommandEncoder();
+
+  // Compute pass
+  const cp = encoder.beginComputePass();
+  cp.setPipeline(computePipeline);
+  cp.setBindGroup(0, computeBind);
+  cp.dispatchWorkgroups(Math.ceil(COUNT / 256));
+  cp.end();
+
+  // Render pass
+  const rp = encoder.beginRenderPass({
+    colorAttachments: [{
+      view: context.getCurrentTexture().createView(),
+      loadOp: "clear", storeOp: "store",
+      clearValue: { r: 0.04, g: 0.05, b: 0.08, a: 1 },
+    }],
+  });
+  rp.setPipeline(renderPipeline);
+  rp.setBindGroup(0, renderBind);
+  rp.draw(COUNT);
+  rp.end();
+
+  device.queue.submit([encoder.finish()]);
+
+  const dt = now - last;
+  last = now;
+  frames++; fpsTime += now - t0;
+  if (now - (frame._l || 0) > 500) {
+    stats.fps.textContent = Math.round(frames / ((now - (frame._l || now - 500)) / 1000));
+    stats.frame.textContent = (fpsTime / Math.max(1, frames)).toFixed(2) + " ms";
+    frames = 0; fpsTime = 0; frame._l = now;
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
