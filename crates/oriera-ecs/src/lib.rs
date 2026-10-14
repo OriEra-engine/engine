@@ -1,15 +1,18 @@
-//! L3 Object Model — archetype ECS.
+//! L3 Object Model — ECS with SoA columns and generation-validated handles.
 //!
 //! # Design
 //!
-//! - **Entity** = (`index`, `generation`). Generation prevents use-after-free:
-//!   when an entity is despawned, its index can be reused but the generation
-//!   counter increments, so stale handles become invalid.
-//! - **Component storage** is per-type: `HashMap<TypeId, Box<dyn Any>>` where
-//!   each boxed value is `HashMap<u32, T>` (entity index -> component value).
-//!   This gives O(1) insert/remove/query and is easy to read.
-//! - **Archetype optimization** is deferred to v0.2; the v0.1 API is stable
-//!   so callers don't need to change when we switch to SoA.
+//! - **Entity** = (`index: u32`, `generation: u32`). Generation prevents
+//!   use-after-free: when an entity is despawned, its index can be reused
+//!   but the generation counter increments, so stale handles are rejected.
+//! - **Component storage** is per-type: `Vec<Option<T>>` indexed directly by
+//!   entity index. O(1) random access with no hashing; the `Option` slot
+//!   doubles as "has this component" flag.
+//! - **Despawn** calls `Column::clear(idx)` on every type-erased column, so
+//!   memory is reclaimed immediately and queries never see stale data.
+//! - **v0.1 note**: This is a flat-column ECS, not multi-archetype.
+//!   Archetype relocation (moving entities between tables when components
+//!   are added/removed) is deferred to v0.2. The public API stays the same.
 //!
 //! # Example
 //!
@@ -44,6 +47,48 @@ pub struct Entity {
 }
 
 // ---------------------------------------------------------------------------
+// Type-erased column
+// ---------------------------------------------------------------------------
+
+trait Column: Any {
+    fn clear(&mut self, idx: usize);
+    #[allow(dead_code)]
+    fn len(&self) -> usize;
+    fn resize(&mut self, new_len: usize);
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+impl<T: 'static> Column for Vec<Option<T>> {
+    fn clear(&mut self, idx: usize) {
+        if idx < self.len() {
+            self[idx] = None;
+        }
+    }
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+    fn resize(&mut self, new_len: usize) {
+        // Grow with None; shrink just truncates.
+        let old_len = self.len();
+        if new_len > old_len {
+            self.reserve(new_len - old_len);
+            for _ in old_len..new_len {
+                self.push(None);
+            }
+        } else {
+            self.truncate(new_len);
+        }
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------
 
@@ -53,10 +98,8 @@ pub struct World {
     next_index: u32,
     generations: Vec<u32>,
     free: Vec<u32>,
-    /// Live entity indices.
-    live: std::collections::HashSet<u32>,
-    /// Per-type component storage: TypeId -> boxed HashMap<index, T>.
-    components: HashMap<TypeId, Box<dyn Any>>,
+    live_count: usize,
+    columns: HashMap<TypeId, Box<dyn Column>>,
 }
 
 impl World {
@@ -74,124 +117,136 @@ impl World {
             let idx = self.next_index;
             self.next_index += 1;
             self.generations.push(0);
+            let new_len = idx as usize + 1;
+            for col in self.columns.values_mut() {
+                col.resize(new_len);
+            }
             idx
         };
         let generation = self.generations[index as usize];
-        self.live.insert(index);
+        self.live_count += 1;
         Entity { index, generation }
     }
 
     /// Remove an entity and all its components.
     pub fn despawn(&mut self, entity: Entity) {
-        if !self.live.remove(&entity.index) {
+        if !self.valid(entity) {
             return;
         }
         self.generations[entity.index as usize] += 1;
+        self.live_count -= 1;
         self.free.push(entity.index);
+        let idx = entity.index as usize;
+        for col in self.columns.values_mut() {
+            col.clear(idx);
+        }
     }
 
     // ---- insert / remove ----
 
     /// Insert or replace a component on an entity.
     pub fn insert<T: 'static>(&mut self, entity: Entity, component: T) {
-        if !self.live.contains(&entity.index) {
+        if !self.valid(entity) {
             return;
         }
         let type_id = TypeId::of::<T>();
-        let col = self
-            .components
-            .entry(type_id)
-            .or_insert_with(|| Box::new(HashMap::<u32, T>::new()));
-        let map = col.downcast_mut::<HashMap<u32, T>>().unwrap();
-        map.insert(entity.index, component);
+        let idx = entity.index as usize;
+        let cap = idx + 1;
+        let col = self.columns.entry(type_id).or_insert_with(|| {
+            let mut v: Vec<Option<T>> = Vec::new();
+            v.resize(cap);
+            Box::new(v) as Box<dyn Column>
+        });
+        col.resize(cap);
+        let vec = col.as_any_mut().downcast_mut::<Vec<Option<T>>>().unwrap();
+        vec[idx] = Some(component);
     }
 
     /// Remove a component from an entity.
     pub fn remove<T: 'static>(&mut self, entity: Entity) {
+        if !self.valid(entity) {
+            return;
+        }
         let type_id = TypeId::of::<T>();
-        if let Some(col) = self.components.get_mut(&type_id) {
-            let map = col.downcast_mut::<HashMap<u32, T>>().unwrap();
-            map.remove(&entity.index);
+        if let Some(col) = self.columns.get_mut(&type_id) {
+            col.clear(entity.index as usize);
         }
     }
 
     /// Get a component ref.
     pub fn get<T: 'static>(&self, entity: Entity) -> Option<&T> {
+        if !self.valid(entity) {
+            return None;
+        }
         let type_id = TypeId::of::<T>();
-        let col = self.components.get(&type_id)?;
-        let map = col.downcast_ref::<HashMap<u32, T>>().unwrap();
-        map.get(&entity.index)
+        let col = self.columns.get(&type_id)?;
+        let vec = col.as_any().downcast_ref::<Vec<Option<T>>>().unwrap();
+        vec.get(entity.index as usize)?.as_ref()
     }
 
     /// Get a component mut ref.
     pub fn get_mut<T: 'static>(&mut self, entity: Entity) -> Option<&mut T> {
+        if !self.valid(entity) {
+            return None;
+        }
         let type_id = TypeId::of::<T>();
-        let col = self.components.get_mut(&type_id)?;
-        let map = col.downcast_mut::<HashMap<u32, T>>().unwrap();
-        map.get_mut(&entity.index)
+        let col = self.columns.get_mut(&type_id)?;
+        let vec = col.as_any_mut().downcast_mut::<Vec<Option<T>>>().unwrap();
+        vec.get_mut(entity.index as usize)?.as_mut()
     }
 
     // ---- query ----
 
-    /// Query entities that have component T.
+    /// Query all entities that have component T.
     pub fn query<T: 'static>(&self) -> impl Iterator<Item = (Entity, &T)> + '_ {
         let type_id = TypeId::of::<T>();
-        let gen = &self.generations;
-        let live = &self.live;
-        self.components
-            .get(&type_id)
-            .into_iter()
-            .flat_map(move |col| {
-                let map = col.downcast_ref::<HashMap<u32, T>>().unwrap();
-                map.iter().filter_map(move |(&idx, v)| {
-                    if live.contains(&idx) {
-                        Some((
-                            Entity {
-                                index: idx,
-                                generation: gen[idx as usize],
-                            },
-                            v,
-                        ))
-                    } else {
-                        None
-                    }
+        let gens = &self.generations;
+        self.columns.get(&type_id).into_iter().flat_map(move |col| {
+            let vec = col.as_any().downcast_ref::<Vec<Option<T>>>().unwrap();
+            vec.iter().enumerate().filter_map(move |(idx, slot)| {
+                slot.as_ref().map(|v| {
+                    (
+                        Entity {
+                            index: idx as u32,
+                            generation: gens[idx],
+                        },
+                        v,
+                    )
                 })
             })
+        })
     }
 
-    /// Query entities that have both A and B.
+    /// Query all entities that have both A and B.
     pub fn query2<A: 'static, B: 'static>(&self) -> impl Iterator<Item = (Entity, &A, &B)> + '_ {
         let ta = TypeId::of::<A>();
         let tb = TypeId::of::<B>();
-        let gen = &self.generations;
-        let live = &self.live;
-        let amap = self
-            .components
+        let gens = &self.generations;
+        let acol = self
+            .columns
             .get(&ta)
-            .map(|c| c.downcast_ref::<HashMap<u32, A>>().unwrap());
-        let bmap = self
-            .components
+            .map(|c| c.as_any().downcast_ref::<Vec<Option<A>>>().unwrap());
+        let bcol = self
+            .columns
             .get(&tb)
-            .map(|c| c.downcast_ref::<HashMap<u32, B>>().unwrap());
+            .map(|c| c.as_any().downcast_ref::<Vec<Option<B>>>().unwrap());
 
-        match (amap, bmap) {
-            (Some(a), Some(b)) => Box::new(a.iter().filter_map(move |(&idx, va)| {
-                if live.contains(&idx) {
-                    b.get(&idx).map(|vb| {
-                        (
-                            Entity {
-                                index: idx,
-                                generation: gen[idx as usize],
-                            },
-                            va,
-                            vb,
-                        )
-                    })
-                } else {
-                    None
-                }
-            }))
-                as Box<dyn Iterator<Item = (Entity, &A, &B)> + '_>,
+        match (acol, bcol) {
+            (Some(a), Some(b)) => {
+                let len = a.len().min(b.len());
+                Box::new((0..len).filter_map(move |idx| {
+                    let av = a[idx].as_ref()?;
+                    let bv = b[idx].as_ref()?;
+                    Some((
+                        Entity {
+                            index: idx as u32,
+                            generation: gens[idx],
+                        },
+                        av,
+                        bv,
+                    ))
+                })) as Box<dyn Iterator<Item = (Entity, &A, &B)> + '_>
+            }
             _ => Box::new(std::iter::empty()),
         }
     }
@@ -199,11 +254,16 @@ impl World {
     // ---- helpers ----
 
     pub fn len(&self) -> usize {
-        self.live.len()
+        self.live_count
     }
 
     pub fn is_empty(&self) -> bool {
-        self.live.is_empty()
+        self.live_count == 0
+    }
+
+    fn valid(&self, entity: Entity) -> bool {
+        (entity.index as usize) < self.generations.len()
+            && self.generations[entity.index as usize] == entity.generation
     }
 }
 
@@ -292,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn despawn_entity() {
+    fn despawn_clears_components() {
         let mut world = World::new();
         let e = world.spawn();
         world.insert(e, Position { x: 1.0, y: 2.0 });
@@ -302,6 +362,25 @@ mod tests {
         world.despawn(e);
         assert_eq!(world.len(), 0);
         assert!(world.query::<Position>().next().is_none());
+        assert!(world.query::<Health>().next().is_none());
+    }
+
+    #[test]
+    fn stale_handle_rejected() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Position { x: 1.0, y: 2.0 });
+        world.despawn(e);
+
+        // e is now stale — insert/get must reject it.
+        world.insert(e, Position { x: 99.0, y: 99.0 });
+        assert!(world.get::<Position>(e).is_none());
+
+        // Spawn a new entity — may reuse index but new generation.
+        let e2 = world.spawn();
+        assert_ne!(e, e2);
+        // The stale handle must not see e2's components.
+        assert!(world.get::<Position>(e).is_none());
     }
 
     #[test]
@@ -310,7 +389,6 @@ mod tests {
         let e = world.spawn();
         world.despawn(e);
 
-        // Spawn again — should get the same index but a new generation.
         let e2 = world.spawn();
         assert_eq!(e2.index, e.index);
         assert_ne!(e2.generation, e.generation);
