@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OriEra — AI-Native World Engine</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "SF Mono", Menlo, monospace;
+         background:#0b0d12; color:#e6e8ee; line-height:1.6;}
+  .hero { padding:60px 20px 40px; text-align:center; border-bottom:1px solid #222633;}
+  .hero h1 { font-size:36px; margin:0 0 12px; letter-spacing:-0.02em;}
+  .hero h1 span { color:#ff7a3d; }
+  .hero p { color:#8a90a6; max-width:640px; margin:0 auto; font-size:15px;}
+  .hero .badges { margin-top:20px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap;}
+  .badge { background:#1a1f2a; border:1px solid #2a3040; padding:4px 10px; border-radius:20px;
+           font-size:11px; color:#8a90a6;}
+  .container { max-width:1100px; margin:0 auto; padding:40px 20px;}
+  h2 { font-size:14px; color:#8a90a6; text-transform:uppercase; letter-spacing:0.1em;
+       margin:40px 0 20px;}
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:20px;}
+  .card { background:#12151c; border:1px solid #222633; border-radius:10px; overflow:hidden;
+          transition:transform .15s, border-color .15s;}
+  .card:hover { transform:translateY(-2px); border-color:#5b8def;}
+  .card .thumb { height:160px; display:flex; align-items:center; justify-content:center;
+                 font-size:40px; background:linear-gradient(135deg, #1a1f2a, #0d1017);}
+  .card .body { padding:16px;}
+  .card .num { font-size:11px; color:#5b8def; font-weight:600;}
+  .card h3 { margin:4px 0 8px; font-size:15px;}
+  .card p { margin:0 0 12px; font-size:12px; color:#8a90a6;}
+  .card .layers { display:flex; gap:4px; flex-wrap:wrap; margin-bottom:12px;}
+  .card .layers span { font-size:10px; background:#1a1f2a; color:#8a90a6; padding:2px 6px; border-radius:3px;}
+  .card a { display:inline-block; background:#5b8def; color:white; text-decoration:none;
+            padding:6px 14px; border-radius:6px; font-size:12px;}
+  .card a:hover { background:#6b9dff;}
+  footer { text-align:center; padding:40px; color:#555b6e; font-size:12px;
+           border-top:1px solid #222633; margin-top:40px;}
+  footer a { color:#8a90a6;}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>Ori<span>Era</span></h1>
+  <p>AI-native, mixed-reality, self-evolving open world engine.<br/>
+     十一层架构 · 五端接入 · 开源共建</p>
+  <div class="badges">
+    <span class="badge">Apache-2.0</span>
+    <span class="badge">11 Layers</span>
+    <span class="badge">5 Platforms</span>
+    <span class="badge">WebGPU</span>
+    <span class="badge">ECS</span>
+    <span class="badge">MCP Agent</span>
+  </div>
+</div>
+
+<div class="container">
+  <h2>Live Demos — 在线体验</h2>
+  <div class="grid">
+
+    <div class="card">
+      <div class="thumb">🔺</div>
+      <div class="body">
+        <div class="num">01</div>
+        <h3>Hello Triangle</h3>
+        <p>L1 平台抽象层 + WebGPU 清屏三角形，五端能力位图切换。</p>
+        <div class="layers"><span>L1 PAL</span><span>L5 Render</span></div>
+        <a href="examples/01-hello-triangle/index.html">打开 demo →</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="thumb">✨</div>
+      <div class="body">
+        <div class="num">02</div>
+        <h3>ECS Spawn</h3>
+        <p>20 万粒子的 SoA ECS，拖动滑块实时调数量，FPS 实测。</p>
+        <div class="layers"><span>L2 Core</span><span>L3 ECS</span></div>
+        <a href="examples/02-ecs-spawn/index.html">打开 demo →</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="thumb">🟧</div>
+      <div class="body">
+        <div class="num">03</div>
+        <h3>Physics Sandbox</h3>
+        <p>重力、碰撞、反弹、鼠标拖拽方块和球。</p>
+        <div class="layers"><span>L6 Physics</span></div>
+        <a href="examples/03-physics/index.html">打开 demo →</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="thumb">💬</div>
+      <div class="body">
+        <div class="num">04</div>
+        <h3>Agent Chat</h3>
+        <p>用自然语言控制粒子世界："放 500 个粒子"、"清空"。</p>
+        <div class="layers"><span>L9 Agent</span><span>MCP Tools</span></div>
+        <a href="examples/04-agent-chat/index.html">打开 demo →</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="thumb">🦆</div>
+      <div class="body">
+        <div class="num">05</div>
+        <h3>glTF Model</h3>
+        <p>Three.js 加载 Duck.glb，鼠标旋转视角。</p>
+        <div class="layers"><span>L4 Assets</span><span>glTF</span></div>
+        <a href="examples/05-gltf-model/index.html">打开 demo →</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="thumb">🧱</div>
+      <div class="body">
+        <div class="num">06</div>
+        <h3>Agent × Physics</h3>
+        <p>聊天指挥物理世界："左边放 5 个方块"、"月球重力"。</p>
+        <div class="layers"><span>L9 Agent</span><span>L6 Physics</span></div>
+        <a href="examples/06-agent-physics/index.html">打开 demo →</a>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<footer>
+  <p>OriEra Engine · <a href="https://github.com/OriEra-engine/engine">GitHub</a> · Apache-2.0 · 2026</p>
+</footer>
+
+</body>
+</html>
