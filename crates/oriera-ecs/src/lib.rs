@@ -67,12 +67,16 @@ impl World {
     pub fn query<T: 'static>(&self) -> impl Iterator<Item = (Entity, &T)> + '_ {
         let type_id = TypeId::of::<T>();
         self.tables.values().flat_map(move |table| {
-            table.columns.get(&type_id).into_iter().flat_map(move |col| {
-                let vec = col.data.downcast_ref::<Vec<Option<T>>>().unwrap();
-                vec.iter()
-                    .enumerate()
-                    .filter_map(|(i, v)| v.as_ref().map(|v| (Entity(i as u32), v)))
-            })
+            table
+                .columns
+                .get(&type_id)
+                .into_iter()
+                .flat_map(move |col| {
+                    let vec = col.data.downcast_ref::<Vec<Option<T>>>().unwrap();
+                    vec.iter()
+                        .enumerate()
+                        .filter_map(|(i, v)| v.as_ref().map(|v| (Entity(i as u32), v)))
+                })
         })
     }
 
