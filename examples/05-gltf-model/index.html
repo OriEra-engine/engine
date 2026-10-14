@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OriEra · 05 glTF Model</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+         background:#0b0d12; color:#e6e8ee; height:100vh; display:flex; flex-direction:column;}
+  header { padding:14px 20px; border-bottom:1px solid #222633;
+           display:flex; justify-content:space-between; align-items:center;}
+  header h1 { font-size:14px; margin:0; }
+  header .tag { font-size:11px; color:#8a90a6; }
+  #info { padding:10px 16px; border-bottom:1px solid #222633; font-size:12px; color:#8a90a6;}
+  #info b { color:#7fd18a; }
+  canvas { flex:1; display:block; }
+  #loading { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+             font-size:14px; color:#8a90a6;}
+</style>
+</head>
+<body>
+<header>
+  <h1>OriEra · L4 Asset Pipeline — glTF Model Loading</h1>
+  <span class="tag">example/05-gltf-model</span>
+</header>
+<div id="info">
+  Model: <b>Duck.glb</b> (Khronos glTF Sample Models) ·
+  Drag to orbit · Scroll to zoom
+</div>
+<div id="loading">加载模型中…</div>
+<canvas id="canvas"></canvas>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+const canvas = document.getElementById("canvas");
+const loading = document.getElementById("loading");
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight - 90);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0d14);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / (window.innerHeight - 90), 0.1, 100);
+camera.position.set(0, 1.5, 5);
+
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0, 0.8, 0);
+
+// 灯光
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+const dir = new THREE.DirectionalLight(0xffffff, 1.5);
+dir.position.set(3, 5, 2);
+scene.add(dir);
+
+// 地面网格
+const grid = new THREE.GridHelper(10, 20, 0x2a3040, 0x1a1f2a);
+scene.add(grid);
+
+// ============================================================
+//  L4 资源管线：ResourceHandle → GLTFLoader → 场景图
+// ============================================================
+const loader = new GLTFLoader();
+const DUCK_URL = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/Duck/glTF-Binary/Duck.glb";
+
+loader.load(DUCK_URL, (gltf) => {
+  const duck = gltf.scene;
+  duck.scale.set(0.015, 0.015, 0.015);  // Duck 原始尺寸很大，缩一下
+  duck.position.y = 0.9;
+  scene.add(duck);
+  loading.style.display = "none";
+
+  // 记录 ResourceHandle 元数据（未来 L4 会正式化）
+  console.log("[L4 Asset] loaded:", {
+    url: DUCK_URL,
+    meshes: duck.children.length,
+    format: "glb",
+  });
+}, (xhr) => {
+  if (xhr.total) {
+    const pct = Math.round(xhr.loaded / xhr.total * 100);
+    loading.textContent = `加载模型中… ${pct}%`;
+  }
+}, (err) => {
+  loading.textContent = "加载失败：" + err.message;
+  console.error(err);
+});
+
+// 动画循环
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / (window.innerHeight - 90);
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight - 90);
+});
+</script>
+</body>
+</html>
