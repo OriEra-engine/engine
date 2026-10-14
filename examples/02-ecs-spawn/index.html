@@ -128,13 +128,26 @@ class World {
   }
 
   /// RenderSystem: 画点
-  renderSystem(ctx, size) {
-    const p = this.positions, c = this.colors, n = this.alive;
-    // 高 DPR 下 2px 看不见，按密度自适应粒子大小
+  /// 性能优化：粒子多时统一颜色，避免每帧切 8 万次 fillStyle
+  renderSystem(ctx, {w, h}) {
+    const p = this.positions, n = this.alive;
     const dot = n < 2000 ? 6 : n < 20000 ? 4 : 2;
-    for (let i = 0; i < n; i++) {
-      ctx.fillStyle = `rgb(${c[i*3]},${c[i*3+1]},${c[i*3+2]})`;
-      ctx.fillRect(p[i*2], p[i*2+1], dot, dot);
+
+    // 统一颜色（OriEra 橙），只设置一次 fillStyle
+    ctx.fillStyle = "#ff7a3d";
+
+    if (n <= 50000) {
+      // 少量粒子：保留 per-particle 颜色
+      const c = this.colors;
+      for (let i = 0; i < n; i++) {
+        ctx.fillStyle = `rgb(${c[i*3]},${c[i*3+1]},${c[i*3+2]})`;
+        ctx.fillRect(p[i*2], p[i*2+1], dot, dot);
+      }
+    } else {
+      // 大量粒子：统一颜色 + 批量画
+      for (let i = 0; i < n; i++) {
+        ctx.fillRect(p[i*2], p[i*2+1], dot, dot);
+      }
     }
   }
 }
