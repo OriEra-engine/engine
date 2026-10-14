@@ -34,6 +34,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 | 04 Agent Chat | 自然语言控制粒子 | [▶](https://oriera-engine.github.io/engine/examples/04-agent-chat/index.html) |
 | 05 glTF Model | Three.js 加载 Duck 模型 | [▶](https://oriera-engine.github.io/engine/examples/05-gltf-model/index.html) |
 | 06 Agent × Physics | 聊天指挥物理世界 | [▶](https://oriera-engine.github.io/engine/examples/06-agent-physics/index.html) |
+| 07 WebGPU 1M Particles | 100 万粒子 GPU compute | [▶](https://oriera-engine.github.io/engine/examples/07-webgpu-particles/index.html) |
 
 ## 架构
 
