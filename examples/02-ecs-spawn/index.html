@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OriEra · 02 ECS Spawn</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+         background:#0b0d12; color:#e6e8ee; }
+  header { padding:14px 20px; border-bottom:1px solid #222633;
+           display:flex; justify-content:space-between; align-items:center;}
+  header h1 { font-size:14px; margin:0; }
+  header .tag { font-size:11px; color:#8a90a6; }
+  main { display:grid; grid-template-columns: 300px 1fr; gap:16px; padding:16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background:#12151c; border:1px solid #222633; border-radius:8px; padding:14px; }
+  .panel h2 { font-size:12px; color:#8a90a6; margin:0 0 10px; text-transform:uppercase; letter-spacing:.08em;}
+  label { display:block; font-size:12px; color:#8a90a6; margin-top:12px;}
+  input[type=range] { width:100%; }
+  .stat { display:flex; justify-content:space-between; padding:4px 0; font-size:12px;}
+  .stat b { color:#7fd18a; }
+  canvas { width:100%; height:540px; background:#000; border-radius:6px; display:block; }
+  .hint { font-size:11px; color:#555b6e; margin-top:10px; line-height:1.5;}
+</style>
+</head>
+<body>
+<header>
+  <h1>OriEra · L2+L3 ECS Demo — 10k entities @ 60fps</h1>
+  <span class="tag">example/02-ecs-spawn</span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>World Settings</h2>
+
+    <label>实体数量 (entities)</label>
+    <input id="count" type="range" min="100" max="100000" value="10000" step="100" />
+    <div class="stat"><span>当前</span><b id="count-label">10,000</b></div>
+
+    <label>系统步进速度 (dt scale)</label>
+    <input id="speed" type="range" min="0" max="3" value="1" step="0.1" />
+
+    <h2 style="margin-top:18px">Stats</h2>
+    <div class="stat"><span>FPS</span><b id="fps">--</b></div>
+    <div class="stat"><span>帧时间</span><b id="frameus">--</b></div>
+    <div class="stat"><span>实体数</span><b id="ent">--</b></div>
+    <div class="stat"><span>Position 内存</span><b id="mem">--</b></div>
+
+    <div class="hint">
+      这是 L3 ECS 的 Web 参考实现：SoA（Structure of Arrays）布局，
+      所有组件存在紧凑 TypedArray 里，没有对象开销。
+      Rust 侧（crates/oriera-ecs）将对齐同一套 API。
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Scene View</h2>
+    <canvas id="canvas"></canvas>
+  </section>
+</main>
+
+<script type="module">
+// ============================================================
+//  OriEra L3 ECS — 参考实现（Web 版）
+//
+//  设计要点（对齐 crates/oriera-ecs 的目标 API）：
+//  - Entity = u32 ID，不携带数据
+//  - Component = 紧凑 TypedArray（SoA），不是对象
+//  - System   = 纯函数，遍历 component view，读写数据
+//  - World    = 注册 components、spawn、run systems
+// ============================================================
+
+class World {
+  constructor() {
+    // 每个 component 是一个 TypedArray，按 entity index 排列
+    this.positions = new Float32Array(0);   // x, y  交错
+    this.velocities = new Float32Array(0);  // vx, vy 交错
+    this.colors = new Uint8Array(0);        // r, g, b 交错
+    this.alive = 0;
+  }
+
+  spawn(n, w, h) {
+    const old = this.alive;
+    if (n <= old) { this.alive = n; return; }
+
+    // 扩容（2x 策略，避免每次重新分配）
+    const need = Math.max(n, this.positions.length / 2 * 2);
+    if (need > this.positions.length / 2) {
+      const newPos = new Float32Array(need * 2);
+      newPos.set(this.positions);
+      this.positions = newPos;
+
+      const newVel = new Float32Array(need * 2);
+      newVel.set(this.velocities);
+      this.velocities = newVel;
+
+      const newCol = new Uint8Array(need * 3);
+      newCol.set(this.colors);
+      this.colors = newCol;
+    }
+
+    // 填充新实体
+    for (let i = old; i < n; i++) {
+      this.positions[i*2]   = Math.random() * w;
+      this.positions[i*2+1] = Math.random() * h;
+      this.velocities[i*2]   = (Math.random() - 0.5) * 2;
+      this.velocities[i*2+1] = (Math.random() - 0.5) * 2;
+      this.colors[i*3]   = 180 + Math.random() * 75;  // R 偏暖
+      this.colors[i*3+1] = 80  + Math.random() * 60;
+      this.colors[i*3+2] = 200 + Math.random() * 55;  // B 偏冷
+    }
+    this.alive = n;
+  }
+
+  // --- Systems ------------------------------------------------
+
+  /// MoveSystem: position += velocity * dt
+  moveSystem(dt) {
+    const p = this.positions, v = this.velocities, n = this.alive;
+    for (let i = 0; i < n; i++) {
+      p[i*2]   += v[i*2]   * dt;
+      p[i*2+1] += v[i*2+1] * dt;
+    }
+  }
+
+  /// BounceSystem: 撞墙反弹
+  bounceSystem(w, h) {
+    const p = this.positions, v = this.velocities, n = this.alive;
+    for (let i = 0; i < n; i++) {
+      if (p[i*2] < 0 || p[i*2] > w)   v[i*2]   *= -1;
+      if (p[i*2+1] < 0 || p[i*2+1] > h) v[i*2+1] *= -1;
+      // clamp 防止飞出屏幕
+      if (p[i*2] < 0) p[i*2] = 0;
+      if (p[i*2] > w) p[i*2] = w;
+      if (p[i*2+1] < 0) p[i*2+1] = 0;
+      if (p[i*2+1] > h) p[i*2+1] = h;
+    }
+  }
+
+  /// RenderSystem: 画点
+  renderSystem(ctx) {
+    const p = this.positions, c = this.colors, n = this.alive;
+    for (let i = 0; i < n; i++) {
+      ctx.fillStyle = `rgb(${c[i*3]},${c[i*3+1]},${c[i*3+2]})`;
+      ctx.fillRect(p[i*2], p[i*2+1], 2, 2);
+    }
+  }
+}
+
+// ============================================================
+//  Boot
+// ============================================================
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d", { alpha: false });
+const world = new World();
+
+const countSlider = document.getElementById("count");
+const countLabel = document.getElementById("count-label");
+const speedSlider = document.getElementById("speed");
+const fpsEl = document.getElementById("fps");
+const frameEl = document.getElementById("frameus");
+const entEl = document.getElementById("ent");
+const memEl = document.getElementById("mem");
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  canvas.width = r.width * dpr;
+  canvas.height = r.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.addEventListener("resize", resize);
+
+function currentWH() {
+  return [canvas.clientWidth, canvas.clientHeight];
+}
+
+// Spawn initial
+let [W, H] = currentWH();
+world.spawn(+countSlider.value, W, H);
+
+countSlider.oninput = () => {
+  countLabel.textContent = (+countSlider.value).toLocaleString();
+  world.spawn(+countSlider.value, W, H);
+};
+
+// ============================================================
+//  Frame loop — L2 调度器的最小模型
+// ============================================================
+let last = performance.now();
+let frames = 0, fpsTime = 0, fps = 0;
+
+function frame(now) {
+  const frameStart = performance.now();
+  let dt = (now - last) / 16.666;  // 以 60fps 为 1.0 单位
+  last = now;
+  dt *= (+speedSlider.value);
+
+  [W, H] = currentWH();
+
+  // L2 调度器：固定顺序跑 systems
+  world.moveSystem(dt);
+  world.bounceSystem(W, H);
+
+  // Render
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+  world.renderSystem(ctx);
+
+  // Stats
+  frames++; fpsTime += now - frameStart;
+  if (now - (frame?._last : 0) > 500) {
+    fps = Math.round(frames / ((now - (frame._last || now - 500)) / 1000));
+    frames = 0; frame._last = now;
+    fpsEl.textContent = fps;
+    frameEl.textContent = (fpsTime / (frame._samples || 1)).toFixed(0) + " µs";
+    frame._samples = 0; fpsTime = 0;
+  }
+  frame._samples = (frame._samples || 0) + 1;
+
+  entEl.textContent = world.alive.toLocaleString();
+  memEl.textContent = (world.positions.byteLength / 1024).toFixed(0) + " KB (pos)";
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
