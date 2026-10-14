@@ -139,11 +139,13 @@ class World {
   }
 
   /// RenderSystem: 画点
-  renderSystem(ctx) {
+  renderSystem(ctx, size) {
     const p = this.positions, c = this.colors, n = this.alive;
+    // 高 DPR 下 2px 看不见，按密度自适应粒子大小
+    const dot = n < 2000 ? 6 : n < 20000 ? 4 : 2;
     for (let i = 0; i < n; i++) {
       ctx.fillStyle = `rgb(${c[i*3]},${c[i*3+1]},${c[i*3+2]})`;
-      ctx.fillRect(p[i*2], p[i*2+1], 2, 2);
+      ctx.fillRect(p[i*2], p[i*2+1], dot, dot);
     }
   }
 }
@@ -166,20 +168,20 @@ const memEl = document.getElementById("mem");
 function resize() {
   const dpr = window.devicePixelRatio || 1;
   const r = canvas.getBoundingClientRect();
-  canvas.width = r.width * dpr;
-  canvas.height = r.height * dpr;
+  canvas.width = Math.max(100, r.width * dpr);
+  canvas.height = Math.max(100, r.height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  W = canvas.clientWidth;
+  H = canvas.clientHeight;
+  // resize 后重新 spawn，让粒子分布到新尺寸
+  world.spawn(+countSlider.value, W, H);
+  console.log("resize:", W, H, "entities:", world.alive);
 }
-resize();
 window.addEventListener("resize", resize);
 
-function currentWH() {
-  return [canvas.clientWidth, canvas.clientHeight];
-}
-
-// Spawn initial
-let [W, H] = currentWH();
-world.spawn(+countSlider.value, W, H);
+// Spawn initial — 等下一帧确保 layout 完成
+let W = 800, H = 500;
+requestAnimationFrame(() => { resize(); });
 
 countSlider.oninput = () => {
   countLabel.textContent = (+countSlider.value).toLocaleString();
@@ -198,30 +200,28 @@ function frame(now) {
   last = now;
   dt *= (+speedSlider.value);
 
-  [W, H] = currentWH();
-
   // L2 调度器：固定顺序跑 systems
   world.moveSystem(dt);
   world.bounceSystem(W, H);
 
   // Render
-  ctx.fillStyle = "#000";
+  ctx.fillStyle = "#0a0d14";
   ctx.fillRect(0, 0, W, H);
-  world.renderSystem(ctx);
+  world.renderSystem(ctx, {w: W, h: H});
 
   // Stats
-  frames++; fpsTime += now - frameStart;
-  if (now - (frame?._last : 0) > 500) {
+  frames++; fpsTime += performance.now() - frameStart;
+  if (now - (frame._last || 0) > 500) {
     fps = Math.round(frames / ((now - (frame._last || now - 500)) / 1000));
     frames = 0; frame._last = now;
     fpsEl.textContent = fps;
-    frameEl.textContent = (fpsTime / (frame._samples || 1)).toFixed(0) + " µs";
+    frameEl.textContent = (fpsTime / Math.max(1,(frame._samples||1))).toFixed(0) + " µs";
     frame._samples = 0; fpsTime = 0;
   }
   frame._samples = (frame._samples || 0) + 1;
 
   entEl.textContent = world.alive.toLocaleString();
-  memEl.textContent = (world.positions.byteLength / 1024).toFixed(0) + " KB (pos)";
+  memEl.textContent = (world.positions.byteLength / 1024).toFixed(0) + " KB";
 
   requestAnimationFrame(frame);
 }
