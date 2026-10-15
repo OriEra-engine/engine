@@ -5,11 +5,12 @@ edition.workspace = true
 license.workspace = true
 description = "OriEra L3 object model: SoA ECS, generation handles, resources"
 
+[dependencies]
+tracing.workspace = true
+
 [lib]
 name = "oriera_ecs"
 path = "src/lib.rs"
-
-[dependencies]
 
 [dev-dependencies]
 criterion.workspace = true

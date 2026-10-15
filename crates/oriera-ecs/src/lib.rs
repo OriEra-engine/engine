@@ -289,21 +289,36 @@ impl World {
 
     // ---- events ----
 
+    /// Per-type cap on undrained events. A queue nobody reads is a
+    /// leak vector, so the oldest events are dropped past this bound —
+    /// a flood that overruns the cap is itself a bug worth a warning.
+    pub const MAX_PENDING_EVENTS: usize = 1024;
+
     /// Push `event` onto the typed queue for `T`. Events are the
     /// engine-standard channel for cross-system signals (an NPC spoke,
     /// an inference landed, a beat fired): writers append during their
     /// system, readers call [`World::take_events`] later in the frame
     /// order (L7 infer → L6 physics → L5 render) and own the drained
-    /// batch. Unread events persist until someone takes them.
+    /// batch. Undrained queues hold at most [`MAX_PENDING_EVENTS`]
+    /// entries; the oldest are dropped (with a warning) when a writer
+    /// floods a type nobody consumes.
     pub fn write_event<T: Send + Sync + 'static>(&mut self, event: T) {
         let queue = self
             .events
             .entry(TypeId::of::<T>())
             .or_insert_with(|| Box::new(Vec::<T>::new()) as Box<dyn Any + Send + Sync>);
-        queue
+        let v = queue
             .downcast_mut::<Vec<T>>()
-            .expect("event queue keyed by TypeId of T")
-            .push(event);
+            .expect("event queue keyed by TypeId of T");
+        v.push(event);
+        if v.len() > Self::MAX_PENDING_EVENTS {
+            v.remove(0);
+            tracing::warn!(
+                ty = std::any::type_name::<T>(),
+                cap = Self::MAX_PENDING_EVENTS,
+                "L3 event queue flooded — dropping oldest; add a take_events reader"
+            );
+        }
     }
 
     /// Drain every pending event of type `T` in write order. The caller
@@ -701,6 +716,26 @@ mod tests {
         world.write_event(InferDone(7));
         assert_eq!(world.take_events::<InferDone>(), vec![InferDone(7)]);
         assert_eq!(world.take_events::<Beat>(), vec![Beat("雨季".into())]);
+    }
+
+    #[test]
+    fn event_flood_is_capped_and_keeps_the_newest() {
+        #[derive(Debug, PartialEq)]
+        struct Loud(u32);
+
+        let mut world = World::new();
+        for i in 0..(World::MAX_PENDING_EVENTS + 64) as u32 {
+            world.write_event(Loud(i));
+        }
+        let drained = world.take_events::<Loud>();
+        assert_eq!(drained.len(), World::MAX_PENDING_EVENTS);
+        // The oldest 64 were dropped; the newest survivor is exactly at
+        // the boundary, and the very newest is the last write.
+        assert_eq!(drained[0].0, 64);
+        assert_eq!(
+            drained.last().unwrap().0,
+            (World::MAX_PENDING_EVENTS + 64) as u32 - 1
+        );
     }
 
     #[test]
