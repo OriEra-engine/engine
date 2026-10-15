@@ -82,7 +82,7 @@ export class HttpChatProvider {
           ...(opts.json ? { response_format: { type: "json_object" } } : {}) });
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const r = await fetch(url, { method: "POST", headers, body });
+        const r = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(20000) });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const data = await r.json();
         this.stats.tokens = (this.stats.tokens || 0)
