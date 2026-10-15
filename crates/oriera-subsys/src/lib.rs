@@ -13,6 +13,24 @@ use oriera_ecs::{Position, Velocity, World};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Gravity(pub f32);
 
+/// Singleton resource: simulation pacing multiplier. `1.0` is real
+/// time, `0.0` freezes the world, `2.0` is double speed. Physics
+/// scales its integration step by this value (clamped to `[0, 8]` —
+/// a hallucinated `1e9` from a model must not explode the world).
+/// Written by whoever owns pacing: the app, a cutscene, or an agent
+/// ("bullet time" while the AI director frames a shot).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimeScale(pub f32);
+
+impl Default for TimeScale {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
+/// Upper clamp for [`TimeScale`] inside the physics step.
+const MAX_TIME_SCALE: f32 = 8.0;
+
 /// Fixed-step particle physics: integrate velocity, apply gravity,
 /// bounce off `bounds`. Runs as an L2-scheduled system.
 pub struct PhysicsSystem {
@@ -31,11 +49,16 @@ impl System<World> for PhysicsSystem {
     }
     fn run(&mut self, ctx: &FrameCtx, world: &mut World) {
         let gravity = world.resource::<Gravity>().map(|g| g.0).unwrap_or(0.0);
+        let scale = world
+            .resource::<TimeScale>()
+            .map(|t| t.0.clamp(0.0, MAX_TIME_SCALE))
+            .unwrap_or(1.0);
+        let dt = ctx.dt * scale;
         let (bw, bh) = self.bounds;
         world.for_each2_mut::<Position, Velocity>(|_e, p, v| {
-            p.x += v.vx * ctx.dt;
-            p.y += v.vy * ctx.dt;
-            v.vy += gravity * ctx.dt;
+            p.x += v.vx * dt;
+            p.y += v.vy * dt;
+            v.vy += gravity * dt;
             if p.x < 0.0 {
                 p.x = 0.0;
                 v.vx = v.vx.abs();
@@ -110,5 +133,40 @@ mod tests {
         world2.insert(e2, Velocity { vx: 0.0, vy: 0.0 });
         sys.run(&ctx(1.0), &mut world2);
         assert_eq!(world2.get::<Velocity>(e2).unwrap().vy, 0.0);
+    }
+
+    #[test]
+    fn time_scale_paces_the_simulation() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Position { x: 50.0, y: 50.0 });
+        world.insert(e, Velocity { vx: 10.0, vy: 0.0 });
+
+        let mut sys = PhysicsSystem::new(100.0, 100.0);
+        sys.run(&ctx(1.0), &mut world);
+        assert_eq!(world.get::<Position>(e).unwrap().x, 60.0); // default 1.0x
+
+        world.insert_resource(TimeScale(2.0));
+        sys.run(&ctx(1.0), &mut world);
+        assert_eq!(world.get::<Position>(e).unwrap().x, 80.0); // double step
+
+        world.insert_resource(TimeScale(0.0));
+        sys.run(&ctx(1.0), &mut world);
+        assert_eq!(world.get::<Position>(e).unwrap().x, 80.0); // frozen
+    }
+
+    #[test]
+    fn absurd_time_scale_is_clamped_not_fatal() {
+        let mut world = World::new();
+        world.insert_resource(TimeScale(1.0e9)); // a hallucinated value
+        let e = world.spawn();
+        world.insert(e, Position { x: 0.0, y: 0.0 });
+        world.insert(e, Velocity { vx: 1.0, vy: 0.0 });
+
+        let mut sys = PhysicsSystem::new(100.0, 100.0);
+        sys.run(&ctx(1.0), &mut world);
+        // 1 * 8 = capped step, entity clamped at bounds — no NaN, no panic.
+        let p = world.get::<Position>(e).unwrap();
+        assert!(p.x.is_finite() && p.x <= 100.0);
     }
 }
