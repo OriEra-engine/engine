@@ -15,10 +15,15 @@ pub struct Gravity(pub f32);
 
 /// Singleton resource: simulation pacing multiplier. `1.0` is real
 /// time, `0.0` freezes the world, `2.0` is double speed. Physics
-/// scales its integration step by this value (clamped to `[0, 8]` —
-/// a hallucinated `1e9` from a model must not explode the world).
-/// Written by whoever owns pacing: the app, a cutscene, or an agent
-/// ("bullet time" while the AI director frames a shot).
+/// scales its integration step by this value (clamped to
+/// `[0, MAX_TIME_SCALE]` — a hallucinated `1e9` from a model must not
+/// explode the world). Written by whoever owns pacing: the app, a
+/// cutscene, or an agent ("bullet time" while the AI director frames
+/// a shot).
+///
+/// **Subsystem contract:** consume pacing through
+/// [`TimeScale::effective`], never `ts.0` — the clamp must live in
+/// exactly one place as animation/audio/net-sync subsystems land.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimeScale(pub f32);
 
@@ -28,8 +33,16 @@ impl Default for TimeScale {
     }
 }
 
-/// Upper clamp for [`TimeScale`] inside the physics step.
-const MAX_TIME_SCALE: f32 = 8.0;
+impl TimeScale {
+    /// The value every pacing consumer must use: the raw multiplier
+    /// clamped to `[0, MAX_TIME_SCALE]` (negative → frozen).
+    pub fn effective(self) -> f32 {
+        self.0.clamp(0.0, MAX_TIME_SCALE)
+    }
+}
+
+/// Upper clamp for [`TimeScale`]; see [`TimeScale::effective`].
+pub const MAX_TIME_SCALE: f32 = 8.0;
 
 /// Fixed-step particle physics: integrate velocity, apply gravity,
 /// bounce off `bounds`. Runs as an L2-scheduled system.
@@ -51,7 +64,7 @@ impl System<World> for PhysicsSystem {
         let gravity = world.resource::<Gravity>().map(|g| g.0).unwrap_or(0.0);
         let scale = world
             .resource::<TimeScale>()
-            .map(|t| t.0.clamp(0.0, MAX_TIME_SCALE))
+            .map(|t| t.effective())
             .unwrap_or(1.0);
         let dt = ctx.dt * scale;
         let (bw, bh) = self.bounds;
@@ -168,5 +181,14 @@ mod tests {
         // 1 * 8 = capped step, entity clamped at bounds — no NaN, no panic.
         let p = world.get::<Position>(e).unwrap();
         assert!(p.x.is_finite() && p.x <= 100.0);
+    }
+
+    #[test]
+    fn effective_is_the_single_clamp_entry_point() {
+        assert_eq!(TimeScale(2.0).effective(), 2.0);
+        assert_eq!(TimeScale(0.0).effective(), 0.0);
+        assert_eq!(TimeScale(-3.0).effective(), 0.0); // negative → frozen
+        assert_eq!(TimeScale(1.0e9).effective(), MAX_TIME_SCALE);
+        assert_eq!(TimeScale::default().effective(), 1.0);
     }
 }
