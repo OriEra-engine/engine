@@ -127,3 +127,119 @@ mod tests {
             .contains("咖啡馆"));
     }
 }
+
+/// Which model backend a creator plugged in. The engine never hardcodes
+/// a vendor — `ProviderConfig` is data, chosen at boot by the app shell
+/// (config file / env / UI dropdown) and resolved via [`create_provider`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderConfig {
+    pub kind: ProviderKind,
+    pub model: String,
+    /// API key. Native builds read this from the environment at the
+    /// platform shell; it never enters engine logs or world state.
+    pub api_key: String,
+    /// Base URL (defaults per kind; override for gateways/proxies).
+    pub base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderKind {
+    /// 智谱开放平台 (open.bigmodel.cn) — glm-4-flash / glm-4.6.
+    Zhipu,
+    /// Any OpenAI-compatible /chat/completions endpoint: OpenAI,
+    /// DeepSeek, Moonshot, Groq, OpenRouter, vLLM...
+    OpenAiCompat,
+    /// Anthropic messages API (needs its browser header on wasm).
+    Anthropic,
+    /// Deterministic offline backend — tests, CI, keyless mode.
+    Rule,
+}
+
+impl ProviderKind {
+    pub fn default_base_url(self) -> &'static str {
+        match self {
+            ProviderKind::Zhipu => "https://open.bigmodel.cn/api/paas/v4",
+            ProviderKind::OpenAiCompat => "https://api.openai.com/v1",
+            ProviderKind::Anthropic => "https://api.anthropic.com/v1",
+            ProviderKind::Rule => "",
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            ProviderKind::Zhipu => "zhipu",
+            ProviderKind::OpenAiCompat => "openai-compat",
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::Rule => "rule",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "zhipu" => Some(ProviderKind::Zhipu),
+            "openai-compat" | "openai" | "deepseek" | "moonshot" | "groq" | "openrouter" => {
+                Some(ProviderKind::OpenAiCompat)
+            }
+            "anthropic" => Some(ProviderKind::Anthropic),
+            "rule" => Some(ProviderKind::Rule),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve a creator's choice into a provider. Native HTTP clients land
+/// behind per-kind feature flags (ROADMAP v0.6); until then remote kinds
+/// resolve to their wasm/browser implementation (kernel.js
+/// `createProvider` mirrors this factory 1:1) and native builds get the
+/// rule backend with the choice recorded for observability.
+pub fn create_provider(cfg: &ProviderConfig) -> std::sync::Arc<dyn ModelProvider> {
+    match cfg.kind {
+        ProviderKind::Rule => std::sync::Arc::new(RuleProvider::new()),
+        kind => {
+            tracing::info!(
+                provider = kind.id(),
+                model = %cfg.model,
+                "L7 remote provider selected; native HTTP adapter pending — browser kernel serves it"
+            );
+            std::sync::Arc::new(RuleProvider::new())
+        }
+    }
+}
+
+#[cfg(test)]
+mod choice_tests {
+    use super::*;
+
+    #[test]
+    fn creators_choose_any_vendor_through_data() {
+        for id in [
+            "zhipu",
+            "openai",
+            "deepseek",
+            "moonshot",
+            "groq",
+            "openrouter",
+            "anthropic",
+            "rule",
+        ] {
+            let kind = ProviderKind::from_id(id).expect(id);
+            let cfg = ProviderConfig {
+                kind,
+                model: "m".into(),
+                api_key: String::new(),
+                base_url: None,
+            };
+            let p = create_provider(&cfg);
+            assert!(!p.id().is_empty());
+        }
+        assert!(ProviderKind::from_id("nope").is_none());
+    }
+
+    #[test]
+    fn default_base_urls_are_sane() {
+        assert!(ProviderKind::Zhipu.default_base_url().contains("bigmodel"));
+        assert!(ProviderKind::Anthropic
+            .default_base_url()
+            .contains("anthropic"));
+    }
+}
