@@ -17,6 +17,14 @@
 
 </div>
 
+<p align="center">
+  <img src="assets/hero.gif" alt="OriEra 演示：AI NPC 长期记忆 × 百万粒子世界生成" width="640" />
+</p>
+<p align="center">
+  <em>上：隅角咖啡馆——3D AI NPC 对话 + 长期记忆 + AI 导演 ｜ 下：自然语言生成粒子世界</em><br/>
+  <a href="docs/media/oriera-official-demo.mp4">📹 完整 54 秒官方演示</a>
+</p>
+
 ---
 
 ## 这是什么
@@ -142,6 +150,12 @@ cargo clippy --workspace -- -D warnings
 
 我们欢迎任何形式的贡献——修 bug、写文档、加 demo、提 RFC。
 
+### 🎃 Hacktoberfest 2026 进行中
+
+10 月 31 日截止前，本仓库所有 `good first issue` 均参与 Hacktoberfest（每个任务都写了涉及文件与验收标准，15 分钟指南带你走完全流程）：
+
+👉 [挑选你的第一个 issue](https://github.com/OriEra-engine/engine/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [15 分钟提交你的第一个 PR](docs/FIRST_PR.md)
+
 **第一次来？** [15 分钟提交你的第一个 PR](docs/FIRST_PR.md) →
 挑一个 [good first issue](https://github.com/OriEra-engine/engine/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 （每个任务都写了涉及文件和验收标准）。
@@ -160,3 +174,11 @@ cargo clippy --workspace -- -D warnings
 ## 协议
 
 [Apache License 2.0](LICENSE) — 专利授权条款，云厂商友好。
+
+---
+
+<p align="center">
+  <sub>如果 OriEra 让你看到 AGI 时代基础设施的另一种可能，<br/>
+  请给这个仓库一个 ⭐ Star —— 你的关注决定这条开源路线能走多远。</sub><br/><br/>
+  <a href="https://github.com/OriEra-engine/engine/stargazers"><img src="https://img.shields.io/badge/给个 Star-⭐-ffc861?style=for-the-badge" alt="Star OriEra" /></a>
+</p>
