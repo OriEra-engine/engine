@@ -14,3 +14,10 @@ oriera-pal = { path = "../oriera-pal" }
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "bench"
+harness = false
