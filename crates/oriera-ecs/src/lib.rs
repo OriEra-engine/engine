@@ -99,24 +99,29 @@ struct ColumnsGuard<'a> {
     slots: [Option<(TypeId, Box<dyn Column>)>; 2],
 }
 
+/// A mutable ref to one guarded column slot (None when the world has
+/// no column of that type).
+type SlotRef<'a> = Option<&'a mut Box<dyn Column>>;
+
 impl ColumnsGuard<'_> {
     fn take(&mut self, slot: usize, type_id: TypeId) {
         self.slots[slot] = self.columns.remove(&type_id).map(|col| (type_id, col));
     }
 
-    fn slot_mut(&mut self, slot: usize) -> Option<&mut Box<dyn Column>> {
+    fn slot_mut(&mut self, slot: usize) -> SlotRef<'_> {
         self.slots[slot].as_mut().map(|(_, col)| col)
     }
 
     /// Disjoint mutable refs to both slots (split borrow, no aliasing).
-    fn two_mut(
-        &mut self,
-    ) -> (
-        Option<&mut Box<dyn Column>>,
-        Option<&mut Box<dyn Column>>,
-    ) {
-        let (first, rest) = self.slots.split_first_mut().expect("slots always has 2 entries");
-        (first.as_mut().map(|(_, col)| col), rest[0].as_mut().map(|(_, col)| col))
+    fn two_mut(&mut self) -> (SlotRef<'_>, SlotRef<'_>) {
+        let (first, rest) = self
+            .slots
+            .split_first_mut()
+            .expect("slots always has 2 entries");
+        (
+            first.as_mut().map(|(_, col)| col),
+            rest[0].as_mut().map(|(_, col)| col),
+        )
     }
 }
 
