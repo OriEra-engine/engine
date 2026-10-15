@@ -1,65 +1,180 @@
-//! L7 Inference — AI runtime stub.
+//! L7 Inference Runtime — command queue executed against the world.
 //!
-//! v0.1: rule-based intent parser (no real LLM). When the user says
-//! "spawn 100 particles", we parse it into an engine command.
+//! In the full architecture this layer routes prompts to on-device or
+//! cloud models (book T10). v0.1 keeps the runtime contract but the
+//! "model" is a direct command channel: higher layers (L9 agent) submit
+//! structured `Command`s, the runtime executes them on the L3 world each
+//! frame and reports throughput metrics.
+//!
+//! Natural-language parsing does NOT live here — that is the L9 agent's
+//! job (`oriera-agent`). This layer only executes what it is given.
 
 use oriera_core::{FrameCtx, System};
+use oriera_ecs::{Position, Velocity, World};
+use oriera_subsys::Gravity;
 
-#[derive(Debug, Clone)]
+/// A structured engine command. Produced by the L9 agent, executed here.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    /// Spawn `n` entities with randomized position/velocity.
     Spawn(usize),
+    /// Despawn every entity.
     Clear,
+    /// Set world gravity (writes the `Gravity` resource read by L6).
     SetGravity(f32),
+    /// Unrecognized intent — counted by `rejected`, never executed.
     Unknown(String),
 }
 
-/// Parse a natural-language string into a Command.
-pub fn parse(input: &str) -> Command {
-    let lower = input.to_lowercase();
-    if lower.contains("spawn") || lower.contains("放") || lower.contains("生成") {
-        if let Some(n) = extract_number(&lower) {
-            return Command::Spawn(n);
-        }
-    }
-    if lower.contains("clear") || lower.contains("清空") || lower.contains("清屏") {
-        return Command::Clear;
-    }
-    if lower.contains("gravity") || lower.contains("重力") {
-        if let Some(g) = extract_number(&lower) {
-            return Command::SetGravity(g as f32);
-        }
-    }
-    Command::Unknown(input.to_string())
-}
-
-fn extract_number(s: &str) -> Option<usize> {
-    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() { None } else { digits.parse().ok() }
-}
-
-/// Inference system: processes a queue of commands each frame.
+/// Inference runtime: drains a command queue each frame.
 pub struct InferSystem {
-    pub pending: Vec<Command>,
+    queue: Vec<Command>,
     pub processed: u64,
+    pub rejected: u64,
+    /// Deterministic spawn RNG state (LCG) — replayable (book T5).
+    seed: u64,
 }
 
 impl InferSystem {
     pub fn new() -> Self {
-        Self { pending: Vec::new(), processed: 0 }
+        Self {
+            queue: Vec::new(),
+            processed: 0,
+            rejected: 0,
+            seed: 0x9E3779B97F4A7C15,
+        }
     }
+
+    /// Submit a command for execution on the next frame.
     pub fn submit(&mut self, cmd: Command) {
-        self.pending.push(cmd);
+        self.queue.push(cmd);
+    }
+
+    /// Simple deterministic LCG so replays reproduce identical spawns.
+    fn rand(&mut self) -> u64 {
+        self.seed = self
+            .seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.seed
     }
 }
 
-impl System for InferSystem {
-    fn name(&self) -> &str { "infer" }
-    fn run(&mut self, _ctx: &FrameCtx) {
-        self.processed += self.pending.len() as u64;
-        self.pending.clear();
+impl System<World> for InferSystem {
+    fn name(&self) -> &str {
+        "infer"
+    }
+    fn run(&mut self, _ctx: &FrameCtx, world: &mut World) {
+        for cmd in std::mem::take(&mut self.queue) {
+            match cmd {
+                Command::Spawn(n) => {
+                    for _ in 0..n {
+                        let e = world.spawn();
+                        let r1 = self.rand();
+                        let r2 = self.rand();
+                        world.insert(
+                            e,
+                            Position {
+                                x: (r1 % 800) as f32,
+                                y: (r2 % 600) as f32,
+                            },
+                        );
+                        world.insert(
+                            e,
+                            Velocity {
+                                vx: ((r1 % 200) as f32 - 100.0) * 0.01,
+                                vy: ((r2 % 200) as f32 - 100.0) * 0.01,
+                            },
+                        );
+                    }
+                    self.processed += 1;
+                }
+                Command::Clear => {
+                    world.clear();
+                    self.processed += 1;
+                }
+                Command::SetGravity(g) => {
+                    world.insert_resource(Gravity(g));
+                    self.processed += 1;
+                }
+                Command::Unknown(_) => {
+                    self.rejected += 1;
+                }
+            }
+        }
     }
 }
 
 impl Default for InferSystem {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oriera_common::FrameIndex;
+
+    fn ctx() -> FrameCtx {
+        FrameCtx {
+            frame: FrameIndex(0),
+            dt: 0.0,
+            now: oriera_common::Timestamp(0),
+        }
+    }
+
+    #[test]
+    fn spawn_command_creates_entities() {
+        let mut world = World::new();
+        let mut sys = InferSystem::new();
+        sys.submit(Command::Spawn(50));
+        sys.run(&ctx(), &mut world);
+        assert_eq!(world.len(), 50);
+        assert_eq!(world.query::<Position>().count(), 50);
+        assert_eq!(sys.processed, 1);
+        assert!(sys.queue.is_empty());
+    }
+
+    #[test]
+    fn clear_and_gravity_commands_touch_the_world() {
+        let mut world = World::new();
+        let mut sys = InferSystem::new();
+        sys.submit(Command::Spawn(10));
+        sys.run(&ctx(), &mut world);
+        assert_eq!(world.len(), 10);
+
+        sys.submit(Command::Clear);
+        sys.submit(Command::SetGravity(9.8));
+        sys.run(&ctx(), &mut world);
+        assert!(world.is_empty());
+        assert_eq!(world.resource::<Gravity>().map(|g| g.0), Some(9.8));
+        assert_eq!(sys.processed, 3);
+    }
+
+    #[test]
+    fn unknown_commands_are_rejected_not_executed() {
+        let mut world = World::new();
+        let mut sys = InferSystem::new();
+        sys.submit(Command::Unknown("make me a sandwich".into()));
+        sys.run(&ctx(), &mut world);
+        assert_eq!(world.len(), 0);
+        assert_eq!(sys.processed, 0);
+        assert_eq!(sys.rejected, 1);
+    }
+
+    #[test]
+    fn spawns_are_deterministic() {
+        let run = || {
+            let mut world = World::new();
+            let mut sys = InferSystem::new();
+            sys.submit(Command::Spawn(5));
+            sys.run(&ctx(), &mut world);
+            world
+                .query::<Position>()
+                .map(|(_e, p)| (p.x, p.y))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(run(), run());
+    }
 }

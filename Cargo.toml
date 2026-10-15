@@ -1,14 +1,16 @@
 [workspace]
 resolver = "2"
+# Layer order, bottom-up. L8/L10/L11 land with the ROADMAP stages.
 members = [
-    "crates/oriera-common",
-    "crates/oriera-pal",
-    "crates/oriera-core",
-    "crates/oriera-ecs",
-    "crates/oriera-asset",
-    "crates/oriera-render",
-    "crates/oriera-subsys",
-    "crates/oriera-infer",
+    "crates/oriera-common",  # L0
+    "crates/oriera-pal",     # L1
+    "crates/oriera-core",    # L2
+    "crates/oriera-ecs",     # L3
+    "crates/oriera-asset",   # L4
+    "crates/oriera-render",  # L5
+    "crates/oriera-subsys",  # L6
+    "crates/oriera-infer",   # L7
+    "crates/oriera-agent",   # L9
     "platforms/pc",
 ]
 exclude = [
@@ -22,27 +24,15 @@ version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["OriEra Contributors"]
-repository = "https://github.com/oriera/oriera"
+repository = "https://github.com/OriEra-engine/engine"
 
+# Only versions actually shared by current crates are pinned here.
+# Add entries (glam, tokio, serde, ...) when the layer that needs them lands.
 [workspace.dependencies]
-# 异步与并行
-tokio = { version = "1.40", features = ["full"] }
-rayon = "1.10"
-crossbeam = "0.8"
-# 内存
-mimalloc = "0.1"
-slotmap = "1.0"
-# 数据结构
 bitflags = "2.6"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-postcard = "1"
-# 日志与观测
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# 数学与确定性
-glam = { version = "0.29", features = ["serde"] }
-fixed = "1.24"
+criterion = "0.5"
 
 [profile.release]
 lto = "thin"

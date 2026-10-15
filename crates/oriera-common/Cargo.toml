@@ -3,14 +3,10 @@ name = "oriera-common"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "OriEra oriera-common"
+description = "OriEra L0 common: shared time and frame types"
 
 [lib]
 name = "oriera_common"
 path = "src/lib.rs"
 
 [dependencies]
-oriera-pal = { path = "../oriera-pal" }
-tracing.workspace = true
-serde.workspace = true
-serde_json.workspace = true

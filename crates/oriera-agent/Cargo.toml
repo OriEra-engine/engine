@@ -1,0 +1,13 @@
+[package]
+name = "oriera-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OriEra L9 agent layer: natural-language intent to engine commands"
+
+[lib]
+name = "oriera_agent"
+path = "src/lib.rs"
+
+[dependencies]
+oriera-infer = { path = "../oriera-infer" }

@@ -1,4 +1,5 @@
-//! L3 Object Model — ECS with SoA columns and generation-validated handles.
+//! L3 Object Model — ECS with SoA columns, generation-validated handles and
+//! a resource store.
 //!
 //! # Design
 //!
@@ -8,8 +9,13 @@
 //! - **Component storage** is per-type: `Vec<Option<T>>` indexed directly by
 //!   entity index. O(1) random access with no hashing; the `Option` slot
 //!   doubles as "has this component" flag.
+//! - **Resources** are singletons keyed by type (e.g. `Gravity`). Systems
+//!   communicate shared state through resources on the world — never through
+//!   globals (book T3 §3.8.1).
 //! - **Despawn** calls `Column::clear(idx)` on every type-erased column, so
 //!   memory is reclaimed immediately and queries never see stale data.
+//! - This layer owns the object model only. Domain logic — physics stepping,
+//!   rendering, inference — lives in the layers above (L5–L9).
 //! - **v0.1 note**: This is a flat-column ECS, not multi-archetype.
 //!   Archetype relocation (moving entities between tables when components
 //!   are added/removed) is deferred to v0.2. The public API stays the same.
@@ -24,9 +30,9 @@
 //! world.insert(e, Position { x: 1.0, y: 2.0 });
 //! world.insert(e, Velocity { vx: 0.5, vy: 0.0 });
 //!
-//! for (entity, pos, vel) in world.query2::<Position, Velocity>() {
-//!     println!("{:?} at {:?} moving {:?}", entity, pos, vel);
-//! }
+//! world.for_each2_mut::<Position, Velocity>(|_entity, pos, vel| {
+//!     pos.x += vel.vx * 0.016;
+//! });
 //!
 //! world.despawn(e);
 //! assert!(world.is_empty());
@@ -52,8 +58,6 @@ pub struct Entity {
 
 trait Column: Any {
     fn clear(&mut self, idx: usize);
-    #[allow(dead_code)]
-    fn len(&self) -> usize;
     fn resize(&mut self, new_len: usize);
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -64,9 +68,6 @@ impl<T: 'static> Column for Vec<Option<T>> {
         if idx < self.len() {
             self[idx] = None;
         }
-    }
-    fn len(&self) -> usize {
-        Vec::len(self)
     }
     fn resize(&mut self, new_len: usize) {
         // Grow with None; shrink just truncates.
@@ -92,7 +93,7 @@ impl<T: 'static> Column for Vec<Option<T>> {
 // World
 // ---------------------------------------------------------------------------
 
-/// The ECS world.
+/// The ECS world: entities, components and resources.
 #[derive(Default)]
 pub struct World {
     next_index: u32,
@@ -100,6 +101,7 @@ pub struct World {
     free: Vec<u32>,
     live_count: usize,
     columns: HashMap<TypeId, Box<dyn Column>>,
+    resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl World {
@@ -140,6 +142,22 @@ impl World {
         for col in self.columns.values_mut() {
             col.clear(idx);
         }
+    }
+
+    /// Despawn every entity, keeping column capacity for reuse.
+    pub fn clear(&mut self) {
+        for idx in 0..self.generations.len() {
+            for col in self.columns.values_mut() {
+                col.clear(idx);
+            }
+        }
+        self.live_count = 0;
+        // Bump every generation so all outstanding handles go stale,
+        // then recycle every index for future spawns.
+        for g in self.generations.iter_mut() {
+            *g += 1;
+        }
+        self.free = (0..self.next_index).collect();
     }
 
     // ---- insert / remove ----
@@ -193,6 +211,25 @@ impl World {
         let col = self.columns.get_mut(&type_id)?;
         let vec = col.as_any_mut().downcast_mut::<Vec<Option<T>>>().unwrap();
         vec.get_mut(entity.index as usize)?.as_mut()
+    }
+
+    // ---- resources ----
+
+    /// Insert or replace a singleton resource (e.g. `Gravity(9.8)`).
+    pub fn insert_resource<T: Send + Sync + 'static>(&mut self, res: T) {
+        self.resources.insert(TypeId::of::<T>(), Box::new(res));
+    }
+
+    /// Read a singleton resource.
+    pub fn resource<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.resources.get(&TypeId::of::<T>())?.downcast_ref::<T>()
+    }
+
+    /// Mutate a singleton resource.
+    pub fn resource_mut<T: Send + Sync + 'static>(&mut self) -> Option<&mut T> {
+        self.resources
+            .get_mut(&TypeId::of::<T>())?
+            .downcast_mut::<T>()
     }
 
     // ---- query ----
@@ -259,40 +296,51 @@ impl World {
             let vec = col.as_any_mut().downcast_mut::<Vec<Option<T>>>().unwrap();
             for (idx, slot) in vec.iter_mut().enumerate() {
                 if let Some(v) = slot.as_mut() {
-                    f(Entity { index: idx as u32, generation: gens[idx] }, v);
+                    f(
+                        Entity {
+                            index: idx as u32,
+                            generation: gens[idx],
+                        },
+                        v,
+                    );
                 }
             }
         }
     }
 
-    /// Integrate physics: move Position by Velocity*dt, bounce off bounds.
-    pub fn integrate_physics(&mut self, dt: f32, gravity: f32, bounds: (f32, f32)) {
-        let (bw, bh) = bounds;
-        let ta = TypeId::of::<Position>();
-        let tb = TypeId::of::<Velocity>();
-        let acol = self.columns.get(&ta).and_then(|c| c.as_any().downcast_ref::<Vec<Option<Position>>>()).cloned();
-        let bcol = self.columns.get(&tb).and_then(|c| c.as_any().downcast_ref::<Vec<Option<Velocity>>>()).cloned();
-        if let (Some(a), Some(b)) = (acol, bcol) {
-            for i in 0..a.len().min(b.len()) {
-                if let (Some(pos), Some(vel)) = (a[i].as_ref(), b[i].as_ref()) {
-                    // We need mutable access — clone the values, modify, write back.
-                    let mut p = *pos;
-                    let mut v = *vel;
-                    p.x += v.vx * dt;
-                    p.y += v.vy * dt;
-                    v.vy += gravity * dt;
-                    if p.x < 0.0 { p.x = 0.0; v.vx = v.vx.abs(); }
-                    if p.x > bw { p.x = bw; v.vx = -v.vx.abs(); }
-                    if p.y < 0.0 { p.y = 0.0; v.vy = v.vy.abs(); }
-                    if p.y > bh { p.y = bh; v.vy = -v.vy.abs(); }
-                    // Write back via insert.
-                    let idx = i as u32;
-                    let gen = self.generations[i];
-                    let e = Entity { index: idx, generation: gen };
-                    self.insert(e, p);
-                    self.insert(e, v);
+    /// Mutable two-component join: call a closure on each entity that has
+    /// both A and B. No cloning — the closure gets `&mut` to both columns.
+    pub fn for_each2_mut<A: 'static, B: 'static>(
+        &mut self,
+        mut f: impl FnMut(Entity, &mut A, &mut B),
+    ) {
+        let ta = TypeId::of::<A>();
+        let tb = TypeId::of::<B>();
+        // Take both columns out of the map so both can be borrowed at once.
+        let mut acol = self.columns.remove(&ta);
+        let mut bcol = self.columns.remove(&tb);
+        if let (Some(a), Some(b)) = (acol.as_mut(), bcol.as_mut()) {
+            let avec = a.as_any_mut().downcast_mut::<Vec<Option<A>>>().unwrap();
+            let bvec = b.as_any_mut().downcast_mut::<Vec<Option<B>>>().unwrap();
+            let len = avec.len().min(bvec.len());
+            for idx in 0..len {
+                if let (Some(av), Some(bv)) = (avec[idx].as_mut(), bvec[idx].as_mut()) {
+                    f(
+                        Entity {
+                            index: idx as u32,
+                            generation: self.generations[idx],
+                        },
+                        av,
+                        bv,
+                    );
                 }
             }
+        }
+        if let Some(b) = bcol {
+            self.columns.insert(tb, b);
+        }
+        if let Some(a) = acol {
+            self.columns.insert(ta, a);
         }
     }
 
@@ -313,23 +361,23 @@ impl World {
 }
 
 // ---------------------------------------------------------------------------
-// Demo components
+// Engine-standard components (L3 object vocabulary)
 // ---------------------------------------------------------------------------
 
+/// Standard transform component. Owned by L3 so that render (L5) and
+/// physics (L6) share one object vocabulary without depending on each other.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Position {
     pub x: f32,
     pub y: f32,
 }
 
+/// Standard motion component.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Velocity {
     pub vx: f32,
     pub vy: f32,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Health(pub f32);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -401,13 +449,29 @@ mod tests {
         let mut world = World::new();
         let e = world.spawn();
         world.insert(e, Position { x: 1.0, y: 2.0 });
-        world.insert(e, Health(100.0));
 
         assert_eq!(world.len(), 1);
         world.despawn(e);
         assert_eq!(world.len(), 0);
         assert!(world.query::<Position>().next().is_none());
-        assert!(world.query::<Health>().next().is_none());
+    }
+
+    #[test]
+    fn clear_despawns_all_and_stales_handles() {
+        let mut world = World::new();
+        let e1 = world.spawn();
+        let e2 = world.spawn();
+        world.insert(e1, Position { x: 1.0, y: 2.0 });
+        world.insert(e2, Position { x: 3.0, y: 4.0 });
+
+        world.clear();
+        assert!(world.is_empty());
+        assert_eq!(world.query::<Position>().count(), 0);
+
+        // Old handles must be rejected after clear.
+        world.insert(e1, Position { x: 9.0, y: 9.0 });
+        assert!(world.get::<Position>(e1).is_none());
+        assert!(world.get::<Position>(e2).is_none());
     }
 
     #[test]
@@ -437,6 +501,40 @@ mod tests {
         let e2 = world.spawn();
         assert_eq!(e2.index, e.index);
         assert_ne!(e2.generation, e.generation);
+    }
+
+    #[test]
+    fn for_each2_mut_joins_without_clone() {
+        let mut world = World::new();
+        let e1 = world.spawn();
+        world.insert(e1, Position { x: 0.0, y: 0.0 });
+        world.insert(e1, Velocity { vx: 1.0, vy: 0.0 });
+        let e2 = world.spawn();
+        world.insert(e2, Position { x: 5.0, y: 5.0 }); // no velocity — skipped
+
+        world.for_each2_mut::<Position, Velocity>(|_e, pos, vel| {
+            pos.x += vel.vx;
+            pos.y += vel.vy;
+        });
+
+        assert_eq!(world.get::<Position>(e1).unwrap().x, 1.0);
+        // e2 untouched by the join.
+        assert_eq!(world.get::<Position>(e2).unwrap().x, 5.0);
+    }
+
+    #[test]
+    fn resources_are_type_keyed_singletons() {
+        #[derive(Debug, PartialEq)]
+        struct Gravity(f32);
+
+        let mut world = World::new();
+        assert!(world.resource::<Gravity>().is_none());
+
+        world.insert_resource(Gravity(9.8));
+        assert_eq!(world.resource::<Gravity>().unwrap(), &Gravity(9.8));
+
+        world.resource_mut::<Gravity>().unwrap().0 = 1.6;
+        assert_eq!(world.resource::<Gravity>().unwrap(), &Gravity(1.6));
     }
 
     #[test]

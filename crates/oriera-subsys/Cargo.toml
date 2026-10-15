@@ -3,16 +3,13 @@ name = "oriera-subsys"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "OriEra subsystems: physics, animation, audio, UI, net"
+description = "OriEra L6 subsystems: physics, animation, audio, UI, net sync"
 
 [lib]
 name = "oriera_subsys"
 path = "src/lib.rs"
 
 [dependencies]
+oriera-common = { path = "../oriera-common" }
 oriera-core = { path = "../oriera-core" }
 oriera-ecs = { path = "../oriera-ecs" }
-oriera-pal = { path = "../oriera-pal" }
-tracing.workspace = true
-serde.workspace = true
-serde_json.workspace = true
