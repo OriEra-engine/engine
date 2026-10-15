@@ -11,7 +11,7 @@
 use crate::memory::{Episode, MemoryStore};
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::World;
-use oriera_infer::{ChatMessage, ModelProvider};
+use oriera_infer::{ChatMessage, ModelProvider, UsageMeter};
 use std::sync::Arc;
 
 /// NPC identity component (L3, registered by the application).
@@ -129,7 +129,7 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
 
     fn run(&mut self, _ctx: &FrameCtx, world: &mut World) {
         let (turn, day, beat) = {
-            let story = world.resource_mut::<WorldStory>().unwrap();
+            let story = world.resource_or_default::<WorldStory>();
             story.turn += 1;
             (story.turn, story.day, story.current_beat().to_string())
         };
@@ -168,7 +168,10 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
                 description: String::new(),
             });
 
-        let log = world.resource::<DialogueLog>().cloned().unwrap_or_default();
+        let log = world
+            .resource::<DialogueLog>()
+            .cloned()
+            .unwrap_or_default();
         let recent: Vec<String> = log
             .recent(6)
             .iter()
@@ -214,6 +217,7 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
             .provider
             .complete(&[ChatMessage::system(sys), ChatMessage::user("（请接话）")])
             .unwrap_or_else(|_| "……".into());
+        meter_usage(world, &*self.provider);
 
         let mut parts = reply.split('|').map(str::trim);
         let say = parts.next().unwrap_or("……").to_string();
@@ -231,21 +235,20 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
             *m = mood;
         }
         world
-            .resource_mut::<DialogueLog>()
-            .unwrap()
+            .resource_or_default::<DialogueLog>()
             .turns
             .push(Turn {
                 speaker: persona.name.clone(),
                 to: partner.name.clone(),
                 text: say.clone(),
             });
-        let log = world.resource_mut::<DialogueLog>().unwrap();
+        let log = world.resource_or_default::<DialogueLog>();
         if log.turns.len() > 24 {
             let drop = log.turns.len() - 24;
             log.turns.drain(0..drop);
         }
         if !remember.is_empty() {
-            world.resource_mut::<MemoryStore>().unwrap().record(
+            world.resource_or_default::<MemoryStore>().record(
                 &persona.name,
                 Episode {
                     turn,
@@ -258,7 +261,7 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
         }
         // The partner also half-remembers the exchange.
         let head: String = say.chars().take(18).collect();
-        world.resource_mut::<MemoryStore>().unwrap().record(
+        world.resource_or_default::<MemoryStore>().record(
             &partner.name,
             Episode {
                 turn,
@@ -269,6 +272,16 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
             },
         );
         let _ = action; // L6 animation mapping lands with the 3D runtime
+    }
+}
+
+/// Record a provider call's token usage into the world's
+/// [`UsageMeter`] — but only when the provider actually measured
+/// something, so worlds without metering stay metering-free.
+fn meter_usage<P: ModelProvider>(world: &mut World, provider: &P) {
+    let usage = provider.last_usage();
+    if usage.total() > 0 {
+        world.resource_or_default::<UsageMeter>().record(usage);
     }
 }
 
@@ -296,14 +309,17 @@ impl<P: ModelProvider> System<World> for DirectorSystem<P> {
 
     fn run(&mut self, _ctx: &FrameCtx, world: &mut World) {
         let (turn, day) = {
-            let s = world.resource_mut::<WorldStory>().unwrap();
+            let s = world.resource_or_default::<WorldStory>();
             s.turn += 1;
             (s.turn, s.day)
         };
         if turn % self.interval != 0 {
             return;
         }
-        let log = world.resource::<DialogueLog>().cloned().unwrap_or_default();
+        let log = world
+            .resource::<DialogueLog>()
+            .cloned()
+            .unwrap_or_default();
         let sys = format!(
             "你是 OriEra 世界引擎的 AI 导演。根据最近对话推进一个小而具体的世界事件，只输出一句话。\n当前第 {} 世界日。最近对话：{}",
             day,
@@ -324,8 +340,9 @@ impl<P: ModelProvider> System<World> for DirectorSystem<P> {
                 self.beat_idx += 1;
                 b
             });
+        meter_usage(world, &*self.provider);
 
-        let story = world.resource_mut::<WorldStory>().unwrap();
+        let story = world.resource_or_default::<WorldStory>();
         story.beats.push(beat.clone());
         if story.beats.len() > 30 {
             story.beats.drain(0..story.beats.len() - 30);
@@ -333,7 +350,7 @@ impl<P: ModelProvider> System<World> for DirectorSystem<P> {
         if turn % (self.interval * 3) == 0 {
             story.day += 1;
         }
-        let mem = world.resource_mut::<MemoryStore>().unwrap();
+        let mem = world.resource_or_default::<MemoryStore>();
         let agents: Vec<String> = mem.agents().map(str::to_string).collect();
         for agent in agents {
             mem.record(
@@ -426,5 +443,24 @@ mod tests {
         let s = w.resource::<WorldStory>().unwrap();
         assert_eq!(s.beats.len(), 6);
         assert_eq!(s.day, 3); // every 3rd beat advances the day
+    }
+
+    #[test]
+    fn cognition_boots_on_a_bare_world_without_panicking() {
+        // No DialogueLog / WorldStory / MemoryStore pre-registered —
+        // the systems self-heal (resource_or_default) instead of
+        // panicking on the first tick. The AI meter appears on its own
+        // as soon as a provider call actually measures tokens.
+        let mut w = World::new();
+        let mut cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 1);
+        let mut dir = DirectorSystem::new(Arc::new(RuleProvider::new()), 1);
+        for _ in 0..3 {
+            cog.run(&ctx(), &mut w);
+            dir.run(&ctx(), &mut w);
+        }
+        assert_eq!(w.resource::<WorldStory>().unwrap().beats.len(), 3);
+        let meter = w.resource::<oriera_infer::UsageMeter>().unwrap();
+        assert_eq!(meter.calls, 3);
+        assert!(meter.total.total() > 0);
     }
 }
