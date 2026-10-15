@@ -3,14 +3,13 @@ name = "oriera-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "OriEra oriera-core"
+description = "OriEra core scheduler"
 
 [lib]
 name = "oriera_core"
 path = "src/lib.rs"
 
 [dependencies]
+oriera-common = { path = "../oriera-common" }
 oriera-pal = { path = "../oriera-pal" }
 tracing.workspace = true
-serde.workspace = true
-serde_json.workspace = true

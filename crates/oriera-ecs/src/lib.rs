@@ -251,6 +251,51 @@ impl World {
         }
     }
 
+    /// Mutable query: call a closure on each entity that has component T.
+    pub fn for_each_mut<T: 'static>(&mut self, mut f: impl FnMut(Entity, &mut T)) {
+        let type_id = TypeId::of::<T>();
+        let gens = self.generations.clone();
+        if let Some(col) = self.columns.get_mut(&type_id) {
+            let vec = col.as_any_mut().downcast_mut::<Vec<Option<T>>>().unwrap();
+            for (idx, slot) in vec.iter_mut().enumerate() {
+                if let Some(v) = slot.as_mut() {
+                    f(Entity { index: idx as u32, generation: gens[idx] }, v);
+                }
+            }
+        }
+    }
+
+    /// Integrate physics: move Position by Velocity*dt, bounce off bounds.
+    pub fn integrate_physics(&mut self, dt: f32, gravity: f32, bounds: (f32, f32)) {
+        let (bw, bh) = bounds;
+        let ta = TypeId::of::<Position>();
+        let tb = TypeId::of::<Velocity>();
+        let acol = self.columns.get(&ta).and_then(|c| c.as_any().downcast_ref::<Vec<Option<Position>>>()).cloned();
+        let bcol = self.columns.get(&tb).and_then(|c| c.as_any().downcast_ref::<Vec<Option<Velocity>>>()).cloned();
+        if let (Some(a), Some(b)) = (acol, bcol) {
+            for i in 0..a.len().min(b.len()) {
+                if let (Some(pos), Some(vel)) = (a[i].as_ref(), b[i].as_ref()) {
+                    // We need mutable access — clone the values, modify, write back.
+                    let mut p = *pos;
+                    let mut v = *vel;
+                    p.x += v.vx * dt;
+                    p.y += v.vy * dt;
+                    v.vy += gravity * dt;
+                    if p.x < 0.0 { p.x = 0.0; v.vx = v.vx.abs(); }
+                    if p.x > bw { p.x = bw; v.vx = -v.vx.abs(); }
+                    if p.y < 0.0 { p.y = 0.0; v.vy = v.vy.abs(); }
+                    if p.y > bh { p.y = bh; v.vy = -v.vy.abs(); }
+                    // Write back via insert.
+                    let idx = i as u32;
+                    let gen = self.generations[i];
+                    let e = Entity { index: idx, generation: gen };
+                    self.insert(e, p);
+                    self.insert(e, v);
+                }
+            }
+        }
+    }
+
     // ---- helpers ----
 
     pub fn len(&self) -> usize {

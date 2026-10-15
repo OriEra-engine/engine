@@ -3,14 +3,15 @@ name = "oriera-render"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "OriEra oriera-render"
+description = "OriEra render kernel"
 
 [lib]
 name = "oriera_render"
 path = "src/lib.rs"
 
 [dependencies]
+oriera-core = { path = "../oriera-core" }
+oriera-ecs = { path = "../oriera-ecs" }
+oriera-subsys = { path = "../oriera-subsys" }
 oriera-pal = { path = "../oriera-pal" }
 tracing.workspace = true
-serde.workspace = true
-serde_json.workspace = true
