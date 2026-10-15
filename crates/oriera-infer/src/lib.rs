@@ -14,6 +14,7 @@
 
 pub mod provider;
 
+pub use oriera_common::TokenUsage;
 pub use provider::{ChatMessage, InferError, ModelProvider, Role, RuleProvider};
 
 use oriera_core::{FrameCtx, System};
@@ -46,11 +47,38 @@ pub struct Stats {
     pub entities: usize,
 }
 
+/// Singleton resource that accumulates model usage across every
+/// cognition/director call in the world. L9 systems record into it
+/// (`provider.last_usage()`); apps read one meter to render cost and
+/// budget UI. Absent by default — nothing meters until someone reads
+/// or seeds it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsageMeter {
+    pub total: TokenUsage,
+    pub calls: u64,
+}
+
+impl UsageMeter {
+    pub fn record(&mut self, usage: TokenUsage) {
+        self.total += usage;
+        self.calls += 1;
+    }
+}
+
+/// How many commands one frame may execute when nothing narrower is
+/// configured. Batches an AI burst across frames instead of letting a
+/// flooded queue blow the frame budget in one tick.
+pub const DEFAULT_FRAME_BUDGET: usize = 32;
+
 /// Inference runtime: drains a command queue each frame.
 pub struct InferSystem {
     queue: Vec<Command>,
     pub processed: u64,
     pub rejected: u64,
+    /// Commands carried over because the frame budget was exhausted.
+    pub deferred: u64,
+    /// Max commands executed per frame.
+    frame_budget: usize,
     /// Deterministic spawn RNG state (LCG) — replayable (book T5).
     seed: u64,
 }
@@ -61,13 +89,29 @@ impl InferSystem {
             queue: Vec::new(),
             processed: 0,
             rejected: 0,
+            deferred: 0,
+            frame_budget: DEFAULT_FRAME_BUDGET,
             seed: 0x9E3779B97F4A7C15,
+        }
+    }
+
+    /// Cap per-frame command execution (e.g. `4` on a slow device, or
+    /// `1` when each command kicks off model work).
+    pub fn with_frame_budget(n: usize) -> Self {
+        Self {
+            frame_budget: n.max(1),
+            ..Self::new()
         }
     }
 
     /// Submit a command for execution on the next frame.
     pub fn submit(&mut self, cmd: Command) {
         self.queue.push(cmd);
+    }
+
+    /// Commands still waiting in the queue right now.
+    pub fn pending(&self) -> usize {
+        self.queue.len()
     }
 
     /// Simple deterministic LCG so replays reproduce identical spawns.
@@ -85,7 +129,10 @@ impl System<World> for InferSystem {
         "infer"
     }
     fn run(&mut self, _ctx: &FrameCtx, world: &mut World) {
-        for cmd in std::mem::take(&mut self.queue) {
+        let limit = self.frame_budget.min(self.queue.len());
+        self.deferred += (self.queue.len() - limit) as u64;
+        let mut batch: Vec<Command> = self.queue.drain(..limit).collect();
+        for cmd in batch.drain(..) {
             match cmd {
                 Command::Spawn(n) => {
                     for _ in 0..n {
@@ -260,5 +307,52 @@ mod tests {
         let v = world.get::<Velocity>(e).unwrap();
         assert_eq!(v.vx, 2.0);
         assert_eq!(v.vy, -6.0);
+    }
+
+    #[test]
+    fn frame_budget_spreads_a_command_flood() {
+        let mut world = World::new();
+        let mut sys = InferSystem::with_frame_budget(8);
+        for _ in 0..20 {
+            sys.submit(Command::Spawn(1));
+        }
+        assert_eq!(sys.pending(), 20);
+
+        sys.run(&ctx(), &mut world);
+        assert_eq!(sys.processed, 8);
+        assert_eq!(sys.deferred, 12);
+        assert_eq!(world.len(), 8);
+        assert_eq!(sys.pending(), 12);
+
+        // Subsequent frames drain the rest.
+        sys.run(&ctx(), &mut world);
+        sys.run(&ctx(), &mut world);
+        assert_eq!(sys.processed, 20);
+        assert_eq!(sys.pending(), 0);
+        assert_eq!(world.len(), 20);
+    }
+
+    #[test]
+    fn default_budget_covers_typical_bursts() {
+        let mut world = World::new();
+        let mut sys = InferSystem::new();
+        for _ in 0..DEFAULT_FRAME_BUDGET {
+            sys.submit(Command::Count);
+        }
+        sys.run(&ctx(), &mut world);
+        assert_eq!(sys.processed, DEFAULT_FRAME_BUDGET as u64);
+        assert_eq!(sys.deferred, 0);
+    }
+
+    #[test]
+    fn usage_meter_accumulates_across_calls() {
+        let mut meter = UsageMeter::default();
+        let p = RuleProvider::new();
+        p.complete(&[ChatMessage::user("聊聊咖啡豆")]).unwrap();
+        meter.record(p.last_usage());
+        p.complete(&[ChatMessage::user("引擎跑通了吗")]).unwrap();
+        meter.record(p.last_usage());
+        assert_eq!(meter.calls, 2);
+        assert!(meter.total.total() > 0);
     }
 }
