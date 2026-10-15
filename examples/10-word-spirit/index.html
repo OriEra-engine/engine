@@ -450,13 +450,15 @@ if (new URLSearchParams(location.search).get("demo") === "1") {
   ];
   let si = 0;
   input.focus();
-  (function play() {
+  const kick = function play() {
     if (si >= score.length || game.over) return;
     const [text, wait] = score[si++];
     input.value = text;
     document.getElementById("say").click();
     setTimeout(play, wait);
-  })();
+  };
+  const delay = parseInt(new URLSearchParams(location.search).get("delay") || "1000", 10);
+  setTimeout(kick, delay);
 }
 </script>
 </body>
