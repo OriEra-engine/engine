@@ -75,8 +75,16 @@ pub struct InferSystem {
     queue: Vec<Command>,
     pub processed: u64,
     pub rejected: u64,
-    /// Commands carried over because the frame budget was exhausted.
+    /// Deferral events: how many times a command had to wait out a
+    /// frame-budget overrun. A command that survives 3 budget-capped
+    /// frames counts 3 here — it is "how long did the queue stall",
+    /// not "how many commands waited". For queue depth see
+    /// [`InferSystem::pending`] and [`InferSystem::max_pending`].
     pub deferred: u64,
+    /// High-water mark of queue depth, in commands: the peak size the
+    /// queue ever reached (after any submit burst, after any drain).
+    /// The one number to answer "how bad was the flood".
+    pub max_pending: usize,
     /// Max commands executed per frame.
     frame_budget: usize,
     /// Deterministic spawn RNG state (LCG) — replayable (book T5).
@@ -90,6 +98,7 @@ impl InferSystem {
             processed: 0,
             rejected: 0,
             deferred: 0,
+            max_pending: 0,
             frame_budget: DEFAULT_FRAME_BUDGET,
             seed: 0x9E3779B97F4A7C15,
         }
@@ -107,6 +116,7 @@ impl InferSystem {
     /// Submit a command for execution on the next frame.
     pub fn submit(&mut self, cmd: Command) {
         self.queue.push(cmd);
+        self.max_pending = self.max_pending.max(self.queue.len());
     }
 
     /// Commands still waiting in the queue right now.
@@ -317,10 +327,11 @@ mod tests {
             sys.submit(Command::Spawn(1));
         }
         assert_eq!(sys.pending(), 20);
+        assert_eq!(sys.max_pending, 20); // high-water mark of the burst
 
         sys.run(&ctx(), &mut world);
         assert_eq!(sys.processed, 8);
-        assert_eq!(sys.deferred, 12);
+        assert_eq!(sys.deferred, 12); // 12 deferral events this frame
         assert_eq!(world.len(), 8);
         assert_eq!(sys.pending(), 12);
 
@@ -330,6 +341,10 @@ mod tests {
         assert_eq!(sys.processed, 20);
         assert_eq!(sys.pending(), 0);
         assert_eq!(world.len(), 20);
+        // Frame 2 deferred 4 more (12 leftovers, budget 8): 12+4 events.
+        assert_eq!(sys.deferred, 16);
+        // High-water mark survives the drain — it is a max, not a level.
+        assert_eq!(sys.max_pending, 20);
     }
 
     #[test]

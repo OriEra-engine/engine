@@ -89,6 +89,52 @@ impl<T: 'static> Column for Vec<Option<T>> {
     }
 }
 
+/// Holds columns taken out of the map during an iteration and puts
+/// them back on drop — including panic unwind. Without this, a
+/// panicking system closure would drop the Box and destroy every
+/// component of that type in the world. Two slots cover the current
+/// max join arity; the array lives on the stack (zero heap alloc).
+struct ColumnsGuard<'a> {
+    columns: &'a mut HashMap<TypeId, Box<dyn Column>>,
+    slots: [Option<(TypeId, Box<dyn Column>)>; 2],
+}
+
+/// A mutable ref to one guarded column slot (None when the world has
+/// no column of that type).
+type SlotRef<'a> = Option<&'a mut Box<dyn Column>>;
+
+impl ColumnsGuard<'_> {
+    fn take(&mut self, slot: usize, type_id: TypeId) {
+        self.slots[slot] = self.columns.remove(&type_id).map(|col| (type_id, col));
+    }
+
+    fn slot_mut(&mut self, slot: usize) -> SlotRef<'_> {
+        self.slots[slot].as_mut().map(|(_, col)| col)
+    }
+
+    /// Disjoint mutable refs to both slots (split borrow, no aliasing).
+    fn two_mut(&mut self) -> (SlotRef<'_>, SlotRef<'_>) {
+        let (first, rest) = self
+            .slots
+            .split_first_mut()
+            .expect("slots always has 2 entries");
+        (
+            first.as_mut().map(|(_, col)| col),
+            rest[0].as_mut().map(|(_, col)| col),
+        )
+    }
+}
+
+impl Drop for ColumnsGuard<'_> {
+    fn drop(&mut self) {
+        for slot in self.slots.iter_mut() {
+            if let Some((type_id, col)) = slot.take() {
+                self.columns.insert(type_id, col);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------
@@ -248,21 +294,36 @@ impl World {
 
     // ---- events ----
 
+    /// Per-type cap on undrained events. A queue nobody reads is a
+    /// leak vector, so the oldest events are dropped past this bound —
+    /// a flood that overruns the cap is itself a bug worth a warning.
+    pub const MAX_PENDING_EVENTS: usize = 1024;
+
     /// Push `event` onto the typed queue for `T`. Events are the
     /// engine-standard channel for cross-system signals (an NPC spoke,
     /// an inference landed, a beat fired): writers append during their
     /// system, readers call [`World::take_events`] later in the frame
     /// order (L7 infer → L6 physics → L5 render) and own the drained
-    /// batch. Unread events persist until someone takes them.
+    /// batch. Undrained queues hold at most [`MAX_PENDING_EVENTS`]
+    /// entries; the oldest are dropped (with a warning) when a writer
+    /// floods a type nobody consumes.
     pub fn write_event<T: Send + Sync + 'static>(&mut self, event: T) {
         let queue = self
             .events
             .entry(TypeId::of::<T>())
             .or_insert_with(|| Box::new(Vec::<T>::new()) as Box<dyn Any + Send + Sync>);
-        queue
+        let v = queue
             .downcast_mut::<Vec<T>>()
-            .expect("event queue keyed by TypeId of T")
-            .push(event);
+            .expect("event queue keyed by TypeId of T");
+        v.push(event);
+        if v.len() > Self::MAX_PENDING_EVENTS {
+            v.remove(0);
+            tracing::warn!(
+                ty = std::any::type_name::<T>(),
+                cap = Self::MAX_PENDING_EVENTS,
+                "L3 event queue flooded — dropping oldest; add a take_events reader"
+            );
+        }
     }
 
     /// Drain every pending event of type `T` in write order. The caller
@@ -342,10 +403,17 @@ impl World {
     /// cloning the generation vector every frame. The closure receives
     /// `&mut T`, not `&mut World`, so the borrow checker already
     /// prevents despawns/inserts during iteration.
+    ///
+    /// Panic safety: a [`ColumnsGuard`] reinserts the column on unwind,
+    /// so a panicking system closure costs the frame, never the column.
     pub fn for_each_mut<T: 'static>(&mut self, mut f: impl FnMut(Entity, &mut T)) {
         let type_id = TypeId::of::<T>();
-        let mut col = self.columns.remove(&type_id);
-        if let Some(c) = col.as_mut() {
+        let mut guard = ColumnsGuard {
+            columns: &mut self.columns,
+            slots: [None, None],
+        };
+        guard.take(0, type_id);
+        if let Some(c) = guard.slot_mut(0) {
             let vec = c.as_any_mut().downcast_mut::<Vec<Option<T>>>().unwrap();
             for (idx, slot) in vec.iter_mut().enumerate() {
                 if let Some(v) = slot.as_mut() {
@@ -359,13 +427,13 @@ impl World {
                 }
             }
         }
-        if let Some(c) = col {
-            self.columns.insert(type_id, c);
-        }
     }
 
     /// Mutable two-component join: call a closure on each entity that has
     /// both A and B. No cloning — the closure gets `&mut` to both columns.
+    ///
+    /// Panic safety: same [`ColumnsGuard`] contract — both columns are
+    /// reinserted even if the closure panics.
     pub fn for_each2_mut<A: 'static, B: 'static>(
         &mut self,
         mut f: impl FnMut(Entity, &mut A, &mut B),
@@ -373,9 +441,13 @@ impl World {
         let ta = TypeId::of::<A>();
         let tb = TypeId::of::<B>();
         // Take both columns out of the map so both can be borrowed at once.
-        let mut acol = self.columns.remove(&ta);
-        let mut bcol = self.columns.remove(&tb);
-        if let (Some(a), Some(b)) = (acol.as_mut(), bcol.as_mut()) {
+        let mut guard = ColumnsGuard {
+            columns: &mut self.columns,
+            slots: [None, None],
+        };
+        guard.take(0, ta);
+        guard.take(1, tb);
+        if let (Some(a), Some(b)) = guard.two_mut() {
             let avec = a.as_any_mut().downcast_mut::<Vec<Option<A>>>().unwrap();
             let bvec = b.as_any_mut().downcast_mut::<Vec<Option<B>>>().unwrap();
             let len = avec.len().min(bvec.len());
@@ -391,12 +463,6 @@ impl World {
                     );
                 }
             }
-        }
-        if let Some(b) = bcol {
-            self.columns.insert(tb, b);
-        }
-        if let Some(a) = acol {
-            self.columns.insert(ta, a);
         }
     }
 
@@ -655,6 +721,54 @@ mod tests {
         world.write_event(InferDone(7));
         assert_eq!(world.take_events::<InferDone>(), vec![InferDone(7)]);
         assert_eq!(world.take_events::<Beat>(), vec![Beat("雨季".into())]);
+    }
+
+    #[test]
+    fn event_flood_is_capped_and_keeps_the_newest() {
+        #[derive(Debug, PartialEq)]
+        struct Loud(u32);
+
+        let mut world = World::new();
+        for i in 0..(World::MAX_PENDING_EVENTS + 64) as u32 {
+            world.write_event(Loud(i));
+        }
+        let drained = world.take_events::<Loud>();
+        assert_eq!(drained.len(), World::MAX_PENDING_EVENTS);
+        // The oldest 64 were dropped; the newest survivor is exactly at
+        // the boundary, and the very newest is the last write.
+        assert_eq!(drained[0].0, 64);
+        assert_eq!(
+            drained.last().unwrap().0,
+            (World::MAX_PENDING_EVENTS + 64) as u32 - 1
+        );
+    }
+
+    #[test]
+    fn panicking_closure_does_not_lose_the_column() {
+        let mut world = World::new();
+        let e1 = world.spawn();
+        world.insert(e1, Position { x: 1.0, y: 1.0 });
+        let e2 = world.spawn();
+        world.insert(e2, Position { x: 2.0, y: 2.0 });
+        world.insert(e2, Velocity { vx: 0.0, vy: 0.0 });
+
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            world.for_each_mut::<Position>(|_e, _p| panic!("system bug"));
+        }));
+        assert!(r.is_err());
+        // The column survived the unwind — data intact, world still usable.
+        assert_eq!(world.query::<Position>().count(), 2);
+        assert_eq!(world.get::<Position>(e1).unwrap().x, 1.0);
+        world.for_each_mut::<Position>(|_e, p| p.x += 1.0);
+        assert_eq!(world.get::<Position>(e1).unwrap().x, 2.0);
+
+        // Same contract for the two-column join.
+        let r2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            world.for_each2_mut::<Position, Velocity>(|_e, _p, _v| panic!("join bug"));
+        }));
+        assert!(r2.is_err());
+        assert_eq!(world.query::<Position>().count(), 2);
+        assert_eq!(world.query::<Velocity>().count(), 1);
     }
 
     #[test]
