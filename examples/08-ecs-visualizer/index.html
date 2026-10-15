@@ -8,8 +8,8 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #0a0a0f; color: #e0e0e0; font-family: 'SF Mono', 'Fira Code', monospace; overflow: hidden; }
   #app { display: flex; height: 100vh; }
-  #sidebar { width: 280px; background: #12121a; padding: 20px; border-right: 1px solid #222; overflow-y: auto; }
-  #canvas-area { flex: 1; position: relative; }
+  #sidebar { width: 280px; min-width: 280px; flex-shrink: 0; background: #12121a; padding: 20px; border-right: 1px solid #222; overflow-y: auto; }
+  #canvas-area { flex: 1; min-width: 0; position: relative; overflow: hidden; }
   canvas { display: block; }
   h1 { font-size: 16px; margin-bottom: 16px; color: #6ee7ff; }
   h2 { font-size: 12px; color: #888; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 1px; }
