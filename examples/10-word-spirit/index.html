@@ -38,6 +38,13 @@
               padding:9px 12px; border-radius:6px; font-size:12px; line-height:1.6;
               color:#d8e8c8; opacity:0; transition:opacity .4s; pointer-events:none; }
   #director.show { opacity:1; }
+  /* ---- Stage 4: 层级仪表盘 ---- */
+  #layers { position:fixed; top:86px; right:12px; width:190px; font-size:10.5px;
+            line-height:1.55; pointer-events:none; }
+  #layers h3 { font-size:10px; color:#5b8def; text-transform:uppercase;
+               letter-spacing:.08em; margin:7px 0 3px; border-bottom:1px solid #222633; }
+  #layers .row { display:flex; justify-content:space-between; color:#8a90a6; }
+  #layers .row b { color:#6ee7ff; font-weight:600; }
   #overlay { position:fixed; inset:0; display:none; flex-direction:column; gap:16px;
              align-items:center; justify-content:center; background:rgba(7,9,15,.86);
              text-align:center; }
@@ -65,6 +72,14 @@
   <span id="g-time">180</span>s · 每座需 <span id="g-need">60</span> 只
 </div>
 <div id="director"></div>
+<div id="layers">
+  <h3>L1 PAL</h3><div class="row"><span>family</span><b>web</b></div><div class="row"><span>backend</span><b>Canvas2D</b></div>
+  <h3>L2 Core</h3><div class="row"><span>fps</span><b id="ly-fps">0</b></div><div class="row"><span>frame</span><b id="ly-fr">0</b></div>
+  <h3>L3 ECS</h3><div class="row"><span>entities</span><b id="ly-ent">0</b></div><div class="row"><span>capacity</span><b id="ly-cap">0</b></div>
+  <h3>L6 Physics</h3><div class="row"><span>gravity</span><b id="ly-grav">0</b></div><div class="row"><span>speed</span><b id="ly-spd">1×</b></div>
+  <h3>L7 Infer</h3><div class="row"><span>processed</span><b id="ly-ok">0</b></div><div class="row"><span>rejected</span><b id="ly-rej">0</b></div>
+  <h3>L9 Agent</h3><div class="row"><span>last parse</span><b id="ly-parse">—</b></div>
+</div>
 <div id="overlay">
   <h2 id="ov-title"></h2>
   <p id="ov-text"></p>
@@ -163,12 +178,23 @@ function loop(t) {
 
 // ---- HUD ----
 const $ = id => document.getElementById(id);
+let frameNo = 0, lastParse = "—";
 function hud() {
+  frameNo++;
   $("h-ent").textContent = liveCount;
   $("h-fps").textContent = fps;
   $("h-grav").textContent = resources.gravity;
   $("h-ok").textContent = infer.processed;
   $("h-rej").textContent = infer.rejected;
+  $("ly-fps").textContent = fps;
+  $("ly-fr").textContent = frameNo;
+  $("ly-ent").textContent = liveCount;
+  $("ly-cap").textContent = nextIndex;
+  $("ly-grav").textContent = +resources.gravity.toFixed(1);
+  $("ly-spd").textContent = +resources.speedScale.toFixed(1) + "×";
+  $("ly-ok").textContent = infer.processed;
+  $("ly-rej").textContent = infer.rejected;
+  $("ly-parse").textContent = lastParse;
 }
 
 // ---- 初始世界：260 只萤火虫 ----
@@ -270,7 +296,9 @@ function submit() {
   const sys = document.createElement("div");
   sys.className = "sys"; sys.textContent = `⌨ ${text}`;
   logEl.appendChild(sys);
-  infer.queue.push(parse(text));       // L9 → L7：进队，下一帧生效
+  const cmd = parse(text);              // L9 → L7：进队，下一帧生效
+  lastParse = cmd.t === "Unknown" ? "Unknown ✗" : cmd.t;
+  infer.queue.push(cmd);
   input.value = "";
 }
 
@@ -408,6 +436,28 @@ logLine = function (cmd) {
 };
 
 director("欢迎来到言灵世界。三座星座沉睡在虚空中——用你的话唤醒它们。", "#6ee7ff");
+
+// ---- 自动演奏模式（?demo=1）：按谱面自动说出言灵，用于演示录像 ----
+if (new URLSearchParams(location.search).get("demo") === "1") {
+  const score = [
+    ["spawn 600",       2600],
+    ["重力 60",          4200],
+    ["how many",         1200],
+    ["重力 0",            600],
+    ["speed 0.3",         600],
+    ["传送到 0,-620",    3000],
+    ["跳舞吧",           1600],
+  ];
+  let si = 0;
+  input.focus();
+  (function play() {
+    if (si >= score.length || game.over) return;
+    const [text, wait] = score[si++];
+    input.value = text;
+    document.getElementById("say").click();
+    setTimeout(play, wait);
+  })();
+}
 </script>
 </body>
 </html>
