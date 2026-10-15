@@ -10,7 +10,7 @@ use oriera_agent::parse;
 use oriera_asset::AssetStore;
 use oriera_core::Scheduler;
 use oriera_ecs::{Position, Velocity, World};
-use oriera_infer::InferSystem;
+use oriera_infer::{InferSystem, Stats};
 use oriera_render::RenderSystem;
 use oriera_subsys::{Gravity, PhysicsSystem};
 
@@ -69,7 +69,13 @@ fn main() {
     // The agent parses intent; the inference runtime executes it on the
     // world next frame.
     let mut infer = InferSystem::new();
-    for line in ["spawn 50 more particles", "set gravity to 1.6"] {
+    for line in [
+        "spawn 50 more particles",
+        "set gravity to 1.6",
+        "speed 2x",
+        "teleport to 10 -20",
+        "how many",
+    ] {
         let cmd = parse(line);
         println!("  Agent    : {:?} → {:?}", line, cmd);
         infer.submit(cmd);
@@ -100,6 +106,7 @@ fn main() {
     println!("  Position comp  : {}", pos_count);
     println!("  Velocity comp  : {}", vel_count);
     println!("  Gravity        : {:?}", world.resource::<Gravity>());
+    println!("  Stats (Count)  : {:?}", world.resource::<Stats>());
     println!("  Avg frame      : {:.2} ms", sched.avg_frame_ms());
     println!("  Assets loaded  : {}", assets.len());
     println!();

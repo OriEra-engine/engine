@@ -22,8 +22,21 @@ pub enum Command {
     Clear,
     /// Set world gravity (writes the `Gravity` resource read by L6).
     SetGravity(f32),
+    /// Shift every entity's position by `(dx, dy)`.
+    Teleport(f32, f32),
+    /// Count live entities into the [`Stats`] resource; world untouched.
+    Count,
+    /// Scale every velocity by `k` ("speed 2x").
+    SetSpeed(f32),
     /// Unrecognized intent — counted by `rejected`, never executed.
     Unknown(String),
+}
+
+/// Singleton resource written by `Command::Count`; the app/UI layer
+/// reads it to answer "how many entities are alive?".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Stats {
+    pub entities: usize,
 }
 
 /// Inference runtime: drains a command queue each frame.
@@ -95,6 +108,25 @@ impl System<World> for InferSystem {
                 }
                 Command::SetGravity(g) => {
                     world.insert_resource(Gravity(g));
+                    self.processed += 1;
+                }
+                Command::Teleport(dx, dy) => {
+                    world.for_each_mut::<Position>(|_e, p| {
+                        p.x += dx;
+                        p.y += dy;
+                    });
+                    self.processed += 1;
+                }
+                Command::Count => {
+                    let entities = world.len();
+                    world.insert_resource(Stats { entities });
+                    self.processed += 1;
+                }
+                Command::SetSpeed(k) => {
+                    world.for_each_mut::<Velocity>(|_e, v| {
+                        v.vx *= k;
+                        v.vy *= k;
+                    });
                     self.processed += 1;
                 }
                 Command::Unknown(_) => {
@@ -176,5 +208,50 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn teleport_shifts_every_position() {
+        let mut world = World::new();
+        let e1 = world.spawn();
+        world.insert(e1, Position { x: 10.0, y: 20.0 });
+        let e2 = world.spawn();
+        world.insert(e2, Position { x: 0.0, y: 0.0 });
+
+        let mut sys = InferSystem::new();
+        sys.submit(Command::Teleport(5.0, -2.0));
+        sys.run(&ctx(), &mut world);
+
+        assert_eq!(world.get::<Position>(e1).unwrap().x, 15.0);
+        assert_eq!(world.get::<Position>(e1).unwrap().y, 18.0);
+        assert_eq!(world.get::<Position>(e2).unwrap().x, 5.0);
+    }
+
+    #[test]
+    fn count_writes_stats_without_touching_entities() {
+        let mut world = World::new();
+        let mut sys = InferSystem::new();
+        sys.submit(Command::Spawn(7));
+        sys.run(&ctx(), &mut world);
+
+        sys.submit(Command::Count);
+        sys.run(&ctx(), &mut world);
+        assert_eq!(world.resource::<Stats>().map(|s| s.entities), Some(7));
+        assert_eq!(world.len(), 7); // unchanged
+    }
+
+    #[test]
+    fn set_speed_scales_velocities() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Velocity { vx: 1.0, vy: -3.0 });
+
+        let mut sys = InferSystem::new();
+        sys.submit(Command::SetSpeed(2.0));
+        sys.run(&ctx(), &mut world);
+
+        let v = world.get::<Velocity>(e).unwrap();
+        assert_eq!(v.vx, 2.0);
+        assert_eq!(v.vy, -6.0);
     }
 }
