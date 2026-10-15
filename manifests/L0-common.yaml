@@ -1,0 +1,18 @@
+apiVersion: oriera.dev/v1
+kind: LayerManifest
+metadata:
+  layer: L0
+  name: common-types
+  owner: core-team
+spec:
+  provides:
+    - id: oriera.common.time.v1
+      contract: rust:oriera_common::{Timestamp,FrameIndex}
+      stability: stable
+  requires: []   # L0 has no oriera dependencies by definition.
+
+  budgets: {}    # pure data types, no runtime cost
+
+  observability:
+    traces: false
+    metrics_prefix: ""

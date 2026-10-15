@@ -4,6 +4,13 @@
 //! hardware/OS differences. Upper layers NEVER branch on `#[cfg(target_os)]`;
 //! they only read [`Capabilities`] and call the trait objects exposed here.
 //!
+//! Boundary traits (contracts live in `contracts/oriera/pal/v1/`):
+//!   * [`gfx`]     — OriGFX backend (`CreateGfxBackend`, `SubmitFrame`)
+//!   * [`input`]   — unified `SpatialInputEvent` stream (`PollInputEvents`)
+//!   * [`storage`] — tiered persistence (`OpenAssetStream`)
+//!   * [`net`]     — edge/cloud transport (`RouteRemoteTask`)
+//!   * [`xr`]      — OpenXR session surface
+//!
 //! Five first-class targets:
 //!   * PC            (Win / macOS / Linux)
 //!   * Mobile        (iOS / Android)
@@ -19,6 +26,14 @@ pub mod storage;
 pub mod xr;
 
 pub use capability::{Capabilities, PlatformProfile};
+pub use gfx::{GfxBackend, GfxBackendKind, NullGfxBackend, SubmitResult};
+pub use input::{
+    EyeGazeEvent, HandPoseEvent, InputBody, InputSource, KeyEvent, NullInputSource, PointerEvent,
+    SpatialAnchorEvent, SpatialInputEvent, VoiceEvent,
+};
+pub use net::{Endpoint, ExecutionSite, NetTransport, OfflineTransport};
+pub use storage::{MemoryStorage, Storage, StorageTier};
+pub use xr::{HeadPose, NoXrSession, XrSession};
 
 /// Detect the current platform and return its capability bitmap.
 /// Called exactly once at startup; the result is immutable thereafter.

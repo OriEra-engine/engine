@@ -8,7 +8,6 @@ name = "oriera-pc"
 path = "src/main.rs"
 
 [dependencies]
-oriera-common = { path = "../../crates/oriera-common" }
 oriera-pal = { path = "../../crates/oriera-pal" }
 oriera-core = { path = "../../crates/oriera-core" }
 oriera-ecs = { path = "../../crates/oriera-ecs" }
@@ -16,5 +15,6 @@ oriera-asset = { path = "../../crates/oriera-asset" }
 oriera-subsys = { path = "../../crates/oriera-subsys" }
 oriera-render = { path = "../../crates/oriera-render" }
 oriera-infer = { path = "../../crates/oriera-infer" }
+oriera-agent = { path = "../../crates/oriera-agent" }
 tracing.workspace = true
 tracing-subscriber.workspace = true

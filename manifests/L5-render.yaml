@@ -1,0 +1,39 @@
+apiVersion: oriera.dev/v1
+kind: LayerManifest
+metadata:
+  layer: L5
+  name: rendering-kernel
+  owner: graphics-team
+spec:
+  provides:
+    - id: oriera.render.frame.v1
+      contract: rust:oriera_render::RenderSystem
+      stability: stable
+  requires:
+    - id: oriera.core.scheduler.v1
+      optional: false
+    - id: oriera.ecs.world.v1
+      optional: false
+  # NOTE: must NOT depend on L6 subsystems (layering violation,
+  # fixed in the 2026-10 architecture pass).
+
+  budgets:
+    frame_time_p99_ms: 8.0
+    draw_calls_max: 4000
+
+  degrade:
+    - when: frame_time_p99_ms > 10.0
+      action: reduce_shadow_resolution
+      cooldown_ms: 500
+    - when: vram_peak_mb > budget
+      action: evict_neural_lod_cache
+      cooldown_ms: 1000
+
+  observability:
+    traces: true
+    metrics_prefix: oriera_render_
+
+  notes: |
+    v0.1 counts visible Position components as the frame stand-in.
+    Pass graph (BuildFrameGraph/AddPass) and wgpu submission land v0.2+
+    (book T8).

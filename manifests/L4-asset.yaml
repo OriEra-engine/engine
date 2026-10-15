@@ -1,0 +1,29 @@
+apiVersion: oriera.dev/v1
+kind: LayerManifest
+metadata:
+  layer: L4
+  name: asset-pipeline
+  owner: content-team
+spec:
+  provides:
+    - id: oriera.asset.store.v1
+      contract: rust:oriera_asset::{AssetStore,AssetHandle}
+      stability: stable
+  requires: []   # in-memory store today; L1 storage streams land v0.2
+
+  budgets:
+    load_p99_ms: 5.0
+
+  degrade:
+    - when: asset_missing
+      action: placeholder_asset
+      cooldown_ms: 0
+
+  observability:
+    traces: true
+    metrics_prefix: oriera_asset_
+
+  notes: |
+    v0.1 is a typed in-memory registry. Content-addressed resolve
+    (hash-as-identity), prefetch/evict and the six-stage AI generation
+    pipeline (book T7) land with L8 work.

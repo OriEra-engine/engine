@@ -3,14 +3,10 @@ name = "oriera-asset"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "OriEra oriera-asset"
+description = "OriEra L4 asset pipeline: handle registry and typed store"
 
 [lib]
 name = "oriera_asset"
 path = "src/lib.rs"
 
 [dependencies]
-oriera-pal = { path = "../oriera-pal" }
-tracing.workspace = true
-serde.workspace = true
-serde_json.workspace = true

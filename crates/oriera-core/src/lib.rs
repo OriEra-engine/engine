@@ -1,18 +1,15 @@
-//! L2 Core — real-time frame scheduler.
+//! L2 Core — real-time frame scheduler and determinism frame.
 //!
-//! Splits each frame into fixed budget slots, runs systems in order,
-//! and reports timing per slot.
+//! The scheduler is generic over the world type `W`: L2 stays below the
+//! object model (L3) and must not know what a `World` is. The application
+//! shell instantiates `Scheduler<oriera_ecs::World>` and owns the world —
+//! systems receive `&mut W` each frame. No shared global state crosses
+//! layer boundaries (book T3 §3.8.1).
 
 use oriera_common::{FrameIndex, Timestamp};
 
 /// Target frame time in nanoseconds (60fps ≈ 16.6ms).
 pub const FRAME_BUDGET_NS: u64 = 16_666_666;
-
-/// A named system that runs each frame.
-pub trait System: Send + Sync {
-    fn name(&self) -> &str;
-    fn run(&mut self, ctx: &FrameCtx);
-}
 
 /// Context passed to every system each frame.
 pub struct FrameCtx {
@@ -21,15 +18,21 @@ pub struct FrameCtx {
     pub now: Timestamp,
 }
 
-/// The frame scheduler.
-pub struct Scheduler {
-    systems: Vec<Box<dyn System>>,
-    frame: FrameIndex,
-    last: Timestamp,
-    pub frame_times: Vec<f32>,
+/// A named system that runs each frame against the world `W`.
+pub trait System<W> {
+    fn name(&self) -> &str;
+    fn run(&mut self, ctx: &FrameCtx, world: &mut W);
 }
 
-impl Scheduler {
+/// The frame scheduler: runs registered systems in order, tracks frame time.
+pub struct Scheduler<W> {
+    systems: Vec<Box<dyn System<W>>>,
+    frame: FrameIndex,
+    last: Timestamp,
+    frame_times: Vec<f32>,
+}
+
+impl<W> Scheduler<W> {
     pub fn new() -> Self {
         Self {
             systems: Vec::new(),
@@ -39,27 +42,27 @@ impl Scheduler {
         }
     }
 
-    pub fn add_system(&mut self, s: Box<dyn System>) {
+    pub fn add_system(&mut self, s: Box<dyn System<W>>) {
         self.systems.push(s);
     }
 
-    /// Run one frame. Returns frame time in ms.
-    pub fn tick(&mut self) -> f32 {
-        let now = Timestamp::now();
-        let dt = now.elapsed(self.last);
-        self.last = now;
+    /// Run one frame. Returns the measured frame time in ms.
+    pub fn tick(&mut self, world: &mut W) -> f32 {
+        let start = Timestamp::now();
+        let dt = start.elapsed(self.last);
+        self.last = start;
 
         let ctx = FrameCtx {
             frame: self.frame,
             dt,
-            now,
+            now: start,
         };
 
         for s in &mut self.systems {
-            s.run(&ctx);
+            s.run(&ctx, world);
         }
 
-        let frame_ms = now.elapsed(self.last) * 1000.0;
+        let frame_ms = Timestamp::now().elapsed(start) * 1000.0;
         self.frame.0 += 1;
         self.frame_times.push(frame_ms);
         if self.frame_times.len() > 60 {
@@ -68,6 +71,7 @@ impl Scheduler {
         frame_ms
     }
 
+    /// Mean frame time over the last 60 frames, in ms.
     pub fn avg_frame_ms(&self) -> f32 {
         if self.frame_times.is_empty() {
             return 0.0;
@@ -76,8 +80,34 @@ impl Scheduler {
     }
 }
 
-impl Default for Scheduler {
+impl<W> Default for Scheduler<W> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct IncSystem;
+
+    impl System<u32> for IncSystem {
+        fn name(&self) -> &str {
+            "inc"
+        }
+        fn run(&mut self, _ctx: &FrameCtx, world: &mut u32) {
+            *world += 1;
+        }
+    }
+
+    #[test]
+    fn scheduler_passes_world_to_systems() {
+        let mut sched: Scheduler<u32> = Scheduler::new();
+        sched.add_system(Box::new(IncSystem));
+        let mut world = 0u32;
+        sched.tick(&mut world);
+        sched.tick(&mut world);
+        assert_eq!(world, 2);
     }
 }
