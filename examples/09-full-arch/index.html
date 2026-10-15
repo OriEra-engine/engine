@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OriEra Full Architecture Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #e0e0e0; font-family: 'SF Mono', Menlo, monospace; overflow: hidden; }
+  #app { display: flex; height: 100vh; }
+  #sidebar { width: 300px; min-width: 300px; flex-shrink: 0; background: #12121a; padding: 16px; border-right: 1px solid #222; overflow-y: auto; }
+  #main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  #canvas-area { flex: 1; position: relative; overflow: hidden; }
+  canvas { display: block; }
+  h1 { font-size: 15px; margin-bottom: 12px; color: #6ee7ff; }
+  h2 { font-size: 11px; color: #888; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #222; padding-bottom: 4px; }
+  .layer { padding: 6px 8px; margin: 3px 0; border-radius: 4px; font-size: 11px; display: flex; justify-content: space-between; align-items: center; }
+  .layer .name { color: #aaa; }
+  .layer .val { color: #6ee7ff; font-weight: bold; }
+  .l0 { background: #1a1a2e; border-left: 3px solid #666; }
+  .l1 { background: #1a1a2e; border-left: 3px solid #6ee7ff; }
+  .l2 { background: #1a1a2e; border-left: 3px solid #ff6b9d; }
+  .l3 { background: #1a1a2e; border-left: 3px solid #a8ff6b; }
+  .l4 { background: #1a1a2e; border-left: 3px solid #ffd93d; }
+  .l5 { background: #1a1a2e; border-left: 3px solid #ff9f43; }
+  .l6 { background: #1a1a2e; border-left: 3px solid #ee5a24; }
+  .l7 { background: #1a1a2e; border-left: 3px solid #e056fd; }
+  button { width: 100%; padding: 6px; margin: 3px 0; background: #1a1a2e; border: 1px solid #333; color: #e0e0e0; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11px; }
+  button:hover { background: #2a2a4e; border-color: #6ee7ff; }
+  button.primary { background: #6ee7ff; color: #000; font-weight: bold; }
+  #chat { background: #0d0d15; border: 1px solid #222; border-radius: 4px; padding: 8px; margin-top: 8px; font-size: 11px; max-height: 120px; overflow-y: auto; }
+  #chat div { margin: 2px 0; }
+  .user { color: #6ee7ff; }
+  .sys { color: #888; }
+  #input-row { display: flex; gap: 4px; margin-top: 6px; }
+  #cmd { flex: 1; background: #0d0d15; border: 1px solid #333; color: #e0e0e0; padding: 5px; border-radius: 4px; font-family: inherit; font-size: 11px; }
+  #perf { position: absolute; bottom: 8px; left: 8px; background: rgba(0,0,0,0.8); padding: 6px 10px; border-radius: 4px; font-size: 10px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <h1>⚙ OriEra Architecture</h1>
+
+    <h2>L0 Common</h2>
+    <div class="layer l0"><span class="name">Timestamp</span><span class="val" id="l0-ts">0</span></div>
+
+    <h2>L1 PAL</h2>
+    <div class="layer l1"><span class="name">Platform</span><span class="val" id="l1-os">web</span></div>
+    <div class="layer l1"><span class="name">GPU</span><span class="val" id="l1-gpu">WebGPU</span></div>
+
+    <h2>L2 Core Scheduler</h2>
+    <div class="layer l2"><span class="name">FPS</span><span class="val" id="l2-fps">60</span></div>
+    <div class="layer l2"><span class="name">Frame</span><span class="val" id="l2-frame">0</span></div>
+
+    <h2>L3 ECS World</h2>
+    <div class="layer l3"><span class="name">Entities</span><span class="val" id="l3-e">0</span></div>
+    <div class="layer l3"><span class="name">Position</span><span class="val" id="l3-p">0</span></div>
+    <div class="layer l3"><span class="name">Velocity</span><span class="val" id="l3-v">0</span></div>
+
+    <h2>L4 Asset</h2>
+    <div class="layer l4"><span class="name">Loaded</span><span class="val" id="l4-a">0</span></div>
+
+    <h2>L5 Render</h2>
+    <div class="layer l5"><span class="name">Draw calls</span><span class="val" id="l5-d">0</span></div>
+    <div class="layer l5"><span class="name">Visible</span><span class="val" id="l5-v">0</span></div>
+
+    <h2>L6 Physics</h2>
+    <div class="layer l6"><span class="name">Bounces</span><span class="val" id="l6-b">0</span></div>
+
+    <h2>L7 Infer</h2>
+    <div class="layer l7"><span class="name">Commands</span><span class="val" id="l7-c">0</span></div>
+    <div id="chat">
+      <div class="sys">> 输入 "spawn 50" 或 "clear"</div>
+    </div>
+    <div id="input-row">
+      <input id="cmd" placeholder="输入命令..." onkeydown="if(event.key==='Enter')doCmd()">
+      <button onclick="doCmd()">→</button>
+    </div>
+
+    <h2>Controls</h2>
+    <button class="primary" onclick="spawn(100)">Spawn 100</button>
+    <button onclick="spawn(500)">Spawn 500</button>
+    <button onclick="spawn(2000)">Spawn 2,000</button>
+    <button onclick="clearWorld()">Clear</button>
+  </div>
+  <div id="main">
+    <div id="canvas-area">
+      <canvas id="c"></canvas>
+      <div id="perf">OriEra Engine — Full Stack Running</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── L0 Common ──
+let startTime = performance.now();
+
+// ── L1 PAL (simulated) ──
+const platform = { os: 'web', gpu: 'WebGPU', input: 'mouse+keyboard' };
+
+// ── L3 ECS (flat-column, matching Rust oriera-ecs) ──
+const world = {
+  next: 0, gen: [], free: [], live: 0, cols: new Map()
+};
+
+function spawnEntity() {
+  let idx = world.free.pop() ?? world.next++;
+  if (idx === world.next - 1) {
+    world.gen.push(0);
+    for (const col of world.cols.values()) while (col.length <= idx) col.push(null);
+  }
+  world.live++;
+  return idx;
+}
+
+function insert(type, idx, data) {
+  let col = world.cols.get(type);
+  if (!col) { col = new Array(idx + 1).fill(null); world.cols.set(type, col); }
+  while (col.length <= idx) col.push(null);
+  col[idx] = data;
+}
+
+function count(type) {
+  const col = world.cols.get(type);
+  if (!col) return 0;
+  let n = 0;
+  for (const s of col) if (s !== null) n++;
+  return n;
+}
+
+let bounceCount = 0;
+function spawn(n) {
+  for (let i = 0; i < n; i++) {
+    const e = spawnEntity();
+    insert('p', e, { x: Math.random() * canvas.width, y: Math.random() * canvas.height });
+    insert('v', e, { vx: (Math.random() - .5) * 4, vy: (Math.random() - .5) * 4 });
+  }
+}
+
+function clearWorld() {
+  for (let i = 0; i < world.gen.length; i++) {
+    if (world.gen[i] === 0 && !world.free.includes(i)) world.gen[i]++;
+  }
+  world.live = 0;
+  for (const col of world.cols.values()) col.fill(null);
+}
+
+// ── L4 Asset ──
+const assets = [{ type: 'texture', w: 256, h: 256 }, { type: 'shader', name: 'default' }];
+
+// ── L7 Infer ──
+let cmdCount = 0;
+const chat = document.getElementById('chat');
+function doCmd() {
+  const input = document.getElementById('cmd');
+  const text = input.value.trim();
+  if (!text) return;
+  chat.innerHTML += `<div class="user">> ${text}</div>`;
+  input.value = '';
+
+  const lower = text.toLowerCase();
+  if (lower.includes('spawn')) {
+    const n = parseInt(lower.match(/\d+/)?.[0]) || 100;
+    spawn(n);
+    chat.innerHTML += `<div class="sys">✓ spawned ${n} entities</div>`;
+  } else if (lower.includes('clear') || lower.includes('清空')) {
+    clearWorld();
+    chat.innerHTML += `<div class="sys">✓ world cleared</div>`;
+  } else {
+    chat.innerHTML += `<div class="sys">? unknown: "${text}"</div>`;
+  }
+  cmdCount++;
+  chat.scrollTop = chat.scrollHeight;
+}
+
+// ── Canvas setup ──
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+function resize() {
+  canvas.width = canvas.parentElement.clientWidth;
+  canvas.height = canvas.parentElement.clientHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ── L2 Core frame loop ──
+let last = performance.now();
+let frames = 0;
+let fpsTime = 0;
+
+function frame() {
+  const now = performance.now();
+  const dt = (now - last) / 1000;
+  last = now;
+  frames++;
+  fpsTime += dt;
+
+  // Clear
+  ctx.fillStyle = '#0a0a0f';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // L6 Physics: integrate
+  const pos = world.cols.get('p');
+  const vel = world.cols.get('v');
+  if (pos && vel) {
+    for (let i = 0; i < pos.length; i++) {
+      if (!pos[i] || !vel[i]) continue;
+      pos[i].x += vel[i].vx;
+      pos[i].y += vel[i].vy;
+      if (pos[i].x < 0 || pos[i].x > canvas.width) { vel[i].vx *= -1; bounceCount++; }
+      if (pos[i].y < 0 || pos[i].y > canvas.height) { vel[i].vy *= -1; bounceCount++; }
+    }
+  }
+
+  // L5 Render: draw
+  if (pos) {
+    ctx.fillStyle = '#6ee7ff';
+    for (let i = 0; i < pos.length; i++) {
+      if (!pos[i]) continue;
+      ctx.fillRect(pos[i].x - 1.5, pos[i].y - 1.5, 3, 3);
+    }
+  }
+
+  // Update UI
+  document.getElementById('l0-ts').textContent = Math.floor(now - startTime);
+  document.getElementById('l2-fps').textContent = Math.round(frames / Math.max(fpsTime, 0.001));
+  document.getElementById('l2-frame').textContent = frames;
+  document.getElementById('l3-e').textContent = world.live;
+  document.getElementById('l3-p').textContent = count('p');
+  document.getElementById('l3-v').textContent = count('v');
+  document.getElementById('l4-a').textContent = assets.length;
+  document.getElementById('l5-d').textContent = world.live;
+  document.getElementById('l5-v').textContent = world.live;
+  document.getElementById('l6-b').textContent = bounceCount;
+  document.getElementById('l7-c').textContent = cmdCount;
+
+  requestAnimationFrame(frame);
+}
+
+// Boot
+spawn(200);
+frame();
+</script>
+</body>
+</html>
