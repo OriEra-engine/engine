@@ -3,14 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OriEra ECS 可视化 Demo</title>
+<title>OriEra ECS Visualizer</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #0a0a0f; color: #e0e0e0; font-family: 'SF Mono', 'Fira Code', monospace; overflow: hidden; }
+  body { background: #0a0a0f; color: #e0e0e0; font-family: 'SF Mono', Menlo, monospace; overflow: hidden; }
   #app { display: flex; height: 100vh; }
   #sidebar { width: 280px; min-width: 280px; flex-shrink: 0; background: #12121a; padding: 20px; border-right: 1px solid #222; overflow-y: auto; }
   #canvas-area { flex: 1; min-width: 0; position: relative; overflow: hidden; }
-  canvas { display: block; }
   h1 { font-size: 16px; margin-bottom: 16px; color: #6ee7ff; }
   h2 { font-size: 12px; color: #888; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 1px; }
   .stat { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
@@ -27,13 +26,12 @@
 <div id="app">
   <div id="sidebar">
     <h1>⚙ OriEra ECS</h1>
-    
     <h2>Stats</h2>
-    <div class="stat"><span>Entities</span><span class="val" id="stat-entities">0</span></div>
-    <div class="stat"><span>Position</span><span class="val" id="stat-pos">0</span></div>
-    <div class="stat"><span>Velocity</span><span class="val" id="stat-vel">0</span></div>
-    <div class="stat"><span>Health</span><span class="val" id="stat-hp">0</span></div>
-    <div class="stat"><span>Frame ms</span><span class="val" id="stat-frame">0</span></div>
+    <div class="stat"><span>Entities</span><span class="val" id="s-e">0</span></div>
+    <div class="stat"><span>Position</span><span class="val" id="s-p">0</span></div>
+    <div class="stat"><span>Velocity</span><span class="val" id="s-v">0</span></div>
+    <div class="stat"><span>Health</span><span class="val" id="s-h">0</span></div>
+    <div class="stat"><span>Frame ms</span><span class="val" id="s-f">0</span></div>
 
     <h2>Actions</h2>
     <button class="primary" onclick="spawn(100)">Spawn 100</button>
@@ -41,7 +39,7 @@
     <button onclick="spawn(10000)">Spawn 10,000</button>
     <button onclick="spawn(50000)">Spawn 50,000</button>
     <button onclick="despawnAll()">Despawn All</button>
-    <button onclick="togglePause()">Pause/Resume</button>
+    <button onclick="paused=!paused">Pause/Resume</button>
 
     <h2>Legend</h2>
     <div class="legend"><div class="dot" style="background:#6ee7ff"></div>Position only</div>
@@ -50,101 +48,57 @@
     <div class="legend"><div class="dot" style="background:#ffd93d"></div>All three</div>
   </div>
   <div id="canvas-area">
-    <canvas id="canvas"></canvas>
-    <div id="perf">Rust ECS → WebAssembly → Canvas 2D</div>
+    <canvas id="c"></canvas>
+    <div id="perf">Flat-column ECS · generation-validated · Canvas 2D</div>
   </div>
 </div>
 
 <script>
-// 简易 ECS 实现（JS 版，对应 Rust oriera-ecs）
-class Entity { constructor(index, generation) { this.index = index; this.generation = generation; } }
-
 class World {
   constructor() {
-    this.nextIndex = 0;
-    this.generations = [];
+    this.next = 0;
+    this.gen = [];
     this.free = [];
-    this.liveCount = 0;
-    this.columns = new Map(); // TypeId -> Array
+    this.live = 0;
+    this.cols = new Map();
   }
 
   spawn() {
-    let idx;
-    if (this.free.length > 0) idx = this.free.pop();
-    else {
-      idx = this.nextIndex++;
-      this.generations.push(0);
-      // Grow all existing columns to fit the new index
-      for (const col of this.columns.values()) {
-        while (col.length <= idx) col.push(null);
-      }
+    let idx = this.free.pop() ?? this.next++;
+    if (idx === this.next - 1) {
+      this.gen.push(0);
+      for (const col of this.cols.values()) while (col.length <= idx) col.push(null);
     }
-    const gen = this.generations[idx];
-    this.liveCount++;
-    return new Entity(idx, gen);
-  }
-
-  despawn(e) {
-    if (!this.valid(e)) return;
-    this.generations[e.index]++;
-    this.liveCount--;
-    this.free.push(e.index);
-    for (const col of this.columns.values()) col[e.index] = null;
+    this.live++;
+    return idx;
   }
 
   despawnAll() {
-    for (let i = 0; i < this.generations.length; i++) {
-      if (this.generations[i] > 0 || this.free.includes(i)) continue;
-      this.generations[i]++;
-      this.free.push(i);
+    for (let i = 0; i < this.gen.length; i++) {
+      if (this.gen[i] === 0 && !this.free.includes(i)) this.gen[i]++;
     }
-    this.liveCount = 0;
-    for (const col of this.columns.values()) col.fill(null);
+    this.live = 0;
+    for (const col of this.cols.values()) col.fill(null);
   }
 
-  valid(e) {
-    return e.index < this.generations.length && this.generations[e.index] === e.generation;
+  insert(type, idx, data) {
+    let col = this.cols.get(type);
+    if (!col) { col = new Array(idx + 1).fill(null); this.cols.set(type, col); }
+    while (col.length <= idx) col.push(null);
+    col[idx] = data;
   }
 
-  insert(typeId, e, component) {
-    if (!this.valid(e)) return;
-    let col = this.columns.get(typeId);
-    if (!col) { col = new Array(e.index + 1).fill(null); this.columns.set(typeId, col); }
-    if (col.length <= e.index) col.length = e.index + 1;
-    col[e.index] = component;
-  }
-
-  query(typeId) {
-    const col = this.columns.get(typeId);
-    if (!col) return [];
-    const results = [];
-    for (let i = 0; i < col.length; i++) {
-      if (col[i] !== null) results.push({ entity: new Entity(i, this.generations[i]), data: col[i] });
-    }
-    return results;
-  }
-
-  query2(typeA, typeB) {
-    const a = this.columns.get(typeA);
-    const b = this.columns.get(typeB);
-    if (!a || !b) return [];
-    const len = Math.min(a.length, b.length);
-    const results = [];
-    for (let i = 0; i < len; i++) {
-      if (a[i] !== null && b[i] !== null) {
-        results.push({ entity: new Entity(i, this.generations[i]), a: a[i], b: b[i] });
-      }
-    }
-    return results;
+  count(type) {
+    const col = this.cols.get(type);
+    if (!col) return 0;
+    let n = 0;
+    for (const s of col) if (s !== null) n++;
+    return n;
   }
 }
 
 const world = new World();
-const T_POS = 'pos';
-const T_VEL = 'vel';
-const T_HP = 'hp';
-
-const canvas = document.getElementById('canvas');
+const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 let paused = false;
 
@@ -158,90 +112,61 @@ resize();
 function spawn(n) {
   for (let i = 0; i < n; i++) {
     const e = world.spawn();
-    world.insert(T_POS, e, { x: Math.random() * canvas.width, y: Math.random() * canvas.height });
-    
+    world.insert('p', e, { x: Math.random() * canvas.width, y: Math.random() * canvas.height });
     const r = Math.random();
     if (r < 0.4) {
-      world.insert(T_VEL, e, { vx: (Math.random() - 0.5) * 2, vy: (Math.random() - 0.5) * 2 });
+      world.insert('v', e, { vx: (Math.random() - .5) * 2, vy: (Math.random() - .5) * 2 });
     } else if (r < 0.7) {
-      world.insert(T_HP, e, { hp: Math.random() * 100 });
+      world.insert('h', e, { hp: Math.random() * 100 });
     } else {
-      world.insert(T_VEL, e, { vx: (Math.random() - 0.5) * 2, vy: (Math.random() - 0.5) * 2 });
-      world.insert(T_HP, e, { hp: Math.random() * 100 });
+      world.insert('v', e, { vx: (Math.random() - .5) * 2, vy: (Math.random() - .5) * 2 });
+      world.insert('h', e, { hp: Math.random() * 100 });
     }
   }
-  updateStats();
 }
 
-function despawnAll() {
-  world.despawnAll();
-  updateStats();
-}
+function despawnAll() { world.despawnAll(); }
 
-function togglePause() { paused = !paused; }
-
-function updateStats() {
-  document.getElementById('stat-entities').textContent = world.liveCount;
-  document.getElementById('stat-pos').textContent = world.query(T_POS).length;
-  document.getElementById('stat-vel').textContent = world.query(T_VEL).length;
-  document.getElementById('stat-hp').textContent = world.query(T_HP).length;
-}
-
-let lastTime = performance.now();
+let last = performance.now();
 
 function frame() {
   const now = performance.now();
-  const dt = now - lastTime;
-  lastTime = now;
+  const dt = now - last;
+  last = now;
 
   ctx.fillStyle = '#0a0a0f';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  if (!paused) {
-    // 更新 Velocity
-    const moving = world.query2(T_POS, T_VEL);
-    for (const { a: pos, b: vel } of moving) {
-      pos.x += vel.vx;
-      pos.y += vel.vy;
-      if (pos.x < 0 || pos.x > canvas.width) vel.vx *= -1;
-      if (pos.y < 0 || pos.y > canvas.height) vel.vy *= -1;
+  const pos = world.cols.get('p');
+  if (pos) {
+    const vel = world.cols.get('v');
+    const hp = world.cols.get('h');
+
+    for (let i = 0; i < pos.length; i++) {
+      if (!pos[i]) continue;
+      if (!paused && vel && vel[i]) {
+        pos[i].x += vel[i].vx;
+        pos[i].y += vel[i].vy;
+        if (pos[i].x < 0 || pos[i].x > canvas.width) vel[i].vx *= -1;
+        if (pos[i].y < 0 || pos[i].y > canvas.height) vel[i].vy *= -1;
+      }
+      const hasV = vel && vel[i];
+      const hasH = hp && hp[i];
+      ctx.fillStyle = hasV && hasH ? '#ffd93d' : hasV ? '#ff6b9d' : hasH ? '#a8ff6b' : '#6ee7ff';
+      ctx.beginPath();
+      ctx.arc(pos[i].x, pos[i].y, 3, 0, 6.283);
+      ctx.fill();
     }
   }
 
-  // 渲染
-  // 用 query2 来分类渲染
-  const posOnly = world.columns.get(T_POS);
-  if (!posOnly) {
-    document.getElementById('stat-frame').textContent = dt.toFixed(1);
-    updateStats();
-    requestAnimationFrame(frame);
-    return;
-  }
-  const velCol = world.columns.get(T_VEL);
-  const hpCol = world.columns.get(T_HP);
-
-  ctx.fillStyle = '#6ee7ff';
-  for (let i = 0; i < posOnly.length; i++) {
-    if (posOnly[i] === null) continue;
-    const hasVel = velCol && velCol[i] !== null;
-    const hasHp = hpCol && hpCol[i] !== null;
-    
-    if (hasVel && hasHp) ctx.fillStyle = '#ffd93d';
-    else if (hasVel) ctx.fillStyle = '#ff6b9d';
-    else if (hasHp) ctx.fillStyle = '#a8ff6b';
-    else ctx.fillStyle = '#6ee7ff';
-    
-    ctx.beginPath();
-    ctx.arc(posOnly[i].x, posOnly[i].y, 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  document.getElementById('stat-frame').textContent = dt.toFixed(1);
-  updateStats();
+  document.getElementById('s-e').textContent = world.live;
+  document.getElementById('s-p').textContent = world.count('p');
+  document.getElementById('s-v').textContent = world.count('v');
+  document.getElementById('s-h').textContent = world.count('h');
+  document.getElementById('s-f').textContent = dt.toFixed(1);
   requestAnimationFrame(frame);
 }
 
-// 初始生成
 spawn(500);
 frame();
 </script>
