@@ -12,7 +12,7 @@ use oriera_core::Scheduler;
 use oriera_ecs::{Position, Velocity, World};
 use oriera_infer::{InferSystem, Stats};
 use oriera_render::RenderSystem;
-use oriera_subsys::{Gravity, PhysicsSystem};
+use oriera_subsys::{Gravity, PhysicsSystem, TimeScale};
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -48,21 +48,36 @@ fn main() {
     }
     println!("  ECS      : {} entities, Gravity(9.8)", world.len());
 
-    // ── L4 Asset: load a fake texture ──
+    // ── L4 Asset: named load + hot swap (the L8 landing pad) ──
     #[derive(Debug)]
     struct Texture {
         width: u32,
         height: u32,
     }
     let mut assets = AssetStore::new();
-    let tex = assets.load(Texture {
-        width: 512,
-        height: 512,
-    });
-    let loaded = assets.get::<Texture>(tex).expect("just loaded");
+    let tex = assets.insert_named(
+        "hero",
+        Texture {
+            width: 512,
+            height: 512,
+        },
+    );
+    let loaded = assets.get_named::<Texture>("hero").expect("just loaded");
     println!(
-        "  Assets   : texture {}×{} ({:?})",
+        "  Assets   : 'hero' {}×{} ({:?})",
         loaded.width, loaded.height, tex
+    );
+    assets.insert_named(
+        "hero",
+        Texture {
+            width: 1024,
+            height: 1024,
+        }, // regenerated in place — same name, same handle
+    );
+    let swapped = assets.get_named::<Texture>("hero").unwrap();
+    println!(
+        "  Hot swap : 'hero' → {}×{} (handle {:?} unchanged)",
+        swapped.width, swapped.height, tex
     );
 
     // ── L9 Agent → L7 Infer: chat lines become engine commands ──
@@ -81,21 +96,33 @@ fn main() {
         infer.submit(cmd);
     }
 
-    // ── L2 Core: build the scheduler over the world ──
-    let mut sched: Scheduler<World> = Scheduler::new();
+    // ── L2 Core: scheduler graded on the platform's own budget ──
+    let mut sched: Scheduler<World> =
+        Scheduler::with_budget_ns(profile.frame_budget_us as u64 * 1000);
     sched.add_system(Box::new(infer));
     sched.add_system(Box::new(PhysicsSystem::new(800.0, 600.0)));
-    sched.add_system(Box::new(RenderSystem::new()));
+    // Shared render handle: the scheduler runs it, the main loop feeds
+    // its adaptive quality governor (L5) with the L2 frame stats.
+    let render = std::rc::Rc::new(std::cell::RefCell::new(RenderSystem::new()));
+    sched.add_system(Box::new(SharedRender(render.clone())));
 
     // ── Run the loop ──
     println!();
     println!("  Running 10 frames...");
     for f in 0..10 {
+        // Slow the world to half pace mid-run: pacing is a resource now.
+        if f == 5 {
+            world.insert_resource(TimeScale(0.5));
+        }
         let ms = sched.tick(&mut world);
+        render
+            .borrow_mut()
+            .observe_frame(sched.avg_frame_ms(), sched.budget_ms());
         if f % 3 == 0 {
             println!("    frame {:2}: {:.2} ms", f, ms);
         }
     }
+    world.insert_resource(TimeScale(1.0));
 
     // ── Report ──
     let pos_count = world.query::<Position>().count();
@@ -107,8 +134,35 @@ fn main() {
     println!("  Velocity comp  : {}", vel_count);
     println!("  Gravity        : {:?}", world.resource::<Gravity>());
     println!("  Stats (Count)  : {:?}", world.resource::<Stats>());
-    println!("  Avg frame      : {:.2} ms", sched.avg_frame_ms());
+    println!(
+        "  Avg frame      : {:.2} ms (budget {:.2} ms)",
+        sched.avg_frame_ms(),
+        sched.budget_ms()
+    );
     println!("  Assets loaded  : {}", assets.len());
+    println!(
+        "  Render         : {:?} quality, {} draw calls",
+        render.borrow().quality,
+        render.borrow().draw_calls
+    );
+    println!();
+    println!("  ── L2 per-system timings (last frame) ──");
+    for (name, ms) in sched.system_timings() {
+        println!("    {:<12} {:>8.3} ms", name, ms);
+    }
     println!();
     println!("  ✅ Closed loop: L9 parse → L7 execute → L6 integrate → L5 count");
+}
+
+/// Runs the shared [`RenderSystem`] inside the scheduler while the main
+/// loop keeps a handle to the same instance for the quality governor.
+struct SharedRender(std::rc::Rc<std::cell::RefCell<RenderSystem>>);
+
+impl oriera_core::System<World> for SharedRender {
+    fn name(&self) -> &str {
+        "render"
+    }
+    fn run(&mut self, ctx: &oriera_core::FrameCtx, world: &mut World) {
+        self.0.borrow_mut().run(ctx, world);
+    }
 }
