@@ -1,13 +1,20 @@
-//! L7 Inference Runtime — command queue executed against the world.
+//! L7 Inference Runtime — model boundary + command queue.
 //!
-//! In the full architecture this layer routes prompts to on-device or
-//! cloud models (book T10). v0.1 keeps the runtime contract but the
-//! "model" is a direct command channel: higher layers (L9 agent) submit
-//! structured `Command`s, the runtime executes them on the L3 world each
-//! frame and reports throughput metrics.
+//! Two services live here (book T10):
+//!
+//! 1. [`ModelProvider`] — the ONLY way any layer talks to a model.
+//!    Applications never hold keys or URLs; providers are configured
+//!    once at boot (`RuleProvider` offline, HTTP providers in platform
+//!    shells / wasm kernels).
+//! 2. [`InferSystem`] — the command queue executed against the L3 world
+//!    each frame, with processed/rejected metrics.
 //!
 //! Natural-language parsing does NOT live here — that is the L9 agent's
 //! job (`oriera-agent`). This layer only executes what it is given.
+
+pub mod provider;
+
+pub use provider::{ChatMessage, InferError, ModelProvider, Role, RuleProvider};
 
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Position, Velocity, World};
