@@ -23,7 +23,8 @@ use oriera_infer::Command;
 ///
 /// Returns `Command::Unknown(input)` when no intent matches — the L7
 /// runtime counts it under `rejected` and executes nothing. Recognized
-/// intents: spawn/放/生成 + N, clear/清空/清屏, gravity/重力 + N.
+/// intents: spawn/放/生成 + N, clear/清空/清屏, gravity/重力 + N,
+/// teleport/传送 + X Y, how many/多少个, speed/速度/倍速 + N.
 pub fn parse(input: &str) -> Command {
     let lower = input.to_lowercase();
     if lower.contains("spawn") || lower.contains("放") || lower.contains("生成") {
@@ -39,23 +40,50 @@ pub fn parse(input: &str) -> Command {
             return Command::SetGravity(g as f32);
         }
     }
+    if lower.contains("teleport") || lower.contains("传送") {
+        let nums = extract_numbers(&lower);
+        if nums.len() >= 2 {
+            return Command::Teleport(nums[0] as f32, nums[1] as f32);
+        }
+    }
+    if lower.contains("how many") || lower.contains("多少") {
+        return Command::Count;
+    }
+    if lower.contains("speed") || lower.contains("速度") || lower.contains("倍速") {
+        if let Some(k) = extract_number(&lower) {
+            return Command::SetSpeed(k as f32);
+        }
+    }
     Command::Unknown(input.to_string())
 }
 
 /// Extract the first number in `s` ("gravity 9.8" → 9.8, not 98).
 fn extract_number(s: &str) -> Option<f64> {
+    extract_numbers(s).into_iter().next()
+}
+
+/// Extract every number in `s`, in order ("teleport to 100 -25" → [100, -25]).
+/// A leading '-' counts as part of the number; lone '-'/'.' are dropped.
+fn extract_numbers(s: &str) -> Vec<f64> {
+    let mut out = Vec::new();
     let mut buf = String::new();
     for c in s.chars() {
-        if c.is_ascii_digit() || (c == '.' && !buf.contains('.')) {
+        if c.is_ascii_digit()
+            || (c == '.' && !buf.contains('.') && !buf.ends_with('-'))
+            || (c == '-' && buf.is_empty())
+        {
             buf.push(c);
         } else if !buf.is_empty() {
-            break; // first number complete
+            if let Ok(n) = buf.parse::<f64>() {
+                out.push(n);
+            }
+            buf.clear();
         }
     }
-    if buf == "." {
-        return None;
+    if let Ok(n) = buf.parse::<f64>() {
+        out.push(n);
     }
-    buf.parse::<f64>().ok()
+    out
 }
 
 #[cfg(test)]
@@ -79,6 +107,35 @@ mod tests {
         assert_eq!(parse("set gravity to 10"), Command::SetGravity(10.0));
         assert_eq!(parse("gravity 9.8"), Command::SetGravity(9.8));
         assert_eq!(parse("重力 9"), Command::SetGravity(9.0));
+    }
+
+    #[test]
+    fn parses_teleport() {
+        assert_eq!(
+            parse("teleport to 100 200"),
+            Command::Teleport(100.0, 200.0)
+        );
+        assert_eq!(parse("传送到 50,-25"), Command::Teleport(50.0, -25.0));
+    }
+
+    #[test]
+    fn parses_count() {
+        assert_eq!(parse("how many entities"), Command::Count);
+        assert_eq!(parse("现在有多少个"), Command::Count);
+    }
+
+    #[test]
+    fn parses_speed() {
+        assert_eq!(parse("speed 2x"), Command::SetSpeed(2.0));
+        assert_eq!(parse("速度 1.5 倍"), Command::SetSpeed(1.5));
+    }
+
+    #[test]
+    fn teleport_needs_two_numbers() {
+        assert_eq!(
+            parse("teleport to the moon"),
+            Command::Unknown("teleport to the moon".to_string())
+        );
     }
 
     #[test]
