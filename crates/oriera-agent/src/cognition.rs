@@ -168,10 +168,7 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
                 description: String::new(),
             });
 
-        let log = world
-            .resource::<DialogueLog>()
-            .cloned()
-            .unwrap_or_default();
+        let log = world.resource::<DialogueLog>().cloned().unwrap_or_default();
         let recent: Vec<String> = log
             .recent(6)
             .iter()
@@ -234,14 +231,11 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
         if let Some(m) = world.get_mut::<Mood>(speaker_e) {
             *m = mood;
         }
-        world
-            .resource_or_default::<DialogueLog>()
-            .turns
-            .push(Turn {
-                speaker: persona.name.clone(),
-                to: partner.name.clone(),
-                text: say.clone(),
-            });
+        world.resource_or_default::<DialogueLog>().turns.push(Turn {
+            speaker: persona.name.clone(),
+            to: partner.name.clone(),
+            text: say.clone(),
+        });
         let log = world.resource_or_default::<DialogueLog>();
         if log.turns.len() > 24 {
             let drop = log.turns.len() - 24;
@@ -316,10 +310,7 @@ impl<P: ModelProvider> System<World> for DirectorSystem<P> {
         if turn % self.interval != 0 {
             return;
         }
-        let log = world
-            .resource::<DialogueLog>()
-            .cloned()
-            .unwrap_or_default();
+        let log = world.resource::<DialogueLog>().cloned().unwrap_or_default();
         let sys = format!(
             "你是 OriEra 世界引擎的 AI 导演。根据最近对话推进一个小而具体的世界事件，只输出一句话。\n当前第 {} 世界日。最近对话：{}",
             day,

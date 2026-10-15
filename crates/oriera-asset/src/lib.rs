@@ -103,12 +103,18 @@ mod tests {
     fn named_assets_hot_swap_behind_the_same_name() {
         let mut store = AssetStore::new();
         let h1 = store.insert_named("npc_face", Texture { rev: 1 });
-        assert_eq!(store.get_named::<Texture>("npc_face"), Some(&Texture { rev: 1 }));
+        assert_eq!(
+            store.get_named::<Texture>("npc_face"),
+            Some(&Texture { rev: 1 })
+        );
 
         // Regeneration: same name, new payload, SAME handle.
         let h2 = store.insert_named("npc_face", Texture { rev: 2 });
         assert_eq!(h1, h2);
-        assert_eq!(store.get_named::<Texture>("npc_face"), Some(&Texture { rev: 2 }));
+        assert_eq!(
+            store.get_named::<Texture>("npc_face"),
+            Some(&Texture { rev: 2 })
+        );
         assert_eq!(store.len(), 1); // no orphaned old payload
     }
 
@@ -122,7 +128,10 @@ mod tests {
         let mut store = AssetStore::new();
         store.insert_named("hero", Texture { rev: 1 });
         store.insert_named("hero", Mesh { tris: 900 });
-        assert_eq!(store.get_named::<Texture>("hero"), Some(&Texture { rev: 1 }));
+        assert_eq!(
+            store.get_named::<Texture>("hero"),
+            Some(&Texture { rev: 1 })
+        );
         assert_eq!(store.get_named::<Mesh>("hero"), Some(&Mesh { tris: 900 }));
     }
 

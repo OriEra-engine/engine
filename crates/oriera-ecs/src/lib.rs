@@ -635,7 +635,10 @@ mod tests {
         world.write_event(NpcSpoke { who: "老周" });
         world.write_event(NpcSpoke { who: "Aria" });
         let batch = world.take_events::<NpcSpoke>();
-        assert_eq!(batch, vec![NpcSpoke { who: "老周" }, NpcSpoke { who: "Aria" }]);
+        assert_eq!(
+            batch,
+            vec![NpcSpoke { who: "老周" }, NpcSpoke { who: "Aria" }]
+        );
         // Second drain sees nothing until written again.
         assert!(world.take_events::<NpcSpoke>().is_empty());
     }

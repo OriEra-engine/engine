@@ -60,6 +60,19 @@ RenderSystem(L5)  统计可见 Position → draw_calls（真实 Pass 图在 ROAD
 整条链路没有任何全局变量，回放确定性由 L3 generation 句柄与
 L7 的固定种子 LCG 保证。
 
+## 润滑剂契约（v0.2，2026-10-15「全层润滑剂」PR）
+
+每层新增的加法式契约（详见 `docs/AI-NATIVE.md` 末节与各层 manifest）：
+
+- L1 `route(caps, RouteHint) -> ExecutionSite`：端云路由在 PAL 一次决策
+- L2 `Scheduler::system_timings()` / `with_budget_ns()`：逐系统耗时 + 平台预算曲线
+- L3 `write_event` / `take_events` / `resource_or_default`：类型化事件、自愈资源
+- L4 `insert_named` / `get_named` / `unload`：命名资产热替换（L8 落地点）
+- L5 `Quality` + `RenderSystem::observe_frame`：迟滞画质调速
+- L6 `TimeScale`：仿真节流资源（钳制 [0,8]）
+- L7 帧预算命令队列（`deferred`）+ `UsageMeter` / `last_usage()` 计量
+- L9 认知/导演自愈启动 + 否定语义解析
+
 ## 目录地图
 
 ```

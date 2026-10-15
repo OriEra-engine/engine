@@ -196,7 +196,10 @@ mod tests {
             parse("不要 spawn 5"),
             Command::Unknown("不要 spawn 5".to_string())
         );
-        assert_eq!(parse("don't clear"), Command::Unknown("don't clear".to_string()));
+        assert_eq!(
+            parse("don't clear"),
+            Command::Unknown("don't clear".to_string())
+        );
     }
 
     #[test]
