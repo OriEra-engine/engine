@@ -1,0 +1,61 @@
+<!doctype html>
+<!-- TODO 1/3: 改标题与说明 -->
+<!-- TODO 2/3: 把 MAIN 区域换成你的画布/内容 -->
+<!-- TODO 3/3: badges 数组改成你演示的层 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OriEra Demo NN — 一句话说明</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,"SF Mono",Menlo,monospace;
+         background:#0b0d12; color:#e6e8ee; }
+  header { padding:18px 24px; border-bottom:1px solid #222633;
+           display:flex; justify-content:space-between; align-items:center; }
+  h1 { font-size:15px; margin:0; }
+  .badges { display:flex; gap:6px; }
+  .badges span { font-size:10px; background:#1a1f2a; color:#8a90a6;
+                 padding:2px 8px; border-radius:3px; }
+  main { height:calc(100vh - 61px); display:flex;
+         align-items:center; justify-content:center; color:#555b6e; }
+  footer { position:fixed; bottom:0; left:0; right:0; padding:8px 24px;
+           font-size:11px; color:#555b6e; border-top:1px solid #222633;
+           display:flex; justify-content:space-between; }
+  a { color:#5b8def; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚙ Demo NN — 一句话说明演示什么</h1>
+  <div class="badges" id="badges">
+    <!-- 层徽章：改这里 -->
+    <span>L? Layer</span><span>L? Layer</span>
+  </div>
+</header>
+
+<main id="stage">
+  TODO: 你的画布放这里
+</main>
+
+<footer>
+  <span>OriEra World Engine</span>
+  <span><a href="../../index.html">← 全部 demo</a></span>
+</footer>
+
+<script>
+// 模板约定：
+//  - 不支持所需 API 时降级提示，不白屏
+//  - console 保持干净
+(async () => {
+  if (!navigator.gpu) {
+    document.getElementById('stage').innerHTML =
+      '此 demo 需要 WebGPU（Chrome/Edge 113+）';
+    return;
+  }
+  // TODO: 你的逻辑
+})();
+</script>
+</body>
+</html>
