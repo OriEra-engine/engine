@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package oriera.genai.v1;
+
+// L8 generative-asset boundary — mirrors crates/oriera-genai public API
+// (ADR 0003). Generation is task-shaped: submit, poll, land. Vendors are
+// data chosen at boot; the engine never hardcodes one.
+
+// What the creator asked for. Providers declare which kinds they serve
+// via ProviderCapabilities; GenAiSystem rejects unsupported requests
+// before any network work.
+enum GenerationKind {
+  GENERATION_KIND_UNSPECIFIED = 0;
+  TEXT_TO_3D = 1;   // prompt  -> GLB/USDZ mesh (e.g. Tripo)
+  IMAGE_TO_3D = 2;  // image   -> GLB/USDZ mesh
+  TEXT_TO_VIDEO = 3; // prompt -> MP4/WebM (e.g. Seedance)
+  IMAGE_TO_VIDEO = 4;
+}
+
+enum AssetFormat {
+  ASSET_FORMAT_UNSPECIFIED = 0;
+  GLB = 1;   // magic "glTF"
+  USDZ = 2;  // zip container, magic "PK"
+  VIDEO = 3; // MP4/WebM container
+  IMAGE = 4; // PNG/JPEG
+}
+
+message GenerationRequest {
+  GenerationKind kind = 1;
+  string prompt = 2;
+  string negative_prompt = 3;
+  // Logical asset name — the L4 `insert_named` landing key (ADR 0003 §2.1).
+  string name = 4;
+  // Client-side validation ceiling; providers must not bypass it.
+  uint64 max_bytes = 5;
+  // Optional deterministic seed where the provider supports it.
+  optional uint64 seed = 6;
+}
+
+// Opaque provider task handle. Stable for polling; never reused.
+message TaskId {
+  string value = 1;
+}
+
+message GeneratedAsset {
+  AssetFormat format = 1;
+  bytes payload = 2;      // validated bytes (magic + size checked)
+  string provider_id = 3; // which adapter produced it (metrics)
+  string model = 4;       // provider-reported model id, if any
+}
+
+message TaskStatus {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    QUEUED = 1;
+    RUNNING = 2;
+    SUCCEEDED = 3;
+    FAILED = 4;
+  }
+  State state = 1;
+  GeneratedAsset asset = 2; // set iff state == SUCCEEDED
+  string error = 3;         // set iff state == FAILED
+}
+
+message ProviderCapabilities {
+  bool text_to_3d = 1;
+  bool image_to_3d = 2;
+  bool text_to_video = 3;
+  bool image_to_video = 4;
+}
+
+service GenerativeAssets {
+  // Appendix-B `RequestGeneration`: submit a task, get its handle.
+  rpc RequestGeneration(GenerationRequest) returns (TaskId);
+  // Poll a task; terminal states carry the asset or the error.
+  rpc PollTask(TaskId) returns (TaskStatus);
+}

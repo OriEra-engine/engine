@@ -28,6 +28,14 @@ spec:
     - when: net_unavailable
       action: local_fallback         # ADR 0001: routing is PAL/L7's own business
       cooldown_ms: 1000
+    # ── Neural-rendering runtime invariants (ADR 0002). Normative clauses  ──
+    # ── only — the code skeleton lands with the second consumer.         ──
+    - when: neural_session_overrun
+      action: slow_down_not_catch_up # ADR 0002 §2: never a catch-up burst
+      cooldown_ms: 0
+    - when: display_queue_full
+      action: drop_decoded_display_only # ADR 0002 §2: only decoded frames may drop
+      cooldown_ms: 0
 
   observability:
     traces: true
@@ -37,3 +45,6 @@ spec:
     v0.1 executes structured commands with a deterministic LCG (replayable,
     book T5). Real model routing — SubmitInference, model lifecycle,
     edge/cloud split (book T10) — lands 2027 H2.
+    Neural/streaming sessions must obey ADR 0002: integer-step frame pacing
+    (target fps divides physics_hz), a bounded display queue, and process
+    isolation between engine state and inference.
