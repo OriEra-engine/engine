@@ -9,6 +9,10 @@ spec:
     - id: oriera.core.scheduler.v1
       contract: rust:oriera_core::{Scheduler,System,FrameCtx}
       stability: stable
+    - id: oriera.core.timings.v1
+      contract: rust:oriera_core::{Scheduler::system_timings,with_budget_ns}
+      stability: stable
+      note: per-system ms of the last frame; budget from the L1 profile
   requires:
     - id: oriera.common.time.v1
       optional: false

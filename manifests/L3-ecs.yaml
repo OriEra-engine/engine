@@ -13,8 +13,12 @@ spec:
       contract: rust:oriera_ecs::{query,query2,for_each_mut,for_each2_mut}
       stability: stable
     - id: oriera.ecs.resource.v1
-      contract: rust:oriera_ecs::{insert_resource,resource,resource_mut}
+      contract: rust:oriera_ecs::{insert_resource,resource,resource_mut,resource_or_default}
       stability: stable
+    - id: oriera.ecs.events.v1
+      contract: rust:oriera_ecs::{write_event,take_events}
+      stability: stable
+      note: typed single-drain queues; the cross-system signal channel
     - id: oriera.ecs.stdcomp.v1
       contract: rust:oriera_ecs::{Position,Velocity}
       stability: stable
@@ -33,4 +37,6 @@ spec:
 
   notes: |
     Flat-column ECS (Vec<Option<T>> per type), generation-validated
-    handles. Signal bus (Publish) and Serialize land with v0.2+ (book T6).
+    handles, zero-alloc single-column iteration (take-reinsert pattern).
+    Typed event queues (events.v1) cover the Publish use-case; full
+    pub/sub and Serialize land with v0.2+ (book T6).

@@ -9,6 +9,11 @@ spec:
     - id: oriera.render.frame.v1
       contract: rust:oriera_render::RenderSystem
       stability: stable
+    - id: oriera.render.quality.v1
+      contract: rust:oriera_render::{Quality,RenderSystem::observe_frame}
+      stability: stable
+      note: hysteresis governor; over budget -> batch harder, headroom
+        -> recover
   requires:
     - id: oriera.core.scheduler.v1
       optional: false
@@ -34,6 +39,7 @@ spec:
     metrics_prefix: oriera_render_
 
   notes: |
-    v0.1 counts visible Position components as the frame stand-in.
-    Pass graph (BuildFrameGraph/AddPass) and wgpu submission land v0.2+
-    (book T8).
+    v0.1 counts visible Position components as the frame stand-in,
+    batched by the adaptive quality tier (SetQuality half of the L5
+    contract). Pass graph (BuildFrameGraph/AddPass) and wgpu submission
+    land v0.2+ (book T8).

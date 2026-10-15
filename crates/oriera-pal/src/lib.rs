@@ -31,7 +31,10 @@ pub use input::{
     EyeGazeEvent, HandPoseEvent, InputBody, InputSource, KeyEvent, NullInputSource, PointerEvent,
     SpatialAnchorEvent, SpatialInputEvent, VoiceEvent,
 };
-pub use net::{Endpoint, ExecutionSite, NetTransport, OfflineTransport};
+pub use net::{
+    route, Endpoint, ExecutionSite, NetTransport, OfflineTransport, Privacy, RouteHint,
+    NPU_PAYLOAD_LIMIT_BYTES,
+};
 pub use storage::{MemoryStorage, Storage, StorageTier};
 pub use xr::{HeadPose, NoXrSession, XrSession};
 

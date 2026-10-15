@@ -9,6 +9,11 @@ spec:
     - id: oriera.asset.store.v1
       contract: rust:oriera_asset::{AssetStore,AssetHandle}
       stability: stable
+    - id: oriera.asset.hotswap.v1
+      contract: rust:oriera_asset::{insert_named,get_named,unload}
+      stability: stable
+      note: logical-name registry; re-insert atomically swaps payload
+        behind the same handle — the landing pad for L8 generation
   requires: []   # in-memory store today; L1 storage streams land v0.2
 
   budgets:

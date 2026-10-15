@@ -102,6 +102,8 @@ pub struct World {
     live_count: usize,
     columns: HashMap<TypeId, Box<dyn Column>>,
     resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+    /// Typed single-frame event queues (see [`World::write_event`]).
+    events: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl World {
@@ -232,6 +234,51 @@ impl World {
             .downcast_mut::<T>()
     }
 
+    /// Mutate a singleton resource, inserting `T::default()` when the
+    /// application never registered one. Engine systems use this so a
+    /// missing registration degrades to an empty resource instead of
+    /// panicking mid-frame — the app shell keeps zero boilerplate.
+    pub fn resource_or_default<T: Default + Send + Sync + 'static>(&mut self) -> &mut T {
+        self.resources
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Box::new(T::default()))
+            .downcast_mut::<T>()
+            .expect("entry keyed by TypeId of T")
+    }
+
+    // ---- events ----
+
+    /// Push `event` onto the typed queue for `T`. Events are the
+    /// engine-standard channel for cross-system signals (an NPC spoke,
+    /// an inference landed, a beat fired): writers append during their
+    /// system, readers call [`World::take_events`] later in the frame
+    /// order (L7 infer → L6 physics → L5 render) and own the drained
+    /// batch. Unread events persist until someone takes them.
+    pub fn write_event<T: Send + Sync + 'static>(&mut self, event: T) {
+        let queue = self
+            .events
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Box::new(Vec::<T>::new()) as Box<dyn Any + Send + Sync>);
+        queue
+            .downcast_mut::<Vec<T>>()
+            .expect("event queue keyed by TypeId of T")
+            .push(event);
+    }
+
+    /// Drain every pending event of type `T` in write order. The caller
+    /// owns the returned batch; a second call in the same frame sees
+    /// only what was written after the first drain.
+    pub fn take_events<T: Send + Sync + 'static>(&mut self) -> Vec<T> {
+        match self.events.get_mut(&TypeId::of::<T>()) {
+            Some(queue) => std::mem::take(
+                queue
+                    .downcast_mut::<Vec<T>>()
+                    .expect("event queue keyed by TypeId of T"),
+            ),
+            None => Vec::new(),
+        }
+    }
+
     // ---- query ----
 
     /// Query all entities that have component T.
@@ -289,22 +336,31 @@ impl World {
     }
 
     /// Mutable query: call a closure on each entity that has component T.
+    ///
+    /// Zero-alloc per call: the column is taken out of the map for the
+    /// iteration (same pattern as [`World::for_each2_mut`]) instead of
+    /// cloning the generation vector every frame. The closure receives
+    /// `&mut T`, not `&mut World`, so the borrow checker already
+    /// prevents despawns/inserts during iteration.
     pub fn for_each_mut<T: 'static>(&mut self, mut f: impl FnMut(Entity, &mut T)) {
         let type_id = TypeId::of::<T>();
-        let gens = self.generations.clone();
-        if let Some(col) = self.columns.get_mut(&type_id) {
-            let vec = col.as_any_mut().downcast_mut::<Vec<Option<T>>>().unwrap();
+        let mut col = self.columns.remove(&type_id);
+        if let Some(c) = col.as_mut() {
+            let vec = c.as_any_mut().downcast_mut::<Vec<Option<T>>>().unwrap();
             for (idx, slot) in vec.iter_mut().enumerate() {
                 if let Some(v) = slot.as_mut() {
                     f(
                         Entity {
                             index: idx as u32,
-                            generation: gens[idx],
+                            generation: self.generations[idx],
                         },
                         v,
                     );
                 }
             }
+        }
+        if let Some(c) = col {
+            self.columns.insert(type_id, c);
         }
     }
 
@@ -535,6 +591,70 @@ mod tests {
 
         world.resource_mut::<Gravity>().unwrap().0 = 1.6;
         assert_eq!(world.resource::<Gravity>().unwrap(), &Gravity(1.6));
+    }
+
+    #[test]
+    fn for_each_mut_joins_without_clone() {
+        let mut world = World::new();
+        let e1 = world.spawn();
+        world.insert(e1, Position { x: 0.0, y: 0.0 });
+        let e2 = world.spawn();
+        world.insert(e2, Position { x: 1.0, y: 1.0 });
+
+        let mut seen = 0;
+        world.for_each_mut::<Position>(|_e, p| {
+            seen += 1;
+            p.x += 1.0;
+        });
+        assert_eq!(seen, 2);
+        assert_eq!(world.get::<Position>(e1).unwrap().x, 1.0);
+        assert_eq!(world.get::<Position>(e2).unwrap().x, 2.0);
+    }
+
+    #[test]
+    fn resource_or_default_inserts_when_missing() {
+        #[derive(Debug, Default, PartialEq)]
+        struct Gravity(f32);
+
+        let mut world = World::new();
+        assert!(world.resource::<Gravity>().is_none());
+        world.resource_or_default::<Gravity>().0 = 4.2;
+        assert_eq!(world.resource::<Gravity>().unwrap(), &Gravity(4.2));
+    }
+
+    #[test]
+    fn events_drain_in_write_order() {
+        #[derive(Debug, PartialEq)]
+        struct NpcSpoke {
+            who: &'static str,
+        }
+
+        let mut world = World::new();
+        assert!(world.take_events::<NpcSpoke>().is_empty());
+
+        world.write_event(NpcSpoke { who: "老周" });
+        world.write_event(NpcSpoke { who: "Aria" });
+        let batch = world.take_events::<NpcSpoke>();
+        assert_eq!(
+            batch,
+            vec![NpcSpoke { who: "老周" }, NpcSpoke { who: "Aria" }]
+        );
+        // Second drain sees nothing until written again.
+        assert!(world.take_events::<NpcSpoke>().is_empty());
+    }
+
+    #[test]
+    fn event_types_are_independent_queues() {
+        #[derive(Debug, PartialEq)]
+        struct Beat(String);
+        #[derive(Debug, PartialEq)]
+        struct InferDone(u64);
+
+        let mut world = World::new();
+        world.write_event(Beat("雨季".into()));
+        world.write_event(InferDone(7));
+        assert_eq!(world.take_events::<InferDone>(), vec![InferDone(7)]);
+        assert_eq!(world.take_events::<Beat>(), vec![Beat("雨季".into())]);
     }
 
     #[test]

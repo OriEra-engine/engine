@@ -41,8 +41,15 @@ use oriera_infer::Command;
 /// runtime counts it under `rejected` and executes nothing. Recognized
 /// intents: spawn/放/生成 + N, clear/清空/清屏, gravity/重力 + N,
 /// teleport/传送 + X Y, how many/多少个, speed/速度/倍速 + N.
+///
+/// A negation word ("不要", "别", "勿", "don't"…) appearing **before**
+/// the intent keyword suppresses execution ("别清空" is not Clear);
+/// a negation after the keyword does not ("清空，但别关灯" still Clear).
 pub fn parse(input: &str) -> Command {
     let lower = input.to_lowercase();
+    if negation_precedes_intent(&lower) {
+        return Command::Unknown(input.to_string());
+    }
     if lower.contains("spawn") || lower.contains("放") || lower.contains("生成") {
         if let Some(n) = extract_number(&lower) {
             return Command::Spawn(n.round() as usize);
@@ -71,6 +78,26 @@ pub fn parse(input: &str) -> Command {
         }
     }
     Command::Unknown(input.to_string())
+}
+
+/// Negation words that suppress an intent they precede.
+const NEGATIONS: &[&str] = &["不要", "别", "勿", "don't", "dont", "do not", "never"];
+
+/// Intent keywords, mirrored from [`parse`] — used only to locate the
+/// first intent mention and compare it against negation positions.
+const INTENT_KEYWORDS: &[&str] = &[
+    "spawn", "放", "生成", "clear", "清空", "清屏", "gravity", "重力", "teleport", "传送",
+    "how many", "多少", "speed", "速度", "倍速",
+];
+
+fn negation_precedes_intent(lower: &str) -> bool {
+    let Some(first_neg) = NEGATIONS.iter().filter_map(|n| lower.find(n)).min() else {
+        return false;
+    };
+    match INTENT_KEYWORDS.iter().filter_map(|k| lower.find(k)).min() {
+        Some(first_kw) => first_neg < first_kw,
+        None => false,
+    }
 }
 
 /// Extract the first number in `s` ("gravity 9.8" → 9.8, not 98).
@@ -160,5 +187,24 @@ mod tests {
             Command::Unknown(s) => assert_eq!(s, "hello there"),
             other => panic!("expected Unknown, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn negation_before_intent_suppresses_it() {
+        assert_eq!(parse("别清空"), Command::Unknown("别清空".to_string()));
+        assert_eq!(
+            parse("不要 spawn 5"),
+            Command::Unknown("不要 spawn 5".to_string())
+        );
+        assert_eq!(
+            parse("don't clear"),
+            Command::Unknown("don't clear".to_string())
+        );
+    }
+
+    #[test]
+    fn negation_after_intent_does_not_suppress() {
+        assert_eq!(parse("清空，但别关灯"), Command::Clear);
+        assert_eq!(parse("spawn 5, never mind the rest"), Command::Spawn(5));
     }
 }

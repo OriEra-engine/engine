@@ -8,6 +8,7 @@
 //! (ROADMAP v0.6). `RuleProvider` is the deterministic offline backend
 //! that keeps tests hermetic and lets the engine run without a key.
 
+use oriera_common::TokenUsage;
 use std::fmt;
 
 /// One turn of a chat-format request.
@@ -65,23 +66,42 @@ pub trait ModelProvider: Send + Sync {
 
     /// Produce one assistant completion for the chat so far.
     fn complete(&self, messages: &[ChatMessage]) -> Result<String, InferError>;
+
+    /// Token usage of the most recent [`ModelProvider::complete`] call.
+    /// Provided (zero) so simple backends opt in only when they can
+    /// measure; HTTP providers override with the API's usage block.
+    fn last_usage(&self) -> TokenUsage {
+        TokenUsage::ZERO
+    }
 }
 
 /// Deterministic offline backend: picks a canned line by keyword.
 /// Same input → same output, so engine tests are hermetic.
 pub struct RuleProvider {
     pub id: &'static str,
+    usage: std::sync::Mutex<TokenUsage>,
 }
 
 impl Default for RuleProvider {
     fn default() -> Self {
-        Self { id: "rule-v1" }
+        Self {
+            id: "rule-v1",
+            usage: std::sync::Mutex::new(TokenUsage::ZERO),
+        }
     }
 }
 
 impl RuleProvider {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Deterministic stand-in for tokenizer output: chars/4 per side.
+    fn estimate(prompt_chars: usize, completion_chars: usize) -> TokenUsage {
+        TokenUsage {
+            prompt: (prompt_chars as u64) / 4,
+            completion: (completion_chars as u64) / 4,
+        }
     }
 }
 
@@ -91,6 +111,7 @@ impl ModelProvider for RuleProvider {
     }
 
     fn complete(&self, messages: &[ChatMessage]) -> Result<String, InferError> {
+        let prompt_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
         let last = messages
             .iter()
             .rev()
@@ -105,8 +126,17 @@ impl ModelProvider for RuleProvider {
             "我那个世界引擎 demo 跑通了！两万实体六十帧，虽然只是小方块在飞。"
         } else {
             "（点头）这条街变了很多，好在咖啡馆没变。"
-        };
-        Ok(say.to_string())
+        }
+        .to_string();
+        let completion_chars = say.chars().count();
+        if let Ok(mut u) = self.usage.lock() {
+            *u = Self::estimate(prompt_chars, completion_chars);
+        }
+        Ok(say)
+    }
+
+    fn last_usage(&self) -> TokenUsage {
+        self.usage.lock().map(|u| *u).unwrap_or(TokenUsage::ZERO)
     }
 }
 
@@ -125,6 +155,36 @@ mod tests {
             .complete(&[ChatMessage::user("x")])
             .unwrap()
             .contains("咖啡馆"));
+    }
+
+    #[test]
+    fn rule_provider_reports_usage_after_each_call() {
+        let p = RuleProvider::new();
+        assert_eq!(p.last_usage(), TokenUsage::ZERO);
+        let prompt = "聊聊咖啡豆豆"; // 6 chars → estimate 6/4 = 1 token
+        let out = p.complete(&[ChatMessage::user(prompt)]).unwrap();
+        assert_eq!(
+            p.last_usage(),
+            TokenUsage {
+                prompt: 1,
+                completion: (out.chars().count() / 4) as u64
+            }
+        );
+        assert!(p.last_usage().total() > 0);
+    }
+
+    #[test]
+    fn default_last_usage_is_zero_for_minimal_backends() {
+        struct Bare;
+        impl ModelProvider for Bare {
+            fn id(&self) -> &str {
+                "bare"
+            }
+            fn complete(&self, _m: &[ChatMessage]) -> Result<String, InferError> {
+                Ok(String::new())
+            }
+        }
+        assert_eq!(Bare.last_usage(), TokenUsage::ZERO);
     }
 }
 

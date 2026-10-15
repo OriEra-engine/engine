@@ -9,6 +9,10 @@ spec:
     - id: oriera.subsys.physics.v1
       contract: rust:oriera_subsys::{PhysicsSystem,Gravity}
       stability: stable
+    - id: oriera.subsys.timescale.v1
+      contract: rust:oriera_subsys::TimeScale
+      stability: stable
+      note: simulation pacing resource, clamped [0,8] inside the step
   requires:
     - id: oriera.core.scheduler.v1
       optional: false
