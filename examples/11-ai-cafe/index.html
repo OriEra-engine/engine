@@ -97,7 +97,7 @@
   <button id="guest-send">插话 ⏎</button>
 </div>
 <button class="gear" id="gear" title="设置">⚙</button>
-<div id="llmstats">L7 calls <b id="s-calls">0</b> · errors <b id="s-err">0</b> · mem episodes <b id="s-mem">0</b></div>
+<div id="llmstats">L7 calls <b id="s-calls">0</b> · errors <b id="s-err">0</b> · tokens <b id="s-tok">0</b> &middot; mem episodes <b id="s-mem">0</b></div>
 
 <div class="modal-bg" id="settings-bg"><div class="modal">
   <h3>⚙ L7 推理运行时 · 设置</h3>
@@ -317,6 +317,7 @@ function renderWorld() {
   $("w-beat").textContent = world.story.beats.at(-1) || "故事即将开始…";
   $("s-calls").textContent = provider.stats.calls; $("s-err").textContent = provider.stats.errors;
   $("s-mem").textContent = memory.lenTotal();
+  $("s-tok").textContent = provider.stats.tokens || 0;
 }
 function renderNPCs() {
   const host = $("npcs"); host.innerHTML = "";
@@ -325,6 +326,8 @@ function renderNPCs() {
     d.innerHTML = `
       <div class="nm"><span>${n.name}</span><span class="mood">${moodOf[n.mood] || "🙂"}</span></div>
       <div class="role">${n.role}</div>
+      ${Object.entries(world.rel).filter(([k]) => k.includes(n.name))
+        .map(([k, v]) => `<div style="display:flex;justify-content:space-between;color:#555b6e;font-size:9.5px"><span>${k.replace(n.name, '').replace('~', '')}</span><span>${Math.round(v)}</span></div><div class="bar"><i style="width:${Math.min(100, v)}%"></i></div>`).join("")}
       <div class="mem">记忆 ${(memory.mem[n.name] || []).length} 条 · 点击查看</div>`;
     d.onclick = () => openMem(n);
     host.appendChild(d);
@@ -353,6 +356,7 @@ const world = {
   npcs: NPCS,
   dialogue: [],
   story: worldMeta && worldMeta.story ? worldMeta.story : { day: 1, beats: [] },
+  rel: worldMeta && worldMeta.rel ? worldMeta.rel : {},
   guestQueue: [],
   turn: worldMeta ? worldMeta.turn : 0,
   onEvent: e => { if (e.type === "l7-error") logLine("sys", `L7 调用失败，本轮降级规则引擎（${e.error}）`); },
@@ -382,7 +386,7 @@ async function pump() {
     }
     const beat = await director.tick(world);
     if (beat) logLine("dir", `🎭 世界进程推进 → ${beat}`);
-    localStorage.setItem("aicafe.world.v1", JSON.stringify({ turn: world.turn, story: world.story }));
+    localStorage.setItem("aicafe.world.v1", JSON.stringify({ turn: world.turn, story: world.story, rel: world.rel }));
     renderWorld(); renderNPCs();
   } finally { pumping = false; }
 }

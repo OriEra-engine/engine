@@ -75,8 +75,7 @@ export class HttpChatProvider {
     } else headers["Authorization"] = "Bearer " + this.cfg.key;
     const body = anthropic
       ? JSON.stringify({ model: this.cfg.model, max_tokens: opts.max ?? 260,
-          system: messages.filter(m => m.role === "system").map(m => m.content).join("
-"),
+          system: messages.filter(m => m.role === "system").map(m => m.content).join("\n"),
           messages: messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content })) })
       : JSON.stringify({ model: this.cfg.model, messages,
           temperature: opts.temp ?? 0.85, max_tokens: opts.max ?? 260,
@@ -86,6 +85,8 @@ export class HttpChatProvider {
         const r = await fetch(url, { method: "POST", headers, body });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const data = await r.json();
+        this.stats.tokens = (this.stats.tokens || 0)
+          + ((data.usage && (data.usage.total_tokens ?? data.usage.input_tokens)) || 0);
         return anthropic ? data.content[0].text : data.choices[0].message.content;
       } catch (e) {
         if (attempt) { this.stats.errors++; throw e; }
@@ -192,6 +193,9 @@ ${recent.join("\n") || "（对话刚开始）"}
     if (!res) res = this._rule(speaker, partner, world);   // L7 降级
     speaker.mood = res.mood;
 
+    const rel = (world.rel = world.rel || {});
+    const rk = [speaker.name, res.to].sort().join('~');
+    rel[rk] = Math.min(100, (rel[rk] || 40) + ((res.mood === 'happy' || res.mood === 'excited') ? 2 : 0.5));
     world.dialogue.push({ speaker: speaker.name, to: res.to, text: res.say });
     if (world.dialogue.length > 24) world.dialogue.shift();
     if (res.remember)
