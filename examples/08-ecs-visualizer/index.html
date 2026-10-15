@@ -74,7 +74,10 @@ class World {
     else {
       idx = this.nextIndex++;
       this.generations.push(0);
-      for (const col of this.columns.values()) col.resize(idx + 1, null);
+      // Grow all existing columns to fit the new index
+      for (const col of this.columns.values()) {
+        while (col.length <= idx) col.push(null);
+      }
     }
     const gen = this.generations[idx];
     this.liveCount++;
@@ -206,15 +209,14 @@ function frame() {
   }
 
   // 渲染
-  const positions = world.query(T_POS);
-  for (const { data: pos } of positions) {
-    // 判断有哪些 component
-    const idx = pos._idx; // 我们需要知道 index
-  }
-
   // 用 query2 来分类渲染
-  // 1. 只有 Position
   const posOnly = world.columns.get(T_POS);
+  if (!posOnly) {
+    document.getElementById('stat-frame').textContent = dt.toFixed(1);
+    updateStats();
+    requestAnimationFrame(frame);
+    return;
+  }
   const velCol = world.columns.get(T_VEL);
   const hpCol = world.columns.get(T_HP);
 
