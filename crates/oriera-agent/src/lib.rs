@@ -1,11 +1,19 @@
-//! L9 Agent — natural-language intent layer.
+//! L9 Agent — cognition, memory and world-progression as engine services.
 //!
-//! The agent turns what a user *says* into structured engine commands,
-//! then hands them to the L7 inference runtime for execution. v0.1 is a
-//! rule-based parser (no LLM); the interface is shaped so an LLM backend
-//! can drop in later without touching callers (book T12, ROADMAP v0.5–0.7).
+//! Three capabilities live here (book T12), all driven through the L2
+//! scheduler as [`oriera_core::System`]s — applications never call a
+//! model directly:
 //!
-//! Example round trip:
+//! * [`cognition::CognitionSystem`] — NPCs speak each N engine ticks,
+//!   prompted from their retrieved long-term memories and the current
+//!   world beat, via the L7 [`oriera_infer::ModelProvider`] boundary.
+//! * [`cognition::DirectorSystem`] — the AI director advances the world
+//!   story (beats/days) from the running dialogue.
+//! * [`memory::MemoryStore`] — episodic long-term memory with
+//!   keyword/recency/importance retrieval, mirrored 1:1 by the wasm
+//!   kernel in `examples/11-ai-cafe/engine/kernel.js`.
+//!
+//! Intent parsing (`parse`) stays for command-style applications.
 //!
 //! ```no_run
 //! use oriera_agent::parse;
@@ -16,6 +24,14 @@
 //! infer.submit(parse("把重力设为 9.8"));
 //! # assert_eq!(infer.processed, 0); // executed on the next scheduler tick
 //! ```
+
+pub mod cognition;
+pub mod memory;
+
+pub use cognition::{
+    CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WorldStory,
+};
+pub use memory::{Episode, MemoryStore};
 
 use oriera_infer::Command;
 

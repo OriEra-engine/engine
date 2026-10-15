@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OriEra Demo 11 — 隅角咖啡馆 · AI NPC</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:#07090f; color:#e6e8ee; overflow:hidden; height:100vh;
+         font-family:-apple-system,"SF Mono",Menlo,monospace; }
+  #stage { position:fixed; inset:0; }
+  canvas { display:block; }
+  /* 左上：世界状态 */
+  #hud { position:fixed; top:10px; left:12px; font-size:11px; color:#8a90a6;
+         line-height:1.75; pointer-events:none; }
+  #hud b { color:#6ee7ff; font-weight:600; }
+  #hud .beat { color:#ffd28a; }
+  /* 右侧：NPC 卡片 */
+  #npcs { position:fixed; top:10px; right:12px; width:212px; display:flex;
+          flex-direction:column; gap:8px; }
+  .npc { background:rgba(13,13,21,.85); border:1px solid #2a3040; border-radius:8px;
+         padding:9px 11px; font-size:11px; cursor:pointer; transition:border-color .15s; }
+  .npc:hover { border-color:#6ee7ff; }
+  .npc .nm { display:flex; justify-content:space-between; color:#e6e8ee; font-weight:600; }
+  .npc .role { color:#8a90a6; font-size:10px; margin:2px 0 5px; }
+  .npc .mood { color:#ffd28a; }
+  .bar { height:3px; background:#1a1f2a; border-radius:2px; margin-top:3px; }
+  .bar i { display:block; height:100%; border-radius:2px; background:#5b8def; }
+  .npc .mem { color:#555b6e; font-size:9.5px; margin-top:4px; }
+  /* 世界日志 */
+  #log { position:fixed; left:12px; bottom:64px; width:340px; max-height:34vh;
+         overflow:hidden auto; font-size:11px; line-height:1.8; pointer-events:auto;
+         mask-image:linear-gradient(transparent, #000 18%); }
+  #log .who { color:#6ee7ff; font-weight:600; }
+  #log .dir { color:#a8ff6b; }
+  #log .ply { color:#ff9f43; }
+  #log .sys { color:#555b6e; }
+  /* 客人插话 */
+  #guest { position:fixed; left:50%; transform:translateX(-50%); bottom:16px;
+           width:min(560px,86vw); display:flex; gap:8px; }
+  #guest input { flex:1; background:rgba(13,13,21,.88); border:1px solid #2a3040;
+                 color:#e6e8ee; padding:9px 13px; border-radius:8px; font:inherit;
+                 font-size:13px; outline:none; }
+  #guest input:focus { border-color:#6ee7ff; }
+  #guest button { background:#ff9f43; color:#07090f; border:0; padding:0 16px;
+                  border-radius:8px; font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+  /* 气泡 */
+  .bubble { position:fixed; max-width:230px; transform:translate(-50%,-100%);
+            background:rgba(16,19,28,.92); border:1px solid #33405a; border-radius:10px;
+            padding:8px 11px; font-size:12px; line-height:1.6; color:#e6e8ee;
+            pointer-events:none; opacity:0; transition:opacity .25s; z-index:5; }
+  .bubble.show { opacity:1; }
+  .bubble .bname { font-size:9.5px; font-weight:700; margin-bottom:2px; }
+  /* 设置 & 记忆 检查器 */
+  .modal-bg { position:fixed; inset:0; background:rgba(7,9,15,.7); display:none;
+              align-items:center; justify-content:center; z-index:20; }
+  .modal { background:#0d0d15; border:1px solid #2a3040; border-radius:10px;
+           width:min(520px,92vw); max-height:82vh; overflow:auto; padding:18px 20px;
+           font-size:12px; line-height:1.8; }
+  .modal h3 { font-size:13px; color:#6ee7ff; margin-bottom:10px; }
+  .modal label { display:block; color:#8a90a6; font-size:10.5px; margin:9px 0 3px; }
+  .modal input, .modal select { width:100%; background:#12151c; border:1px solid #2a3040;
+           color:#e6e8ee; padding:7px 10px; border-radius:6px; font:inherit; font-size:12px; }
+  .modal .row { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  .modal button { background:#1a1f2a; border:1px solid #33405a; color:#e6e8ee;
+           padding:7px 14px; border-radius:6px; font:inherit; font-size:11.5px; cursor:pointer; }
+  .modal button.pri { background:#6ee7ff; color:#07090f; font-weight:700; border:0; }
+  #mem-body .ep { border-left:2px solid #33405a; padding:2px 0 2px 9px; margin:7px 0; }
+  #mem-body .ep b { color:#ffd28a; font-size:10px; }
+  #mem-body .ep span { color:#555b6e; font-size:9.5px; float:right; }
+  .gear { position:fixed; bottom:16px; right:14px; background:rgba(13,13,21,.85);
+          border:1px solid #2a3040; color:#8a90a6; border-radius:8px; width:34px; height:34px;
+          font-size:15px; cursor:pointer; }
+  .state-dot { display:inline-block; width:7px; height:7px; border-radius:50%;
+               background:#555b6e; margin-right:5px; }
+  .state-dot.live { background:#a8ff6b; box-shadow:0 0 6px #a8ff6b; }
+  #llmstats { position:fixed; bottom:16px; left:14px; font-size:10px; color:#555b6e;
+              pointer-events:none; line-height:1.7; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="hud">
+  <b>隅角咖啡馆</b> · OriEra Demo 11<br/>
+  世界日 <b id="w-day">1</b> · 回合 <b id="w-turn">0</b> · 声望 <b id="w-rep">0</b><br/>
+  世界进程：<span class="beat" id="w-beat">故事即将开始…</span><br/>
+  L7 推理 <span class="state-dot" id="dot"></span><span id="llm-name">规则引擎（未配置大模型）</span>
+</div>
+
+<div id="npcs"></div>
+<div id="log"></div>
+
+<div id="guest">
+  <input id="guest-input" placeholder="以客人身份插话（例如：老板，今天的豆子怎么样？）" />
+  <button id="guest-send">插话 ⏎</button>
+</div>
+<button class="gear" id="gear" title="设置">⚙</button>
+<div id="llmstats">L7 calls <b id="s-calls">0</b> · errors <b id="s-err">0</b> · mem episodes <b id="s-mem">0</b></div>
+
+<div class="modal-bg" id="settings-bg"><div class="modal">
+  <h3>⚙ L7 推理运行时 · 设置</h3>
+  <p style="color:#8a90a6;font-size:10.5px;line-height:1.8">
+    Key 只存本浏览器 localStorage，用于直连智谱开放平台；本仓库不含任何密钥。
+    不填 Key 时 demo 以规则引擎运行，功能完整。</p>
+  <label>API Key（智谱 bigmodel.cn）</label>
+  <input id="set-key" type="password" placeholder="粘贴你的 Key" />
+  <label>模型</label>
+  <select id="set-model">
+    <option value="glm-4-flash">glm-4-flash（免费）</option>
+    <option value="glm-4.5-air">glm-4.5-air</option>
+    <option value="glm-4.6">glm-4.6</option>
+  </select>
+  <label>API Base URL（默认官方，可换兼容网关）</label>
+  <input id="set-base" value="https://open.bigmodel.cn/api/paas/v4" />
+  <div class="row">
+    <button class="pri" id="set-save">保存并测试连接</button>
+    <button id="mem-export">导出记忆 JSON</button>
+    <button id="mem-clear">清空全部记忆</button>
+    <button id="set-close">关闭</button>
+  </div>
+  <p id="set-msg" style="color:#a8ff6b;font-size:10.5px;margin-top:9px"></p>
+</div></div>
+
+<div class="modal-bg" id="mem-bg"><div class="modal">
+  <h3 id="mem-title">记忆检查器</h3>
+  <p style="color:#8a90a6;font-size:10.5px">L9 长期记忆 · 检索式 episodic memory · 刷新页面依然存在（localStorage）</p>
+  <div id="mem-body"></div>
+  <div class="row"><button id="mem-close">关闭</button></div>
+</div></div>
+
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+<!-- 应用层（L11）：只有场景、UI 和内核装配。模型调用/提示词/记忆检索全部在
+     engine/kernel.js（引擎层，与 Rust crate 同构）。 -->
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "./vendor/OrbitControls.js";
+import { GLTFLoader } from "./vendor/GLTFLoader.js";
+import { MemoryStore, ZhipuProvider, CognitionSystem, DirectorSystem, Scheduler } from "./engine/kernel.js";
+
+const $ = id => document.getElementById(id);
+
+/* ---------- L1 · 渲染平台 ---------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+$("stage").appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0c12);
+scene.fog = new THREE.Fog(0x0a0c12, 10, 26);
+const camera = new THREE.PerspectiveCamera(46, innerWidth / innerHeight, .1, 100);
+camera.position.set(0, 4.4, 9.4);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.1, 0);
+controls.maxPolarAngle = 1.45; controls.minDistance = 4; controls.maxDistance = 15;
+controls.enableDamping = true;
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* ---------- 咖啡馆几何 ---------- */
+const wood  = new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: .8 });
+const wood2 = new THREE.MeshStandardMaterial({ color: 0x8a6a45, roughness: .75 });
+const dark  = new THREE.MeshStandardMaterial({ color: 0x241f1a, roughness: .9 });
+const metal = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: .35, metalness: .8 });
+function box(w, h, d, mat, x, y, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z); m.castShadow = m.receiveShadow = true; scene.add(m); return m;
+}
+box(13, .25, 9.5, wood, 0, 0, 0);
+box(13, 4, .25, dark, 0, 2, -4.7);
+box(.25, 4, 9.5, dark, -6.4, 2, 0); box(.25, 4, 9.5, dark, 6.4, 2, 0);
+box(3.4, 1.6, .1, new THREE.MeshStandardMaterial({ color:0x0e1420, emissive:0x1a2c4a, emissiveIntensity:.9 }), -3.6, 2.2, -4.56);
+box(3.4, 1.6, .1, new THREE.MeshStandardMaterial({ color:0x0e1420, emissive:0x1a2c4a, emissiveIntensity:.9 }),  3.6, 2.2, -4.56);
+box(6.4, 1.05, 1.1, wood2, 0, .52, -3.4);
+box(6.4, .12, 1.35, wood, 0, 1.11, -3.4);
+box(1.5, .95, .8, metal, -1.6, 1.62, -3.5);
+const cupMat = new THREE.MeshStandardMaterial({ color: 0xe8e2d6, roughness: .5 });
+for (const [cx, cz] of [[.4,-3.3],[1.0,-3.5],[-0.4,-3.55]]) {
+  const c = new THREE.Mesh(new THREE.CylinderGeometry(.09,.07,.14,12), cupMat);
+  c.position.set(cx, 1.24, cz); c.castShadow = true; scene.add(c);
+}
+for (const [tx, tz] of [[-3.4, .6], [3.4, .8], [0, 1.9]]) {
+  const top = new THREE.Mesh(new THREE.CylinderGeometry(.85, .85, .08, 24), wood2);
+  top.position.set(tx, .95, tz); top.castShadow = top.receiveShadow = true; scene.add(top);
+  const leg = new THREE.Mesh(new THREE.CylinderGeometry(.09, .14, .9, 10), dark);
+  leg.position.set(tx, .45, tz); scene.add(leg);
+  for (let s = 0; s < 2; s++) {
+    const ch = box(.55, .1, .55, wood2, tx + (s ? .95 : -.95), .62, tz + .3);
+    box(.55, .65, .09, wood2, ch.position.x, 1.0, tz + .52);
+    const cl = new THREE.Mesh(new THREE.CylinderGeometry(.05,.05,.6,8), dark);
+    cl.position.set(ch.position.x, .3, tz + .3); scene.add(cl);
+  }
+}
+for (const lx of [-3.4, 0, 3.4]) {
+  const wire = new THREE.Mesh(new THREE.CylinderGeometry(.015,.015,1.4,6), dark);
+  wire.position.set(lx, 3.3, -.4); scene.add(wire);
+  const bulb = new THREE.Mesh(new THREE.SphereGeometry(.14, 12, 12),
+    new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffb35c, emissiveIntensity: 2.2 }));
+  bulb.position.set(lx, 2.58, -.4); scene.add(bulb);
+  const light = new THREE.PointLight(0xffb35c, 26, 9, 1.8);
+  light.position.set(lx, 2.55, -.4); scene.add(light);
+}
+scene.add(new THREE.AmbientLight(0x334, .8));
+const moon = new THREE.DirectionalLight(0x5b7bd6, .5);
+moon.position.set(4, 6, 6); scene.add(moon);
+
+/* ---------- NPC（引擎世界状态 + 3D 化身） ---------- */
+const NPCS = [
+  { id: "zhou", name: "老周", color: 0xc07a3a, role: "咖啡馆老板 · 手冲派",
+    description: "五十岁，开了十二年咖啡馆。话不多但每句都有分量，记得每个熟客的口味。相信好咖啡需要等待，好故事也是。",
+    anchor: [-1.2, -2.6], facing: 0, mood: "neutral" },
+  { id: "aria", name: "Aria", color: 0x7a6ac0, role: "自由插画师 · 窗边常驻",
+    description: "二十六岁，正在画一本关于'会说话的咖啡馆'的绘本。感性，观察力强，喜欢用颜色形容心情。有点怕截稿日，但更怕失去灵感。",
+    anchor: [-4.35, .1], facing: 1.2, mood: "neutral" },
+  { id: "zhe", name: "阿哲", color: 0x3a9a7a, role: "计算机系学生 · 想做游戏",
+    description: "二十二岁，休学边缘，带着旧笔记本写一个世界引擎的 demo。好奇、话多、容易兴奋，崇拜老周的手艺。最近在纠结要不要 all-in。",
+    anchor: [4.35, .3], facing: -1.4, mood: "neutral" },
+];
+const rig = {};
+function fallbackBot(color) {
+  const g = new THREE.Group();
+  const m = new THREE.MeshStandardMaterial({ color, roughness: .6 });
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(.32, .5, 6, 12), m); body.position.y = .85;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(.24, 14, 14), m); head.position.y = 1.5;
+  g.add(body, head); return g;
+}
+const place = n => { rig[n.id].model.position.set(n.anchor[0], 0, n.anchor[1]); rig[n.id].model.rotation.y = n.facing; };
+new GLTFLoader().load("./vendor/RobotExpressive.glb", gltf => {
+  for (const n of NPCS) {
+    const model = gltf.scene.clone(true);
+    model.scale.setScalar(.78);
+    model.traverse(o => { if (o.isMesh) { o.material = o.material.clone(); o.material.color.setHex(n.color); o.castShadow = true; } });
+    scene.add(model);
+    const mixer = new THREE.AnimationMixer(model), acts = {};
+    for (const clip of gltf.animations) acts[clip.name] = mixer.clipAction(clip);
+    rig[n.id] = { model, mixer, acts, current: null, target: null };
+    place(n); play(n.id, "Idle");
+  }
+  logLine("sys", "L1/L6 就绪：3 个 NPC 装载（本地 RobotExpressive · CC）");
+}, undefined, () => {
+  for (const n of NPCS) { const bot = fallbackBot(n.color); scene.add(bot);
+    rig[n.id] = { model: bot, mixer: null, acts: {}, current: null, target: null, fallback: true }; place(n); }
+  logLine("sys", "模型加载失败，降级为程序化机器人");
+});
+function play(id, name) {
+  const r = rig[id]; if (!r || r.fallback) return;
+  if (!r.acts[name]) name = "Idle";
+  if (r.current === name) return;
+  if (r.current && r.acts[r.current]) r.acts[r.current].fadeOut(.35);
+  r.acts[name].reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(.35).play();
+  r.current = name;
+}
+function applyAction(id, action) {
+  const r = rig[id]; if (!r) return;
+  const map = { idle: "Idle", wave: "Wave", dance: "Dance", sitting: "Sitting",
+                yes: "Yes", thumbs_up: "ThumbsUp", walk_to_counter: "Walking" };
+  if (action === "walk_to_counter") r.target = new THREE.Vector3((Math.random() - .5) * 2, 0, -2.4);
+  else r.target = null;
+  play(id, map[action] || "Idle");
+}
+
+/* ---------- 气泡与帧循环 ---------- */
+const bubbles = {};
+for (const n of NPCS) {
+  const d = document.createElement("div"); d.className = "bubble";
+  d.innerHTML = `<div class="bname" style="color:#${n.color.toString(16).padStart(6,"0")}">${n.name}</div><div class="btext"></div>`;
+  document.body.appendChild(d); bubbles[n.id] = { el: d, until: 0 };
+}
+const v3 = new THREE.Vector3();
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  for (const n of NPCS) {
+    const r = rig[n.id]; if (!r) continue;
+    if (r.mixer) r.mixer.update(dt);
+    if (r.target) {
+      const p = r.model.position, dir = r.target.clone().sub(p);
+      if (dir.length() > .12) { dir.normalize(); p.addScaledVector(dir, dt * 1.4); r.model.rotation.y = Math.atan2(dir.x, dir.z); }
+      else { r.target = null; play(n.id, "Idle"); }
+    }
+    v3.set(r.model.position.x, 2.35, r.model.position.z).project(camera);
+    const b = bubbles[n.id];
+    b.el.style.left = ((v3.x * .5 + .5) * innerWidth) + "px";
+    b.el.style.top = ((-v3.y * .5 + .5) * innerHeight) + "px";
+    b.el.classList.toggle("show", performance.now() < b.until);
+  }
+  controls.update(); renderer.render(scene, camera);
+}
+animate();
+
+/* ---------- UI ---------- */
+const moodOf = { happy: "😊", neutral: "🙂", sad: "😔", excited: "🤩", thoughtful: "🤔" };
+const logEl = $("log");
+function logLine(cls, text) {
+  const d = document.createElement("div");
+  if (cls === "who-line") d.innerHTML = text; else { d.className = cls; d.textContent = text; }
+  logEl.appendChild(d);
+  while (logEl.children.length > 60) logEl.removeChild(logEl.firstChild);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function renderWorld() {
+  $("w-day").textContent = world.story.day; $("w-turn").textContent = world.turn;
+  $("w-beat").textContent = world.story.beats.at(-1) || "故事即将开始…";
+  $("s-calls").textContent = provider.stats.calls; $("s-err").textContent = provider.stats.errors;
+  $("s-mem").textContent = memory.lenTotal();
+}
+function renderNPCs() {
+  const host = $("npcs"); host.innerHTML = "";
+  for (const n of NPCS) {
+    const d = document.createElement("div"); d.className = "npc";
+    d.innerHTML = `
+      <div class="nm"><span>${n.name}</span><span class="mood">${moodOf[n.mood] || "🙂"}</span></div>
+      <div class="role">${n.role}</div>
+      <div class="mem">记忆 ${(memory.mem[n.name] || []).length} 条 · 点击查看</div>`;
+    d.onclick = () => openMem(n);
+    host.appendChild(d);
+  }
+}
+function openMem(n) {
+  $("mem-title").textContent = `🧠 ${n.name} 的长期记忆（${(memory.mem[n.name] || []).length} 条）`;
+  const eps = (memory.mem[n.name] || []).slice().reverse();
+  $("mem-body").innerHTML = eps.length
+    ? eps.map(e => `<div class="ep"><b>关于 ${e.about}</b><span>第${e.day}日 · 重要度${e.imp}</span><br/>${e.text}</div>`).join("")
+    : `<p style="color:#555b6e">还没有记忆。让世界跑一会儿，或插一句话。</p>`;
+  $("mem-bg").style.display = "flex";
+}
+$("mem-close").onclick = () => $("mem-bg").style.display = "none";
+$("mem-bg").addEventListener("click", e => { if (e.target === $("mem-bg")) $("mem-bg").style.display = "none"; });
+
+/* ---------- 引擎装配（应用唯一与 AI 有关的事：插拔引擎服务） ---------- */
+const LLM_KEY = "aicafe.llm.v1";
+const cfg = Object.assign({ key: "", model: "glm-4-flash", base: "https://open.bigmodel.cn/api/paas/v4" },
+  JSON.parse(localStorage.getItem(LLM_KEY) || "{}"));
+const provider = new ZhipuProvider(cfg);
+const memory = new MemoryStore();
+let worldMeta = null;
+try { worldMeta = JSON.parse(localStorage.getItem("aicafe.world.v1")); } catch {}
+const world = {
+  npcs: NPCS,
+  dialogue: [],
+  story: worldMeta && worldMeta.story ? worldMeta.story : { day: 1, beats: [] },
+  guestQueue: [],
+  turn: worldMeta ? worldMeta.turn : 0,
+  onEvent: e => { if (e.type === "l7-error") logLine("sys", `L7 调用失败，本轮降级规则引擎（${e.error}）`); },
+};
+const cognition = new CognitionSystem(provider, memory, { interval: 1 });
+const director = new DirectorSystem(provider, memory, { interval: 8 });
+const scheduler = new Scheduler();
+scheduler.add(cognition);
+scheduler.add(director);
+
+function refreshDot() {
+  $("dot").classList.toggle("live", provider.ready);
+  $("llm-name").textContent = provider.ready ? `${cfg.model} · 浏览器直连（引擎 L7）` : "规则引擎（未配置大模型）";
+}
+
+let pumping = false;
+async function pump() {
+  if (pumping) return; pumping = true;
+  try {
+    const turn = await cognition.tick(world);
+    if (turn) {
+      applyAction(turn.speaker.id, turn.action);
+      bubbles[turn.speaker.id].until = performance.now() + 4600;
+      bubbles[turn.speaker.id].el.querySelector(".btext").textContent = turn.say;
+      if (turn.guest) logLine("ply", `🧑 你说：${turn.guest}`);
+      logLine("who-line", `<span class="who">${turn.speaker.name}</span> <span style="color:#555b6e">→ ${turn.to}</span><br/>${turn.say}`);
+    }
+    const beat = await director.tick(world);
+    if (beat) logLine("dir", `🎭 世界进程推进 → ${beat}`);
+    localStorage.setItem("aicafe.world.v1", JSON.stringify({ turn: world.turn, story: world.story }));
+    renderWorld(); renderNPCs();
+  } finally { pumping = false; }
+}
+setInterval(pump, provider.ready ? 3600 : 2600);
+
+/* ---------- 客人插话 ---------- */
+const gi = $("guest-input");
+function guestSay() { const t = gi.value.trim(); if (!t) return; gi.value = ""; world.guestQueue.push(t.slice(0, 80)); }
+$("guest-send").onclick = guestSay;
+gi.addEventListener("keydown", e => { if (e.key === "Enter") guestSay(); });
+
+/* ---------- 设置面板（装配 L7 provider 的唯一入口） ---------- */
+const sbg = $("settings-bg");
+$("gear").onclick = () => { $("set-key").value = cfg.key; $("set-model").value = cfg.model; $("set-base").value = cfg.base; sbg.style.display = "flex"; };
+$("set-close").onclick = () => sbg.style.display = "none";
+sbg.addEventListener("click", e => { if (e.target === sbg) sbg.style.display = "none"; });
+$("set-save").onclick = async () => {
+  cfg.key = $("set-key").value.trim();
+  cfg.model = $("set-model").value;
+  cfg.base = $("set-base").value.trim() || "https://open.bigmodel.cn/api/paas/v4";
+  const msg = $("set-msg");
+  if (!cfg.key) {
+    localStorage.removeItem(LLM_KEY);
+    msg.style.color = "#ffd28a"; msg.textContent = "已清空 Key，回到规则引擎。";
+  } else {
+    msg.style.color = "#8a90a6"; msg.textContent = "测试连接中…";
+    const test = new ZhipuProvider({ ...cfg });
+    try {
+      const r = await test.complete([{ role: "user", content: "ping" }], { max: 8 });
+      localStorage.setItem(LLM_KEY, JSON.stringify(cfg));
+      msg.style.color = "#a8ff6b"; msg.textContent = `连接成功（${cfg.model}）`;
+    } catch (e) {
+      msg.style.color = "#ff7a8a"; msg.textContent = "连接失败：" + e.message + "（Key 未保存）";
+    }
+  }
+  provider.cfg = { ...cfg };
+  refreshDot();
+};
+$("mem-export").onclick = () => {
+  const blob = new Blob([memory.export()], { type: "application/json" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "aicafe-memory.json"; a.click();
+};
+$("mem-clear").onclick = () => {
+  memory.clear(); localStorage.removeItem("aicafe.world.v1");
+  world.story = { day: 1, beats: [] }; world.turn = 0; world.dialogue = [];
+  renderWorld(); renderNPCs();
+  $("set-msg").style.color = "#a8ff6b"; $("set-msg").textContent = "记忆已清空，世界回到第一日。";
+};
+
+/* ---------- 启动 ---------- */
+if (world.turn === 0) {
+  logLine("sys", "隅角咖啡馆 · 灯亮了。AI 内嵌于引擎架构：认知/记忆/导演是内核系统，应用只装配与渲染。");
+  memory.record("老周", { turn: 0, day: 1, about: "Aria", text: "Aria 总在窗边画到打烊，喜欢双份浓缩", imp: 4 });
+  memory.record("Aria", { turn: 0, day: 1, about: "老周", text: "老周记得每个人的口味，这本身就像魔法", imp: 3 });
+  memory.record("阿哲", { turn: 0, day: 1, about: "老周", text: "想跟老周学手冲，顺便蹭插座写代码", imp: 3 });
+} else {
+  logLine("sys", `记忆装载完成：第 ${world.story.day} 世界日，已进行 ${world.turn} 回合——他们记得之前的一切。`);
+}
+refreshDot(); renderWorld(); renderNPCs();
+</script>
+</body>
+</html>

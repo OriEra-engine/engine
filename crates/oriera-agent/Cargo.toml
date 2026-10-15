@@ -3,11 +3,18 @@ name = "oriera-agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "OriEra L9 agent layer: natural-language intent to engine commands"
+description = "OriEra L9 agent layer: cognition systems, long-term memory, AI director, NL intent"
 
 [lib]
 name = "oriera_agent"
 path = "src/lib.rs"
 
 [dependencies]
+oriera-common = { path = "../oriera-common" }
+oriera-core = { path = "../oriera-core" }
+oriera-ecs = { path = "../oriera-ecs" }
 oriera-infer = { path = "../oriera-infer" }
+
+[[example]]
+name = "cafe"
+path = "examples/cafe.rs"
