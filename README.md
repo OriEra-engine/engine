@@ -27,7 +27,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 
 **🌐 https://oriera-engine.github.io/engine/**
 
-9 个可玩 demo，浏览器直接打开：
+10 个可玩 demo，浏览器直接打开：
 
 | Demo | 展示 | 打开 |
 |---|---|---|
@@ -40,6 +40,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 | 07 WebGPU 1M Particles | 100 万粒子 GPU compute | [▶](https://oriera-engine.github.io/engine/examples/07-webgpu-particles/index.html) |
 | 08 ECS Visualizer | 交互式 ECS 检视器 | [▶](https://oriera-engine.github.io/engine/examples/08-ecs-visualizer/index.html) |
 | 09 Full Architecture | L0–L7 全链路架构可视化闭环 | [▶](https://oriera-engine.github.io/engine/examples/09-full-arch/index.html) |
+| 10 Word Spirit 言灵世界 | AI 原生小游戏：自然语言改写物理法则 | [▶](https://oriera-engine.github.io/engine/examples/10-word-spirit/index.html) |
 
 ## 架构
 

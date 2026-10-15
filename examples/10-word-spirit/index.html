@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OriEra Demo 10 — 言灵世界 Word Spirit（Stage 2：言灵通道）</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background:#07090f; color:#e6e8ee; overflow:hidden;
+         font-family:-apple-system,"SF Mono",Menlo,monospace; height:100vh; }
+  #stage { position:fixed; inset:0; }
+  canvas { display:block; }
+  #hud { position:fixed; top:10px; left:12px; font-size:11px; color:#8a90a6;
+         line-height:1.7; pointer-events:none; }
+  #hud b { color:#6ee7ff; font-weight:600; }
+  /* ---- L9 言灵输入 ---- */
+  #speak { position:fixed; left:50%; transform:translateX(-50%); bottom:18px;
+           width:min(640px,90vw); display:flex; gap:8px; }
+  #speak input { flex:1; background:rgba(13,13,21,.85); border:1px solid #2a3040;
+                 color:#e6e8ee; padding:10px 14px; border-radius:8px;
+                 font:inherit; font-size:14px; outline:none; }
+  #speak input:focus { border-color:#6ee7ff; box-shadow:0 0 14px rgba(110,231,255,.25); }
+  #speak button { background:#6ee7ff; color:#07090f; border:0; padding:0 18px;
+                  border-radius:8px; font:inherit; font-size:13px; font-weight:700;
+                  cursor:pointer; }
+  #log { position:fixed; right:12px; bottom:18px; width:250px; font-size:10.5px;
+         line-height:1.75; color:#8a90a6; pointer-events:none; }
+  #log .cmd { color:#ffd28a; }
+  #log .rej { color:#ff7a8a; }
+  #log .sys { color:#5b8def; }
+  /* ---- Stage 3: 游戏目标与 AI 导演 ---- */
+  #goal { position:fixed; top:10px; right:12px; text-align:right; font-size:11px;
+          color:#8a90a6; line-height:1.7; pointer-events:none; }
+  #goal b { color:#ffd28a; }
+  #director { position:fixed; left:12px; bottom:96px; max-width:300px;
+              background:rgba(13,13,21,.82); border:1px solid #2a3040; border-left:3px solid #a8ff6b;
+              padding:9px 12px; border-radius:6px; font-size:12px; line-height:1.6;
+              color:#d8e8c8; opacity:0; transition:opacity .4s; pointer-events:none; }
+  #director.show { opacity:1; }
+  /* ---- Stage 4: 层级仪表盘 ---- */
+  #layers { position:fixed; top:86px; right:12px; width:190px; font-size:10.5px;
+            line-height:1.55; pointer-events:none; }
+  #layers h3 { font-size:10px; color:#5b8def; text-transform:uppercase;
+               letter-spacing:.08em; margin:7px 0 3px; border-bottom:1px solid #222633; }
+  #layers .row { display:flex; justify-content:space-between; color:#8a90a6; }
+  #layers .row b { color:#6ee7ff; font-weight:600; }
+  #overlay { position:fixed; inset:0; display:none; flex-direction:column; gap:16px;
+             align-items:center; justify-content:center; background:rgba(7,9,15,.86);
+             text-align:center; }
+  #overlay h2 { font-size:30px; letter-spacing:.12em; }
+  #overlay p { color:#8a90a6; font-size:13px; max-width:520px; line-height:1.8; }
+  #overlay button { background:#6ee7ff; color:#07090f; border:0; padding:10px 26px;
+                    border-radius:8px; font:inherit; font-weight:700; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="world"></canvas></div>
+<div id="hud">
+  <b>言灵世界</b> · Stage 2 言灵通道（L9 解析 → L7 执行）<br/>
+  entities <b id="h-ent">0</b> · fps <b id="h-fps">0</b> · gravity <b id="h-grav">0</b><br/>
+  L7 processed <b id="h-ok">0</b> · rejected <b id="h-rej">0</b>
+</div>
+<div id="speak">
+  <input id="utter" autocomplete="off" spellcheck="false"
+         placeholder="说出言灵：spawn 100 / 生成 100 · gravity 9.8 / 重力 9.8 · speed 2x · teleport 100 200 / 传送到 100,200 · how many / 多少个 · clear / 清空" />
+  <button id="say">言灵 ⏎</button>
+</div>
+<div id="log"></div>
+<div id="goal">
+  <b>点亮星座 <span id="g-lit">0</span>/3</b><br/>
+  <span id="g-time">180</span>s · 每座需 <span id="g-need">60</span> 只
+</div>
+<div id="director"></div>
+<div id="layers">
+  <h3>L1 PAL</h3><div class="row"><span>family</span><b>web</b></div><div class="row"><span>backend</span><b>Canvas2D</b></div>
+  <h3>L2 Core</h3><div class="row"><span>fps</span><b id="ly-fps">0</b></div><div class="row"><span>frame</span><b id="ly-fr">0</b></div>
+  <h3>L3 ECS</h3><div class="row"><span>entities</span><b id="ly-ent">0</b></div><div class="row"><span>capacity</span><b id="ly-cap">0</b></div>
+  <h3>L6 Physics</h3><div class="row"><span>gravity</span><b id="ly-grav">0</b></div><div class="row"><span>speed</span><b id="ly-spd">1×</b></div>
+  <h3>L7 Infer</h3><div class="row"><span>processed</span><b id="ly-ok">0</b></div><div class="row"><span>rejected</span><b id="ly-rej">0</b></div>
+  <h3>L9 Agent</h3><div class="row"><span>last parse</span><b id="ly-parse">—</b></div>
+</div>
+<div id="overlay">
+  <h2 id="ov-title"></h2>
+  <p id="ov-text"></p>
+  <button id="ov-restart">再开一界 ⏎</button>
+</div>
+
+<script>
+"use strict";
+// ============================================================
+// OriEra Demo 10 — 言灵世界 Word Spirit
+// Stage 1: L3 对象模型（SoA + generation）+ L6 固定步长物理
+// 架构对照：crates/oriera-ecs（L3）、crates/oriera-subsys（L6）
+// ============================================================
+
+// ---- L3: SoA 实体存储（对照 oriera-ecs 的 Vec<Option<T>> 列）----
+const CAP = 100000;
+const px = new Float32Array(CAP), py = new Float32Array(CAP);
+const vx = new Float32Array(CAP), vy = new Float32Array(CAP);
+const alive = new Uint8Array(CAP);        // Option<T> 的 Some/None
+const generation = new Uint32Array(CAP);  // 句柄代数，despawn 后 +1
+let nextIndex = 0, liveCount = 0;
+const freeList = [];
+
+function spawn(x, y, vx0, vy0) {
+  const i = freeList.length ? freeList.pop() : nextIndex++;
+  alive[i] = 1; liveCount++;
+  px[i] = x; py[i] = y; vx[i] = vx0; vy[i] = vy0;
+  return i;
+}
+function despawn(i) {
+  if (!alive[i]) return;
+  alive[i] = 0; liveCount--;
+  generation[i]++;
+  freeList.push(i);
+}
+
+// ---- L6: 物理子系统 —— Gravity resource + 固定步长积分（对照 oriera-subsys）----
+const resources = { gravity: 0, speedScale: 1 };   // L3 resource 单例
+const FIXED_DT = 1 / 60;
+
+function stepPhysics(dt) {
+  const g = resources.gravity, s = resources.speedScale;
+  for (let i = 0; i < nextIndex; i++) {
+    if (!alive[i]) continue;
+    px[i] += vx[i] * s * dt;
+    py[i] += vy[i] * s * dt;
+    vy[i] += g * dt;
+    // 边界反弹（对照 PhysicsSystem::new(800,600) 的 bounds 语义）
+    if (px[i] < 4)       { px[i] = 4;       vx[i] =  Math.abs(vx[i]); }
+    if (px[i] > W - 4)   { px[i] = W - 4;   vx[i] = -Math.abs(vx[i]); }
+    if (py[i] < 4)       { py[i] = 4;       vy[i] =  Math.abs(vy[i]); }
+    if (py[i] > H - 4)   { py[i] = H - 4;   vy[i] = -Math.abs(vy[i]); }
+    // 轻微游走，让群体有生命感
+    vx[i] += (Math.random() - 0.5) * 8 * dt;
+    vy[i] += (Math.random() - 0.5) * 8 * dt;
+  }
+}
+
+// ---- L5: 渲染（Canvas2D；萤火虫发光效果）----
+const canvas = document.getElementById("world");
+const ctx = canvas.getContext("2d");
+let W = innerWidth, H = innerHeight;
+function resize() { W = innerWidth; H = innerHeight; canvas.width = W; canvas.height = H; }
+addEventListener("resize", resize); resize();
+
+function render(t) {
+  ctx.fillStyle = "rgba(7,9,15,0.35)";        // 拖尾
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  for (let i = 0; i < nextIndex; i++) {
+    if (!alive[i]) continue;
+    const flick = 0.55 + 0.45 * Math.sin(t * 0.004 + i * 1.7);
+    const r = 1.6 + flick * 1.4;
+    ctx.fillStyle = `rgba(255,196,90,${0.10 * flick})`;
+    ctx.beginPath(); ctx.arc(px[i], py[i], r * 5, 0, 6.283); ctx.fill();
+    ctx.fillStyle = `rgba(255,224,150,${0.85 * flick})`;
+    ctx.beginPath(); ctx.arc(px[i], py[i], r, 0, 6.283); ctx.fill();
+  }
+  ctx.restore();
+  drawZones(t);
+}
+
+// ---- L2: 帧循环 —— 固定步长累加器（对照 oriera-core Scheduler）----
+let last = performance.now(), acc = 0, fps = 60, fpsAcc = 0, fpsN = 0, fpsT = 0;
+function loop(t) {
+  const dt = Math.min((t - last) / 1000, 0.1);
+  last = t; acc += dt;
+  while (acc >= FIXED_DT) { stepInfer(); stepPhysics(FIXED_DT); stepGame(FIXED_DT); acc -= FIXED_DT; }
+  render(t);
+  fpsAcc += dt; fpsN++; fpsT += dt;
+  if (fpsT > 0.5) { fps = Math.round(fpsN / fpsAcc); fpsAcc = fpsN = fpsT = 0; }
+  hud();
+  requestAnimationFrame(loop);
+}
+
+// ---- HUD ----
+const $ = id => document.getElementById(id);
+let frameNo = 0, lastParse = "—";
+function hud() {
+  frameNo++;
+  $("h-ent").textContent = liveCount;
+  $("h-fps").textContent = fps;
+  $("h-grav").textContent = resources.gravity;
+  $("h-ok").textContent = infer.processed;
+  $("h-rej").textContent = infer.rejected;
+  $("ly-fps").textContent = fps;
+  $("ly-fr").textContent = frameNo;
+  $("ly-ent").textContent = liveCount;
+  $("ly-cap").textContent = nextIndex;
+  $("ly-grav").textContent = +resources.gravity.toFixed(1);
+  $("ly-spd").textContent = +resources.speedScale.toFixed(1) + "×";
+  $("ly-ok").textContent = infer.processed;
+  $("ly-rej").textContent = infer.rejected;
+  $("ly-parse").textContent = lastParse;
+}
+
+// ---- 初始世界：260 只萤火虫 ----
+for (let k = 0; k < 260; k++) {
+  spawn(Math.random() * W, Math.random() * H,
+        (Math.random() - 0.5) * 40, (Math.random() - 0.5) * 40);
+}
+requestAnimationFrame(loop);
+
+// ============================================================
+// Stage 2: L9 言灵解析（逐字对照 crates/oriera-agent/src/lib.rs）
+//          L7 命令队列执行（对照 crates/oriera-infer/src/lib.rs）
+// ============================================================
+
+// ---- L9: 规则解析器 ----
+function extractNumbers(s) {           // 对照 extract_numbers：含前导负号
+  const out = []; let buf = "";
+  for (const c of s) {
+    if (/\d/.test(c) || (c === "." && !buf.includes(".") && !buf.endsWith("-"))
+        || (c === "-" && buf === "")) buf += c;
+    else if (buf) { const n = parseFloat(buf); if (!isNaN(n)) out.push(n); buf = ""; }
+  }
+  if (buf) { const n = parseFloat(buf); if (!isNaN(n)) out.push(n); }
+  return out;
+}
+function parse(input) {                // 对照 oriera_agent::parse
+  const s = input.toLowerCase();
+  if (s.includes("spawn") || s.includes("放") || s.includes("生成")) {
+    const n = extractNumbers(s)[0];
+    if (n !== undefined) return { t: "Spawn", n: Math.round(n) };
+  }
+  if (s.includes("clear") || s.includes("清空") || s.includes("清屏"))
+    return { t: "Clear" };
+  if (s.includes("gravity") || s.includes("重力")) {
+    const g = extractNumbers(s)[0];
+    if (g !== undefined) return { t: "SetGravity", g };
+  }
+  if (s.includes("teleport") || s.includes("传送")) {
+    const ns = extractNumbers(s);
+    if (ns.length >= 2) return { t: "Teleport", dx: ns[0], dy: ns[1] };
+  }
+  if (s.includes("how many") || s.includes("多少"))
+    return { t: "Count" };
+  if (s.includes("speed") || s.includes("速度") || s.includes("倍速")) {
+    const k = extractNumbers(s)[0];
+    if (k !== undefined) return { t: "SetSpeed", k };
+  }
+  return { t: "Unknown", raw: input };
+}
+
+// ---- L7: 命令队列（逐帧执行，指标上报）----
+const infer = { queue: [], processed: 0, rejected: 0, stats: null };
+function stepInfer() {                 // 对照 InferSystem::run
+  for (const cmd of infer.queue.splice(0)) {
+    switch (cmd.t) {
+      case "Spawn":
+        for (let k = 0; k < Math.min(cmd.n, 20000); k++)
+          spawn(Math.random() * W, Math.random() * H,
+                (Math.random() - .5) * 60, (Math.random() - .5) * 60);
+        infer.processed++; break;
+      case "Clear":
+        for (let i = 0; i < nextIndex; i++) despawn(i);
+        infer.processed++; break;
+      case "SetGravity": resources.gravity = cmd.g; infer.processed++; break;
+      case "Teleport":
+        for (let i = 0; i < nextIndex; i++) { if (alive[i]) { px[i] += cmd.dx; py[i] += cmd.dy; } }
+        infer.processed++; break;
+      case "Count":
+        infer.stats = { entities: liveCount }; infer.processed++; break;
+      case "SetSpeed": resources.speedScale = cmd.k; infer.processed++; break;
+      default: infer.rejected++;
+    }
+    logLine(cmd);
+  }
+}
+
+// ---- 言灵输入与日志 ----
+const logEl = document.getElementById("log");
+function logLine(cmd) {
+  const d = document.createElement("div");
+  if (cmd.t === "Unknown") { d.className = "rej"; d.textContent = `✗ 言灵无法解析「${cmd.raw}」`; }
+  else {
+    d.className = "cmd";
+    const { t, ...rest } = cmd;
+    const arg = Object.entries(rest)
+      .map(([k, v]) => `${k}: ${typeof v === "number" ? +v.toFixed(1) : v}`).join(", ");
+    const extra = t === "Count" && infer.stats ? ` — 当前 ${infer.stats.entities} 只` : "";
+    d.textContent = `→ Command::${t}(${arg})${extra}`;
+  }
+  logEl.appendChild(d);
+  while (logEl.children.length > 9) logEl.removeChild(logEl.firstChild);
+}
+const input = document.getElementById("utter");
+document.getElementById("say").onclick = submit;
+input.addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
+function submit() {
+  const text = input.value.trim();
+  if (!text) return;
+  const sys = document.createElement("div");
+  sys.className = "sys"; sys.textContent = `⌨ ${text}`;
+  logEl.appendChild(sys);
+  const cmd = parse(text);              // L9 → L7：进队，下一帧生效
+  lastParse = cmd.t === "Unknown" ? "Unknown ✗" : cmd.t;
+  infer.queue.push(cmd);
+  input.value = "";
+}
+
+// ============================================================
+// Stage 3: 游戏目标 —— 星座 / AI 导演 / 胜负
+// ============================================================
+const NEED = 60, GAME_TIME = 180;
+let zones = [];
+function makeZones() {
+  zones = [
+    { x: W * 0.18, y: H * 0.88, r: 115, lit: false, hold: 0, n: 0, name: "沉渊座" },
+    { x: W * 0.82, y: H * 0.88, r: 115, lit: false, hold: 0, n: 0, name: "潮汐座" },
+    { x: W * 0.50, y: H * 0.22, r: 115, lit: false, hold: 0, n: 0, name: "悬穹座" },
+  ];
+}
+makeZones();
+addEventListener("resize", makeZones);
+
+const game = { time: GAME_TIME, over: false, said30: false, said10: false };
+
+function stepGame(dt) {
+  if (game.over) return;
+  game.time -= dt;
+  for (const z of zones) {
+    if (z.lit) { z.n = NEED; continue; }
+    let n = 0;
+    const r2 = z.r * z.r;
+    for (let i = 0; i < nextIndex; i++) {
+      if (!alive[i]) continue;
+      const dx = px[i] - z.x, dy = py[i] - z.y;
+      if (dx * dx + dy * dy < r2) n++;
+    }
+    z.n = n;
+    if (n >= NEED) {
+      z.hold += dt;
+      if (z.hold > 0.6) {
+        z.lit = true;
+        director(`✦ ${z.name}被点亮了！世界的记忆里又多了一座星座。`, "#a8ff6b");
+        if (zones.every(q => q.lit)) win();
+      }
+    } else z.hold = 0;
+  }
+  if (game.time <= 30 && !game.said30) { game.said30 = true; director("言灵师，沙漏只剩三十息了。", "#ffd28a"); }
+  if (game.time <= 10 && !game.said10) { game.said10 = true; director("十息！说出你最后的言灵！", "#ff7a8a"); }
+  if (game.time <= 0) lose();
+  $("g-lit").textContent = zones.filter(z => z.lit).length;
+  $("g-time").textContent = Math.max(0, Math.ceil(game.time));
+}
+
+function drawZones(t) {
+  for (const z of zones) {
+    const pulse = z.lit ? 1 : 0.55 + 0.2 * Math.sin(t * 0.003 + z.x);
+    ctx.save();
+    ctx.translate(z.x, z.y);
+    ctx.strokeStyle = z.lit ? "rgba(110,231,255,.9)" : `rgba(255,210,138,${pulse})`;
+    ctx.lineWidth = z.lit ? 2.5 : 1.5;
+    ctx.setLineDash(z.lit ? [] : [8, 7]);
+    ctx.beginPath(); ctx.arc(0, 0, z.r, 0, 6.283); ctx.stroke();
+    ctx.setLineDash([]);
+    if (z.lit) {                       // 点亮：星座图形
+      ctx.strokeStyle = "rgba(110,231,255,.85)"; ctx.lineWidth = 1;
+      for (let s = 0; s < 5; s++) {
+        const a = s * 1.2566 + t * 0.0002, rr = z.r * 0.55;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * rr * .3, Math.sin(a) * rr * .3);
+        ctx.lineTo(Math.cos(a + 1.1) * rr, Math.sin(a + 1.1) * rr);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(200,245,255,.95)";
+        ctx.beginPath(); ctx.arc(Math.cos(a + 1.1) * rr, Math.sin(a + 1.1) * rr, 2.2, 0, 6.283); ctx.fill();
+      }
+    }
+    ctx.fillStyle = z.lit ? "rgba(110,231,255,.9)" : "rgba(255,210,138,.75)";
+    ctx.font = "11px Menlo,monospace"; ctx.textAlign = "center";
+    ctx.fillText(z.lit ? `${z.name} ✦` : `${z.name} ${z.n}/${NEED}`, 0, -z.r - 8);
+    if (!z.lit && z.n > 0) {           // 聚集进度弧
+      ctx.strokeStyle = "rgba(255,210,138,.9)"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, 0, z.r + 5, -1.5708, -1.5708 + 6.283 * Math.min(z.n / NEED, 1));
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+// ---- AI 导演（书 T12：AI 导演系统的规则版）----
+const dirEl = document.getElementById("director");
+let dirTimer = null;
+function director(text, color) {
+  dirEl.textContent = "◈ " + text;
+  dirEl.style.borderLeftColor = color || "#a8ff6b";
+  dirEl.classList.add("show");
+  clearTimeout(dirTimer);
+  dirTimer = setTimeout(() => dirEl.classList.remove("show"), 3800);
+}
+
+// ---- 胜负 ----
+function win() {
+  game.over = true;
+  document.getElementById("ov-title").textContent = "✦ 世界因言而生 ✦";
+  document.getElementById("ov-title").style.color = "#6ee7ff";
+  document.getElementById("ov-text").innerHTML =
+    `三座星座全部点亮，剩余 ${Math.ceil(game.time)}s。<br/>` +
+    `言灵 ${infer.processed} 次 · 无效 ${infer.rejected} 次 · 世界存续 ${GAME_TIME - game.time | 0}s<br/>` +
+    `<b>你说的每一句话，都是这个世界的物理法则。</b>`;
+  document.getElementById("overlay").style.display = "flex";
+}
+function lose() {
+  if (game.over) return;
+  game.over = true;
+  document.getElementById("ov-title").textContent = "世界归于寂静";
+  document.getElementById("ov-title").style.color = "#ff7a8a";
+  document.getElementById("ov-text").innerHTML =
+    `沙漏流尽，只点亮了 ${zones.filter(z => z.lit).length}/3 座星座。<br/>再试一次——记住：重力能聚群，传送能赶路，言灵要短。`;
+  document.getElementById("overlay").style.display = "flex";
+}
+document.getElementById("ov-restart").onclick = () => location.reload();
+addEventListener("keydown", e => {
+  if (game.over && e.key === "Enter") location.reload();
+});
+
+// 命令执行的导演反馈
+const _origLogLine = logLine;
+logLine = function (cmd) {
+  _origLogLine(cmd);
+  if (game.over) return;
+  const say = {
+    Spawn: () => director(`${cmd.n} 个新的光点应言而生。`, "#ffd28a"),
+    Clear: () => director("万物归零。世界等待下一句话。", "#8a90a6"),
+    SetGravity: () => director(`重力之律已改写：${+cmd.g.toFixed(1)}。群体正在坠落。`, "#ff9f43"),
+    Teleport: () => director(`空间被言灵折跃 (${+cmd.dx.toFixed(0)}, ${+cmd.dy.toFixed(0)})。`, "#a8ff6b"),
+    Count: () => director(`世界上现存 ${infer.stats ? infer.stats.entities : liveCount} 个光点。`, "#5b8def"),
+    SetSpeed: () => director(`时间流速 ×${+cmd.k.toFixed(1)}。`, "#5b8def"),
+  }[cmd.t];
+  if (say) say();
+  else director("这句言灵，世界听不懂。", "#ff7a8a");
+};
+
+director("欢迎来到言灵世界。三座星座沉睡在虚空中——用你的话唤醒它们。", "#6ee7ff");
+
+// ---- 自动演奏模式（?demo=1）：按谱面自动说出言灵，用于演示录像 ----
+if (new URLSearchParams(location.search).get("demo") === "1") {
+  const score = [
+    ["spawn 600",       2600],
+    ["重力 60",          4200],
+    ["how many",         1200],
+    ["重力 0",            600],
+    ["speed 0.3",         600],
+    ["传送到 0,-620",    3000],
+    ["跳舞吧",           1600],
+  ];
+  let si = 0;
+  input.focus();
+  const kick = function play() {
+    if (si >= score.length || game.over) return;
+    const [text, wait] = score[si++];
+    input.value = text;
+    document.getElementById("say").click();
+    setTimeout(play, wait);
+  };
+  const delay = parseInt(new URLSearchParams(location.search).get("delay") || "1000", 10);
+  setTimeout(kick, delay);
+}
+</script>
+</body>
+</html>
