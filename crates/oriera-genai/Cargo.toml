@@ -1,0 +1,14 @@
+[package]
+name = "oriera-genai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OriEra L8 generative AI: native asset generation behind one engine boundary (ADR 0003)"
+
+[lib]
+name = "oriera_genai"
+path = "src/lib.rs"
+
+# Skeleton stage: pure std — the layer below is reached only when the
+# engine-loop integration (GenAiSystem + L4 hot swap) lands.
+[dependencies]

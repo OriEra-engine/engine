@@ -18,7 +18,7 @@
 | L5 | 渲染内核：Pass 图、帧提交 | `crates/oriera-render` | ✅ 骨架 | `BuildFrameGraph` `AddPass` `SetQuality` |
 | L6 | 子系统服务：物理/动画/音频/UI/网络同步 | `crates/oriera-subsys` | ✅ 物理 | `StepPhysics` `SampleAnimation`(规划) `SyncState`(规划) |
 | L7 | AI 推理运行时：命令执行、端云路由 | `crates/oriera-infer` | ✅ 骨架 | `SubmitInference` `ReportInferenceMetrics` |
-| L8 | 生成式 AI：文生 3D 管线 | — | 📋 2028（ROADMAP） | `RequestGeneration` `ValidateAsset` |
+| L8 | 生成式 AI：资产生成管线 | `crates/oriera-genai` | ✅ 骨架（ADR 0003） | `RequestGeneration` `ValidateAsset` |
 | L9 | Agent 层：意图→命令 | `crates/oriera-agent` | ✅ 规则版 | `InvokeTool`（v1 规则解析，后续 LLM） |
 | L10 | AR/VR 交互：多模态感知 | — | 📋 2027 H2 | 手势/眼动经 L1 `SpatialInputEvent` 进来 |
 | L11 | 应用与 UGC 创作生态 | `platforms/*` + `examples/*` | ✅ 壳 | 同源编辑器（规划） |
@@ -76,10 +76,10 @@ L7 的固定种子 LCG 保证。
 ## 目录地图
 
 ```
-crates/          L0–L7、L9 各层实现（见上表）
+crates/          L0–L9 各层实现（见上表）
 platforms/       五端入口：pc / web / ar_glasses / bci_reserved
 examples/        浏览器可玩的分层演示（01–09，见首页 index.html）
-contracts/       跨语言接口契约（Protobuf，目前 pal/v1）
+contracts/       跨语言接口契约（Protobuf，目前 pal/v1、genai/v1）
 manifests/       每层的 LayerManifest（provides/requires/budgets/degrade）
 docs/            架构文档、ADR、性能记录、release notes
 ```
