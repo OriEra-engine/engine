@@ -1,0 +1,29 @@
+apiVersion: oriera.dev/v1
+kind: LayerManifest
+metadata:
+  layer: L2
+  name: core-systems
+  owner: core-team
+spec:
+  provides:
+    - id: oriera.core.scheduler.v1
+      contract: rust:oriera_core::{Scheduler,System,FrameCtx}
+      stability: stable
+  requires:
+    - id: oriera.common.time.v1
+      optional: false
+
+  budgets:
+    frame_overhead_ms: 0.1     # scheduler bookkeeping per frame
+
+  degrade:
+    - when: frame_time_p99 > budget*1.2
+      action: report_and_continue   # v0.1: observability only; slicing lands v0.2
+
+  observability:
+    traces: true
+    metrics_prefix: oriera_core_
+
+  notes: |
+    Generic over the world type W — L2 must not know about L3.
+    Deterministic replay (RecordInput/Checkpoint, book T5) is v0.2 scope.

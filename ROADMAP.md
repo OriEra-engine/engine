@@ -11,7 +11,8 @@
 - [x] Monorepo 骨架（Rust + pnpm workspace）
 - [x] L1 PAL 能力位图 + 五端入口
 - [x] 开源治理文件（CONTRIBUTING / GOVERNANCE / Code of Conduct）
-- [ ] 02-ecs-spawn：ECS 一万实体 60fps
+- [x] 02-ecs-spawn：ECS demo 已上线（浏览器 20 万粒子 SoA）
+- [x] 架构整理：层↔crate 对照、LayerManifest、依赖规则（见 docs/ARCHITECTURE.md）
 - [ ] 01-hello-triangle 升级为 wgpu 原生窗口（不只是网页版）
 
 ### 2027 H1（v0.2 – v0.4）

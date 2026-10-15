@@ -25,7 +25,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 
 **🌐 https://oriera-engine.github.io/engine/**
 
-6 个可玩 demo，浏览器直接打开：
+9 个可玩 demo，浏览器直接打开：
 
 | Demo | 展示 | 打开 |
 |---|---|---|
@@ -36,6 +36,8 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 | 05 glTF Model | Three.js 加载 Duck 模型 | [▶](https://oriera-engine.github.io/engine/examples/05-gltf-model/index.html) |
 | 06 Agent × Physics | 聊天指挥物理世界 | [▶](https://oriera-engine.github.io/engine/examples/06-agent-physics/index.html) |
 | 07 WebGPU 1M Particles | 100 万粒子 GPU compute | [▶](https://oriera-engine.github.io/engine/examples/07-webgpu-particles/index.html) |
+| 08 ECS Visualizer | 交互式 ECS 检视器 | [▶](https://oriera-engine.github.io/engine/examples/08-ecs-visualizer/index.html) |
+| 09 Full Architecture | L0–L7 全链路架构可视化闭环 | [▶](https://oriera-engine.github.io/engine/examples/09-full-arch/index.html) |
 
 ## 架构
 
@@ -79,6 +81,9 @@ graph TB
     XCT[横切: 观测 · 安全 · 计量 · 调试] -.-> L11 & L10 & L9 & L8 & L7 & L6 & L5 & L4 & L3 & L2 & L1
 ```
 
+层 ↔ crate 对照、依赖规则与一帧数据流见 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**；
+每层的机器可读清单（provides/requires/budgets/degrade）在 `manifests/`。
+
 ## 五端接入
 
 | 端 | 目录 | 状态 |
@@ -87,7 +92,7 @@ graph TB
 | Mobile (iOS/Android) | `platforms/mobile/` | 📋 规划 |
 | Web (Wasm + WebGPU) | `platforms/web/` | ✅ demo 已跑 |
 | AR 眼镜 (visionOS / 骁龙 / WebXR) | `platforms/ar_glasses/` | 📋 重点适配 |
-| 脑机接口（预留） | `platforms/bci_reserved/` | 🔒 仅 trait，v1 不实现 |
+| 脑机接口（预留） | `platforms/bci_reserved/` | 🔒 仅预留 bit 位与 proto，v1 不实现 |
 
 上层代码只读 `Capabilities` 位图，不写 `#[cfg(target_os)]`——加新端只改一个文件。
 
@@ -95,14 +100,14 @@ graph TB
 
 | 层 | 首选技术 |
 |---|---|
-| 引擎主语言 | Rust（L1–L7 实时层） |
+| 引擎主语言 | Rust（L1–L7、L9 实时层） |
 | Web 分发 | Wasm + WebGPU（wgpu 统一后端） |
 | 对象模型 | ECS（SoA 布局，TypedArray 参考实现已跑） |
 | 渲染 | wgpu / WebGPU，未来支持 3DGS 神经渲染 |
 | 物理 | Jolt（Rust），Web 参考实现已跑 |
 | Agent | LangGraph + MCP 协议（v1 规则解析，未来接 LLM） |
 | 契约 | Protobuf + JSON Schema 2020-12 |
-| 构建 | Cargo workspace + pnpm workspace |
+| 构建 | Cargo workspace（JS 侧编辑器/SDK 落地时再引入 pnpm） |
 
 ## 快速开始
 

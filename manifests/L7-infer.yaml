@@ -1,0 +1,35 @@
+apiVersion: oriera.dev/v1
+kind: LayerManifest
+metadata:
+  layer: L7
+  name: inference-runtime
+  owner: ai-team
+spec:
+  provides:
+    - id: oriera.infer.runtime.v1
+      contract: rust:oriera_infer::{InferSystem,Command}
+      stability: stable
+  requires:
+    - id: oriera.core.scheduler.v1
+      optional: false
+    - id: oriera.ecs.world.v1
+      optional: false
+    - id: oriera.subsys.physics.v1
+      optional: false   # Gravity resource
+
+  budgets:
+    dispatch_p99_ms: 1.0    # on-device slice of the frame budget
+
+  degrade:
+    - when: net_unavailable
+      action: local_fallback         # ADR 0001: routing is PAL/L7's own business
+      cooldown_ms: 1000
+
+  observability:
+    traces: true
+    metrics_prefix: oriera_infer_
+
+  notes: |
+    v0.1 executes structured commands with a deterministic LCG (replayable,
+    book T5). Real model routing — SubmitInference, model lifecycle,
+    edge/cloud split (book T10) — lands 2027 H2.

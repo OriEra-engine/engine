@@ -19,13 +19,9 @@
 rustup toolchain install stable
 cargo test --workspace
 
-# Web demo（无需 Rust）
+# Web demo（无需 Rust，任选一个 demo 目录）
 cd examples/01-hello-triangle && python3 -m http.server 8000
 # 浏览器打开 http://localhost:8000，需要 Chrome/Edge 113+（WebGPU）
-
-# Python AI 侧（可选）
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r ai/requirements.txt
 ```
 
 ## 代码规范
@@ -54,7 +50,7 @@ pip install -r ai/requirements.txt
 
 - 标了 `good first issue` 的 issue
 - `help wanted`
-- `examples/` 下还没填的 demo（02-ecs-spawn、03-physics…）
+- `ROADMAP.md` 里未勾选的条目（如 L8/L10/L11 对应的 crate）
 - 各 crate 里的 `TODO` 注释
 
 ## 沟通

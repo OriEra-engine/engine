@@ -1,0 +1,32 @@
+apiVersion: oriera.dev/v1
+kind: LayerManifest
+metadata:
+  layer: L9
+  name: agent
+  owner: ai-team
+spec:
+  provides:
+    - id: oriera.agent.intent.v1
+      contract: rust:oriera_agent::parse
+      stability: stable
+  requires:
+    - id: oriera.infer.runtime.v1
+      optional: false   # produces Command values
+
+  budgets:
+    parse_p99_ms: 0.1    # rule-based v1; LLM budget lands with model routing
+
+  degrade:
+    - when: intent_unmatched
+      action: return_unknown   # L7 counts it as rejected; nothing executes
+      cooldown_ms: 0
+
+  observability:
+    traces: true
+    metrics_prefix: oriera_agent_
+
+  notes: |
+    v0.1 is a rule parser (spawn/clear/gravity, zh+en). LLM backend,
+    MCP tool registry and AI director land v0.5–0.7 (book T12).
+    L8 (generative) and L10 (interaction) crates are not created yet —
+    see ROADMAP.

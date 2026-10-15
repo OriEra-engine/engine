@@ -1,0 +1,35 @@
+apiVersion: oriera.dev/v1
+kind: LayerManifest
+metadata:
+  layer: L6
+  name: subsystem-services
+  owner: engine-team
+spec:
+  provides:
+    - id: oriera.subsys.physics.v1
+      contract: rust:oriera_subsys::{PhysicsSystem,Gravity}
+      stability: stable
+  requires:
+    - id: oriera.core.scheduler.v1
+      optional: false
+    - id: oriera.ecs.world.v1
+      optional: false
+    - id: oriera.ecs.stdcomp.v1
+      optional: false
+
+  budgets:
+    step_p99_ms: 1.5     # AR glasses budget slice (book T3 §3.5)
+
+  degrade:
+    - when: step_p99_ms > budget
+      action: fixed_timestep_decimation   # drop sub-steps, keep determinism
+      cooldown_ms: 500
+
+  observability:
+    traces: true
+    metrics_prefix: oriera_subsys_
+
+  notes: |
+    Physics is fixed-step, resource-driven (Gravity singleton written by
+    L7, read here). Jolt integration and animation/audio/net-sync
+    subsystems land 2027 H1 (book T9).

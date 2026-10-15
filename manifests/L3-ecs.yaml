@@ -1,0 +1,36 @@
+apiVersion: oriera.dev/v1
+kind: LayerManifest
+metadata:
+  layer: L3
+  name: object-model
+  owner: core-team
+spec:
+  provides:
+    - id: oriera.ecs.world.v1
+      contract: rust:oriera_ecs::{World,Entity}
+      stability: stable
+    - id: oriera.ecs.query.v1
+      contract: rust:oriera_ecs::{query,query2,for_each_mut,for_each2_mut}
+      stability: stable
+    - id: oriera.ecs.resource.v1
+      contract: rust:oriera_ecs::{insert_resource,resource,resource_mut}
+      stability: stable
+    - id: oriera.ecs.stdcomp.v1
+      contract: rust:oriera_ecs::{Position,Velocity}
+      stability: stable
+  requires: []   # self-contained; no L1/L2 dependency
+
+  budgets:
+    query_10k_join_ms: 1.0      # flat-column SoA join, see docs/PERF.md
+
+  degrade:
+    - when: archetype_relocation_needed   # add/remove heavy churn
+      action: defer_to_v0_2               # flat columns today, archetypes later
+
+  observability:
+    traces: false
+    metrics_prefix: oriera_ecs_
+
+  notes: |
+    Flat-column ECS (Vec<Option<T>> per type), generation-validated
+    handles. Signal bus (Publish) and Serialize land with v0.2+ (book T6).
