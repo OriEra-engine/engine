@@ -11,6 +11,8 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![GitHub Pages](https://img.shields.io/github/deployments/OriEra-engine/engine/github-pages?label=pages)](https://oriera-engine.github.io/engine/)
 
+中文 · [English](README.en.md)
+
 </div>
 
 ---
@@ -132,14 +134,24 @@ cargo test --workspace         # 跑全部单元测试
 cargo clippy --workspace -- -D warnings
 ```
 
-## 贡献
+## 贡献与社区
 
 我们欢迎任何形式的贡献——修 bug、写文档、加 demo、提 RFC。
 
-- [贡献指南](CONTRIBUTING.md)
-- [治理模式](GOVERNANCE.md)
-- [路线图](ROADMAP.md)
-- [行为准则](CODE_OF_CONDUCT.md)
+**第一次来？** [15 分钟提交你的第一个 PR](docs/FIRST_PR.md) →
+挑一个 [good first issue](https://github.com/OriEra-engine/engine/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+（每个任务都写了涉及文件和验收标准）。
+
+| 想做什么 | 入口 |
+|---|---|
+| 理解架构 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 书 ↔ 仓库对照 | [BOOK_MAP.md](docs/BOOK_MAP.md) |
+| 提问 / 聊天 | [Discussions](https://github.com/OriEra-engine/engine/discussions)（中英文都行） |
+| 改架构 / 动契约 | 先在 [Ideas 区](https://github.com/OriEra-engine/engine/discussions/categories/ideas) 开 RFC，7 天评论期 |
+| 加一个 demo | 复制 [examples/_template/](examples/_template/)，10 分钟出活 |
+| 报安全问题 | [SECURITY.md](SECURITY.md)（不要开公开 issue） |
+
+- [贡献指南](CONTRIBUTING.md) · [治理模式](GOVERNANCE.md) · [路线图](ROADMAP.md) · [行为准则](CODE_OF_CONDUCT.md)
 
 ## 协议
 
