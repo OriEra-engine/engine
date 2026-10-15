@@ -58,8 +58,9 @@ spec:
 
   notes: |
     Pre-lands a slice of the ROADMAP-2028 L8 item (ADR 0003): provider
-    boundary, validation and the offline backend. Engine-loop integration
-    (GenAiSystem, L4 hot-swap landing, L9 intent) and the Tripo/Seedance
-    protocol adapters (providers feature, endpoint-versioned config —
-    Tripo V2 retires 2026-11-01) follow in staged PRs. Vendors are data
-    chosen at boot; keys live only in platform shells.
+    boundary, validation, the offline backend, engine-loop integration
+    and the Tripo/Seedance protocol adapters (`providers` feature,
+    endpoint-versioned config — Tripo V2 retires 2026-11-01, migration
+    is one diff in tripo.rs). Vendors are data chosen at boot; keys
+    live only in platform shells. Adapters speak protocol only — the
+    HTTP transport is injected by the shell, so the wasm budget holds.

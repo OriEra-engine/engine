@@ -28,9 +28,10 @@ authors = ["OriEra Contributors"]
 repository = "https://github.com/OriEra-engine/engine"
 
 # Only versions actually shared by current crates are pinned here.
-# Add entries (glam, tokio, serde, ...) when the layer that needs them lands.
+# Add entries (glam, tokio, ...) when the layer that needs them lands.
 [workspace.dependencies]
 bitflags = "2.6"
+serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 criterion = "0.5"

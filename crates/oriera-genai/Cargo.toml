@@ -17,3 +17,10 @@ oriera-common = { path = "../oriera-common" }
 oriera-core = { path = "../oriera-core" }
 oriera-ecs = { path = "../oriera-ecs" }
 tracing.workspace = true
+# Protocol adapters only (providers feature): JSON shapes, still no
+# HTTP client — transport stays injected (ADR 0003, wasm budget).
+serde_json = { workspace = true, optional = true }
+
+[features]
+default = []
+providers = ["dep:serde_json"]

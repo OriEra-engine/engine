@@ -18,10 +18,20 @@
 //! absence degrades to a placeholder instead of a crash, the contract is
 //! in `contracts/oriera/genai/v1`, and the engine core vendors zero SDKs.
 
+pub mod config;
 pub mod hot_swap;
 pub mod mock;
+#[cfg(feature = "providers")]
+pub mod seedance;
 pub mod system;
+#[cfg(feature = "providers")]
+pub mod transport;
+#[cfg(feature = "providers")]
+pub mod tripo;
 
+#[cfg(feature = "providers")]
+pub use config::create_generation_provider_with_transport;
+pub use config::{create_generation_provider, ProviderConfig, ProviderKind};
 pub use hot_swap::{apply_pending, GenAsset};
 pub use mock::MockProvider;
 pub use system::{
