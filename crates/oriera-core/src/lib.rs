@@ -30,7 +30,17 @@ pub struct Scheduler<W> {
     frame: FrameIndex,
     last: Timestamp,
     frame_times: Vec<f32>,
+    /// Frames in a row that exceeded the budget by >20% (reset on any
+    /// in-budget frame).
+    consecutive_overruns: u32,
+    /// How many times the sustained-overrun warning has fired. Read by
+    /// tests and the observability cross-cut (book T15).
+    pub budget_warnings: u64,
 }
+
+/// Sustained overruns that trigger one warning, and the overrun ratio.
+const OVERRUN_STREAK: u32 = 60;
+const OVERRUN_RATIO: f32 = 1.2;
 
 impl<W> Scheduler<W> {
     pub fn new() -> Self {
@@ -39,6 +49,8 @@ impl<W> Scheduler<W> {
             frame: FrameIndex(0),
             last: Timestamp::now(),
             frame_times: Vec::new(),
+            consecutive_overruns: 0,
+            budget_warnings: 0,
         }
     }
 
@@ -68,7 +80,31 @@ impl<W> Scheduler<W> {
         if self.frame_times.len() > 60 {
             self.frame_times.remove(0);
         }
+        self.record_budget(frame_ms);
         frame_ms
+    }
+
+    /// Book T5 `ReportBudget`: a frame >20% over budget extends the
+    /// streak; 60 in a row emits one `tracing::warn!` with the mean
+    /// frame time, then the streak restarts. Pure function of the
+    /// measured frame time so tests can drive it deterministically.
+    fn record_budget(&mut self, frame_ms: f32) {
+        let budget_ms = FRAME_BUDGET_NS as f32 / 1_000_000.0;
+        if frame_ms > budget_ms * OVERRUN_RATIO {
+            self.consecutive_overruns += 1;
+            if self.consecutive_overruns >= OVERRUN_STREAK {
+                tracing::warn!(
+                    frame = self.frame.0,
+                    avg_frame_ms = self.avg_frame_ms(),
+                    budget_ms,
+                    "L2 scheduler over budget for {OVERRUN_STREAK} consecutive frames"
+                );
+                self.budget_warnings += 1;
+                self.consecutive_overruns = 0;
+            }
+        } else {
+            self.consecutive_overruns = 0;
+        }
     }
 
     /// Mean frame time over the last 60 frames, in ms.
@@ -109,5 +145,46 @@ mod tests {
         sched.tick(&mut world);
         sched.tick(&mut world);
         assert_eq!(world, 2);
+    }
+
+    #[test]
+    fn sustained_overruns_fire_one_warning_per_streak() {
+        let mut sched: Scheduler<()> = Scheduler::new();
+        let over_ms = (FRAME_BUDGET_NS as f32 / 1_000_000.0) * 1.5;
+        for _ in 0..60 {
+            sched.record_budget(over_ms);
+        }
+        assert_eq!(sched.budget_warnings, 1);
+
+        // Next 60 overruns → a second warning (streak restarted).
+        for _ in 0..60 {
+            sched.record_budget(over_ms);
+        }
+        assert_eq!(sched.budget_warnings, 2);
+    }
+
+    #[test]
+    fn single_in_budget_frame_resets_the_streak() {
+        let mut sched: Scheduler<()> = Scheduler::new();
+        let over_ms = (FRAME_BUDGET_NS as f32 / 1_000_000.0) * 1.5;
+        for _ in 0..59 {
+            sched.record_budget(over_ms);
+        }
+        sched.record_budget(1.0); // in budget: streak resets
+        for _ in 0..59 {
+            sched.record_budget(over_ms);
+        }
+        assert_eq!(sched.budget_warnings, 0);
+    }
+
+    #[test]
+    fn exactly_at_ratio_threshold_is_not_an_overrun() {
+        let mut sched: Scheduler<()> = Scheduler::new();
+        let at_threshold = (FRAME_BUDGET_NS as f32 / 1_000_000.0) * 1.2;
+        for _ in 0..120 {
+            sched.record_budget(at_threshold);
+        }
+        assert_eq!(sched.budget_warnings, 0);
+        assert_eq!(sched.consecutive_overruns, 0);
     }
 }
