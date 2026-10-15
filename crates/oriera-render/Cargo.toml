@@ -13,3 +13,4 @@ path = "src/lib.rs"
 oriera-common = { path = "../oriera-common" }
 oriera-core = { path = "../oriera-core" }
 oriera-ecs = { path = "../oriera-ecs" }
+tracing.workspace = true
