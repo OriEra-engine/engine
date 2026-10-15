@@ -48,7 +48,8 @@ pub struct Scheduler<W> {
     budget_ns: u64,
     /// Per-system wall time of the most recent frame, in ms, in run
     /// order. The answer to "which system ate this frame" — for
-    /// AI-native apps that is usually cognition or inference.
+    /// AI-native apps that is usually cognition or inference. Names
+    /// are captured once at `add_system`; ticks only rewrite the ms.
     system_ms: Vec<(String, f32)>,
 }
 
@@ -76,6 +77,7 @@ impl<W> Scheduler<W> {
     }
 
     pub fn add_system(&mut self, s: Box<dyn System<W>>) {
+        self.system_ms.push((s.name().to_string(), 0.0));
         self.systems.push(s);
     }
 
@@ -102,12 +104,10 @@ impl<W> Scheduler<W> {
             now: start,
         };
 
-        self.system_ms.clear();
-        for s in &mut self.systems {
+        for (s, timing) in self.systems.iter_mut().zip(self.system_ms.iter_mut()) {
             let t0 = Timestamp::now();
             s.run(&ctx, world);
-            let ms = Timestamp::now().elapsed(t0) * 1000.0;
-            self.system_ms.push((s.name().to_string(), ms));
+            timing.1 = Timestamp::now().elapsed(t0) * 1000.0;
         }
 
         let frame_ms = Timestamp::now().elapsed(start) * 1000.0;
