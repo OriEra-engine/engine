@@ -21,6 +21,10 @@ spec:
     - id: oriera.pal.net.v1
       contract: proto/oriera/pal/v1/net.proto
       stability: stable
+    - id: oriera.pal.route.v1
+      contract: rust:oriera_pal::{route,RouteHint,Privacy}
+      stability: stable
+      note: pure caps+hint -> ExecutionSite decision; privacy pins on-device
 
   requires: []   # L1 is the bottom; nothing below it.
 

@@ -9,6 +9,10 @@ spec:
     - id: oriera.infer.runtime.v1
       contract: rust:oriera_infer::{InferSystem,Command}
       stability: stable
+    - id: oriera.infer.usage.v1
+      contract: rust:oriera_infer::{UsageMeter,ModelProvider::last_usage}
+      stability: stable
+      note: frame-budgeted queue (deferred counter) + token metering
   requires:
     - id: oriera.core.scheduler.v1
       optional: false

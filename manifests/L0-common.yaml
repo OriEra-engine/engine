@@ -9,6 +9,10 @@ spec:
     - id: oriera.common.time.v1
       contract: rust:oriera_common::{Timestamp,FrameIndex}
       stability: stable
+    - id: oriera.common.tokens.v1
+      contract: rust:oriera_common::TokenUsage
+      stability: stable
+      note: shared metering vocabulary; L7 reports, L9 accumulates
   requires: []   # L0 has no oriera dependencies by definition.
 
   budgets: {}    # pure data types, no runtime cost
