@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.png" width="200" alt="OriEra logo" />
+
 # OriEra 世界引擎
 
 **AI 原生、虚实融合、可自演化的开放数字世界运行时**

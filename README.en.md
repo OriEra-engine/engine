@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.png" width="200" alt="OriEra logo" />
+
 # OriEra World Engine
 
 **AI-native, mixed-reality, self-evolving open digital world runtime**
