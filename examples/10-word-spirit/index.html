@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OriEra Demo 10 — 言灵世界 Word Spirit（Stage 1：世界与物理）</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background:#07090f; color:#e6e8ee; overflow:hidden;
+         font-family:-apple-system,"SF Mono",Menlo,monospace; height:100vh; }
+  #stage { position:fixed; inset:0; }
+  canvas { display:block; }
+  #hud { position:fixed; top:10px; left:12px; font-size:11px; color:#8a90a6;
+         line-height:1.7; pointer-events:none; }
+  #hud b { color:#6ee7ff; font-weight:600; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="world"></canvas></div>
+<div id="hud">
+  <b>言灵世界</b> · Stage 1 世界与物理<br/>
+  entities <b id="h-ent">0</b> · fps <b id="h-fps">0</b> · gravity <b id="h-grav">0</b>
+</div>
+
+<script>
+"use strict";
+// ============================================================
+// OriEra Demo 10 — 言灵世界 Word Spirit
+// Stage 1: L3 对象模型（SoA + generation）+ L6 固定步长物理
+// 架构对照：crates/oriera-ecs（L3）、crates/oriera-subsys（L6）
+// ============================================================
+
+// ---- L3: SoA 实体存储（对照 oriera-ecs 的 Vec<Option<T>> 列）----
+const CAP = 100000;
+const px = new Float32Array(CAP), py = new Float32Array(CAP);
+const vx = new Float32Array(CAP), vy = new Float32Array(CAP);
+const alive = new Uint8Array(CAP);        // Option<T> 的 Some/None
+const generation = new Uint32Array(CAP);  // 句柄代数，despawn 后 +1
+let nextIndex = 0, liveCount = 0;
+const freeList = [];
+
+function spawn(x, y, vx0, vy0) {
+  const i = freeList.length ? freeList.pop() : nextIndex++;
+  alive[i] = 1; liveCount++;
+  px[i] = x; py[i] = y; vx[i] = vx0; vy[i] = vy0;
+  return i;
+}
+function despawn(i) {
+  if (!alive[i]) return;
+  alive[i] = 0; liveCount--;
+  generation[i]++;
+  freeList.push(i);
+}
+
+// ---- L6: 物理子系统 —— Gravity resource + 固定步长积分（对照 oriera-subsys）----
+const resources = { gravity: 0, speedScale: 1 };   // L3 resource 单例
+const FIXED_DT = 1 / 60;
+
+function stepPhysics(dt) {
+  const g = resources.gravity, s = resources.speedScale;
+  for (let i = 0; i < nextIndex; i++) {
+    if (!alive[i]) continue;
+    px[i] += vx[i] * s * dt;
+    py[i] += vy[i] * s * dt;
+    vy[i] += g * dt;
+    // 边界反弹（对照 PhysicsSystem::new(800,600) 的 bounds 语义）
+    if (px[i] < 4)       { px[i] = 4;       vx[i] =  Math.abs(vx[i]); }
+    if (px[i] > W - 4)   { px[i] = W - 4;   vx[i] = -Math.abs(vx[i]); }
+    if (py[i] < 4)       { py[i] = 4;       vy[i] =  Math.abs(vy[i]); }
+    if (py[i] > H - 4)   { py[i] = H - 4;   vy[i] = -Math.abs(vy[i]); }
+    // 轻微游走，让群体有生命感
+    vx[i] += (Math.random() - 0.5) * 8 * dt;
+    vy[i] += (Math.random() - 0.5) * 8 * dt;
+  }
+}
+
+// ---- L5: 渲染（Canvas2D；萤火虫发光效果）----
+const canvas = document.getElementById("world");
+const ctx = canvas.getContext("2d");
+let W = innerWidth, H = innerHeight;
+function resize() { W = innerWidth; H = innerHeight; canvas.width = W; canvas.height = H; }
+addEventListener("resize", resize); resize();
+
+function render(t) {
+  ctx.fillStyle = "rgba(7,9,15,0.35)";        // 拖尾
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  for (let i = 0; i < nextIndex; i++) {
+    if (!alive[i]) continue;
+    const flick = 0.55 + 0.45 * Math.sin(t * 0.004 + i * 1.7);
+    const r = 1.6 + flick * 1.4;
+    ctx.fillStyle = `rgba(255,196,90,${0.10 * flick})`;
+    ctx.beginPath(); ctx.arc(px[i], py[i], r * 5, 0, 6.283); ctx.fill();
+    ctx.fillStyle = `rgba(255,224,150,${0.85 * flick})`;
+    ctx.beginPath(); ctx.arc(px[i], py[i], r, 0, 6.283); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---- L2: 帧循环 —— 固定步长累加器（对照 oriera-core Scheduler）----
+let last = performance.now(), acc = 0, fps = 60, fpsAcc = 0, fpsN = 0, fpsT = 0;
+function loop(t) {
+  const dt = Math.min((t - last) / 1000, 0.1);
+  last = t; acc += dt;
+  while (acc >= FIXED_DT) { stepPhysics(FIXED_DT); acc -= FIXED_DT; }
+  render(t);
+  fpsAcc += dt; fpsN++; fpsT += dt;
+  if (fpsT > 0.5) { fps = Math.round(fpsN / fpsAcc); fpsAcc = fpsN = fpsT = 0; }
+  hud();
+  requestAnimationFrame(loop);
+}
+
+// ---- HUD ----
+const $ = id => document.getElementById(id);
+function hud() {
+  $("h-ent").textContent = liveCount;
+  $("h-fps").textContent = fps;
+  $("h-grav").textContent = resources.gravity;
+}
+
+// ---- 初始世界：260 只萤火虫 ----
+for (let k = 0; k < 260; k++) {
+  spawn(Math.random() * W, Math.random() * H,
+        (Math.random() - 0.5) * 40, (Math.random() - 0.5) * 40);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
