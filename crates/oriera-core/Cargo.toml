@@ -3,6 +3,7 @@ name = "oriera-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "OriEra L2 core: frame scheduler and determinism frame"
 
 [lib]
@@ -10,5 +11,5 @@ name = "oriera_core"
 path = "src/lib.rs"
 
 [dependencies]
-oriera-common = { path = "../oriera-common" }
+oriera-common.workspace = true
 tracing.workspace = true

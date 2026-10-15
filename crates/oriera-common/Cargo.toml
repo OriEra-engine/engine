@@ -3,6 +3,7 @@ name = "oriera-common"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "OriEra L0 common: shared time and frame types"
 
 [lib]

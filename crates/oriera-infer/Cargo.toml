@@ -3,6 +3,7 @@ name = "oriera-infer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "OriEra L7 inference runtime: command queue, execution site routing"
 
 [lib]
@@ -10,8 +11,8 @@ name = "oriera_infer"
 path = "src/lib.rs"
 
 [dependencies]
-oriera-common = { path = "../oriera-common" }
-oriera-core = { path = "../oriera-core" }
-oriera-ecs = { path = "../oriera-ecs" }
-oriera-subsys = { path = "../oriera-subsys" }
+oriera-common.workspace = true
+oriera-core.workspace = true
+oriera-ecs.workspace = true
+oriera-subsys.workspace = true
 tracing.workspace = true

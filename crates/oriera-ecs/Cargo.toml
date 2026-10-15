@@ -3,6 +3,7 @@ name = "oriera-ecs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "OriEra L3 object model: SoA ECS, generation handles, resources"
 
 [dependencies]

@@ -3,6 +3,7 @@ name = "oriera-asset"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "OriEra L4 asset pipeline: handle registry and typed store"
 
 [lib]
