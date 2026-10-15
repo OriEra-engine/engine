@@ -231,7 +231,9 @@ function frame() {
     else if (hasHp) ctx.fillStyle = '#a8ff6b';
     else ctx.fillStyle = '#6ee7ff';
     
-    ctx.fillRect(posOnly[i].x - 1, posOnly[i].y - 1, 2, 2);
+    ctx.beginPath();
+    ctx.arc(posOnly[i].x, posOnly[i].y, 3, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   document.getElementById('stat-frame').textContent = dt.toFixed(1);
