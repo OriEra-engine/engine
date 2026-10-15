@@ -7,9 +7,14 @@
 //! layer boundaries (book T3 §3.8.1).
 
 use oriera_common::{FrameIndex, Timestamp};
+use std::collections::VecDeque;
 
 /// Target frame time in nanoseconds (60fps ≈ 16.6ms).
 pub const FRAME_BUDGET_NS: u64 = 16_666_666;
+
+/// How many per-system timings and frame samples are kept for the
+/// rolling averages the scheduler reports.
+const HISTORY: usize = 60;
 
 /// Context passed to every system each frame.
 pub struct FrameCtx {
@@ -29,13 +34,22 @@ pub struct Scheduler<W> {
     systems: Vec<Box<dyn System<W>>>,
     frame: FrameIndex,
     last: Timestamp,
-    frame_times: Vec<f32>,
+    frame_times: VecDeque<f32>,
     /// Frames in a row that exceeded the budget by >20% (reset on any
     /// in-budget frame).
     consecutive_overruns: u32,
     /// How many times the sustained-overrun warning has fired. Read by
     /// tests and the observability cross-cut (book T15).
     pub budget_warnings: u64,
+    /// Frame budget this scheduler is graded against. Defaults to
+    /// [`FRAME_BUDGET_NS`]; platform shells pass the L1 profile's
+    /// budget (`frame_budget_us * 1000`) via [`Scheduler::with_budget_ns`]
+    /// so AR glasses at 90fps are not graded on the 60fps curve.
+    budget_ns: u64,
+    /// Per-system wall time of the most recent frame, in ms, in run
+    /// order. The answer to "which system ate this frame" — for
+    /// AI-native apps that is usually cognition or inference.
+    system_ms: Vec<(String, f32)>,
 }
 
 /// Sustained overruns that trigger one warning, and the overrun ratio.
@@ -44,18 +58,36 @@ const OVERRUN_RATIO: f32 = 1.2;
 
 impl<W> Scheduler<W> {
     pub fn new() -> Self {
+        Self::with_budget_ns(FRAME_BUDGET_NS)
+    }
+
+    /// Build a scheduler graded against a specific frame budget (ns).
+    pub fn with_budget_ns(budget_ns: u64) -> Self {
         Self {
             systems: Vec::new(),
             frame: FrameIndex(0),
             last: Timestamp::now(),
-            frame_times: Vec::new(),
+            frame_times: VecDeque::with_capacity(HISTORY + 1),
             consecutive_overruns: 0,
             budget_warnings: 0,
+            budget_ns: budget_ns.max(1),
+            system_ms: Vec::new(),
         }
     }
 
     pub fn add_system(&mut self, s: Box<dyn System<W>>) {
         self.systems.push(s);
+    }
+
+    /// The configured frame budget in ms.
+    pub fn budget_ms(&self) -> f32 {
+        self.budget_ns as f32 / 1_000_000.0
+    }
+
+    /// Per-system wall time of the last frame, in run order:
+    /// `[(name, ms), ...]`. Updated by every [`Scheduler::tick`].
+    pub fn system_timings(&self) -> &[(String, f32)] {
+        &self.system_ms
     }
 
     /// Run one frame. Returns the measured frame time in ms.
@@ -70,15 +102,19 @@ impl<W> Scheduler<W> {
             now: start,
         };
 
+        self.system_ms.clear();
         for s in &mut self.systems {
+            let t0 = Timestamp::now();
             s.run(&ctx, world);
+            let ms = Timestamp::now().elapsed(t0) * 1000.0;
+            self.system_ms.push((s.name().to_string(), ms));
         }
 
         let frame_ms = Timestamp::now().elapsed(start) * 1000.0;
         self.frame.0 += 1;
-        self.frame_times.push(frame_ms);
-        if self.frame_times.len() > 60 {
-            self.frame_times.remove(0);
+        self.frame_times.push_back(frame_ms);
+        if self.frame_times.len() > HISTORY {
+            self.frame_times.pop_front();
         }
         self.record_budget(frame_ms);
         frame_ms
@@ -89,14 +125,21 @@ impl<W> Scheduler<W> {
     /// frame time, then the streak restarts. Pure function of the
     /// measured frame time so tests can drive it deterministically.
     fn record_budget(&mut self, frame_ms: f32) {
-        let budget_ms = FRAME_BUDGET_NS as f32 / 1_000_000.0;
+        let budget_ms = self.budget_ms();
         if frame_ms > budget_ms * OVERRUN_RATIO {
             self.consecutive_overruns += 1;
             if self.consecutive_overruns >= OVERRUN_STREAK {
+                let worst = self
+                    .system_ms
+                    .iter()
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .map(|(n, _)| n.as_str())
+                    .unwrap_or("");
                 tracing::warn!(
                     frame = self.frame.0,
                     avg_frame_ms = self.avg_frame_ms(),
                     budget_ms,
+                    worst_system = worst,
                     "L2 scheduler over budget for {OVERRUN_STREAK} consecutive frames"
                 );
                 self.budget_warnings += 1;
@@ -145,6 +188,38 @@ mod tests {
         sched.tick(&mut world);
         sched.tick(&mut world);
         assert_eq!(world, 2);
+    }
+
+    #[test]
+    fn custom_budget_changes_the_grading_curve() {
+        // AR-glasses budget (11.1ms): 14ms frames are overruns here but
+        // not against the 60fps default.
+        let mut sched: Scheduler<()> = Scheduler::with_budget_ns(11_111_000);
+        let over_ms = sched.budget_ms() * 1.5;
+        for _ in 0..60 {
+            sched.record_budget(over_ms);
+        }
+        assert_eq!(sched.budget_warnings, 1);
+
+        let mut desktop: Scheduler<()> = Scheduler::new();
+        for _ in 0..120 {
+            desktop.record_budget(over_ms);
+        }
+        assert_eq!(desktop.budget_warnings, 0);
+        assert!((desktop.budget_ms() - 16.6666).abs() < 0.01);
+    }
+
+    #[test]
+    fn tick_records_per_system_timings_in_run_order() {
+        let mut sched: Scheduler<u32> = Scheduler::new();
+        sched.add_system(Box::new(IncSystem));
+        sched.add_system(Box::new(IncSystem));
+        let mut world = 0u32;
+        sched.tick(&mut world);
+        let t = sched.system_timings();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].0, "inc");
+        assert!(t.iter().all(|(_, ms)| *ms >= 0.0));
     }
 
     #[test]
