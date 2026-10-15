@@ -18,9 +18,15 @@
 //! absence degrades to a placeholder instead of a crash, the contract is
 //! in `contracts/oriera/genai/v1`, and the engine core vendors zero SDKs.
 
+pub mod hot_swap;
 pub mod mock;
+pub mod system;
 
+pub use hot_swap::{apply_pending, GenAsset};
 pub use mock::MockProvider;
+pub use system::{
+    AssetFailed, AssetLanded, AssetSwap, GenAiLimits, GenAiMeter, GenAiSystem, PendingSwaps,
+};
 
 use std::fmt;
 

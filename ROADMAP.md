@@ -13,6 +13,7 @@
 - [x] 开源治理文件（CONTRIBUTING / GOVERNANCE / Code of Conduct）
 - [x] 02-ecs-spawn：ECS demo 已上线（浏览器 20 万粒子 SoA）
 - [x] 架构整理：层↔crate 对照、LayerManifest、依赖规则（见 docs/ARCHITECTURE.md）
+- [x] L8 骨架提前落地：GenerationProvider 边界 + Mock + 校验 + L4 热替换（ADR 0003，2028 管线做深）
 - [ ] 01-hello-triangle 升级为 wgpu 原生窗口（不只是网页版）
 
 ### 2027 H1（v0.2 – v0.4）

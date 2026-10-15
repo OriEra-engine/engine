@@ -9,6 +9,11 @@ description = "OriEra L8 generative AI: native asset generation behind one engin
 name = "oriera_genai"
 path = "src/lib.rs"
 
-# Skeleton stage: pure std — the layer below is reached only when the
-# engine-loop integration (GenAiSystem + L4 hot swap) lands.
+# Only downward: L4 landing pad, L3 world/resources/events, L2 system
+# trait. No L7 dependency — generation is its own boundary (ADR 0003).
 [dependencies]
+oriera-asset = { path = "../oriera-asset" }
+oriera-common = { path = "../oriera-common" }
+oriera-core = { path = "../oriera-core" }
+oriera-ecs = { path = "../oriera-ecs" }
+tracing.workspace = true

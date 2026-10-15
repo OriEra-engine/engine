@@ -17,9 +17,23 @@ spec:
       stability: stable
       note: magic sniff + size ceiling + GLB chunk sanity; deep validation
         (mesh legality, zip nesting) lands with the v0.2 asset decoder
+    - id: oriera.genai.system.v1
+      contract: rust:oriera_genai::{GenAiSystem,GenAiMeter,GenAiLimits}
+      stability: stable
+      note: L2-scheduled system — bounded submit/poll slice, validation,
+        PendingSwaps + AssetLanded/AssetFailed events, placeholder degrade
+    - id: oriera.genai.hotswap.v1
+      contract: rust:oriera_genai::hot_swap::{apply_pending,GenAsset}
+      stability: stable
+      note: shell-side drain of PendingSwaps into the L4 named registry
+        (the documented L8 landing pad)
   requires:
+    - id: oriera.core.scheduler.v1
+      optional: false   # System<World> runs on the L2 scheduler
+    - id: oriera.ecs.world.v1
+      optional: false   # resources + typed events
     - id: oriera.asset.hotswap.v1
-      optional: true    # the landing pad; wired by GenAiSystem (v0.3)
+      optional: false   # insert_named landing
 
   budgets:
     # Pure-std skeleton keeps the wasm slice tiny; adapters live behind

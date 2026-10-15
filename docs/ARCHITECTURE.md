@@ -30,6 +30,7 @@
 
 1. **只准向下依赖**：上层只依赖下层的抽象接口。当前 Cargo 依赖图：
    `agent(L9) → infer(L7) → subsys(L6)/ecs(L3) → core(L2) → common(L0)`；
+   `agent(L9) → genai(L8) → asset(L4)/ecs(L3)/core(L2)`（ADR 0003）；
    `render(L5) → ecs(L3) → core(L2)`；`pal(L1)` 只被平台壳引用。
    **禁止**出现 `render → subsys` 这类倒置（v0.0.1 曾有，已修复）。
 2. **禁止跨层共享可变全局状态**：v0.0.1 曾用 `thread_local! WORLD` 让 L5/L6
@@ -49,6 +50,8 @@
   │ 持有 World(L3) + AssetStore(L4)，构建 Scheduler<World>(L2)
   ▼ 每帧 sched.tick(&mut world)
 InferSystem(L7)   执行命令队列 → 生成/清除实体、写 Gravity resource
+GenAiSystem(L8)   限量轮询生成任务 → 校验 → PendingSwaps + AssetLanded 事件
+                  （壳层随后 hot_swap::apply_pending 把结果落入 L4 命名资产）
 PhysicsSystem(L6) for_each2_mut::<Position,Velocity> 积分 + 边界反弹
 RenderSystem(L5)  统计可见 Position → draw_calls（真实 Pass 图在 ROADMAP）
   ▼

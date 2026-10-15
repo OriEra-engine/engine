@@ -14,7 +14,7 @@
 | L1 PAL | 端云推理路由：按设备能力位图决定端侧/云端模型；传感器（眼动/语音）语义化预处理 | ✅ `route(caps, RouteHint)` v1 纯函数策略已落地 | 换端不换代码 |
 | L2 Core | AI 任务的帧预算切片：认知/导演 tick 限时不超帧预算；确定性回放录制推理输入输出 | ✅ 调度器已驱动认知系统；逐系统耗时 + 平台预算已接入 | `Scheduler::add(cognition)` |
 | L3 对象模型 | 记忆即组件：episodic memory 挂在实体上，`Serialize` 后随世界快照持久化 | ✅ MemoryStore（L9 服务）；快照见 #12 | 实体级记忆，无需自建存储 |
-| L4 资产管线 | 生成式资产（文生 3D/纹理/音效）六段式流水线，校验修复后入库 | 📋 L8 供给（ROADMAP 2028）；接口在附录 B 表 B-4 | `GenerateAsset(prompt, 约束, 预算)` |
+| L4 资产管线 | 生成式资产（文生 3D/纹理/音效）六段式流水线，校验修复后入库 | 🧪 L8 已供给（ADR 0003）：`GenAiSystem` 校验后写 `PendingSwaps`，壳层 `apply_pending` 热替换入库 | `GenerateAsset(prompt, 约束, 预算)` |
 | L5 渲染内核 | 神经渲染（3DGS/NeRF 混合几何）；AI 超分与注视点优化 | 📋 能力位图已含 NEURAL_RENDER_3DGS 位 | Pass 图里声明式启用 |
 | L6 子系统 | AI 动画（语音驱动口型/程序化动作选择）；空间音频场景理解 | ✅ 动作选择已由认知输出 action 驱动 | NPC 输出 `wave/dance/...` 自动映射 |
 | L7 推理运行时 | **模型生命周期唯一入口**：提供商注册表、请求队列、重试、指标、降级链 | ✅ `ModelProvider` + `create_provider`（8 家）+ 浏览器 Http/Anthropic 实现 | 装配期一行选厂商 |
