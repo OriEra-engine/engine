@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>OriEra Demo 10 — 言灵世界 Word Spirit（Stage 1：世界与物理）</title>
+<title>OriEra Demo 10 — 言灵世界 Word Spirit（Stage 2：言灵通道）</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; margin: 0; }
@@ -14,14 +14,36 @@
   #hud { position:fixed; top:10px; left:12px; font-size:11px; color:#8a90a6;
          line-height:1.7; pointer-events:none; }
   #hud b { color:#6ee7ff; font-weight:600; }
+  /* ---- L9 言灵输入 ---- */
+  #speak { position:fixed; left:50%; transform:translateX(-50%); bottom:18px;
+           width:min(640px,90vw); display:flex; gap:8px; }
+  #speak input { flex:1; background:rgba(13,13,21,.85); border:1px solid #2a3040;
+                 color:#e6e8ee; padding:10px 14px; border-radius:8px;
+                 font:inherit; font-size:14px; outline:none; }
+  #speak input:focus { border-color:#6ee7ff; box-shadow:0 0 14px rgba(110,231,255,.25); }
+  #speak button { background:#6ee7ff; color:#07090f; border:0; padding:0 18px;
+                  border-radius:8px; font:inherit; font-size:13px; font-weight:700;
+                  cursor:pointer; }
+  #log { position:fixed; right:12px; bottom:18px; width:250px; font-size:10.5px;
+         line-height:1.75; color:#8a90a6; pointer-events:none; }
+  #log .cmd { color:#ffd28a; }
+  #log .rej { color:#ff7a8a; }
+  #log .sys { color:#5b8def; }
 </style>
 </head>
 <body>
 <div id="stage"><canvas id="world"></canvas></div>
 <div id="hud">
-  <b>言灵世界</b> · Stage 1 世界与物理<br/>
-  entities <b id="h-ent">0</b> · fps <b id="h-fps">0</b> · gravity <b id="h-grav">0</b>
+  <b>言灵世界</b> · Stage 2 言灵通道（L9 解析 → L7 执行）<br/>
+  entities <b id="h-ent">0</b> · fps <b id="h-fps">0</b> · gravity <b id="h-grav">0</b><br/>
+  L7 processed <b id="h-ok">0</b> · rejected <b id="h-rej">0</b>
 </div>
+<div id="speak">
+  <input id="utter" autocomplete="off" spellcheck="false"
+         placeholder="说出言灵：spawn 100 / 生成 100 · gravity 9.8 / 重力 9.8 · speed 2x · teleport 100 200 / 传送到 100,200 · how many / 多少个 · clear / 清空" />
+  <button id="say">言灵 ⏎</button>
+</div>
+<div id="log"></div>
 
 <script>
 "use strict";
@@ -104,7 +126,7 @@ let last = performance.now(), acc = 0, fps = 60, fpsAcc = 0, fpsN = 0, fpsT = 0;
 function loop(t) {
   const dt = Math.min((t - last) / 1000, 0.1);
   last = t; acc += dt;
-  while (acc >= FIXED_DT) { stepPhysics(FIXED_DT); acc -= FIXED_DT; }
+  while (acc >= FIXED_DT) { stepInfer(); stepPhysics(FIXED_DT); acc -= FIXED_DT; }
   render(t);
   fpsAcc += dt; fpsN++; fpsT += dt;
   if (fpsT > 0.5) { fps = Math.round(fpsN / fpsAcc); fpsAcc = fpsN = fpsT = 0; }
@@ -118,6 +140,8 @@ function hud() {
   $("h-ent").textContent = liveCount;
   $("h-fps").textContent = fps;
   $("h-grav").textContent = resources.gravity;
+  $("h-ok").textContent = infer.processed;
+  $("h-rej").textContent = infer.rejected;
 }
 
 // ---- 初始世界：260 只萤火虫 ----
@@ -126,6 +150,102 @@ for (let k = 0; k < 260; k++) {
         (Math.random() - 0.5) * 40, (Math.random() - 0.5) * 40);
 }
 requestAnimationFrame(loop);
+
+// ============================================================
+// Stage 2: L9 言灵解析（逐字对照 crates/oriera-agent/src/lib.rs）
+//          L7 命令队列执行（对照 crates/oriera-infer/src/lib.rs）
+// ============================================================
+
+// ---- L9: 规则解析器 ----
+function extractNumbers(s) {           // 对照 extract_numbers：含前导负号
+  const out = []; let buf = "";
+  for (const c of s) {
+    if (/\d/.test(c) || (c === "." && !buf.includes(".") && !buf.endsWith("-"))
+        || (c === "-" && buf === "")) buf += c;
+    else if (buf) { const n = parseFloat(buf); if (!isNaN(n)) out.push(n); buf = ""; }
+  }
+  if (buf) { const n = parseFloat(buf); if (!isNaN(n)) out.push(n); }
+  return out;
+}
+function parse(input) {                // 对照 oriera_agent::parse
+  const s = input.toLowerCase();
+  if (s.includes("spawn") || s.includes("放") || s.includes("生成")) {
+    const n = extractNumbers(s)[0];
+    if (n !== undefined) return { t: "Spawn", n: Math.round(n) };
+  }
+  if (s.includes("clear") || s.includes("清空") || s.includes("清屏"))
+    return { t: "Clear" };
+  if (s.includes("gravity") || s.includes("重力")) {
+    const g = extractNumbers(s)[0];
+    if (g !== undefined) return { t: "SetGravity", g };
+  }
+  if (s.includes("teleport") || s.includes("传送")) {
+    const ns = extractNumbers(s);
+    if (ns.length >= 2) return { t: "Teleport", dx: ns[0], dy: ns[1] };
+  }
+  if (s.includes("how many") || s.includes("多少"))
+    return { t: "Count" };
+  if (s.includes("speed") || s.includes("速度") || s.includes("倍速")) {
+    const k = extractNumbers(s)[0];
+    if (k !== undefined) return { t: "SetSpeed", k };
+  }
+  return { t: "Unknown", raw: input };
+}
+
+// ---- L7: 命令队列（逐帧执行，指标上报）----
+const infer = { queue: [], processed: 0, rejected: 0, stats: null };
+function stepInfer() {                 // 对照 InferSystem::run
+  for (const cmd of infer.queue.splice(0)) {
+    switch (cmd.t) {
+      case "Spawn":
+        for (let k = 0; k < Math.min(cmd.n, 20000); k++)
+          spawn(Math.random() * W, Math.random() * H,
+                (Math.random() - .5) * 60, (Math.random() - .5) * 60);
+        infer.processed++; break;
+      case "Clear":
+        for (let i = 0; i < nextIndex; i++) despawn(i);
+        infer.processed++; break;
+      case "SetGravity": resources.gravity = cmd.g; infer.processed++; break;
+      case "Teleport":
+        for (let i = 0; i < nextIndex; i++) { if (alive[i]) { px[i] += cmd.dx; py[i] += cmd.dy; } }
+        infer.processed++; break;
+      case "Count":
+        infer.stats = { entities: liveCount }; infer.processed++; break;
+      case "SetSpeed": resources.speedScale = cmd.k; infer.processed++; break;
+      default: infer.rejected++;
+    }
+    logLine(cmd);
+  }
+}
+
+// ---- 言灵输入与日志 ----
+const logEl = document.getElementById("log");
+function logLine(cmd) {
+  const d = document.createElement("div");
+  if (cmd.t === "Unknown") { d.className = "rej"; d.textContent = `✗ 言灵无法解析「${cmd.raw}」`; }
+  else {
+    d.className = "cmd";
+    const { t, ...rest } = cmd;
+    const arg = Object.entries(rest)
+      .map(([k, v]) => `${k}: ${typeof v === "number" ? +v.toFixed(1) : v}`).join(", ");
+    const extra = t === "Count" && infer.stats ? ` — 当前 ${infer.stats.entities} 只` : "";
+    d.textContent = `→ Command::${t}(${arg})${extra}`;
+  }
+  logEl.appendChild(d);
+  while (logEl.children.length > 9) logEl.removeChild(logEl.firstChild);
+}
+const input = document.getElementById("utter");
+document.getElementById("say").onclick = submit;
+input.addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
+function submit() {
+  const text = input.value.trim();
+  if (!text) return;
+  const sys = document.createElement("div");
+  sys.className = "sys"; sys.textContent = `⌨ ${text}`;
+  logEl.appendChild(sys);
+  infer.queue.push(parse(text));       // L9 → L7：进队，下一帧生效
+  input.value = "";
+}
 </script>
 </body>
 </html>
