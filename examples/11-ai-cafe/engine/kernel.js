@@ -52,7 +52,49 @@ export class MemoryStore {
   _save() { localStorage.setItem(this.persistKey, JSON.stringify(this.mem)); }
 }
 
-/* ---------- L7 · ModelProvider（智谱 GLM 浏览器直连实现） ---------- */
+/* ---------- L7 · ModelProvider：创作者自选大模型 ----------
+ * 与 Rust oriera-infer::create_provider 工厂一一对应。
+ * 任何 OpenAI 兼容端点（智谱/DeepSeek/Moonshot/Groq/OpenRouter/vLLM）
+ * 走 HttpChatProvider；Anthropic 走专用头；rule 为离线后端。
+ * ----------------------------------------------------------- */
+export class HttpChatProvider {
+  /** cfg: {kind, key, model, base} —— Key 只存在浏览器 localStorage */
+  constructor(cfg) { this.cfg = cfg; this.stats = { calls: 0, errors: 0 }; }
+  get id() { return (this.cfg.kind || "openai-compat") + ":" + (this.cfg.model || "?"); }
+  get ready() { return !!this.cfg.key; }
+  async complete(messages, opts = {}) {
+    if (!this.ready) throw new Error("no key");
+    this.stats.calls++;
+    const anthropic = this.cfg.kind === "anthropic";
+    const url = ((this.cfg.base || "") + (anthropic ? "/messages" : "/chat/completions"));
+    const headers = { "Content-Type": "application/json" };
+    if (anthropic) {
+      headers["x-api-key"] = this.cfg.key;
+      headers["anthropic-version"] = "2023-06-01";
+      headers["anthropic-dangerous-direct-browser-access"] = "true";
+    } else headers["Authorization"] = "Bearer " + this.cfg.key;
+    const body = anthropic
+      ? JSON.stringify({ model: this.cfg.model, max_tokens: opts.max ?? 260,
+          system: messages.filter(m => m.role === "system").map(m => m.content).join("
+"),
+          messages: messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content })) })
+      : JSON.stringify({ model: this.cfg.model, messages,
+          temperature: opts.temp ?? 0.85, max_tokens: opts.max ?? 260,
+          ...(opts.json ? { response_format: { type: "json_object" } } : {}) });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await fetch(url, { method: "POST", headers, body });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const data = await r.json();
+        return anthropic ? data.content[0].text : data.choices[0].message.content;
+      } catch (e) {
+        if (attempt) { this.stats.errors++; throw e; }
+        await new Promise(z => setTimeout(z, 900));
+      }
+    }
+  }
+}
+/** 兼容旧名 */
 export class ZhipuProvider {
   /** cfg: {key, model, base} —— Key 只存在浏览器 localStorage */
   constructor(cfg) { this.cfg = cfg; this.stats = { calls: 0, errors: 0 }; }
@@ -225,4 +267,20 @@ export class Scheduler {
   constructor() { this.systems = []; }
   add(sys) { this.systems.push(sys); }
   async tick(world) { for (const s of this.systems) await s.tick(world); }
+}
+
+/* ---------- L7 · 提供商工厂（镜像 Rust create_provider） ---------- */
+export const PROVIDER_PRESETS = {
+  zhipu:       { label: "智谱 GLM",       base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash" },
+  openai:      { label: "OpenAI",         base: "https://api.openai.com/v1",             model: "gpt-4o-mini" },
+  deepseek:    { label: "DeepSeek",       base: "https://api.deepseek.com/v1",           model: "deepseek-chat" },
+  moonshot:    { label: "Moonshot Kimi",  base: "https://api.moonshot.cn/v1",            model: "moonshot-v1-8k" },
+  groq:        { label: "Groq",           base: "https://api.groq.com/openai/v1",        model: "llama-3.1-8b-instant" },
+  openrouter:  { label: "OpenRouter",     base: "https://openrouter.ai/api/v1",          model: "openrouter/auto" },
+  anthropic:   { label: "Anthropic",      base: "https://api.anthropic.com/v1",          model: "claude-3-5-haiku-latest" },
+  rule:        { label: "离线规则引擎",    base: "",                                        model: "rule-v1" },
+};
+export function createProvider(cfg) {
+  if (!cfg.kind || cfg.kind === "rule" || !cfg.key) return null; // 认知系统自动降级
+  return new HttpChatProvider(cfg);
 }

@@ -106,14 +106,21 @@
     不填 Key 时 demo 以规则引擎运行，功能完整。</p>
   <label>API Key（智谱 bigmodel.cn）</label>
   <input id="set-key" type="password" placeholder="粘贴你的 Key" />
-  <label>模型</label>
-  <select id="set-model">
-    <option value="glm-4-flash">glm-4-flash（免费）</option>
-    <option value="glm-4.5-air">glm-4.5-air</option>
-    <option value="glm-4.6">glm-4.6</option>
+  <label>大模型提供商（创作者自选，引擎只认 L7 边界）</label>
+  <select id="set-kind">
+    <option value="zhipu">智谱 GLM</option>
+    <option value="openai">OpenAI</option>
+    <option value="deepseek">DeepSeek</option>
+    <option value="moonshot">Moonshot Kimi</option>
+    <option value="groq">Groq</option>
+    <option value="openrouter">OpenRouter</option>
+    <option value="anthropic">Anthropic</option>
+    <option value="rule">离线规则引擎</option>
   </select>
-  <label>API Base URL（默认官方，可换兼容网关）</label>
-  <input id="set-base" value="https://open.bigmodel.cn/api/paas/v4" />
+  <label>模型名（切换提供商会自动填推荐值，可改）</label>
+  <input id="set-model" value="glm-4-flash" />
+  <label>API Base URL（留空用官方默认）</label>
+  <input id="set-base" placeholder="https://open.bigmodel.cn/api/paas/v4" />
   <div class="row">
     <button class="pri" id="set-save">保存并测试连接</button>
     <button id="mem-export">导出记忆 JSON</button>
@@ -139,7 +146,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "./vendor/OrbitControls.js";
 import { GLTFLoader } from "./vendor/GLTFLoader.js";
-import { MemoryStore, ZhipuProvider, CognitionSystem, DirectorSystem, Scheduler } from "./engine/kernel.js";
+import { MemoryStore, HttpChatProvider, createProvider, PROVIDER_PRESETS, CognitionSystem, DirectorSystem, Scheduler } from "./engine/kernel.js";
 
 const $ = id => document.getElementById(id);
 
@@ -336,9 +343,9 @@ $("mem-bg").addEventListener("click", e => { if (e.target === $("mem-bg")) $("me
 
 /* ---------- 引擎装配（应用唯一与 AI 有关的事：插拔引擎服务） ---------- */
 const LLM_KEY = "aicafe.llm.v1";
-const cfg = Object.assign({ key: "", model: "glm-4-flash", base: "https://open.bigmodel.cn/api/paas/v4" },
+const cfg = Object.assign({ kind: "zhipu", key: "", model: "glm-4-flash", base: "https://open.bigmodel.cn/api/paas/v4" },
   JSON.parse(localStorage.getItem(LLM_KEY) || "{}"));
-const provider = new ZhipuProvider(cfg);
+const provider = createProvider(cfg) || { cfg, ready: false, stats: { calls: 0, errors: 0 } };
 const memory = new MemoryStore();
 let worldMeta = null;
 try { worldMeta = JSON.parse(localStorage.getItem("aicafe.world.v1")); } catch {}
@@ -358,7 +365,7 @@ scheduler.add(director);
 
 function refreshDot() {
   $("dot").classList.toggle("live", provider.ready);
-  $("llm-name").textContent = provider.ready ? `${cfg.model} · 浏览器直连（引擎 L7）` : "规则引擎（未配置大模型）";
+  $("llm-name").textContent = provider.ready ? `${PROVIDER_PRESETS[cfg.kind]?.label || cfg.kind} · ${cfg.model}（引擎 L7）` : "规则引擎（未配置大模型）";
 }
 
 let pumping = false;
@@ -389,20 +396,25 @@ gi.addEventListener("keydown", e => { if (e.key === "Enter") guestSay(); });
 
 /* ---------- 设置面板（装配 L7 provider 的唯一入口） ---------- */
 const sbg = $("settings-bg");
-$("gear").onclick = () => { $("set-key").value = cfg.key; $("set-model").value = cfg.model; $("set-base").value = cfg.base; sbg.style.display = "flex"; };
+$("gear").onclick = () => { $("set-kind").value = cfg.kind || "zhipu"; $("set-key").value = cfg.key; $("set-model").value = cfg.model; $("set-base").value = cfg.base || ""; sbg.style.display = "flex"; };
+$("set-kind").addEventListener("change", () => {
+  const pre = PROVIDER_PRESETS[$("set-kind").value];
+  if (pre) { $("set-model").value = pre.model; $("set-base").value = pre.base; }
+});
 $("set-close").onclick = () => sbg.style.display = "none";
 sbg.addEventListener("click", e => { if (e.target === sbg) sbg.style.display = "none"; });
 $("set-save").onclick = async () => {
+  cfg.kind = $("set-kind").value;
   cfg.key = $("set-key").value.trim();
-  cfg.model = $("set-model").value;
-  cfg.base = $("set-base").value.trim() || "https://open.bigmodel.cn/api/paas/v4";
+  cfg.model = $("set-model").value.trim();
+  cfg.base = $("set-base").value.trim() || PROVIDER_PRESETS[cfg.kind]?.base || "";
   const msg = $("set-msg");
   if (!cfg.key) {
     localStorage.removeItem(LLM_KEY);
     msg.style.color = "#ffd28a"; msg.textContent = "已清空 Key，回到规则引擎。";
   } else {
     msg.style.color = "#8a90a6"; msg.textContent = "测试连接中…";
-    const test = new ZhipuProvider({ ...cfg });
+    const test = createProvider({ ...cfg });
     try {
       const r = await test.complete([{ role: "user", content: "ping" }], { max: 8 });
       localStorage.setItem(LLM_KEY, JSON.stringify(cfg));
@@ -411,7 +423,12 @@ $("set-save").onclick = async () => {
       msg.style.color = "#ff7a8a"; msg.textContent = "连接失败：" + e.message + "（Key 未保存）";
     }
   }
-  provider.cfg = { ...cfg };
+  const fresh = createProvider({ ...cfg });
+  if (fresh) { fresh.stats = provider.stats; }
+  Object.assign(window, {}); // no-op
+  // 替换运行中的 provider 引用：认知/导演闭包持有同一对象，这里直接改字段
+  if (fresh) { Object.setPrototypeOf(provider, Object.getPrototypeOf(fresh)); Object.assign(provider, fresh); }
+  provider.cfg = { ...cfg }; provider.ready = !!cfg.key;
   refreshDot();
 };
 $("mem-export").onclick = () => {

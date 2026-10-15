@@ -14,3 +14,4 @@ oriera-common = { path = "../oriera-common" }
 oriera-core = { path = "../oriera-core" }
 oriera-ecs = { path = "../oriera-ecs" }
 oriera-subsys = { path = "../oriera-subsys" }
+tracing.workspace = true
