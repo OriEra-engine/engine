@@ -10,17 +10,20 @@ spec:
       contract: proto/oriera/pal/v1/capability.proto
       stability: stable
     - id: oriera.pal.gfx.v1
-      contract: proto/oriera/pal/v1/gfx_backend.proto
+      contract: rust:oriera_pal::{GfxBackend,SubmitResult}
       stability: stable
+      note: proto lands with contract hardening; trait is the live boundary
     - id: oriera.pal.input.v1
       contract: proto/oriera/pal/v1/spatial_input.proto
       stability: stable
     - id: oriera.pal.storage.v1
-      contract: proto/oriera/pal/v1/storage.proto
+      contract: rust:oriera_pal::{Storage,MemoryStorage}
       stability: stable
+      note: proto lands with contract hardening; trait is the live boundary
     - id: oriera.pal.net.v1
-      contract: proto/oriera/pal/v1/net.proto
+      contract: rust:oriera_pal::{NetTransport,Endpoint}
       stability: stable
+      note: proto lands with contract hardening; trait is the live boundary
     - id: oriera.pal.route.v1
       contract: rust:oriera_pal::{route,RouteHint,Privacy}
       stability: stable
