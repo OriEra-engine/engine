@@ -30,7 +30,7 @@ pub mod genai;
 pub mod memory;
 
 pub use cognition::{
-    CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WorldStory,
+    CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WakeEvent, WorldStory,
 };
 pub use memory::{Episode, MemoryStore};
 

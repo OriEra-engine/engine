@@ -13,16 +13,25 @@ spec:
       contract: rust:oriera_core::{Scheduler::system_timings,with_budget_ns}
       stability: stable
       note: per-system ms of the last frame; budget from the L1 profile
+    - id: oriera.core.allocator.v1
+      contract: rust:oriera_core::{BudgetAllocator,AllocatorConfig,Scheduler::grants}
+      stability: stable
+      note: compute slicing (v0.4) — EWMA cost to floored
+        proportional shares, hysteresis throttle via FrameCtx::grants;
+        AllocatorConfig::off() is exact pass-through
   requires:
     - id: oriera.common.time.v1
       optional: false
+    - id: oriera.common.grants.v1
+      optional: false   # FrameCtx carries the grant table (v0.4)
 
   budgets:
     frame_overhead_ms: 0.1     # scheduler bookkeeping per frame
 
   degrade:
     - when: frame_time_p99 > budget*1.2
-      action: report_and_continue   # v0.1: observability only; slicing lands v0.2
+      action: proportional_throttle   # v0.4: BudgetAllocator squeezes
+                                       # spenders to share/cost (floored 0.1)
 
   observability:
     traces: true

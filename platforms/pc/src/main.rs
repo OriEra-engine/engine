@@ -151,6 +151,25 @@ fn main() {
     for (name, ms) in sched.system_timings() {
         println!("    {:<12} {:>8.3} ms", name, ms);
     }
+    // v0.4 compute allocation: what the budget arbiter decided for the
+    // frame — each system's share of the budget and its work-rate dial.
+    // Everything reads 100% throttle while the frame fits its budget;
+    // the dial only moves when the ledger is over-subscribed.
+    println!();
+    println!(
+        "  ── L2 compute allocation (load {:.2}, headroom {:.0}%) ──",
+        sched.allocator().load(sched.budget_ms()),
+        sched.headroom() * 100.0
+    );
+    for (name, _) in sched.system_timings() {
+        let g = sched.grants().get(name);
+        println!(
+            "    {:<12} share {:>7.2} ms   throttle {:>3.0}%",
+            name,
+            g.share_ms,
+            g.throttle * 100.0
+        );
+    }
     println!();
     println!("  ✅ Closed loop: L9 parse → L7 execute → L6 integrate → L5 count");
 }

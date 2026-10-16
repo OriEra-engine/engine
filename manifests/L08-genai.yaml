@@ -21,7 +21,10 @@ spec:
       contract: rust:oriera_genai::{GenAiSystem,GenAiMeter,GenAiLimits}
       stability: stable
       note: L2-scheduled system — bounded submit/poll slice, validation,
-        PendingSwaps + AssetLanded/AssetFailed events, placeholder degrade
+        PendingSwaps + AssetLanded/AssetFailed events, placeholder
+        degrade; v0.4 budget-aware — the in-flight ceiling
+        scales with the L2 grant throttle and the poll interval stretches
+        (cap 8x), so generation defers under pressure instead of degrading
     - id: oriera.genai.hotswap.v1
       contract: rust:oriera_genai::hot_swap::{apply_pending,GenAsset}
       stability: stable

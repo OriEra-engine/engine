@@ -48,11 +48,19 @@ pub const MAX_TIME_SCALE: f32 = 8.0;
 /// bounce off `bounds`. Runs as an L2-scheduled system.
 pub struct PhysicsSystem {
     pub bounds: (f32, f32),
+    /// Frames whose integration pass was skipped as a provable no-op
+    /// (frozen time, or an exactly-still world). The compute-budget
+    /// readout line for "work NOT spent" — a world waiting on the AI
+    /// pays nothing for physics.
+    pub idle_frames: u64,
 }
 
 impl PhysicsSystem {
     pub fn new(w: f32, h: f32) -> Self {
-        Self { bounds: (w, h) }
+        Self {
+            bounds: (w, h),
+            idle_frames: 0,
+        }
     }
 }
 
@@ -67,6 +75,27 @@ impl System<World> for PhysicsSystem {
             .map(|t| t.effective())
             .unwrap_or(1.0);
         let dt = ctx.dt * scale;
+
+        // Compute-budget idle skip (v0.4): when integration provably
+        // cannot move anything, do not walk the columns at all. Both
+        // cases are exact no-ops for finite floats —
+        // (1) frozen time: `dt == 0` makes every delta exactly ±0.0;
+        // (2) a perfectly still world: zero gravity and every velocity
+        //     exactly 0.0. The still-check is read-only and bails on
+        //     the first moving entity, so it costs far less than the
+        //     write-heavy integration it replaces.
+        // Anything that merely *looks* idle (tiny velocities) still
+        // integrates — approximation is the L2 allocator's business,
+        // never the physics pass's.
+        if dt == 0.0
+            || (gravity == 0.0
+                && world
+                    .query::<Velocity>()
+                    .all(|(_e, v)| v.vx == 0.0 && v.vy == 0.0))
+        {
+            self.idle_frames += 1;
+            return;
+        }
         let (bw, bh) = self.bounds;
         world.for_each2_mut::<Position, Velocity>(|_e, p, v| {
             p.x += v.vx * dt;
@@ -98,11 +127,12 @@ mod tests {
     use oriera_common::FrameIndex;
     use oriera_ecs::Entity;
 
-    fn ctx(dt: f32) -> FrameCtx {
+    fn ctx(dt: f32) -> FrameCtx<'static> {
         FrameCtx {
             frame: FrameIndex(0),
             dt,
             now: oriera_common::Timestamp(0),
+            grants: oriera_common::Grants::EMPTY,
         }
     }
 
@@ -190,5 +220,115 @@ mod tests {
         assert_eq!(TimeScale(-3.0).effective(), 0.0); // negative → frozen
         assert_eq!(TimeScale(1.0e9).effective(), MAX_TIME_SCALE);
         assert_eq!(TimeScale::default().effective(), 1.0);
+    }
+
+    #[test]
+    fn frozen_time_skips_the_pass_bit_identically() {
+        let build = || {
+            let mut w = World::new();
+            w.insert_resource(Gravity(9.8));
+            for i in 0..10 {
+                let e = w.spawn();
+                w.insert(
+                    e,
+                    Position {
+                        x: i as f32 * 7.0,
+                        y: 13.0,
+                    },
+                );
+                w.insert(e, Velocity { vx: 1.5, vy: -0.25 });
+            }
+            w
+        };
+        // Frozen world: dt·scale = 0 → integration is an exact no-op, so
+        // five skipped frames must equal a world that never integrated
+        // at all, bit for bit.
+        let mut frozen = build();
+        frozen.insert_resource(TimeScale(0.0));
+        let mut sys = PhysicsSystem::new(100.0, 100.0);
+        for _ in 0..5 {
+            sys.run(&ctx(1.0), &mut frozen);
+        }
+        assert_eq!(sys.idle_frames, 5);
+        let fresh = build();
+        let a: Vec<(u32, u32)> = frozen
+            .query::<Position>()
+            .map(|(_e, p)| (p.x.to_bits(), p.y.to_bits()))
+            .collect();
+        let b: Vec<(u32, u32)> = fresh
+            .query::<Position>()
+            .map(|(_e, p)| (p.x.to_bits(), p.y.to_bits()))
+            .collect();
+        assert_eq!(a, b);
+
+        // The same provable no-op via a zero-dt context (e.g. the very
+        // first frame before the clock has a predecessor).
+        let mut zero_dt = build();
+        let mut sys2 = PhysicsSystem::new(100.0, 100.0);
+        sys2.run(&ctx(0.0), &mut zero_dt);
+        assert_eq!(sys2.idle_frames, 1);
+    }
+
+    #[test]
+    fn perfectly_still_world_skips_but_gravity_wakes_it() {
+        let mut w = World::new();
+        for i in 0..4 {
+            let e = w.spawn();
+            w.insert(
+                e,
+                Position {
+                    x: i as f32,
+                    y: 50.0,
+                },
+            );
+            w.insert(e, Velocity { vx: 0.0, vy: 0.0 });
+        }
+        let mut sys = PhysicsSystem::new(100.0, 100.0);
+
+        // No gravity resource → zero gravity: still world, skip.
+        sys.run(&ctx(1.0), &mut w);
+        assert_eq!(sys.idle_frames, 1);
+        let before: Vec<(u32, u32)> = w
+            .query::<Position>()
+            .map(|(_e, p)| (p.x.to_bits(), p.y.to_bits()))
+            .collect();
+
+        // Gravity appears: zero velocities would still accelerate —
+        // must NOT skip (the skip only holds when the pass is a no-op).
+        // Integration order moves position by the *pre-update*
+        // velocity, so the first gravity frame changes velocities, not
+        // positions yet.
+        w.insert_resource(Gravity(9.8));
+        sys.run(&ctx(1.0), &mut w);
+        assert_eq!(sys.idle_frames, 1); // unchanged: it ran
+        let vels: Vec<f32> = w.query::<Velocity>().map(|(_e, v)| v.vy).collect();
+        assert!(vels.iter().all(|vy| *vy > 0.0)); // falling now
+        sys.run(&ctx(1.0), &mut w);
+        let after: Vec<(u32, u32)> = w
+            .query::<Position>()
+            .map(|(_e, p)| (p.x.to_bits(), p.y.to_bits()))
+            .collect();
+        assert_ne!(before, after); // and by frame two, positions moved
+
+        // A single moving entity anywhere cancels the still-world skip.
+        let mut w2 = World::new();
+        for i in 0..4 {
+            let e = w2.spawn();
+            w2.insert(
+                e,
+                Position {
+                    x: i as f32,
+                    y: 50.0,
+                },
+            );
+            w2.insert(e, Velocity { vx: 0.0, vy: 0.0 });
+        }
+        let mover = w2.spawn();
+        w2.insert(mover, Position { x: 0.0, y: 0.0 });
+        w2.insert(mover, Velocity { vx: 5.0, vy: 0.0 });
+        let mut sys2 = PhysicsSystem::new(100.0, 100.0);
+        sys2.run(&ctx(1.0), &mut w2);
+        assert_eq!(sys2.idle_frames, 0);
+        assert_eq!(w2.get::<Position>(mover).unwrap().x, 5.0);
     }
 }

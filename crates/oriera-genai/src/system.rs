@@ -214,15 +214,32 @@ impl System<World> for GenAiSystem {
         "l8-genai"
     }
 
-    fn run(&mut self, _ctx: &FrameCtx, world: &mut World) {
+    fn run(&mut self, ctx: &FrameCtx, world: &mut World) {
         self.tick += 1;
         let limits = self.limits.effective();
         let validation = ValidationLimits {
             max_bytes: limits.max_bytes,
         };
 
+        // Compute-budget dial (v0.4): allocator pressure shrinks the
+        // in-flight ceiling and stretches the poll interval — at most
+        // 8×. Generation is the most deferrable work in the engine:
+        // under pressure assets land later, never worse. Unmanaged
+        // (throttle 1.0) keeps the configured limits exactly.
+        let grant = ctx.grants.get(self.name());
+        let max_in_flight = grant.scale_usize(limits.max_in_flight, 1);
+        let poll_interval = if grant.throttle >= 1.0 {
+            limits.poll_interval_ticks
+        } else {
+            let stretch = (1.0 / grant.throttle.max(0.05)).ceil() as u32;
+            limits
+                .poll_interval_ticks
+                .saturating_mul(stretch)
+                .min(limits.poll_interval_ticks.saturating_mul(8))
+        };
+
         // 1. Capacity-bounded submission.
-        while self.in_flight.len() < limits.max_in_flight {
+        while self.in_flight.len() < max_in_flight {
             let Some(req) = self.queue.pop() else {
                 break;
             };
@@ -254,8 +271,8 @@ impl System<World> for GenAiSystem {
         }
 
         // 2. Interval-bounded polling: a slice of the frame budget, not
-        //    a transport storm.
-        if self.tick.is_multiple_of(limits.poll_interval_ticks as u64) {
+        //    a transport storm (stretched under budget pressure above).
+        if self.tick.is_multiple_of(poll_interval as u64) {
             let mut in_flight = std::mem::take(&mut self.in_flight);
             in_flight.retain(|t| {
                 match self.provider.poll_task(&t.task) {
@@ -320,16 +337,63 @@ mod tests {
     use oriera_common::FrameIndex;
     use std::sync::Arc;
 
-    fn ctx() -> FrameCtx {
+    fn ctx() -> FrameCtx<'static> {
         FrameCtx {
             frame: FrameIndex(0),
             dt: 0.0,
             now: oriera_common::Timestamp(0),
+            grants: oriera_common::Grants::EMPTY,
         }
     }
 
     fn world() -> World {
         World::new()
+    }
+
+    /// A context where `l8-genai` is managed at the given throttle.
+    fn ctx_throttled(t: f32) -> FrameCtx<'static> {
+        let entries = Box::leak(
+            vec![(
+                "l8-genai".to_string(),
+                oriera_common::ComputeGrant {
+                    share_ms: 1.0,
+                    throttle: t,
+                },
+            )]
+            .into_boxed_slice(),
+        );
+        FrameCtx {
+            frame: FrameIndex(0),
+            dt: 0.0,
+            now: oriera_common::Timestamp(0),
+            grants: oriera_common::Grants::new(entries),
+        }
+    }
+
+    #[test]
+    fn budget_pressure_defers_generation_not_degrades_it() {
+        // Four queued requests, max_in_flight 4: unthrottled submits
+        // all four on the first tick; half throttle submits two — the
+        // rest wait for headroom, and nothing fails or placeholders.
+        let queue_four = || {
+            let mut sys = GenAiSystem::new(Arc::new(MockProvider::new()));
+            for i in 0..4 {
+                sys.submit(GenerationRequest::text_to_3d(format!("prop{i}"), "a prop"));
+            }
+            sys
+        };
+        let mut w = world();
+        let mut full = queue_four();
+        full.run(&ctx(), &mut w);
+        let full_meter = *w.resource::<GenAiMeter>().unwrap();
+        assert_eq!(full_meter.submitted, 4); // full ceiling, first tick
+
+        let mut w2 = world();
+        let mut squeezed = queue_four();
+        squeezed.run(&ctx_throttled(0.5), &mut w2);
+        let meter = *w2.resource::<GenAiMeter>().unwrap();
+        assert_eq!(meter.submitted, 2); // half the ceiling
+        assert_eq!(meter.failed, 0); // deferred, never failed
     }
 
     #[test]
