@@ -14,6 +14,13 @@
   #hud { position:fixed; top:10px; left:12px; font-size:11px; color:#8a90a6;
          line-height:1.7; pointer-events:none; }
   #hud b { color:#6ee7ff; font-weight:600; }
+  /* ---- EN hint for international visitors ---- */
+  #en-hint { position:fixed; top:12px; left:50%; transform:translateX(-50%);
+             max-width:min(640px,44vw); text-align:center;
+             background:rgba(13,13,21,.72); border:1px solid #2a3040; border-radius:8px;
+             padding:6px 14px; font-size:11px; line-height:1.6; color:#8a90a6;
+             pointer-events:none; }
+  #en-hint code { color:#6ee7ff; font-family:inherit; }
   /* ---- L9 言灵输入 ---- */
   #speak { position:fixed; left:50%; transform:translateX(-50%); bottom:18px;
            width:min(640px,90vw); display:flex; gap:8px; }
@@ -61,6 +68,7 @@
   entities <b id="h-ent">0</b> · fps <b id="h-fps">0</b> · gravity <b id="h-grav">0</b><br/>
   L7 processed <b id="h-ok">0</b> · rejected <b id="h-rej">0</b>
 </div>
+<div id="en-hint">English works too: <code>spawn 100</code> · <code>gravity 1.6</code> · <code>speed 2x</code> · <code>teleport 100 200</code> · <code>clear</code> — your words become engine commands (L9&nbsp;→&nbsp;L7), no API key needed.</div>
 <div id="speak">
   <input id="utter" autocomplete="off" spellcheck="false"
          placeholder="说出言灵：spawn 100 / 生成 100 · gravity 9.8 / 重力 9.8 · speed 2x · teleport 100 200 / 传送到 100,200 · how many / 多少个 · clear / 清空" />
