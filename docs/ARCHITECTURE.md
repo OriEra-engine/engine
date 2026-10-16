@@ -201,7 +201,7 @@ L9 DirectorSystem 调度 NPC 行为 → L6 动作/物理 → L5 画质迟滞调�
 - L2 `BudgetAllocator`：EWMA 成本 → 带保底的份额 → 迟滞节流（快降慢升），
   经 `FrameCtx::grants` 借用下发（零分配）；`AllocatorConfig::off()` 逐位回退
 - L7 自适应队列：命令预算 ×throttle（下限 1 条/帧）+ submit 时可证安全合并
-- L6 空转跳过：冻结/完全静止的积分是恒等无操作，整趟跳过（位级等价）
+- L6 空转跳过：冻结/完全静止且无越界实体的积分是恒等无操作，整趟跳过（位级等价）
 - L9 注意力节拍器：压力下说话间隔 ×(1/throttle)（封顶 8×），
   `WakeEvent` 玩家一碰世界立即回满速
 - L8 `GenAiLimits` 拨杆感知：in-flight 上限与轮询间隔随压力缩放（缓不降级）
@@ -233,7 +233,7 @@ assets/          logo、hero GIF 等品牌资产
 
 ## 9. 测试、CI 与性能
 
-- 全仓 **180 个测试**（CI 实测口径：`cargo test --workspace` + genai `providers` feature，2026-10-16），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
+- 全仓 **181 个测试**（CI 实测口径：`cargo test --workspace` + genai `providers` feature，2026-10-16），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
 - 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 / v0.2.0 / v0.3.0）。
 - 基准怎么跑、当前参考数据见 [PERF.md](PERF.md)。
 
