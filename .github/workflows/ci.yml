@@ -29,3 +29,22 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy (genai providers feature)
         run: cargo clippy -p oriera-genai --all-targets --features providers -- -D warnings
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: LayerManifest gate
+        run: python scripts/check_manifests.py
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: ECS benchmarks (report-only)
+        run: cargo bench -p oriera-ecs

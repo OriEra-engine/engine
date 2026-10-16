@@ -196,11 +196,12 @@ L9 DirectorSystem 调度 NPC 行为 → L6 动作/物理 → L5 画质迟滞调�
 
 每层在 `manifests/` 声明机器可读的清单（L0–L9 共 10 份 YAML，含 L08-genai）：
 对外提供什么契约（provides）、依赖哪些契约（requires）、性能预算（budgets）、降级策略（degrade）。
-CI 据此做门禁（规划中）：
+CI 门禁分两步走——**静态部分已落地**（`scripts/check_manifests.py`，随每个 PR 运行），性能部分规划中：
 
-- 某层 `requires` 了未声明 stable 的契约 → CI 失败；
-- `provides` 的契约发生不兼容变更未升主版本 → CI 失败；
-- 实测 P99 超预算 20% → 发布进入评审。
+- ✅ 某层 `requires` 了无人提供、或未声明 stable 的契约 → CI 失败（已落地）；
+- ✅ `provides` 的 `proto/` 契约引用文件缺失、`rust:`/`proto:` 之外的引用形式 → CI 失败（已落地）；
+- 📋 `provides` 的契约发生不兼容变更未升主版本 → CI 失败（规划）；
+- 📋 实测 P99 超预算 20% → 发布进入评审（规划；CI 已跑 `cargo bench -p oriera-ecs` 留档基线数据）。
 
 新增一层时：建 crate → 写 `manifests/Lxx-*.yaml` → 在 `contracts/` 落契约 → 在上表加一行 → CI 接入。
 
