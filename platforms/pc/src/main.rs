@@ -19,8 +19,9 @@ fn main() {
 
     // ── L1 PAL: detect platform ──
     let profile = oriera_pal::detect_platform();
+    let banner = format!("OriEra World Engine v{} (PC)", env!("CARGO_PKG_VERSION"));
     println!("╔══════════════════════════════════════╗");
-    println!("║   OriEra World Engine v0.0.1 (PC)    ║");
+    println!("║{banner:^38}║");
     println!("╚══════════════════════════════════════╝");
     println!("  Platform : {:?} / {}", profile.family, profile.os_name);
     println!("  Budget   : {} µs/frame", profile.frame_budget_us);
