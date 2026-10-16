@@ -77,24 +77,36 @@ impl System<World> for PhysicsSystem {
         let dt = ctx.dt * scale;
 
         // Compute-budget idle skip (v0.4): when integration provably
-        // cannot move anything, do not walk the columns at all. Both
-        // cases are exact no-ops for finite floats —
-        // (1) frozen time: `dt == 0` makes every delta exactly ±0.0;
-        // (2) a perfectly still world: zero gravity and every velocity
-        //     exactly 0.0. The still-check is read-only and bails on
-        //     the first moving entity, so it costs far less than the
-        //     write-heavy integration it replaces.
-        // Anything that merely *looks* idle (tiny velocities) still
-        // integrates — approximation is the L2 allocator's business,
-        // never the physics pass's.
-        if dt == 0.0
-            || (gravity == 0.0
-                && world
-                    .query::<Velocity>()
-                    .all(|(_e, v)| v.vx == 0.0 && v.vy == 0.0))
-        {
-            self.idle_frames += 1;
-            return;
+        // cannot change anything, do not walk the columns at all. The
+        // pass is a no-op exactly when both hold —
+        // (1) every integrated entity sits inside the bounds, so the
+        //     clamp arms cannot fire (integration clamps strays home
+        //     even at zero velocity — skipping over them would NOT be
+        //     a no-op; review #52);
+        // (2) every delta is exactly zero: frozen time (`dt == 0`),
+        //     or zero gravity with every velocity exactly 0.0.
+        // The scan is read-only over the same pairs the write pass
+        // would touch and bails as soon as neither skip condition can
+        // hold anymore. Anything that merely *looks* idle (tiny
+        // velocities) still integrates — approximation is the L2
+        // allocator's business, never the physics pass's.
+        if dt == 0.0 || gravity == 0.0 {
+            let (bw, bh) = self.bounds;
+            let mut all_inside = true;
+            let mut all_still = true;
+            for (_e, p, v) in world.query2::<Position, Velocity>() {
+                let inside = p.x >= 0.0 && p.x <= bw && p.y >= 0.0 && p.y <= bh;
+                let still = v.vx == 0.0 && v.vy == 0.0;
+                all_inside &= inside;
+                all_still &= still;
+                if !all_inside && !all_still {
+                    break; // neither skip branch can hold anymore
+                }
+            }
+            if all_inside && (dt == 0.0 || all_still) {
+                self.idle_frames += 1;
+                return;
+            }
         }
         let (bw, bh) = self.bounds;
         world.for_each2_mut::<Position, Velocity>(|_e, p, v| {
@@ -267,6 +279,33 @@ mod tests {
         let mut sys2 = PhysicsSystem::new(100.0, 100.0);
         sys2.run(&ctx(0.0), &mut zero_dt);
         assert_eq!(sys2.idle_frames, 1);
+    }
+
+    #[test]
+    fn out_of_bounds_entities_are_clamped_even_when_still() {
+        // REVIEW #52: the skip predicate must not fire while anything
+        // sits outside the bounds — integration clamps those home even
+        // with zero velocity, so skipping would NOT be a no-op.
+        let mut w = World::new();
+        let outside = w.spawn();
+        w.insert(outside, Position { x: -5.0, y: 200.0 });
+        w.insert(outside, Velocity { vx: 0.0, vy: 0.0 });
+        let inside = w.spawn();
+        w.insert(inside, Position { x: 50.0, y: 50.0 });
+        w.insert(inside, Velocity { vx: 0.0, vy: 0.0 });
+
+        let mut sys = PhysicsSystem::new(100.0, 100.0);
+        sys.run(&ctx(1.0), &mut w);
+        // Integration (no skip): clamp both coordinates of the outside
+        // entity into the bounds; the inside entity is untouched.
+        let p = w.get::<Position>(outside).unwrap();
+        assert_eq!(p.x, 0.0);
+        assert_eq!(p.y, 100.0);
+        assert_eq!(w.get::<Position>(inside).unwrap().x, 50.0);
+        assert_eq!(
+            sys.idle_frames, 0,
+            "still world, but NOT skippable while clamps have work"
+        );
     }
 
     #[test]
