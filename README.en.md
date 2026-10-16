@@ -15,6 +15,14 @@
 
 </div>
 
+<p align="center">
+  <img src="assets/hero.gif" alt="OriEra demo: AI NPC with long-term memory × million-particle world generation" width="640" />
+</p>
+<p align="center">
+  <em>Top: Corner Café — 3D AI NPC chat + long-term memory + AI director ｜ Bottom: natural-language world generation</em><br/>
+  <a href="docs/media/oriera-official-demo.mp4">📹 Full 54-second official demo</a>
+</p>
+
 ---
 
 ## What is this
@@ -27,7 +35,7 @@ Architecturally it is an **11-layer stack** with five first-class platforms.
 
 ## Try it (zero install)
 
-**🌐 https://oriera-engine.github.io/engine/** — 9 playable demos in your browser.
+**🌐 https://oriera-engine.github.io/engine/** — 11 playable demos in your browser.
 
 ## Architecture
 
@@ -53,7 +61,9 @@ cargo run -p oriera-pc
 
 ## Community
 
+- 🗺️ [Open source guide](docs/OPEN_SOURCE_GUIDE.en.md) — how to join, with or without writing code
 - 🐣 [15-minute first PR guide](docs/FIRST_PR.md) (Chinese)
+- 🎃 **Hacktoberfest 2026 is live** — all [good first issues](https://github.com/OriEra-engine/engine/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) count until Oct 31
 - 📚 [Book ↔ repo map](docs/BOOK_MAP.md) — the architecture book is our spec
 - 💬 [Discussions](https://github.com/OriEra-engine/engine/discussions) — questions in EN or 中文 both welcome
 - 🗺️ [ROADMAP](ROADMAP.md) — L8/L10/L11 landing schedule
@@ -61,3 +71,11 @@ cargo run -p oriera-pc
 ## License
 
 Apache License 2.0 — patent grant included, cloud-friendly.
+
+---
+
+<p align="center">
+  <sub>If OriEra shows you another possible future for AGI-era infrastructure,<br/>
+  please give this repo a ⭐ Star — it decides how far this open-source path can go.</sub><br/><br/>
+  <a href="https://github.com/OriEra-engine/engine/stargazers"><img src="https://img.shields.io/badge/Star%20this%20repo-⭐-ffc861?style=for-the-badge" alt="Star OriEra" /></a>
+</p>
