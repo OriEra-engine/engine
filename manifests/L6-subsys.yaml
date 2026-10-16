@@ -16,9 +16,10 @@ spec:
     - id: oriera.subsys.idle.v1
       contract: rust:oriera_subsys::PhysicsSystem::idle_frames
       stability: stable
-      note: provable no-op skip (v0.4) — frozen dt or an
-        exactly-still world skips the integration pass bit-identically;
-        approximation stays the allocator's business, never physics
+      note: provable no-op skip (v0.4) — frozen dt, or an
+        exactly-still world with nothing outside the bounds, skips the
+        integration pass bit-identically (clamps count as work, review
+        #52); approximation stays the allocator's business, never physics
   requires:
     - id: oriera.core.scheduler.v1
       optional: false
