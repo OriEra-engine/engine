@@ -3,7 +3,7 @@
 > 一句话理解：**十一层是责任边界，接口契约是连接器，横切系统是全局仪表盘与刹车。**
 > （《OriEra 世界引擎》技术篇 T3）
 
-本文是仓库的完整架构文档，对应 **v0.2.0**（2026-10）的 main 分支。
+本文是仓库的完整架构文档，对应 **v0.3.0**（2026-10）的 main 分支。
 定位：读完这一篇，你应该能回答三个问题——每层是什么、代码在哪、为什么这样切。
 层职责与接口契约的完整定义见书技术篇 T4–T15 与附录 B；书 ↔ 仓库对照见 [BOOK_MAP.md](BOOK_MAP.md)。
 
@@ -39,7 +39,7 @@ OriEra 不是又一个游戏引擎。它是一个 **AI 原生、虚实融合、�
 | L5 | 渲染内核：Pass 图、帧提交 | `crates/oriera-render` | ✅ 骨架 | `BuildFrameGraph` `AddPass` `SetQuality` |
 | L6 | 子系统服务：物理/动画/音频/UI/网络同步 | `crates/oriera-subsys` | ✅ 物理 | `StepPhysics` `SampleAnimation`(规划) `SyncState`(规划) |
 | L7 | AI 推理运行时：命令执行、端云路由 | `crates/oriera-infer` | ✅ 可用 | `SubmitInference` `ReportInferenceMetrics` |
-| L8 | 生成式 AI：文生 3D 管线 | — | 📋 2028（ROADMAP） | `RequestGeneration` `ValidateAsset` |
+| L8 | 生成式 AI：文生 3D 管线 | `crates/oriera-genai` | ✅ 骨架（ADR 0003，2028 做深） | `RequestGeneration` `ValidateAsset` |
 | L9 | Agent 层：意图→命令 | `crates/oriera-agent` | ✅ 可用 | `InvokeTool`（v1 规则解析 + 认知系统） |
 | L10 | AR/VR 交互：多模态感知 | — | 📋 2027 H2 | 手势/眼动经 L1 `SpatialInputEvent` 进来 |
 | L11 | 应用与 UGC 创作生态 | `platforms/*` + `examples/*` | ✅ 壳 | 同源编辑器（规划） |
@@ -49,6 +49,7 @@ OriEra 不是又一个游戏引擎。它是一个 **AI 原生、虚实融合、�
 
 ```
 agent(L9) → infer(L7) → subsys(L6) → ecs(L3) → core(L2) → common(L0)
+          → genai(L8) → asset(L4) / ecs(L3) / core(L2)（ADR 0003：生成不依赖推理）
                         infer(L7) → ecs(L3)
 render(L5) → ecs(L3) → core(L2)
 pal(L1)：只被平台壳（platforms/*）引用，不被上层 crate 直接依赖
@@ -111,10 +112,14 @@ v0.2 落地帧预算命令队列（`deferred` 计数，命令洪峰摊到后续�
 与 `UsageMeter` / `last_usage()` 计量；20s 超时防挂死。
 **Key 只存在平台壳**（浏览器 localStorage / 环境变量），永不入仓。
 
-### L8 — 生成式 AI（规划）
+### L8 · oriera-genai — 生成式 AI（骨架已落地，ADR 0003）
 
-文生 3D / 纹理 / 音效的六段式流水线（生成→校验→修复→入库），接口在附录 B 表 B-4，
-ROADMAP 2028。落地点已由 L4 命名热替换备好。
+**生成是独立边界，不走 L7 推理**（ADR 0003）：`GenerationProvider` trait + `MockProvider`
++ `validate_asset` 校验；Tripo / Seedance 协议适配器随 `providers` feature 门控
+（只定义 JSON shape，零 HTTP client——transport 由壳层注入，wasm 体积可控）。
+引擎环集成：`GenAiSystem` 限量轮询生成任务 → 校验 → `PendingSwaps` + `AssetLanded` 事件，
+壳层 `hot_swap::apply_pending` 把结果落入 L4 命名资产（demo：`cargo run -p oriera-genai --example hotswap`）。
+L9 已有生成意图入口。契约落在 `contracts/oriera/genai/v1`。深管线（六段式生成→修复）2028 做。
 
 ### L9 · oriera-agent — 意图到命令
 
@@ -146,6 +151,8 @@ v0.2 润滑剂：认知/导演自愈启动（裸世界 boot 是测试契约）+ 
   │ 持有 World(L3) + AssetStore(L4)，构建 Scheduler<World>(L2)
   ▼ 每帧 sched.tick(&mut world)
 InferSystem(L7)   执行命令队列 → 生成/清除实体、写 Gravity resource
+GenAiSystem(L8)   限量轮询生成任务 → 校验 → PendingSwaps + AssetLanded 事件
+                  （壳层随后 hot_swap::apply_pending 把结果落入 L4 命名资产）
 PhysicsSystem(L6) for_each2_mut::<Position,Velocity> 积分 + 边界反弹
 RenderSystem(L5)  统计可见 Position → draw_calls（真实 Pass 图在 ROADMAP）
   ▼
@@ -187,7 +194,7 @@ L9 DirectorSystem 调度 NPC 行为 → L6 动作/物理 → L5 画质迟滞调�
 
 ## 7. 治理：LayerManifest 与架构门禁（T3 §3.8.3）
 
-每层在 `manifests/` 声明机器可读的清单（L0–L7、L9 共 9 份 YAML）：
+每层在 `manifests/` 声明机器可读的清单（L0–L9 共 10 份 YAML，含 L08-genai）：
 对外提供什么契约（provides）、依赖哪些契约（requires）、性能预算（budgets）、降级策略（degrade）。
 CI 据此做门禁（规划中）：
 
@@ -200,10 +207,10 @@ CI 据此做门禁（规划中）：
 ## 8. 目录地图
 
 ```
-crates/          L0–L7、L9 各层实现（见上表）
+crates/          L0–L9 各层实现（见上表，含 L8 oriera-genai）
 platforms/       五端入口：pc / web / ar_glasses / bci_reserved
 examples/        浏览器可玩的分层演示（01–11 + _template，见首页 index.html）
-contracts/       跨语言接口契约（Protobuf，目前 pal/v1）
+contracts/       跨语言接口契约（Protobuf：pal/v1、genai/v1）
 manifests/       每层的 LayerManifest（provides/requires/budgets/degrade）
 docs/            架构文档、ADR、AI 原生图、性能记录、release notes
 assets/          logo、hero GIF 等品牌资产
@@ -236,6 +243,8 @@ L9 的 Agent 是引擎系统（挂调度器、吃帧预算、有世界状态）�
 
 - [AI-NATIVE.md](AI-NATIVE.md)：十一层逐层 AI 内嵌图 + 润滑剂详解
 - [ADR 0001](adr/0001-five-platforms-capability-bitmap.md)：五端一等公民与能力位图
+- [ADR 0002](adr/0002-neural-rendering-runtime-invariants.md)：神经渲染运行时不变量
+- [ADR 0003](adr/0003-l8-native-generative-ai.md)：L8 原生生成式 AI 边界
 - [ROADMAP.md](../ROADMAP.md)：L8/L10/L11 的落地节奏（三阶段演化到 2031+）
 - [PERF.md](PERF.md)：基准怎么跑、当前参考数据
 - 书技术篇：T3 总览 / T4–T14 各层 / T15 横切 / T17 测试与基准（[BOOK_MAP.md](BOOK_MAP.md)）

@@ -33,6 +33,10 @@ spec:
     - when: vram_peak_mb > budget
       action: evict_neural_lod_cache
       cooldown_ms: 1000
+    # ADR 0002: neural refinement is an additive path, never a requirement.
+    - when: neural_render_cap_missing   # NEURAL_RENDER_3DGS bit absent
+      action: passthrough_rasterization
+      cooldown_ms: 0
 
   observability:
     traces: true
@@ -42,4 +46,6 @@ spec:
     v0.1 counts visible Position components as the frame stand-in,
     batched by the adaptive quality tier (SetQuality half of the L5
     contract). Pass graph (BuildFrameGraph/AddPass) and wgpu submission
-    land v0.2+ (book T8).
+    land v0.2+ (book T8). A NeuralRefine pass type may join the pass
+    graph only after it exists, and must obey ADR 0002 (integer-step
+    pacing, bounded display queue, capability-gated passthrough).

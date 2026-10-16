@@ -3,6 +3,7 @@ name = "oriera-render"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "OriEra L5 render kernel: pass graph and frame submission"
 
 [lib]
@@ -10,7 +11,7 @@ name = "oriera_render"
 path = "src/lib.rs"
 
 [dependencies]
-oriera-common = { path = "../oriera-common" }
-oriera-core = { path = "../oriera-core" }
-oriera-ecs = { path = "../oriera-ecs" }
+oriera-common.workspace = true
+oriera-core.workspace = true
+oriera-ecs.workspace = true
 tracing.workspace = true

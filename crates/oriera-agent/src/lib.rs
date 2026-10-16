@@ -26,6 +26,7 @@
 //! ```
 
 pub mod cognition;
+pub mod genai;
 pub mod memory;
 
 pub use cognition::{

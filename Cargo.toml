@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-# Layer order, bottom-up. L8/L10/L11 land with the ROADMAP stages.
+# Layer order, bottom-up. L10/L11 land with the ROADMAP stages.
 members = [
     "crates/oriera-common",  # L0
     "crates/oriera-pal",     # L1
@@ -10,6 +10,7 @@ members = [
     "crates/oriera-render",  # L5
     "crates/oriera-subsys",  # L6
     "crates/oriera-infer",   # L7
+    "crates/oriera-genai",   # L8 (ADR 0003)
     "crates/oriera-agent",   # L9
     "platforms/pc",
 ]
@@ -20,16 +21,28 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["OriEra Contributors"]
 repository = "https://github.com/OriEra-engine/engine"
 
 # Only versions actually shared by current crates are pinned here.
-# Add entries (glam, tokio, serde, ...) when the layer that needs them lands.
+# Add entries (glam, tokio, ...) when the layer that needs them lands.
+# Internal layer crates: path for workspace builds, version for `cargo publish`.
 [workspace.dependencies]
+oriera-common = { path = "crates/oriera-common", version = "0.3.0" }
+oriera-pal = { path = "crates/oriera-pal", version = "0.3.0" }
+oriera-core = { path = "crates/oriera-core", version = "0.3.0" }
+oriera-ecs = { path = "crates/oriera-ecs", version = "0.3.0" }
+oriera-asset = { path = "crates/oriera-asset", version = "0.3.0" }
+oriera-render = { path = "crates/oriera-render", version = "0.3.0" }
+oriera-subsys = { path = "crates/oriera-subsys", version = "0.3.0" }
+oriera-infer = { path = "crates/oriera-infer", version = "0.3.0" }
+oriera-genai = { path = "crates/oriera-genai", version = "0.3.0" }
+oriera-agent = { path = "crates/oriera-agent", version = "0.3.0" }
 bitflags = "2.6"
+serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 criterion = "0.5"

@@ -9,9 +9,16 @@ spec:
     - id: oriera.agent.intent.v1
       contract: rust:oriera_agent::parse
       stability: stable
+    - id: oriera.agent.genai-intent.v1
+      contract: rust:oriera_agent::genai::parse_generation
+      stability: stable
+      note: NL → GenerationRequest bridge into L8 (rule-based v1,
+        negation-aware); apps try generation first, commands second
   requires:
     - id: oriera.infer.runtime.v1
       optional: false   # produces Command values
+    - id: oriera.genai.provider.v1
+      optional: false   # produces GenerationRequest values
 
   budgets:
     parse_p99_ms: 0.1    # rule-based v1; LLM budget lands with model routing
@@ -29,5 +36,5 @@ spec:
     v0.1 is a rule parser (spawn/clear/gravity, zh+en, negation-aware).
     Cognition/Director boot self-heals (resource_or_default) and meters
     tokens into UsageMeter. LLM backend, MCP tool registry land
-    v0.5–0.7 (book T12). L8 (generative) and L10 (interaction) crates
-    are not created yet — see ROADMAP.
+    v0.5–v0.7 (book T12). genai::parse_generation bridges into the L8
+    crate (ADR 0003); L10 (interaction) is not created yet — see ROADMAP.

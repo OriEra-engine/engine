@@ -23,5 +23,9 @@ jobs:
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
+      - name: Test (genai providers feature)
+        run: cargo test -p oriera-genai --features providers
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (genai providers feature)
+        run: cargo clippy -p oriera-genai --all-targets --features providers -- -D warnings

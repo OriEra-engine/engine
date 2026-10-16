@@ -1,0 +1,66 @@
+apiVersion: oriera.dev/v1
+kind: LayerManifest
+metadata:
+  layer: L8
+  name: generative-ai
+  owner: ai-team
+spec:
+  provides:
+    - id: oriera.genai.provider.v1
+      contract: rust:oriera_genai::{GenerationProvider,MockProvider}
+      stability: stable
+      note: task-shaped boundary (request_generation/poll_task/capabilities),
+        mirrors L7 ModelProvider; deterministic MockProvider keeps tests
+        hermetic and demos keyless (ADR 0003)
+    - id: oriera.genai.validate.v1
+      contract: rust:oriera_genai::{validate_asset,ValidationLimits}
+      stability: stable
+      note: magic sniff + size ceiling + GLB chunk sanity; deep validation
+        (mesh legality, zip nesting) lands with the v0.2 asset decoder
+    - id: oriera.genai.system.v1
+      contract: rust:oriera_genai::{GenAiSystem,GenAiMeter,GenAiLimits}
+      stability: stable
+      note: L2-scheduled system — bounded submit/poll slice, validation,
+        PendingSwaps + AssetLanded/AssetFailed events, placeholder degrade
+    - id: oriera.genai.hotswap.v1
+      contract: rust:oriera_genai::hot_swap::{apply_pending,GenAsset}
+      stability: stable
+      note: shell-side drain of PendingSwaps into the L4 named registry
+        (the documented L8 landing pad)
+  requires:
+    - id: oriera.core.scheduler.v1
+      optional: false   # System<World> runs on the L2 scheduler
+    - id: oriera.ecs.world.v1
+      optional: false   # resources + typed events
+    - id: oriera.asset.hotswap.v1
+      optional: false   # insert_named landing
+
+  budgets:
+    # Pure-std skeleton keeps the wasm slice tiny; adapters live behind
+    # the `providers` feature and are excluded from this budget.
+    wasm_size_kb_max: 150
+    poll_slice_p99_ms: 0.5   # engine-tick share of task polling
+
+  degrade:
+    - when: provider_absent
+      action: mock_fallback          # default backend; demos run keyless
+      cooldown_ms: 0
+    - when: asset_invalid
+      action: reject_and_count       # never enters the asset store
+      cooldown_ms: 0
+    - when: task_failed
+      action: placeholder_mesh       # ADR 0003 criterion 3 — land, don't crash
+      cooldown_ms: 0
+
+  observability:
+    traces: true
+    metrics_prefix: oriera_genai_
+
+  notes: |
+    Pre-lands a slice of the ROADMAP-2028 L8 item (ADR 0003): provider
+    boundary, validation, the offline backend, engine-loop integration
+    and the Tripo/Seedance protocol adapters (`providers` feature,
+    endpoint-versioned config — Tripo V2 retires 2026-11-01, migration
+    is one diff in tripo.rs). Vendors are data chosen at boot; keys
+    live only in platform shells. Adapters speak protocol only — the
+    HTTP transport is injected by the shell, so the wasm budget holds.

@@ -1,0 +1,27 @@
+[package]
+name = "oriera-genai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OriEra L8 generative AI: native asset generation behind one engine boundary (ADR 0003)"
+
+[lib]
+name = "oriera_genai"
+path = "src/lib.rs"
+
+# Only downward: L4 landing pad, L3 world/resources/events, L2 system
+# trait. No L7 dependency — generation is its own boundary (ADR 0003).
+[dependencies]
+oriera-asset.workspace = true
+oriera-common.workspace = true
+oriera-core.workspace = true
+oriera-ecs.workspace = true
+tracing.workspace = true
+# Protocol adapters only (providers feature): JSON shapes, still no
+# HTTP client — transport stays injected (ADR 0003, wasm budget).
+serde_json = { workspace = true, optional = true }
+
+[features]
+default = []
+providers = ["dep:serde_json"]
