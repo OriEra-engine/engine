@@ -37,6 +37,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install PyYAML
+        run: python -m pip install pyyaml
       - name: LayerManifest gate
         run: python scripts/check_manifests.py
 
