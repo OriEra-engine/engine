@@ -21,7 +21,7 @@
 </p>
 <p align="center">
   <em>Top: Corner Café — 3D AI NPC chat + long-term memory + AI director ｜ Bottom: natural-language world generation</em><br/>
-  <a href="docs/media/oriera-official-demo.mp4">📹 Full 54-second official demo</a>
+  <a href="docs/media/oriera-official-demo-en.mp4">📹 Full 54-second official demo (English subtitles)</a> · <a href="docs/media/oriera-official-demo.mp4">中文原版</a>
 </p>
 
 ---
