@@ -16,6 +16,12 @@
          line-height:1.75; pointer-events:none; }
   #hud b { color:#6ee7ff; font-weight:600; }
   #hud .beat { color:#ffd28a; }
+  /* ---- EN hint for international visitors ---- */
+  #en-hint { position:fixed; top:12px; left:50%; transform:translateX(-50%);
+             max-width:min(640px,46vw); text-align:center;
+             background:rgba(13,13,21,.72); border:1px solid #2a3040; border-radius:8px;
+             padding:6px 14px; font-size:11px; line-height:1.6; color:#8a90a6;
+             pointer-events:none; }
   /* 右侧：NPC 卡片 */
   #npcs { position:fixed; top:10px; right:12px; width:212px; display:flex;
           flex-direction:column; gap:8px; }
@@ -88,6 +94,7 @@
   世界进程：<span class="beat" id="w-beat">故事即将开始…</span><br/>
   L7 推理 <span class="state-dot" id="dot"></span><span id="llm-name">规则引擎（未配置大模型）</span>
 </div>
+<div id="en-hint">AI NPCs chat, remember each other &amp; a director drives the story — all as engine systems. Works offline; add any OpenAI-compatible key in ⚙ for full LLM.</div>
 
 <div id="npcs"></div>
 <div id="log"></div>
