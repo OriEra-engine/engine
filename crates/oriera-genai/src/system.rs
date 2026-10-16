@@ -378,7 +378,7 @@ mod tests {
         let queue_four = || {
             let mut sys = GenAiSystem::new(Arc::new(MockProvider::new()));
             for i in 0..4 {
-                sys.submit(GenerationRequest::text_to_3d(&format!("prop{i}"), "a prop"));
+                sys.submit(GenerationRequest::text_to_3d(format!("prop{i}"), "a prop"));
             }
             sys
         };
