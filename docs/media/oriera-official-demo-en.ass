@@ -1,0 +1,28 @@
+[Script Info]
+Title: OriEra official demo - English subtitles
+ScriptType: v4.00+
+PlayResX: 1280
+PlayResY: 800
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: EN,Arial,19,&H00FFFFFF,&H00FFFFFF,&H96000000,&H96000000,-1,0,0,0,100,100,0,0,1,1.6,0.8,2,40,40,26,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.40,0:00:02.90,EN,,0,0,0,,OriEra World Engine -- AI-native, reality-blended, self-evolving
+Dialogue: 0,0:00:03.10,0:00:05.40,EN,,0,0,0,,(1) Word Spirit: speech becomes action -- words parsed into engine commands, physics rewritten live
+Dialogue: 0,0:00:05.80,0:00:09.00,EN,,0,0,0,,Type "spawn 600" -- L9 parses it into an engine command; the world answers next frame
+Dialogue: 0,0:00:09.20,0:00:12.60,EN,,0,0,0,,"gravity 60" -- rewrite physics with one sentence
+Dialogue: 0,0:00:12.80,0:00:14.80,EN,,0,0,0,,"how many" -- query world state in plain words
+Dialogue: 0,0:00:14.90,0:00:17.20,EN,,0,0,0,,zero gravity, slow time, teleport -- all spoken
+Dialogue: 0,0:00:18.90,0:00:22.50,EN,,0,0,0,,"dance" -- and the swarm dances
+Dialogue: 0,0:00:25.10,0:00:27.30,EN,,0,0,0,,(2) Corner Cafe -- cognition, long-term memory and an AI director, all engine systems
+Dialogue: 0,0:00:27.80,0:00:31.50,EN,,0,0,0,,Three NPCs live here: the owner, an illustrator, an engine hacker
+Dialogue: 0,0:00:31.80,0:00:36.50,EN,,0,0,0,,They talk on their own -- every line lands in long-term memory
+Dialogue: 0,0:00:36.80,0:00:42.50,EN,,0,0,0,,They remember each other across turns; the AI director advances the story
+Dialogue: 0,0:00:42.80,0:00:47.50,EN,,0,0,0,,Join as a guest: any OpenAI-compatible key -- or just watch the offline rule engine
+Dialogue: 0,0:00:47.80,0:00:51.20,EN,,0,0,0,,One engine loop the whole time: L9 cognition to L7 inference, budgeted per frame
+Dialogue: 0,0:00:51.60,0:00:54.20,EN,,0,0,0,,Open source, Apache-2.0 -- github.com/OriEra-engine/engine

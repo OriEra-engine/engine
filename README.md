@@ -23,7 +23,7 @@
 </p>
 <p align="center">
   <em>上：隅角咖啡馆——3D AI NPC 对话 + 长期记忆 + AI 导演 ｜ 下：自然语言生成粒子世界</em><br/>
-  <a href="docs/media/oriera-official-demo.mp4">📹 完整 54 秒官方演示</a>
+  <a href="docs/media/oriera-official-demo.mp4">📹 完整 54 秒官方演示</a> · <a href="docs/media/oriera-official-demo-en.mp4">EN subtitled</a>
 </p>
 
 ---
