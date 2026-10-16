@@ -163,6 +163,7 @@ cargo clippy --workspace -- -D warnings
 | 想做什么 | 入口 |
 |---|---|
 | 理解架构 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 参与开源全景（不写代码也行） | [OPEN_SOURCE_GUIDE.md](docs/OPEN_SOURCE_GUIDE.md) |
 | 书 ↔ 仓库对照 | [BOOK_MAP.md](docs/BOOK_MAP.md) |
 | 提问 / 聊天 | [Discussions](https://github.com/OriEra-engine/engine/discussions)（中英文都行） |
 | 改架构 / 动契约 | 先在 [Ideas 区](https://github.com/OriEra-engine/engine/discussions/categories/ideas) 开 RFC，7 天评论期 |
