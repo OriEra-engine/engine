@@ -13,9 +13,18 @@ spec:
       contract: rust:oriera_infer::{UsageMeter,ModelProvider::last_usage}
       stability: stable
       note: frame-budgeted queue (deferred counter) + token metering
+    - id: oriera.infer.adaptive.v1
+      contract: rust:oriera_infer::InferSystem
+      stability: stable
+      note: budget-aware queue (v0.4) — runtime cap scales
+        with the L2 grant throttle (min 1 per frame, never starves) and
+        submit coalesces provably-safe adjacent duplicates (Spawn sum /
+        SetGravity last / Count last; float-sensitive kinds never merge)
   requires:
     - id: oriera.core.scheduler.v1
       optional: false
+    - id: oriera.common.grants.v1
+      optional: false   # runtime queue budget reads the throttle (v0.4)
     - id: oriera.ecs.world.v1
       optional: false
     - id: oriera.subsys.physics.v1

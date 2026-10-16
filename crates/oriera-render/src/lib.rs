@@ -150,6 +150,7 @@ mod tests {
             frame: FrameIndex(0),
             dt: 0.0,
             now: oriera_common::Timestamp(0),
+            grants: oriera_common::Grants::EMPTY,
         };
         let mut sys = RenderSystem::new();
         sys.run(&ctx, &mut world);
@@ -174,6 +175,7 @@ mod tests {
             frame: FrameIndex(0),
             dt: 0.0,
             now: oriera_common::Timestamp(0),
+            grants: oriera_common::Grants::EMPTY,
         };
         let mut sys = RenderSystem::new();
 

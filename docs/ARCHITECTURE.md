@@ -31,9 +31,9 @@ OriEra 不是又一个游戏引擎。它是一个 **AI 原生、虚实融合、�
 
 | 层 | 职责 | crate | 状态 | 关键接口（附录 B） |
 |---|---|---|---|---|
-| L0 | 跨层共享类型 | `crates/oriera-common` | ✅ | `Timestamp` / `FrameIndex` / `TokenUsage` |
+| L0 | 跨层共享类型 | `crates/oriera-common` | ✅ | `Timestamp` / `FrameIndex` / `TokenUsage` / `ComputeGrant` |
 | L1 | 平台抽象：图形/输入/存储/网络/XR 边界 | `crates/oriera-pal` | ✅ 骨架 | `QueryCapabilities` `CreateGfxBackend` `PollInputEvents` `OpenAssetStream` `RouteRemoteTask` |
-| L2 | 核心系统：帧调度、确定性框架 | `crates/oriera-core` | ✅ 骨架 | `BeginFrame` `SubmitTask` `ReportBudget` |
+| L2 | 核心系统：帧调度、算力分拨、确定性框架 | `crates/oriera-core` | ✅ 骨架 | `BeginFrame` `SubmitTask` `ReportBudget` `BudgetAllocator` |
 | L3 | 对象模型：ECS、资源单例 | `crates/oriera-ecs` | ✅ 可用 | `Spawn` `Query` `Publish`(规划) `Serialize`(规划) |
 | L4 | 资产管线：句柄注册表 | `crates/oriera-asset` | ✅ 骨架 | `ResolveAsset`(哈希即身份，规划) `Prefetch` `Evict` |
 | L5 | 渲染内核：Pass 图、帧提交 | `crates/oriera-render` | ✅ 骨架 | `BuildFrameGraph` `AddPass` `SetQuality` |
@@ -149,8 +149,8 @@ v0.2 润滑剂：认知/导演自愈启动（裸世界 boot 是测试契约）+ 
 ```
 应用壳 (platforms/pc)
   │ 持有 World(L3) + AssetStore(L4)，构建 Scheduler<World>(L2)
-  ▼ 每帧 sched.tick(&mut world)
-InferSystem(L7)   执行命令队列 → 生成/清除实体、写 Gravity resource
+  ▼ 每帧 sched.tick(&mut world)   ← tick 顶部：BudgetAllocator 先分拨本帧份额
+InferSystem(L7)   执行命令队列（预算 ×throttle）→ 生成/清除实体、写 Gravity resource
 GenAiSystem(L8)   限量轮询生成任务 → 校验 → PendingSwaps + AssetLanded 事件
                   （壳层随后 hot_swap::apply_pending 把结果落入 L4 命名资产）
 PhysicsSystem(L6) for_each2_mut::<Position,Velocity> 积分 + 边界反弹
@@ -192,6 +192,20 @@ L9 DirectorSystem 调度 NPC 行为 → L6 动作/物理 → L5 画质迟滞调�
 一句话：**AI 的输出是概率性的、突发的、贵的；引擎的职责是把这些毛刺吸收掉——
 计量、限流、降级、自愈，让上层以为世界永远是平滑的。**
 
+### v0.4 算力分拨契约（2026-10-16「先分后花」）
+
+润滑剂是每层各自刹车；算力分拨升级为**一个账本 + 中央仲裁 + 各层拨杆**——
+帧预算先分后花，浪费在进帧之前消掉。完整地图见 [COMPUTE-BUDGET.md](COMPUTE-BUDGET.md)。
+
+- L0 `ComputeGrant`/`Grants`：分拨词汇；查无此名 = 未纳管 = 满速
+- L2 `BudgetAllocator`：EWMA 成本 → 带保底的份额 → 迟滞节流（快降慢升），
+  经 `FrameCtx::grants` 借用下发（零分配）；`AllocatorConfig::off()` 逐位回退
+- L7 自适应队列：命令预算 ×throttle（下限 1 条/帧）+ submit 时可证安全合并
+- L6 空转跳过：冻结/完全静止的积分是恒等无操作，整趟跳过（位级等价）
+- L9 注意力节拍器：压力下说话间隔 ×(1/throttle)（封顶 8×），
+  `WakeEvent` 玩家一碰世界立即回满速
+- L8 `GenAiLimits` 拨杆感知：in-flight 上限与轮询间隔随压力缩放（缓不降级）
+
 ## 7. 治理：LayerManifest 与架构门禁（T3 §3.8.3）
 
 每层在 `manifests/` 声明机器可读的清单（L0–L9 共 10 份 YAML，含 L08-genai）：
@@ -219,7 +233,7 @@ assets/          logo、hero GIF 等品牌资产
 
 ## 9. 测试、CI 与性能
 
-- 全仓 **152 个测试**（CI 实测口径：`cargo test --workspace` + genai `providers` feature，2026-10-16），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
+- 全仓 **179 个测试**（CI 实测口径：`cargo test --workspace` + genai `providers` feature，2026-10-16），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
 - 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 / v0.2.0 / v0.3.0）。
 - 基准怎么跑、当前参考数据见 [PERF.md](PERF.md)。
 
@@ -243,6 +257,7 @@ L9 的 Agent 是引擎系统（挂调度器、吃帧预算、有世界状态）�
 ## 11. 延伸阅读
 
 - [AI-NATIVE.md](AI-NATIVE.md)：十一层逐层 AI 内嵌图 + 润滑剂详解
+- [COMPUTE-BUDGET.md](COMPUTE-BUDGET.md)：算力分拨管线地图（五个微模型 + 植入模型三步）
 - [ADR 0001](adr/0001-five-platforms-capability-bitmap.md)：五端一等公民与能力位图
 - [ADR 0002](adr/0002-neural-rendering-runtime-invariants.md)：神经渲染运行时不变量
 - [ADR 0003](adr/0003-l8-native-generative-ai.md)：L8 原生生成式 AI 边界

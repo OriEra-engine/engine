@@ -6,8 +6,13 @@
 //! systems receive `&mut W` each frame. No shared global state crosses
 //! layer boundaries (book T3 §3.8.1).
 
-use oriera_common::{FrameIndex, Timestamp};
+use oriera_common::{FrameIndex, Grants, Timestamp};
 use std::collections::VecDeque;
+
+pub mod allocator;
+
+pub use allocator::{AllocatorConfig, BudgetAllocator};
+pub use oriera_common::{ComputeGrant, Grants as BudgetGrants};
 
 /// Target frame time in nanoseconds (60fps ≈ 16.6ms).
 pub const FRAME_BUDGET_NS: u64 = 16_666_666;
@@ -16,11 +21,16 @@ pub const FRAME_BUDGET_NS: u64 = 16_666_666;
 /// rolling averages the scheduler reports.
 const HISTORY: usize = 60;
 
-/// Context passed to every system each frame.
-pub struct FrameCtx {
+/// Context passed to every system each frame. `grants` carries the
+/// compute allocation decided for *this* frame by the L2
+/// [`BudgetAllocator`] — spend-hungry systems scale their work by
+/// `ctx.grants.throttle_of(self.name())`; systems that don't look
+/// simply run at full speed (missing entry = unmanaged).
+pub struct FrameCtx<'a> {
     pub frame: FrameIndex,
     pub dt: f32,
     pub now: Timestamp,
+    pub grants: Grants<'a>,
 }
 
 /// A named system that runs each frame against the world `W`.
@@ -51,6 +61,11 @@ pub struct Scheduler<W> {
     /// AI-native apps that is usually cognition or inference. Names
     /// are captured once at `add_system`; ticks only rewrite the ms.
     system_ms: Vec<(String, f32)>,
+    /// Frame-budget arbiter (compute slicing). Regulates on observed
+    /// per-system cost; see [`BudgetAllocator`].
+    allocator: BudgetAllocator,
+    /// Reused grant table — steady-state ticks allocate nothing.
+    grant_table: Vec<(String, oriera_common::ComputeGrant)>,
 }
 
 /// Sustained overruns that trigger one warning, and the overrun ratio.
@@ -73,10 +88,40 @@ impl<W> Scheduler<W> {
             budget_warnings: 0,
             budget_ns: budget_ns.max(1),
             system_ms: Vec::new(),
+            allocator: BudgetAllocator::default(),
+            grant_table: Vec::new(),
         }
     }
 
+    /// Replace the allocator tuning (e.g. `AllocatorConfig::off()` for
+    /// pass-through behavior, or faster rhythms in tests).
+    pub fn with_allocator(mut self, config: AllocatorConfig) -> Self {
+        self.allocator = BudgetAllocator::new(config);
+        self
+    }
+
+    /// Read-only access to the budget arbiter (load, throttles, config).
+    pub fn allocator(&self) -> &BudgetAllocator {
+        &self.allocator
+    }
+
+    /// The grant table systems are reading this frame (empty when the
+    /// allocator is off — everyone unmanaged, full throttle).
+    pub fn grants(&self) -> Grants<'_> {
+        Grants::new(&self.grant_table)
+    }
+
+    /// Fraction of the frame budget left on the table over the last
+    /// 60 frames: `1.0` = everything (or no data yet), `0.0` = spent.
+    pub fn headroom(&self) -> f32 {
+        if self.frame_times.is_empty() {
+            return 1.0;
+        }
+        (1.0 - self.avg_frame_ms() / self.budget_ms()).clamp(0.0, 1.0)
+    }
+
     pub fn add_system(&mut self, s: Box<dyn System<W>>) {
+        self.allocator.register(s.name());
         self.system_ms.push((s.name().to_string(), 0.0));
         self.systems.push(s);
     }
@@ -93,15 +138,25 @@ impl<W> Scheduler<W> {
     }
 
     /// Run one frame. Returns the measured frame time in ms.
+    ///
+    /// Order inside the tick: the allocator first derives this frame's
+    /// grants from everything observed so far and hands them to the
+    /// systems via [`FrameCtx::grants`]; after the systems run, the
+    /// fresh per-system timings are folded back into the allocator's
+    /// cost model. Regulation leads, observation closes the loop.
     pub fn tick(&mut self, world: &mut W) -> f32 {
         let start = Timestamp::now();
         let dt = start.elapsed(self.last);
         self.last = start;
 
+        self.allocator
+            .allocate(self.budget_ms(), &mut self.grant_table);
+
         let ctx = FrameCtx {
             frame: self.frame,
             dt,
             now: start,
+            grants: Grants::new(&self.grant_table),
         };
 
         for (s, timing) in self.systems.iter_mut().zip(self.system_ms.iter_mut()) {
@@ -109,6 +164,8 @@ impl<W> Scheduler<W> {
             s.run(&ctx, world);
             timing.1 = Timestamp::now().elapsed(t0) * 1000.0;
         }
+
+        self.allocator.observe(&self.system_ms);
 
         let frame_ms = Timestamp::now().elapsed(start) * 1000.0;
         self.frame.0 += 1;
@@ -261,5 +318,46 @@ mod tests {
         }
         assert_eq!(sched.budget_warnings, 0);
         assert_eq!(sched.consecutive_overruns, 0);
+    }
+
+    #[test]
+    fn grants_flow_from_allocator_into_the_tick() {
+        let mut sched: Scheduler<()> = Scheduler::new();
+        sched.add_system(Box::new(Noop));
+        let mut w = ();
+        sched.tick(&mut w);
+        // Even on frame 0 the table exists (cold start: everyone
+        // managed, full throttle — never a zero-work first frame).
+        assert!(!sched.grants().is_empty());
+        assert!(sched.grants().is_managed("noop"));
+        assert_eq!(sched.grants().throttle_of("noop"), 1.0);
+    }
+
+    struct Noop;
+
+    impl System<()> for Noop {
+        fn name(&self) -> &str {
+            "noop"
+        }
+        fn run(&mut self, _ctx: &FrameCtx, _world: &mut ()) {}
+    }
+
+    #[test]
+    fn allocator_off_means_transparent_passthrough() {
+        let mut sched: Scheduler<u32> = Scheduler::new().with_allocator(AllocatorConfig::off());
+        sched.add_system(Box::new(IncSystem));
+        let mut world = 0u32;
+        for _ in 0..10 {
+            sched.tick(&mut world);
+        }
+        assert_eq!(world, 10); // behavior identical to v0.3
+        assert!(sched.grants().is_empty());
+        assert_eq!(sched.allocator().throttle_of("inc"), 1.0);
+    }
+
+    #[test]
+    fn headroom_is_a_fraction_of_unspent_budget() {
+        let sched: Scheduler<()> = Scheduler::new();
+        assert_eq!(sched.headroom(), 1.0); // no data yet
     }
 }

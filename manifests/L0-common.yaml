@@ -13,6 +13,12 @@ spec:
       contract: rust:oriera_common::TokenUsage
       stability: stable
       note: shared metering vocabulary; L7 reports, L9 accumulates
+    - id: oriera.common.grants.v1
+      contract: rust:oriera_common::{ComputeGrant,Grants}
+      stability: stable
+      note: compute-allocation vocabulary (v0.4); L2 produces one grant
+        per system per frame, FrameCtx carries it, spend-hungry systems
+        read throttle_of(name); absent entry = unmanaged = full speed
   requires: []   # L0 has no oriera dependencies by definition.
 
   budgets: {}    # pure data types, no runtime cost

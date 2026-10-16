@@ -14,6 +14,13 @@ spec:
       stability: stable
       note: NL → GenerationRequest bridge into L8 (rule-based v1,
         negation-aware); apps try generation first, commands second
+    - id: oriera.agent.cadence.v1
+      contract: rust:oriera_agent::{WakeEvent,CognitionSystem}
+      stability: stable
+      note: attention metronome (v0.4) — under budget
+        pressure the speak interval stretches by 1/throttle (cap 8x);
+        a WakeEvent (player touched the world) restores base cadence
+        instantly; utterance content is never touched
   requires:
     - id: oriera.infer.runtime.v1
       optional: false   # produces Command values

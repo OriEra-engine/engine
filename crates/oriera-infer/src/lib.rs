@@ -71,6 +71,12 @@ impl UsageMeter {
 pub const DEFAULT_FRAME_BUDGET: usize = 32;
 
 /// Inference runtime: drains a command queue each frame.
+///
+/// Compute-budget aware: the effective per-frame command budget is the
+/// configured `frame_budget` scaled by the L2 allocator's throttle
+/// (`ctx.grants`), so an over-subscribed frame automatically executes
+/// fewer commands instead of blowing the budget — never fewer than one,
+/// the queue can slow but never starve.
 pub struct InferSystem {
     queue: Vec<Command>,
     pub processed: u64,
@@ -81,11 +87,16 @@ pub struct InferSystem {
     /// not "how many commands waited". For queue depth see
     /// [`InferSystem::pending`] and [`InferSystem::max_pending`].
     pub deferred: u64,
+    /// Commands merged away by [`InferSystem::submit`] coalescing
+    /// (e.g. two adjacent spawns becoming one). Each merge is
+    /// provably world- and RNG-identical — this counter is the
+    /// "waste avoided" line in the metrics readout.
+    pub coalesced: u64,
     /// High-water mark of queue depth, in commands: the peak size the
     /// queue ever reached (after any submit burst, after any drain).
     /// The one number to answer "how bad was the flood".
     pub max_pending: usize,
-    /// Max commands executed per frame.
+    /// Max commands executed per frame (before throttle scaling).
     frame_budget: usize,
     /// Deterministic spawn RNG state (LCG) — replayable (book T5).
     seed: u64,
@@ -98,6 +109,7 @@ impl InferSystem {
             processed: 0,
             rejected: 0,
             deferred: 0,
+            coalesced: 0,
             max_pending: 0,
             frame_budget: DEFAULT_FRAME_BUDGET,
             seed: 0x9E3779B97F4A7C15,
@@ -105,7 +117,8 @@ impl InferSystem {
     }
 
     /// Cap per-frame command execution (e.g. `4` on a slow device, or
-    /// `1` when each command kicks off model work).
+    /// `1` when each command kicks off model work). The runtime budget
+    /// may still shrink below this under allocator pressure.
     pub fn with_frame_budget(n: usize) -> Self {
         Self {
             frame_budget: n.max(1),
@@ -114,7 +127,42 @@ impl InferSystem {
     }
 
     /// Submit a command for execution on the next frame.
+    ///
+    /// Coalesces against the queue tail when the merge is *provably*
+    /// identical in world outcome and RNG stream — cheap flood control
+    /// that runs before the queue ever reaches a frame:
+    ///
+    /// - `Spawn(m)` + `Spawn(n)` → `Spawn(m + n)`: one loop of `m + n`
+    ///   entities draws the same LCG sequence as two loops of `m`, `n`.
+    /// - `SetGravity(a)` + `SetGravity(b)` → `SetGravity(b)`: a plain
+    ///   resource overwrite; the earlier value is unobservable.
+    /// - `Count` + `Count` → `Count`: both read the world at execution
+    ///   time, which is identical either way.
+    ///
+    /// Deliberately NOT merged: `Teleport`/`SetSpeed` pairs — floating
+    /// point addition and multiplication are not associative, so
+    /// `(x + dx1) + dx2` can differ from `x + (dx1 + dx2)` in the last
+    /// bit, and anything that changes observable floats is not waste
+    /// removal, it is a behavior change.
     pub fn submit(&mut self, cmd: Command) {
+        if let Some(tail) = self.queue.last_mut() {
+            let merged = match (tail, &cmd) {
+                (Command::Spawn(m), Command::Spawn(n)) => {
+                    *m += *n;
+                    Some(())
+                }
+                (Command::SetGravity(prev), Command::SetGravity(new)) => {
+                    *prev = *new;
+                    Some(())
+                }
+                (Command::Count, Command::Count) => Some(()),
+                _ => None,
+            };
+            if merged.is_some() {
+                self.coalesced += 1;
+                return;
+            }
+        }
         self.queue.push(cmd);
         self.max_pending = self.max_pending.max(self.queue.len());
     }
@@ -138,8 +186,15 @@ impl System<World> for InferSystem {
     fn name(&self) -> &str {
         "infer"
     }
-    fn run(&mut self, _ctx: &FrameCtx, world: &mut World) {
-        let limit = self.frame_budget.min(self.queue.len());
+    fn run(&mut self, ctx: &FrameCtx, world: &mut World) {
+        // The allocator's dial for this frame: budget × throttle, never
+        // below one command. Unmanaged (allocator off / not registered)
+        // reads throttle 1.0 and behaves exactly like the static cap.
+        let limit = ctx
+            .grants
+            .get(self.name())
+            .scale_usize(self.frame_budget, 1)
+            .min(self.queue.len());
         self.deferred += (self.queue.len() - limit) as u64;
         let mut batch: Vec<Command> = self.queue.drain(..limit).collect();
         for cmd in batch.drain(..) {
@@ -210,13 +265,36 @@ impl Default for InferSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oriera_common::FrameIndex;
+    use oriera_common::{ComputeGrant, FrameIndex, Grants, Timestamp};
 
-    fn ctx() -> FrameCtx {
+    fn ctx() -> FrameCtx<'static> {
         FrameCtx {
             frame: FrameIndex(0),
             dt: 0.0,
-            now: oriera_common::Timestamp(0),
+            now: Timestamp(0),
+            grants: Grants::EMPTY,
+        }
+    }
+
+    /// A context where `infer` is managed at the given throttle. The
+    /// one-entry table is leaked: test-only, bounded by the number of
+    /// distinct throttles exercised (a handful).
+    fn throttled(t: f32) -> FrameCtx<'static> {
+        let entries = Box::leak(
+            vec![(
+                "infer".to_string(),
+                ComputeGrant {
+                    share_ms: 1.0,
+                    throttle: t,
+                },
+            )]
+            .into_boxed_slice(),
+        );
+        FrameCtx {
+            frame: FrameIndex(0),
+            dt: 0.0,
+            now: Timestamp(0),
+            grants: Grants::new(entries),
         }
     }
 
@@ -323,16 +401,20 @@ mod tests {
     fn frame_budget_spreads_a_command_flood() {
         let mut world = World::new();
         let mut sys = InferSystem::with_frame_budget(8);
-        for _ in 0..20 {
+        // Alternate kinds so nothing coalesces — this test measures the
+        // frame budget in isolation (coalescing has its own tests).
+        for i in 0..10 {
             sys.submit(Command::Spawn(1));
+            sys.submit(Command::SetGravity(1.0 + i as f32));
         }
         assert_eq!(sys.pending(), 20);
         assert_eq!(sys.max_pending, 20); // high-water mark of the burst
+        assert_eq!(sys.coalesced, 0);
 
         sys.run(&ctx(), &mut world);
         assert_eq!(sys.processed, 8);
         assert_eq!(sys.deferred, 12); // 12 deferral events this frame
-        assert_eq!(world.len(), 8);
+        assert_eq!(world.len(), 4); // 4 spawns in the first 8 commands
         assert_eq!(sys.pending(), 12);
 
         // Subsequent frames drain the rest.
@@ -340,7 +422,7 @@ mod tests {
         sys.run(&ctx(), &mut world);
         assert_eq!(sys.processed, 20);
         assert_eq!(sys.pending(), 0);
-        assert_eq!(world.len(), 20);
+        assert_eq!(world.len(), 10);
         // Frame 2 deferred 4 more (12 leftovers, budget 8): 12+4 events.
         assert_eq!(sys.deferred, 16);
         // High-water mark survives the drain — it is a max, not a level.
@@ -351,12 +433,19 @@ mod tests {
     fn default_budget_covers_typical_bursts() {
         let mut world = World::new();
         let mut sys = InferSystem::new();
-        for _ in 0..DEFAULT_FRAME_BUDGET {
-            sys.submit(Command::Count);
+        // Mixed kinds: a same-kind burst would coalesce (by design) and
+        // this test would measure the merge, not the budget.
+        for i in 0..DEFAULT_FRAME_BUDGET {
+            sys.submit(if i % 2 == 0 {
+                Command::Count
+            } else {
+                Command::SetGravity(i as f32)
+            });
         }
         sys.run(&ctx(), &mut world);
         assert_eq!(sys.processed, DEFAULT_FRAME_BUDGET as u64);
         assert_eq!(sys.deferred, 0);
+        assert_eq!(sys.coalesced, 0);
     }
 
     #[test]
@@ -369,5 +458,111 @@ mod tests {
         meter.record(p.last_usage());
         assert_eq!(meter.calls, 2);
         assert!(meter.total.total() > 0);
+    }
+
+    #[test]
+    fn allocator_throttle_shrinks_the_runtime_budget() {
+        let mut world = World::new();
+        let mut sys = InferSystem::with_frame_budget(8);
+        for i in 0..4 {
+            sys.submit(Command::Spawn(1));
+            sys.submit(Command::SetGravity(1.0 + i as f32));
+        }
+        // Half throttle: 8 submitted × 0.5 → 4 run this frame.
+        sys.run(&throttled(0.5), &mut world);
+        assert_eq!(sys.processed, 4);
+        assert_eq!(sys.pending(), 4);
+
+        // Full throttle: back to the configured cap.
+        for i in 0..4 {
+            sys.submit(Command::Spawn(1));
+            sys.submit(Command::SetGravity(10.0 + i as f32));
+        }
+        sys.run(&ctx(), &mut world);
+        assert_eq!(sys.processed, 12); // 4 + 8
+    }
+
+    #[test]
+    fn throttled_queue_never_starves_below_one_command() {
+        let mut world = World::new();
+        let mut sys = InferSystem::with_frame_budget(8);
+        for i in 0..5 {
+            sys.submit(if i % 2 == 0 {
+                Command::Count
+            } else {
+                Command::SetGravity(i as f32)
+            });
+        }
+        // Even a near-zero throttle keeps the queue moving.
+        sys.run(&throttled(0.0), &mut world);
+        assert_eq!(sys.processed, 1);
+        assert_eq!(sys.pending(), 4);
+    }
+
+    #[test]
+    fn adjacent_spawns_coalesce_bit_identically() {
+        // World outcome AND the LCG stream must be identical to running
+        // the commands unmerged — proven by direct comparison against
+        // a system that never coalesces (commands interleaved).
+        let run = |coalesced: bool| {
+            let mut world = World::new();
+            let mut sys = InferSystem::new();
+            sys.submit(Command::Spawn(5));
+            if !coalesced {
+                sys.run(&ctx(), &mut world); // force execution between submits
+            }
+            sys.submit(Command::Spawn(3));
+            sys.run(&ctx(), &mut world);
+            if coalesced {
+                sys.run(&ctx(), &mut world);
+            }
+            (
+                world
+                    .query::<Position>()
+                    .map(|(_e, p)| (p.x.to_bits(), p.y.to_bits()))
+                    .collect::<Vec<_>>(),
+                sys.processed,
+            )
+        };
+        let (merged_world, _) = run(true);
+        let (plain_world, _) = run(false);
+        assert_eq!(merged_world.len(), 8);
+        assert_eq!(merged_world, plain_world); // bit-identical entities
+    }
+
+    #[test]
+    fn duplicate_gravity_and_count_coalesce() {
+        let mut world = World::new();
+        let mut sys = InferSystem::new();
+        sys.submit(Command::SetGravity(9.8));
+        sys.submit(Command::SetGravity(1.6)); // overwrites before execution
+        sys.submit(Command::Count);
+        sys.submit(Command::Count); // second count is pure waste
+        assert_eq!(sys.pending(), 2); // 4 submissions → 2 commands
+        assert_eq!(sys.coalesced, 2);
+        sys.run(&ctx(), &mut world);
+        assert_eq!(world.resource::<Gravity>().map(|g| g.0), Some(1.6));
+        assert!(world.resource::<Stats>().is_some());
+    }
+
+    #[test]
+    fn float_sensitive_commands_are_never_merged() {
+        let mut sys = InferSystem::new();
+        sys.submit(Command::Teleport(0.1, 0.0));
+        sys.submit(Command::Teleport(0.2, 0.0));
+        sys.submit(Command::SetSpeed(2.0));
+        sys.submit(Command::SetSpeed(2.0)); // *4, not idempotent
+        assert_eq!(sys.pending(), 4);
+        assert_eq!(sys.coalesced, 0);
+    }
+
+    #[test]
+    fn different_command_kinds_do_not_coalesce_across_the_tail() {
+        let mut sys = InferSystem::new();
+        sys.submit(Command::Spawn(5));
+        sys.submit(Command::Count); // must run AFTER the spawn lands
+        sys.submit(Command::Spawn(2)); // tail is Count, not Spawn
+        assert_eq!(sys.pending(), 3);
+        assert_eq!(sys.coalesced, 0);
     }
 }

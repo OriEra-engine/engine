@@ -52,6 +52,15 @@ pub struct Turn {
     pub text: String,
 }
 
+/// Typed player-attention event: "someone just interacted with the
+/// world" (spoke, clicked, entered). Consumed by
+/// [`CognitionSystem`], which snaps its cadence back to base for that
+/// tick regardless of budget pressure — attention is the one signal
+/// that outranks the ledger. Written by shells or any input path via
+/// `world.write_event(WakeEvent)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WakeEvent;
+
 /// Rolling dialogue log resource.
 #[derive(Debug, Default, Clone)]
 pub struct DialogueLog {
@@ -82,6 +91,32 @@ impl WorldStory {
     }
 }
 
+/// The attention dial shared by the L9 systems: full throttle (or
+/// unmanaged) keeps the base cadence; budget pressure stretches it by
+/// `1/throttle` (throttle 0.5 → twice the gap), capped at
+/// `base × max_stretch`. Pure function of the grant — deterministic,
+/// zero state.
+fn stretched_interval(base: u32, max_stretch: u32, name: &str, ctx: &FrameCtx) -> u32 {
+    let t = ctx.grants.throttle_of(name);
+    if t >= 1.0 {
+        base
+    } else {
+        let stretch = (1.0 / t.max(0.05)).ceil() as u32;
+        (base.saturating_mul(stretch)).min(base.saturating_mul(max_stretch.max(1)))
+    }
+}
+
+/// u64 flavor for the director's wider intervals.
+fn stretched_interval_u64(base: u64, max_stretch: u32, name: &str, ctx: &FrameCtx) -> u64 {
+    let t = ctx.grants.throttle_of(name);
+    if t >= 1.0 {
+        base
+    } else {
+        let stretch = (1.0 / t.max(0.05)).ceil() as u64;
+        (base.saturating_mul(stretch)).min(base.saturating_mul(max_stretch.max(1) as u64))
+    }
+}
+
 const DEFAULT_BEATS: &[&str] = &[
     "雨季来了，店里放起了爵士",
     "绘本画到了'会说话的咖啡机'这一章",
@@ -96,8 +131,11 @@ const DEFAULT_BEATS: &[&str] = &[
 /// the dialogue log grows — all inside the engine tick.
 pub struct CognitionSystem<P: ModelProvider> {
     provider: Arc<P>,
-    /// Speak once per N engine ticks.
+    /// Speak once per N engine ticks at full attention.
     pub interval: u32,
+    /// Cap on how far budget pressure may stretch the cadence
+    /// (8 = an eighth of the chatter at the deepest squeeze).
+    pub max_stretch: u32,
     /// Round-robin cursor over speaking NPCs.
     cursor: usize,
     /// Cached speaker order (rebuilt when the roster changes).
@@ -109,6 +147,7 @@ impl<P: ModelProvider> CognitionSystem<P> {
         Self {
             provider,
             interval: interval.max(1),
+            max_stretch: 8,
             cursor: 0,
             order: Vec::new(),
         }
@@ -127,14 +166,24 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
         "l9-cognition"
     }
 
-    fn run(&mut self, _ctx: &FrameCtx, world: &mut World) {
+    fn run(&mut self, ctx: &FrameCtx, world: &mut World) {
         let (turn, day, beat) = {
             let story = world.resource_or_default::<WorldStory>();
             story.turn += 1;
             (story.turn, story.day, story.current_beat().to_string())
         };
 
-        if turn % self.interval as u64 != 0 {
+        // Attention metronome (v0.4 compute budget): a player touch
+        // snaps the cadence back to base; otherwise sustained budget
+        // pressure stretches it. Either way the utterance itself is
+        // untouched — cheaper, never dumber.
+        let woken = !world.take_events::<WakeEvent>().is_empty();
+        let interval = if woken {
+            self.interval
+        } else {
+            stretched_interval(self.interval, self.max_stretch, self.name(), ctx)
+        };
+        if turn % interval as u64 != 0 {
             return;
         }
         self.roster(world);
@@ -283,6 +332,8 @@ fn meter_usage<P: ModelProvider>(world: &mut World, provider: &P) {
 pub struct DirectorSystem<P: ModelProvider> {
     provider: Arc<P>,
     pub interval: u64,
+    /// Cap on budget-pressure stretch, same default as cognition.
+    pub max_stretch: u32,
     beat_idx: usize,
 }
 
@@ -291,6 +342,7 @@ impl<P: ModelProvider> DirectorSystem<P> {
         Self {
             provider,
             interval: interval.max(1),
+            max_stretch: 8,
             beat_idx: 0,
         }
     }
@@ -301,13 +353,14 @@ impl<P: ModelProvider> System<World> for DirectorSystem<P> {
         "l9-director"
     }
 
-    fn run(&mut self, _ctx: &FrameCtx, world: &mut World) {
+    fn run(&mut self, ctx: &FrameCtx, world: &mut World) {
         let (turn, day) = {
             let s = world.resource_or_default::<WorldStory>();
             s.turn += 1;
             (s.turn, s.day)
         };
-        if turn % self.interval != 0 {
+        let interval = stretched_interval_u64(self.interval, self.max_stretch, self.name(), ctx);
+        if turn % interval != 0 {
             return;
         }
         let log = world.resource::<DialogueLog>().cloned().unwrap_or_default();
@@ -361,16 +414,51 @@ impl<P: ModelProvider> System<World> for DirectorSystem<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oriera_common::{FrameIndex, Timestamp};
+    use oriera_common::{ComputeGrant, FrameIndex, Grants, Timestamp};
     use oriera_infer::RuleProvider;
     use std::sync::Arc;
 
-    fn ctx() -> FrameCtx {
+    fn ctx() -> FrameCtx<'static> {
         FrameCtx {
             frame: FrameIndex(0),
             dt: 0.0,
             now: Timestamp(0),
+            grants: Grants::EMPTY,
         }
+    }
+
+    /// A context where `name` is managed at the given throttle. The
+    /// one-entry table is leaked: test-only, bounded usage.
+    fn ctx_throttled(name: &str, t: f32) -> FrameCtx<'static> {
+        let entries = Box::leak(
+            vec![(
+                name.to_string(),
+                ComputeGrant {
+                    share_ms: 1.0,
+                    throttle: t,
+                },
+            )]
+            .into_boxed_slice(),
+        );
+        FrameCtx {
+            frame: FrameIndex(0),
+            dt: 0.0,
+            now: Timestamp(0),
+            grants: Grants::new(entries),
+        }
+    }
+
+    /// Runs cognition for `ticks` and returns the dialogue length.
+    fn chatter(ticks: u64, ctx: &FrameCtx, wake_each_tick: bool) -> usize {
+        let mut w = cafe_world();
+        let mut cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 1);
+        for _ in 0..ticks {
+            if wake_each_tick {
+                w.write_event(WakeEvent);
+            }
+            cog.run(ctx, &mut w);
+        }
+        w.resource::<DialogueLog>().unwrap().turns.len()
     }
 
     fn cafe_world() -> World {
@@ -453,5 +541,48 @@ mod tests {
         let meter = w.resource::<oriera_infer::UsageMeter>().unwrap();
         assert_eq!(meter.calls, 3);
         assert!(meter.total.total() > 0);
+    }
+
+    #[test]
+    fn budget_pressure_stretches_the_cadence_not_the_content() {
+        // Full attention: one utterance per tick (10 ticks → 10 lines).
+        assert_eq!(chatter(10, &ctx(), false), 10);
+        // Half throttle: interval stretches to 2 → half the calls.
+        let squeezed = chatter(10, &ctx_throttled("l9-cognition", 0.5), false);
+        assert_eq!(squeezed, 5);
+        // Deep squeeze respects max_stretch=8 even at throttle 0.01
+        // (the allocator floor is 0.1, but the dial must hold alone).
+        let deep = chatter(16, &ctx_throttled("l9-cognition", 0.01), false);
+        assert_eq!(deep, 2); // interval 8 → turns 8 and 16
+    }
+
+    #[test]
+    fn a_wake_event_restores_full_attention_instantly() {
+        // Deep squeeze, but the player touches the world every tick:
+        // attention outranks the ledger — full cadence, no warm-up.
+        let woken = chatter(10, &ctx_throttled("l9-cognition", 0.01), true);
+        assert_eq!(woken, 10);
+    }
+
+    #[test]
+    fn throttle_of_another_system_does_not_affect_cognition() {
+        // The grant table is per-system: a squeezed "render" leaves the
+        // café conversation untouched.
+        let n = chatter(6, &ctx_throttled("render", 0.1), false);
+        assert_eq!(n, 6);
+    }
+
+    #[test]
+    fn director_also_stretches_under_pressure() {
+        let run = |ctx: &FrameCtx| {
+            let mut w = cafe_world();
+            let mut dir = DirectorSystem::new(Arc::new(RuleProvider::new()), 1);
+            for _ in 0..10 {
+                dir.run(ctx, &mut w);
+            }
+            w.resource::<WorldStory>().unwrap().beats.len()
+        };
+        assert_eq!(run(&ctx()), 10);
+        assert_eq!(run(&ctx_throttled("l9-director", 0.5)), 5);
     }
 }
