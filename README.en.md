@@ -7,6 +7,7 @@
 **AI-native, mixed-reality, self-evolving open digital world runtime**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![crates.io](https://img.shields.io/crates/v/oriera-agent.svg)](https://crates.io/crates/oriera-agent)
 [![CI](https://github.com/OriEra-engine/engine/actions/workflows/ci.yml/badge.svg)](https://github.com/OriEra-engine/engine/actions/workflows/ci.yml)
 [![Live Demo](https://img.shields.io/badge/demo-live-ff7a3d.svg)](https://oriera-engine.github.io/engine/)
 [![Discussions](https://img.shields.io/badge/discussions-join-5b8def.svg)](https://github.com/OriEra-engine/engine/discussions)
