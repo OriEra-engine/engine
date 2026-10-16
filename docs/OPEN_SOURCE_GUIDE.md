@@ -3,6 +3,8 @@
 > 写给第一次来 OriEra 社区的人——不管你会不会写代码。
 > 15 分钟能提交第一个 PR 的速通版在 [FIRST_PR.md](FIRST_PR.md)；本篇是全景地图。
 
+**中文** · [English](OPEN_SOURCE_GUIDE.en.md)
+
 ## 1. OriEra 开源社区全景
 
 | 入口 | 地址 | 用途 |

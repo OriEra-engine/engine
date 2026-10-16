@@ -61,6 +61,7 @@ cargo run -p oriera-pc
 
 ## Community
 
+- 🗺️ [Open source guide](docs/OPEN_SOURCE_GUIDE.en.md) — how to join, with or without writing code
 - 🐣 [15-minute first PR guide](docs/FIRST_PR.md) (Chinese)
 - 🎃 **Hacktoberfest 2026 is live** — all [good first issues](https://github.com/OriEra-engine/engine/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) count until Oct 31
 - 📚 [Book ↔ repo map](docs/BOOK_MAP.md) — the architecture book is our spec
