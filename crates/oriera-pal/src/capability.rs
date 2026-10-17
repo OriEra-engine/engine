@@ -171,11 +171,50 @@ impl PlatformProfile {
 mod tests {
     use super::*;
 
+    fn all_profiles() -> [PlatformProfile; 6] {
+        [
+            PlatformProfile::pc("linux"),
+            PlatformProfile::mobile("android"),
+            PlatformProfile::web(),
+            PlatformProfile::ar_glasses("visionos"),
+            PlatformProfile::bci_reserved(),
+            PlatformProfile::unknown(),
+        ]
+    }
+
     #[test]
     fn bci_bits_are_zero_in_v1() {
+        let bci_bits = Capabilities::BCI_EEG_LSL | Capabilities::BCI_NON_INVASIVE;
+
+        for profile in all_profiles() {
+            assert!(
+                !profile.caps.intersects(bci_bits),
+                "{:?} must not expose BCI capabilities in v1: {:?}",
+                profile.family,
+                profile.caps
+            );
+        }
+    }
+
+    #[test]
+    fn pc_has_graphics_and_keyboard_mouse_without_eye_gaze() {
         let p = PlatformProfile::pc("linux");
-        assert!(!p.caps.contains(Capabilities::BCI_EEG_LSL));
-        assert!(!p.caps.contains(Capabilities::BCI_NON_INVASIVE));
+        assert!(p.caps.contains(Capabilities::GFX_WGPU));
+        assert!(p.caps.contains(Capabilities::INPUT_KEYBOARD_MOUSE));
+        assert!(!p.caps.contains(Capabilities::INPUT_EYE_GAZE));
+    }
+
+    #[test]
+    fn mobile_has_npu_and_8gb_vram_capabilities() {
+        let p = PlatformProfile::mobile("android");
+        assert!(p.caps.contains(Capabilities::NPU_TOPS_48));
+        assert!(p.caps.contains(Capabilities::VRAM_8GB));
+    }
+
+    #[test]
+    fn web_has_60fps_budget() {
+        let p = PlatformProfile::web();
+        assert_eq!(p.frame_budget_us, 16_666);
     }
 
     #[test]
@@ -184,5 +223,23 @@ mod tests {
         assert_eq!(p.frame_budget_us, 11_111);
         assert!(p.caps.contains(Capabilities::FOVEATED_RENDERING));
         assert!(p.caps.contains(Capabilities::INPUT_EYE_GAZE));
+    }
+
+    #[test]
+    fn bci_reserved_has_no_capabilities() {
+        let p = PlatformProfile::bci_reserved();
+        assert!(p.caps.is_empty());
+    }
+
+    #[test]
+    fn all_platforms_stay_within_8gb_vram_budget() {
+        for profile in all_profiles() {
+            assert!(
+                profile.vram_budget_mb <= 8192,
+                "{:?} VRAM budget exceeds 8192 MB: {} MB",
+                profile.family,
+                profile.vram_budget_mb
+            );
+        }
     }
 }
