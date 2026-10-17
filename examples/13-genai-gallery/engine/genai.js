@@ -221,17 +221,14 @@ export function createGenerationProvider(cfg) {
 }
 
 /** L7 聊天选型 → L8 图像提供商的引擎内映射（厂商知识不进应用）：
- *  智谱/OpenAI 的 Key 直接复用为 CogView/images 生成；其余厂商（无
- *  images 方言端点）与无 Key 情况降级为程序化后端——离线也是表达。 */
+ *  智谱/OpenAI 的 Key 直接复用为 CogView/images 生成，base/model 引用
+ *  GEN_PROVIDER_PRESETS（单一来源）；其余厂商（无 images 方言端点）与
+ *  无 Key 情况降级为程序化后端——离线也是表达（ADR 0003 判据 3）。 */
 export function imageProviderFromChatConfig(cfg) {
-  // 只有这两家的 Key 能直接复用为 images 方言端点；其余厂商与无 Key
-  // 情况降级为程序化后端——离线也是表达（ADR 0003 判据 3）。
-  if (!cfg || !cfg.key) return new ProceduralProvider();
-  if (cfg.kind === "openai")
-    return new CogViewProvider({ key: cfg.key, model: "gpt-image-1", base: "https://api.openai.com/v1" });
-  if (cfg.kind === "zhipu")
-    return new CogViewProvider({ key: cfg.key, model: "cogview-3-flash", base: "https://open.bigmodel.cn/api/paas/v4" });
-  return new ProceduralProvider();
+  const preset = cfg && cfg.key && GEN_PROVIDER_PRESETS[cfg.kind];
+  return preset && preset.kind !== "tripo" // tripo 是 3D 方言，不能当 images 端点
+    ? new CogViewProvider({ key: cfg.key, model: preset.model, base: preset.base })
+    : new ProceduralProvider();
 }
 
 /* ---------- L4 · 命名资产库（↔ oriera-asset insert_named 热替换） ---------- */
