@@ -57,6 +57,7 @@ impl MockProvider {
             GenerationKind::TextTo3d | GenerationKind::ImageTo3d => {
                 (AssetFormat::Glb, crate::tiny_glb())
             }
+            GenerationKind::TextToImage => (AssetFormat::Image, crate::tiny_png()),
             GenerationKind::TextToVideo | GenerationKind::ImageToVideo => {
                 (AssetFormat::Video, crate::tiny_mp4_stub())
             }
@@ -160,6 +161,26 @@ mod tests {
         match p.poll_task(&id).unwrap() {
             TaskStatus::Succeeded(a) => {
                 assert_eq!(a.format, AssetFormat::Video);
+                assert!(crate::validate_asset(&a, &Default::default()).is_ok());
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn image_requests_land_valid_png_stubs() {
+        let p = MockProvider::new();
+        let id = p
+            .request_generation(&GenerationRequest::text_to_image(
+                "sky_dome",
+                "雨夜霓虹的天空",
+            ))
+            .unwrap();
+        p.poll_task(&id).unwrap(); // Queued
+        p.poll_task(&id).unwrap(); // Running
+        match p.poll_task(&id).unwrap() {
+            TaskStatus::Succeeded(a) => {
+                assert_eq!(a.format, AssetFormat::Image);
                 assert!(crate::validate_asset(&a, &Default::default()).is_ok());
             }
             other => panic!("expected success, got {other:?}"),

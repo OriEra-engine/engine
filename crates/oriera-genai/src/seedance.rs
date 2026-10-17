@@ -66,6 +66,7 @@ impl GenerationProvider for SeedanceProvider {
         ProviderCapabilities {
             text_to_3d: false,
             image_to_3d: false,
+            text_to_image: false,
             text_to_video: true,
             image_to_video: false, // v0.1 request surface has no image field
         }

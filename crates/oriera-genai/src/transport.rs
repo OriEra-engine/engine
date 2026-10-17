@@ -42,6 +42,17 @@ impl HttpRequest {
             body: None,
         }
     }
+
+    /// A GET with no credentials — for vendor-signed CDN links, where a
+    /// stray `Authorization` header can turn a valid URL into a 400.
+    pub fn get_public(url: impl Into<String>) -> Self {
+        Self {
+            method: Method::Get,
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -38,7 +38,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 
 **🌐 https://oriera-engine.github.io/engine/**
 
-12 个可玩 demo，浏览器直接打开：
+13 个可玩 demo，浏览器直接打开：
 
 | Demo | 展示 | 打开 |
 |---|---|---|
@@ -54,6 +54,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 | 10 Word Spirit 言灵世界 | AI 原生小游戏：自然语言改写物理法则 | [▶](https://oriera-engine.github.io/engine/examples/10-word-spirit/index.html) |
 | 11 Corner Café 隅角咖啡馆 | 3D AI NPC：大模型对话 + 长期记忆 + AI 导演 | [▶](https://oriera-engine.github.io/engine/examples/11-ai-cafe/index.html) |
 | 12 Memory Atlas 记忆星图 | 离线 NPC 记忆写入、检索与时间衰减可视化 | [▶](https://oriera-engine.github.io/engine/examples/12-memory-atlas/index.html) |
+| 13 Generative Gallery 生成式画廊 | 一句话主题 → L8 文生图/文生 3D → L4 热替换装帧小 3D 世界 | [▶](https://oriera-engine.github.io/engine/examples/13-genai-gallery/index.html) |
 
 ## 架构
 

@@ -53,6 +53,7 @@ impl GenerationProvider for TripoProvider {
         ProviderCapabilities {
             text_to_3d: true,
             image_to_3d: false, // v0.1 request surface has no image field
+            text_to_image: false,
             text_to_video: false,
             image_to_video: false,
         }

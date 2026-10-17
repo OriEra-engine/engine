@@ -15,6 +15,11 @@ pub enum ProviderKind {
     /// `providers` feature; current endpoint generation V2 (retires
     /// 2026-11-01 — `base_url` is config, migrating is one diff).
     Tripo,
+    /// Text→PNG/JPEG stills through the OpenAI **images dialect**
+    /// (`POST {base}/images/generations`). Default base is Zhipu
+    /// CogView; OpenAI images or any compatible gateway is the same
+    /// adapter with `base_url`/`model` overrides.
+    CogView,
     /// ByteDance Seedance video models via a Volcano-Ark-compatible
     /// tasks API. Also behind the `providers` feature.
     Seedance,
@@ -25,6 +30,7 @@ impl ProviderKind {
         match self {
             ProviderKind::Mock => "mock",
             ProviderKind::Tripo => "tripo",
+            ProviderKind::CogView => "cogview",
             ProviderKind::Seedance => "seedance",
         }
     }
@@ -33,6 +39,7 @@ impl ProviderKind {
         match id {
             "mock" | "" => Some(ProviderKind::Mock),
             "tripo" | "tripo3d" => Some(ProviderKind::Tripo),
+            "cogview" | "image" | "images" => Some(ProviderKind::CogView),
             "seedance" | "ark" | "doubao-seedance" => Some(ProviderKind::Seedance),
             _ => None,
         }
@@ -44,6 +51,9 @@ impl ProviderKind {
             ProviderKind::Mock => "",
             // V2 generation; watch the 2026-11-01 retirement notice.
             ProviderKind::Tripo => "https://api.tripo3d.ai",
+            // Zhipu open platform (CogView); OpenAI-compatible images
+            // endpoints override via base_url.
+            ProviderKind::CogView => "https://open.bigmodel.cn/api/paas/v4",
             // Volcano Ark (volcengine); BytePlus variants override the base.
             ProviderKind::Seedance => "https://ark.cn-beijing.volces.com",
         }
@@ -136,10 +146,11 @@ pub fn create_generation_provider_with_transport(
     cfg: &ProviderConfig,
     transport: crate::transport::SharedTransport,
 ) -> Arc<dyn GenerationProvider> {
-    use crate::{seedance::SeedanceProvider, tripo::TripoProvider};
+    use crate::{cogview::CogViewProvider, seedance::SeedanceProvider, tripo::TripoProvider};
     match cfg.kind {
         ProviderKind::Mock => Arc::new(MockProvider::new()),
         ProviderKind::Tripo => Arc::new(TripoProvider::new(cfg.clone(), transport)),
+        ProviderKind::CogView => Arc::new(CogViewProvider::new(cfg.clone(), transport)),
         ProviderKind::Seedance => Arc::new(SeedanceProvider::new(cfg.clone(), transport)),
     }
 }
@@ -150,7 +161,9 @@ mod tests {
 
     #[test]
     fn kinds_roundtrip_and_default_to_mock() {
-        for id in ["mock", "tripo", "tripo3d", "seedance", "ark", ""] {
+        for id in [
+            "mock", "tripo", "tripo3d", "cogview", "image", "images", "seedance", "ark", "",
+        ] {
             assert!(ProviderKind::from_id(id).is_some(), "{id}");
         }
         assert_eq!(ProviderKind::from_id("nope"), None);
@@ -167,6 +180,11 @@ mod tests {
         cfg.base_url = Some("https://my-gateway.example".into());
         assert_eq!(cfg.base(), "https://my-gateway.example");
         assert!(ProviderKind::Seedance.default_base_url().contains("volces"));
+        // The images dialect defaults to Zhipu CogView and is overridable
+        // to any OpenAI-images-compatible endpoint.
+        assert!(ProviderKind::CogView
+            .default_base_url()
+            .contains("bigmodel"));
     }
 
     #[test]

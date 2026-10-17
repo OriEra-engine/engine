@@ -10,8 +10,9 @@ spec:
       contract: rust:oriera_genai::{GenerationProvider,MockProvider}
       stability: stable
       note: task-shaped boundary (request_generation/poll_task/capabilities),
-        mirrors L7 ModelProvider; deterministic MockProvider keeps tests
-        hermetic and demos keyless (ADR 0003)
+        mirrors L7 ModelProvider; five kinds incl. text_to_image
+        (RFC 0001); deterministic MockProvider keeps tests hermetic
+        and demos keyless (ADR 0003)
     - id: oriera.genai.validate.v1
       contract: rust:oriera_genai::{validate_asset,ValidationLimits}
       stability: stable
@@ -62,8 +63,16 @@ spec:
   notes: |
     Pre-lands a slice of the ROADMAP-2028 L8 item (ADR 0003): provider
     boundary, validation, the offline backend, engine-loop integration
-    and the Tripo/Seedance protocol adapters (`providers` feature,
-    endpoint-versioned config — Tripo V2 retires 2026-11-01, migration
-    is one diff in tripo.rs). Vendors are data chosen at boot; keys
-    live only in platform shells. Adapters speak protocol only — the
-    HTTP transport is injected by the shell, so the wasm budget holds.
+    and the Tripo/Seedance/CogView protocol adapters (`providers`
+    feature, endpoint-versioned config — Tripo V2 retires 2026-11-01,
+    migration is one diff in tripo.rs). CogView speaks the OpenAI
+    images dialect (default base Zhipu; any compatible gateway via
+    base_url/model overrides) and serves text_to_image (RFC 0001) —
+    the highest-leverage kind for small 3D games: skydomes, ground
+    albedo, posters, sprite sheets. Placeholder degrade is
+    kind-matched: a failed still lands a real 1x1 PNG, a failed mesh
+    lands an empty-scene GLB (ADR 0003 criterion 3). Vendors are data
+    chosen at boot; keys live only in platform shells. Adapters speak
+    protocol only — the HTTP transport is injected by the shell, so
+    the wasm budget holds. Browser-side mirror: demo 13
+    engine/genai.js (same boundary, fetch transport).

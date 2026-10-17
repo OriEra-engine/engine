@@ -118,6 +118,7 @@ pub struct AssetFailed {
 struct InFlight {
     task: crate::TaskId,
     name: String,
+    kind: crate::GenerationKind,
 }
 
 /// The L8 system: request queue + bounded task polling + validation +
@@ -167,6 +168,7 @@ impl GenAiSystem {
         &self,
         world: &mut World,
         name: &str,
+        kind: crate::GenerationKind,
         error: String,
         degraded: bool,
         limits: &GenAiLimits,
@@ -182,7 +184,7 @@ impl GenAiSystem {
                 .queue
                 .push(AssetSwap {
                     name: name.to_string(),
-                    asset: placeholder_asset(),
+                    asset: placeholder_asset(kind),
                     placeholder: true,
                 });
             world.write_event(AssetLanded {
@@ -199,11 +201,20 @@ impl GenAiSystem {
     }
 }
 
-/// The degrade payload: a fully valid, parseable minimal GLB.
-fn placeholder_asset() -> GeneratedAsset {
+/// The degrade payload: a valid, parseable minimal container **in the
+/// format the slot expects** — a failed skydome texture lands a real
+/// 1×1 PNG, a failed mesh lands a real empty-scene GLB. Renderers never
+/// receive bytes their decoder cannot read (ADR 0003 criterion 3).
+fn placeholder_asset(kind: crate::GenerationKind) -> GeneratedAsset {
+    let payload = match kind.placeholder_format() {
+        AssetFormat::Glb => crate::tiny_glb(),
+        AssetFormat::Image => crate::tiny_png(),
+        AssetFormat::Video => crate::tiny_mp4_stub(),
+        AssetFormat::Usdz => Vec::new(), // no USDZ kinds yet; unreachable
+    };
     GeneratedAsset {
-        format: AssetFormat::Glb,
-        payload: crate::tiny_glb(),
+        format: kind.placeholder_format(),
+        payload,
         provider_id: "placeholder".into(),
         model: String::new(),
     }
@@ -248,6 +259,7 @@ impl System<World> for GenAiSystem {
                     world.resource_or_default::<GenAiMeter>().submitted += 1;
                     self.in_flight.push(InFlight {
                         task,
+                        kind: req.kind,
                         name: req.name,
                     });
                 }
@@ -259,13 +271,14 @@ impl System<World> for GenAiSystem {
                     self.fail(
                         world,
                         &req.name,
+                        req.kind,
                         format!("unsupported: {m}"),
                         false,
                         &limits,
                     );
                 }
                 Err(e) => {
-                    self.fail(world, &req.name, e.to_string(), true, &limits);
+                    self.fail(world, &req.name, req.kind, e.to_string(), true, &limits);
                 }
             }
         }
@@ -302,13 +315,13 @@ impl System<World> for GenAiSystem {
                                     error = %e,
                                     "L8 generated asset failed validation — degrading"
                                 );
-                                self.fail(world, &t.name, e.to_string(), true, &limits);
+                                self.fail(world, &t.name, t.kind, e.to_string(), true, &limits);
                             }
                         }
                         false // terminal
                     }
                     Ok(TaskStatus::Failed(m)) => {
-                        self.fail(world, &t.name, m, true, &limits);
+                        self.fail(world, &t.name, t.kind, m, true, &limits);
                         false
                     }
                     Ok(_) => true, // queued/running: poll again later
@@ -454,6 +467,47 @@ mod tests {
         let failed = w.take_events::<AssetFailed>();
         assert_eq!(failed.len(), 1);
         assert!(failed[0].degraded);
+    }
+
+    #[test]
+    fn image_failure_lands_a_png_placeholder_not_an_empty_mesh() {
+        struct FailImages;
+        impl GenerationProvider for FailImages {
+            fn id(&self) -> &str {
+                "fail-images"
+            }
+            fn capabilities(&self) -> crate::ProviderCapabilities {
+                crate::ProviderCapabilities::ALL
+            }
+            fn request_generation(
+                &self,
+                req: &GenerationRequest,
+            ) -> Result<crate::TaskId, GenAiError> {
+                match req.kind {
+                    crate::GenerationKind::TextToImage => {
+                        Err(GenAiError::Provider("image vendor down".into()))
+                    }
+                    _ => unreachable!("test only submits images"),
+                }
+            }
+            fn poll_task(&self, _t: &crate::TaskId) -> Result<TaskStatus, GenAiError> {
+                unreachable!("never submitted")
+            }
+        }
+
+        let mut w = world();
+        let mut sys = GenAiSystem::new(Arc::new(FailImages));
+        sys.submit(GenerationRequest::text_to_image("sky_dome", "雨夜霓虹"));
+        sys.run(&ctx(), &mut w);
+
+        let swaps = &w.resource::<PendingSwaps>().unwrap().queue;
+        assert_eq!(swaps.len(), 1);
+        assert!(swaps[0].placeholder);
+        // The slot expects a still: the placeholder must be a decodable
+        // PNG, not the 3D tiny GLB.
+        assert_eq!(swaps[0].asset.format, crate::AssetFormat::Image);
+        assert!(crate::validate_asset(&swaps[0].asset, &Default::default()).is_ok());
+        assert_eq!(swaps[0].asset.payload.first(), Some(&0x89)); // PNG magic
     }
 
     #[test]

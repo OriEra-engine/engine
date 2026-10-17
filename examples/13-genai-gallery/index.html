@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OriEra Demo 13 — 生成式画廊 Generative Gallery</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#0a0e14;color:#e9f0f4}
+*{box-sizing:border-box}body{margin:0;overflow:hidden}a{color:#92e4ce}
+#stage{position:fixed;inset:0}
+#en-hint{position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:30;background:rgba(10,16,22,.82);
+  border:1px solid #2b3a4a;border-top:none;border-radius:0 0 10px 10px;padding:5px 14px;
+  font-size:11px;color:#9db3c2;pointer-events:none;text-align:center}
+.panel{position:fixed;z-index:20;background:rgba(13,19,27,.88);border:1px solid #28364a;border-radius:14px;
+  padding:16px 18px;backdrop-filter:blur(6px);width:300px}
+#left{top:52px;left:16px}
+#right{top:52px;right:16px;width:280px}
+h1{font-size:15px;margin:0 0 2px;letter-spacing:.06em}
+.sub{font-size:11px;color:#8a99ab;margin-bottom:12px}
+label{display:block;font-size:11.5px;color:#9fb0c0;margin:12px 0 6px}
+input,select,button{font:inherit;border:1px solid #3b4d63;border-radius:8px;padding:8px 10px;color:inherit;background:#0d1520;width:100%}
+button{cursor:pointer}button:hover{border-color:#91e4cb}
+button.primary{background:#a1e6cd;color:#0f241e;border-color:#a1e6cd;font-weight:650}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px}
+.chips button{width:auto;font-size:11.5px;padding:5px 9px;border-radius:999px;color:#b9c8d6}
+.gear{position:fixed;right:16px;bottom:16px;z-index:25;width:40px;height:40px;border-radius:50%;font-size:18px}
+#panel-gear{display:none;position:fixed;right:16px;bottom:64px;z-index:26;width:300px}
+#panel-gear.open{display:block}
+.slots{font-size:12px}
+.slots .row{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid #1e2a38;align-items:center}
+.slots .row:first-child{border-top:none}
+.dot{width:8px;height:8px;border-radius:50%;background:#4a5a6a;flex:none;display:inline-block;margin-right:6px}
+.dot.q{background:#e7c26a;animation:pulse 1.2s infinite}
+.dot.ok{background:#7fe0b0}.dot.bad{background:#e07f7f}
+.dot.ph{background:#c9a7e0}
+.meter{font-size:11px;color:#8fa0b0;margin-top:10px;line-height:1.7;font-variant-numeric:tabular-nums}
+.meter b{color:#cfe3d8}
+#toggle{margin-top:12px;font-size:12px}
+footer{position:fixed;left:16px;bottom:14px;z-index:20;font-size:11px;color:#7f8ea0;line-height:1.7;max-width:560px}
+#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:40;background:rgba(18,26,36,.94);
+  border:1px solid #2d3d50;border-radius:10px;padding:8px 16px;font-size:12.5px;color:#cfe3d8;opacity:0;transition:opacity .3s;pointer-events:none}
+#toast.show{opacity:1}
+@keyframes pulse{50%{opacity:.35}}
+@media(max-width:760px){.panel{width:min(46vw,240px)}#right{display:none}footer{display:none}}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="en-hint">Type a theme → the engine's L8 generates sky / ground / posters (offline procedural by default; add a CogView or Tripo key in ⚙). Hot swap, no reload.</div>
+
+<section class="panel" id="left">
+  <h1>ORIERA · 生成式画廊</h1>
+  <div class="sub">L8 GenAiSystem · L4 命名热替换 · L5 槽位消费 —— demo 13</div>
+  <label for="theme">世界主题（一句话）</label>
+  <input id="theme" maxlength="40" value="雨夜霓虹的东京小巷">
+  <button class="primary" id="retheme">重新装帧这个世界</button>
+  <label>预设主题</label>
+  <div class="chips" id="chips"></div>
+  <button id="toggle">表达对比：查看「引擎前 · 纯色」</button>
+</section>
+
+<section class="panel" id="right">
+  <h1>生成槽位</h1>
+  <div class="sub">引擎美术导演输出的资产，经校验热替换落位</div>
+  <div class="slots" id="slots"></div>
+  <div class="meter" id="meter">计量启动中…</div>
+  <div class="meter" id="provider"></div>
+</section>
+
+<section class="panel" id="panel-gear">
+  <h1>⚙ L8 生成运行时</h1>
+  <div class="sub">Key 只存本浏览器 localStorage；本仓库不含任何密钥。</div>
+  <label for="g-kind">生成提供商</label>
+  <select id="g-kind">
+    <option value="procedural">离线程序化（无需 Key）</option>
+    <option value="zhipu">智谱 CogView（文生图）</option>
+    <option value="openai">OpenAI images（文生图）</option>
+    <option value="tripo">Tripo（文生 3D 道具）</option>
+  </select>
+  <label for="g-key">API Key</label>
+  <input id="g-key" type="password" placeholder="sk-… / 9329…（绝不入仓）" autocomplete="off">
+  <label for="g-model">模型（可选，留空用默认）</label>
+  <input id="g-model" placeholder="cogview-3-flash / gpt-image-1 / tripo-v2.5">
+  <label for="g-base">Base URL（可选，兼容网关）</label>
+  <input id="g-base" placeholder="https://open.bigmodel.cn/api/paas/v4">
+  <button class="primary" id="g-save" style="margin-top:12px">保存并重建提供商</button>
+  <div class="sub" style="margin-top:10px">未在本页存过 Key 时，会自动复用 demo 11（咖啡馆）保存的智谱 Key。</div>
+</section>
+
+<button class="gear" id="gear" title="生成设置">⚙</button>
+<footer>
+  应用零模型代码：提示词形状、HTTP、校验、降级都在引擎侧（engine/genai.js ↔ crates/oriera-genai 一一对照）。<br>
+  离线 = 确定性程序化贴图（ADR 0003 判据 3：降级也是表达）；配 Key = CogView 文生图 / Tripo 文生 3D 热替换。
+</footer>
+<div id="toast"></div>
+
+<script>
+/* 排障钩子（经典脚本先于模块执行）：捕获模块脚本的未处理错误 */
+window.__e = [];
+window.addEventListener("error", e => window.__e.push(`${e.message} @${(e.filename || "?").split("/").pop()}:${e.lineno}`));
+window.addEventListener("unhandledrejection", e => window.__e.push(`rejection: ${e.reason}`));
+</script>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "./vendor/OrbitControls.js";
+import { GLTFLoader } from "./vendor/GLTFLoader.js";
+import {
+  GEN_PROVIDER_PRESETS, ART_SLOTS, GenerationKind,
+  createGenerationProvider, loadGenaiConfig, saveGenaiConfig,
+  GenAiSystem, ArtDirectorSystem, AssetStore, SlotBindings, applyPending, Scheduler,
+} from "./engine/genai.js";
+
+/* ---------- L5 场景：一间小画廊（穹顶 + 地面 + 三面墙 + 展台） ---------- */
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x0a0e14, 0.016);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, .1, 120);
+camera.position.set(0, 3.4, 10.5);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.2, 0);
+controls.enableDamping = true; controls.maxDistance = 26; controls.minDistance = 4;
+controls.maxPolarAngle = Math.PI * .52;
+
+const FLAT = { sky: 0x141b26, ground: 0x1b222e, wall: 0x232c3a, poster: 0x2b3546, prop: 0x5a6b7d };
+
+const skyMat = new THREE.MeshBasicMaterial({ color: FLAT.sky, side: THREE.BackSide });
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(38, 32, 16), skyMat));
+
+const groundMat = new THREE.MeshStandardMaterial({ color: FLAT.ground, roughness: .92 });
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(26, 26), groundMat);
+ground.rotation.x = -Math.PI / 2; scene.add(ground);
+
+const wallMat = new THREE.MeshStandardMaterial({ color: FLAT.wall, roughness: .95 });
+const WALLS = [ // position + 朝向（法线指向房间中心）
+  { pos: [-7, 4, 0], ry: Math.PI / 2 },
+  { pos: [7, 4, 0], ry: -Math.PI / 2 },
+  { pos: [0, 4, 7], ry: Math.PI },
+];
+for (const w of WALLS) {
+  const wall = new THREE.Mesh(new THREE.PlaneGeometry(14, 8), wallMat);
+  wall.position.set(...w.pos); wall.rotation.y = w.ry;
+  scene.add(wall);
+}
+const posterMats = [];
+const POSTERS = [ // 与三面墙一一对应的挂画位；n* 为帧板朝墙方向的偏移分量
+  { pos: [-6.6, 3.1, 0], ry: Math.PI / 2, nx: -1, nz: 0 },
+  { pos: [6.6, 3.1, 0], ry: -Math.PI / 2, nx: 1, nz: 0 },
+  { pos: [0, 3.1, 6.6], ry: 0, nx: 0, nz: 1 },
+];
+POSTERS.forEach(p => {
+  const pm = new THREE.MeshStandardMaterial({ color: FLAT.poster, roughness: .85 });
+  posterMats.push(pm);
+  const poster = new THREE.Mesh(new THREE.PlaneGeometry(2.3, 3.2), pm);
+  poster.position.set(...p.pos); poster.rotation.y = p.ry;
+  scene.add(poster);
+  const frame = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 3.5),
+    new THREE.MeshStandardMaterial({ color: 0x11161f, roughness: .6 }));
+  frame.position.set(p.pos[0] + p.nx * .015, 3.1, p.pos[2] + p.nz * .015);
+  frame.rotation.y = p.ry;
+  scene.add(frame);
+});
+
+const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(.85, 1, 1.1, 24),
+  new THREE.MeshStandardMaterial({ color: 0x2a3444, roughness: .5, metalness: .2 }));
+pedestal.position.y = .55; scene.add(pedestal);
+const heroGroup = new THREE.Group(); heroGroup.position.y = 1.6; scene.add(heroGroup);
+const propFallback = new THREE.Mesh(new THREE.TorusKnotGeometry(.55, .18, 96, 14),
+  new THREE.MeshStandardMaterial({ color: FLAT.prop, roughness: .35, metalness: .35 }));
+heroGroup.add(propFallback);
+
+scene.add(new THREE.AmbientLight(0xbfd4e6, .55));
+const key = new THREE.DirectionalLight(0xfff3e0, 1.5); key.position.set(4, 9, 6); scene.add(key);
+const rim = new THREE.DirectionalLight(0x9fc4ff, .7); rim.position.set(-6, 5, -7); scene.add(rim);
+const spot = new THREE.SpotLight(0xffe9c9, 60, 12, .5, .5); spot.position.set(0, 8, 1.2);
+spot.target = heroGroup; scene.add(spot);
+
+/* ---------- 引擎装配（应用只选提供商、说主题） ---------- */
+let provider = createGenerationProvider(loadGenaiConfig());
+const genai = new GenAiSystem(provider, { maxInFlight: 3 });
+const art = new ArtDirectorSystem(genai);
+const store = new AssetStore();
+const scheduler = new Scheduler(); scheduler.add(genai);
+const world = { events: [] };
+
+/* ---------- L5 槽位绑定：资产落地 → 原位换芯（不重建场景） ---------- */
+const slots = new SlotBindings(store);
+const texLoader = new THREE.TextureLoader();
+const gltfLoader = new GLTFLoader();
+const applied = {}; // name -> {texture}
+const showTexture = { on: true }; // 表达对比开关
+
+function applyImageTo(mat, bytes, { srgb = true, repeat = null } = {}) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+  texLoader.load(url, t => {
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    if (repeat) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeat, repeat); }
+    if (applied[mat.uuid]) applied[mat.uuid].dispose?.();
+    applied[mat.uuid] = t;
+    mat.map = showTexture.on ? t : null;
+    mat.color.set(0xffffff); mat.needsUpdate = true;
+    URL.revokeObjectURL(url);
+  });
+}
+slots.bind("sky.dome", a => applyImageTo(skyMat, a.payload));
+slots.bind("ground.albedo", a => applyImageTo(groundMat, a.payload, { repeat: 3 }));
+posterMats.forEach((pm, i) => slots.bind(`poster.${i + 1}`, a => applyImageTo(pm, a.payload)));
+slots.bind("hero.prop", a => {
+  if (a.format !== "glb") return;
+  gltfLoader.parse(a.payload.buffer.slice(a.payload.byteOffset, a.payload.byteOffset + a.payload.byteLength), "", gltf => {
+    heroGroup.clear();
+    const obj = gltf.scene;
+    const box = new THREE.Box3().setFromObject(obj);
+    const size = box.getSize(new THREE.Vector3()).length() || 1;
+    obj.scale.setScalar(2.1 / size);
+    obj.position.y = -(box.getCenter(new THREE.Vector3()).y * 2.1 / size) + .9;
+    heroGroup.add(obj);
+  }, () => { /* 解析失败：保持现役道具（降级不崩） */ });
+});
+
+/* ---------- HUD：槽位状态 + 计量（读引擎事件/资源，不猜） ---------- */
+const slotEls = {};
+const slotsBox = document.getElementById("slots");
+for (const s of ART_SLOTS) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<span><i class="dot"></i>${s.label}</span><span class="st" style="color:#7f8fa0">待命</span>`;
+  slotsBox.appendChild(row);
+  slotEls[s.name] = { dot: row.querySelector(".dot"), st: row.querySelector(".st") };
+}
+const setSlot = (name, cls, text) => {
+  const el = slotEls[name]; if (!el) return;
+  el.dot.className = "dot " + cls;
+  el.st.textContent = text;
+  el.st.style.color = cls === "ok" ? "#a8dcc4" : cls === "bad" ? "#e0a7a7" : cls === "ph" ? "#d6bce8" : cls ? "#c9b983" : "#7f8fa0";
+};
+const toast = (msg) => {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2600);
+};
+function drainEvents() {
+  for (const e of world.events.splice(0)) {
+    if (e.type === "art-retheme") {
+      const queued = new Set(e.names);
+      for (const n of e.names) setSlot(n, "q", "生成中…");
+      for (const s of ART_SLOTS) if (!queued.has(s.name)) setSlot(s.name, "", "不适用");
+    }
+    else if (e.type === "genai-landed") {
+      if (e.placeholder) setSlot(e.name, "ph", "占位降级");
+      else { const kb = ((store.getNamed(e.name)?.payload.length) || 0) / 1024 | 0; setSlot(e.name, "ok", `${e.provider} · ${kb}KB`); }
+    }
+    else if (e.type === "genai-failed") setSlot(e.name, "bad", "失败→降级");
+  }
+}
+function renderMeter() {
+  const m = world.genaiMeter;
+  document.getElementById("meter").innerHTML = m
+    ? `提交 <b>${m.submitted}</b> · 成功 <b>${m.succeeded}</b> · 降级 <b>${m.degraded}</b> · 入库 <b>${(m.bytes_in / 1024).toFixed(0)}KB</b>` : "计量启动中…";
+  document.getElementById("provider").innerHTML =
+    `提供商 <b>${provider.id}</b>${provider.ready ? "" : "（未配 Key）"}${provider.stats.images ? ` · 图 ${provider.stats.images}` : ""}${provider.stats.meshes ? ` · 模型 ${provider.stats.meshes}` : ""}`;
+}
+
+/* ---------- 应用交互：换主题 / 表达对比 / ⚙ ---------- */
+function retheme() {
+  const theme = document.getElementById("theme").value.trim() || "雨夜霓虹的东京小巷";
+  const names = art.retheme(world, theme);
+  if (!names.length) toast("当前提供商不服务这些槽位（例如 Tripo 不生成贴图）");
+  else toast(`美术导演已提交 ${names.length} 个槽位：${theme}`);
+}
+document.getElementById("retheme").onclick = retheme;
+
+const PRESETS = ["雨夜霓虹的东京小巷", "晨雾松林中的木屋营地", "蒸汽朋克齿轮工坊", "深海观测站舷窗外", "沙漠绿洲黄昏集市", "雪原极光科考站"];
+const chips = document.getElementById("chips");
+for (const p of PRESETS) {
+  const b = document.createElement("button");
+  b.textContent = p; b.title = p;
+  b.onclick = () => { document.getElementById("theme").value = p; retheme(); };
+  chips.appendChild(b);
+}
+
+const toggleBtn = document.getElementById("toggle");
+let flat = false;
+toggleBtn.onclick = () => {
+  flat = !flat; showTexture.on = !flat;
+  const setMap = (mat, color) => { mat.map = flat ? null : (applied[mat.uuid] || null); mat.color.set(flat ? color : 0xffffff); mat.needsUpdate = true; };
+  setMap(skyMat, FLAT.sky); setMap(groundMat, FLAT.ground);
+  posterMats.forEach(pm => setMap(pm, FLAT.poster));
+  heroGroup.children.forEach(c => c.visible = flat ? false : true);
+  if (flat) heroGroup.add(propFallback); else heroGroup.remove(propFallback);
+  toggleBtn.textContent = flat ? "表达对比：查看「引擎后 · 生成」" : "表达对比：查看「引擎前 · 纯色」";
+  toast(flat ? "纯色时代：生成能力接入前的世界" : "生成时代：L8 热替换后的世界");
+};
+
+const gear = document.getElementById("gear"), panel = document.getElementById("panel-gear");
+gear.onclick = () => panel.classList.toggle("open");
+function fillGear() {
+  const cfg = loadGenaiConfig();
+  document.getElementById("g-kind").value = cfg.kind === "tripo" ? "tripo" : cfg.kind === "openai" ? "openai" : cfg.kind === "zhipu" ? "zhipu" : "procedural";
+  document.getElementById("g-key").value = cfg.key || "";
+  document.getElementById("g-model").value = cfg.model || "";
+  document.getElementById("g-base").value = cfg.base || "";
+}
+fillGear();
+document.getElementById("g-save").onclick = () => {
+  const kind = document.getElementById("g-kind").value;
+  const cfg = {
+    kind, key: document.getElementById("g-key").value.trim(),
+    model: document.getElementById("g-model").value.trim(),
+    base: document.getElementById("g-base").value.trim() || (GEN_PROVIDER_PRESETS[kind] || {}).base || "",
+  };
+  saveGenaiConfig(cfg);
+  provider = createGenerationProvider(cfg);
+  genai.provider = provider; art.genai = genai;
+  panel.classList.remove("open");
+  toast(`已切换生成提供商：${provider.id}`);
+  renderMeter();
+};
+
+/* ---------- 主循环：泵调度器 → 落地换芯 → 读事件 ---------- */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  scheduler.tick(world);
+  applyPending(store, world);
+  drainEvents();
+  renderMeter();
+  heroGroup.rotation.y += .0035;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+setTimeout(retheme, 500); // 先看一眼「引擎前」，再让 L8 装帧世界
+window.__dbg = { skyMat, groundMat, posterMats, store, world }; // console 调试出口
+</script>
+</body>
+</html>
