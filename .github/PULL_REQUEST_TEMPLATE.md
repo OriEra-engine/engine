@@ -9,6 +9,7 @@
 - [ ] 我没有动 bit 40+ 的 BCI 预留位
 - [ ] 如果是 breaking change，我已经在 PR 标题加 `BREAKING:` 并说明了迁移路径
 - [ ] 每个 commit 都有 `Signed-off-by:`（DCO）
+- [ ] 本 PR 是否引入**新机制**（新算法/调度/校验/降级/路由/协议格式，见 CONTRIBUTING「新机制披露检查」）：否 / **是**（已通知维护者分诊）
 
 ## 这个 PR 做了什么？
 
