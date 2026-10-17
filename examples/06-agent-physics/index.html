@@ -144,19 +144,47 @@ const tools = {
 };
 
 // 意图解析
+function parseCount(value) {
+  if (/^\d+$/.test(value)) return Number(value);
+  if (!/^(?:[一二两三四五六七八九]|[一二三四五六七八九]?十[一二三四五六七八九]?)$/.test(value)) return NaN;
+  const digits = { 一:1, 二:2, 两:2, 三:3, 四:4, 五:5, 六:6, 七:7, 八:8, 九:9 };
+  if (value.includes("十")) {
+    const [tens, units] = value.split("十");
+    const high = tens ? digits[tens] : 1;
+    const low = units ? digits[units] : 0;
+    return high === undefined || low === undefined ? NaN : high * 10 + low;
+  }
+  return digits[value] ?? NaN;
+}
+
 function parseIntent(text) {
   const t = text.toLowerCase();
   let m;
-  if (m = t.match(/(\d+)\s*个方块/)) {
+  // 先捕获完整数字，避免把不支持的“一百二十一”截成“二十一”。
+  if (m = t.match(/([\d零〇一二两三四五六七八九十百千万亿兆壹贰叁肆伍陆柒捌玖拾佰仟廿卅卌点负]+)\s*个方块/)) {
+    const count = parseCount(m[1]);
+    if (!Number.isSafeInteger(count)) return null;
     let side = "center";
     if (t.includes("左")) side = "left";
     if (t.includes("右")) side = "right";
-    return { tool: "spawn_boxes", args: { count: +m[1], side } };
+    return { tool: "spawn_boxes", args: { count, side } };
   }
-  if (m = t.match(/(\d+)\s*个球/)) return { tool: "spawn_balls", args: { count: +m[1] } };
+  if (m = t.match(/([\d零〇一二两三四五六七八九十百千万亿兆壹贰叁肆伍陆柒捌玖拾佰仟廿卅卌点负]+)\s*个球/)) {
+    const count = parseCount(m[1]);
+    if (!Number.isSafeInteger(count)) return null;
+    return { tool: "spawn_balls", args: { count } };
+  }
   if (t.includes("清空") || t.includes("clear")) return { tool: "clear_world", args: {} };
   if (m = t.match(/重力.*?(\d+\.?\d*)/)) return { tool: "set_gravity", args: { factor: +m[1] } };
   return null;
+}
+
+// 每条独立解析，避免多指令只命中第一项、方向参数跨指令串扰。
+function parseIntents(text) {
+  return text.split(/[·，,；;。\n、]+|然后|接着/)
+    .map(command => command.trim())
+    .filter(Boolean)
+    .map(command => ({ command, intent: parseIntent(command) }));
 }
 
 // ============================================================
@@ -178,11 +206,17 @@ function send() {
   const text = inputEl.value.trim();
   if (!text) return;
   addMsg("user", text); inputEl.value = "";
-  const intent = parseIntent(text);
-  if (!intent) { addMsg("agent", "没听懂，换个说法试试。"); return; }
-  const result = tools[intent.tool].handler(intent.args);
-  addMsg("tool", `→ ${intent.tool}(${JSON.stringify(intent.args)})`, "tool");
-  addMsg("agent", result);
+  const commands = parseIntents(text);
+  if (!commands.length) { addMsg("agent", "没听懂，换个说法试试。"); return; }
+  for (const { command, intent } of commands) {
+    if (!intent) {
+      addMsg("agent", `没听懂：${command}`);
+      continue;
+    }
+    const result = tools[intent.tool].handler(intent.args);
+    addMsg("tool", `→ ${intent.tool}(${JSON.stringify(intent.args)})`, "tool");
+    addMsg("agent", result);
+  }
 }
 sendBtn.onclick = send;
 inputEl.onkeydown = e => { if (e.key==="Enter") send(); };
