@@ -36,7 +36,9 @@ Architecturally it is an **11-layer stack** with five first-class platforms.
 
 ## Try it (zero install)
 
-**🌐 https://oriera-engine.github.io/engine/** — 11 playable demos in your browser.
+**🌐 https://oriera-engine.github.io/engine/** — 12 playable demos in your browser.
+
+New: [Memory Atlas](https://oriera-engine.github.io/engine/examples/12-memory-atlas/index.html) — record NPC memories, recall relevant episodes, and explore recency offline using the existing browser kernel.
 
 ## Architecture
 
