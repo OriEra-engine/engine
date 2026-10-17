@@ -397,9 +397,10 @@ const artStore = new AssetStore();
 const artSlots = new SlotBindings(artStore);
 const artLoader = new THREE.TextureLoader();
 artSlots.bind("wall.art", a => {
-  if (a.placeholder) { // 生成失败：保持暖色底板，不挂黑图（降级也是表达）
-    artMat.map = null; artMat.color.setHex(ART_FLAT); artMat.needsUpdate = true;
-    logLine("sys", `🖼 墙面画廊生成失败，保持原画（${(a.provider_id || "placeholder")}）`);
+  if (a.placeholder) { // 生成失败：退回暖色底板，不挂黑图（降级也是表达）
+    if (artMat.map) { artMat.map.dispose(); artMat.map = null; } // 弃旧画也要还显存
+    artMat.color.setHex(ART_FLAT); artMat.needsUpdate = true;
+    logLine("sys", `🖼 墙面画廊生成失败，暂以暖色底板示人（${(a.provider_id || "placeholder")}）`);
     return;
   }
   const url = URL.createObjectURL(new Blob([a.payload], { type: "image/png" }));
@@ -408,7 +409,7 @@ artSlots.bind("wall.art", a => {
     if (artMat.map) artMat.map.dispose();
     artMat.map = t; artMat.color.setHex(0xffffff); artMat.needsUpdate = true;
     URL.revokeObjectURL(url);
-  });
+  }, undefined, () => URL.revokeObjectURL(url)); // 解码失败同样回收 blob URL
 });
 function artPump() {
   storyboard.tick(world); genai.tick(world); applyPending(artStore, world);
