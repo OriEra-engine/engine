@@ -18,6 +18,8 @@
 //! absence degrades to a placeholder instead of a crash, the contract is
 //! in `contracts/oriera/genai/v1`, and the engine core vendors zero SDKs.
 
+#[cfg(feature = "providers")]
+pub mod cogview;
 pub mod config;
 pub mod hot_swap;
 pub mod mock;
@@ -54,6 +56,10 @@ pub enum GenerationKind {
     TextTo3d,
     /// reference image → GLB/USDZ mesh.
     ImageTo3d,
+    /// prompt → PNG/JPEG still (e.g. CogView, any OpenAI-images-dialect
+    /// endpoint). The single highest-leverage kind for small 3D games:
+    /// skydomes, ground albedo, posters, sprite sheets are all stills.
+    TextToImage,
     /// prompt → video container (e.g. Seedance). Seedance is a *video*
     /// model; in this layer it also feeds future image-to-3D pipelines.
     TextToVideo,
@@ -67,8 +73,21 @@ impl GenerationKind {
         match self {
             GenerationKind::TextTo3d => "text_to_3d",
             GenerationKind::ImageTo3d => "image_to_3d",
+            GenerationKind::TextToImage => "text_to_image",
             GenerationKind::TextToVideo => "text_to_video",
             GenerationKind::ImageToVideo => "image_to_video",
+        }
+    }
+
+    /// The degrade payload format for this kind: a placeholder landing
+    /// after a failure must be parseable by whatever consumes the slot
+    /// (ADR 0003 criterion 3 — an outage costs fidelity, never a crash;
+    /// a still slot must not receive an empty mesh).
+    pub fn placeholder_format(self) -> AssetFormat {
+        match self {
+            GenerationKind::TextTo3d | GenerationKind::ImageTo3d => AssetFormat::Glb,
+            GenerationKind::TextToImage => AssetFormat::Image,
+            GenerationKind::TextToVideo | GenerationKind::ImageToVideo => AssetFormat::Video,
         }
     }
 }
@@ -128,6 +147,18 @@ impl GenerationRequest {
         }
     }
 
+    /// A text-to-image request landing under `name`, with default limits.
+    pub fn text_to_image(name: impl Into<String>, prompt: impl Into<String>) -> Self {
+        Self {
+            kind: GenerationKind::TextToImage,
+            prompt: prompt.into(),
+            negative_prompt: String::new(),
+            name: name.into(),
+            max_bytes: ValidationLimits::default().max_bytes,
+            seed: None,
+        }
+    }
+
     /// A text-to-video request landing under `name`, with default limits.
     pub fn text_to_video(name: impl Into<String>, prompt: impl Into<String>) -> Self {
         Self {
@@ -178,15 +209,17 @@ impl TaskStatus {
 pub struct ProviderCapabilities {
     pub text_to_3d: bool,
     pub image_to_3d: bool,
+    pub text_to_image: bool,
     pub text_to_video: bool,
     pub image_to_video: bool,
 }
 
 impl ProviderCapabilities {
-    /// All four kinds — the [`MockProvider`] default.
+    /// All five kinds — the [`MockProvider`] default.
     pub const ALL: ProviderCapabilities = ProviderCapabilities {
         text_to_3d: true,
         image_to_3d: true,
+        text_to_image: true,
         text_to_video: true,
         image_to_video: true,
     };
@@ -196,6 +229,7 @@ impl ProviderCapabilities {
         match kind {
             GenerationKind::TextTo3d => self.text_to_3d,
             GenerationKind::ImageTo3d => self.image_to_3d,
+            GenerationKind::TextToImage => self.text_to_image,
             GenerationKind::TextToVideo => self.text_to_video,
             GenerationKind::ImageToVideo => self.image_to_video,
         }
@@ -380,6 +414,60 @@ pub(crate) fn tiny_mp4_stub() -> Vec<u8> {
     out
 }
 
+/// The smallest fully-valid PNG: one 1×1 RGBA pixel (stored, zlib level
+/// 0 stream). Doubles as the **placeholder still** for image degrade
+/// paths — one payload, provably parseable by any PNG decoder, small
+/// enough to inline. Chunk CRCs are computed at construction, so the
+/// container is self-consistent by construction, not by transcription.
+pub(crate) fn tiny_png() -> Vec<u8> {
+    /// Reference CRC-32 (ISO 3309, as PNG requires).
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in data {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+    fn chunk(out: &mut Vec<u8>, ty: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(ty);
+        out.extend_from_slice(data);
+        let mut crc_input = Vec::with_capacity(4 + data.len());
+        crc_input.extend_from_slice(ty);
+        crc_input.extend_from_slice(data);
+        out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+    }
+    // IHDR: 1×1, 8-bit RGBA, no interlace.
+    let ihdr: [u8; 13] = [
+        0, 0, 0, 1, // width
+        0, 0, 0, 1, // height
+        8, 6, 0, 0, 0, // bit depth, color type, flags
+    ];
+    // IDAT: zlib stream with one stored (uncompressed) deflate block —
+    // filter byte 0 + one transparent RGBA pixel. Adler-32 of five zero
+    // bytes is 5 (`00 00 00 05` big-endian).
+    let idat: [u8; 16] = [
+        0x78, 0x9C, // zlib header (CMF/FLG, checksum valid)
+        0x01, 0x05, 0x00, 0xFA, 0xFF, // BFINAL stored block, LEN=5, NLEN
+        0x00, // scanline filter: none
+        0x00, 0x00, 0x00, 0x00, // one transparent pixel
+        0x00, 0x05, 0x00, 0x01, // Adler-32: b=5, a=1
+    ];
+    let mut out = Vec::with_capacity(8 + 25 + 28 + 12);
+    out.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &idat);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +503,61 @@ mod tests {
         ] {
             assert!(validate_asset(&asset(format, payload), &ValidationLimits::default()).is_ok());
         }
+    }
+
+    #[test]
+    fn tiny_png_is_a_structurally_valid_png() {
+        let png = asset(AssetFormat::Image, tiny_png());
+        assert!(validate_asset(&png, &ValidationLimits::default()).is_ok());
+        // Verify every chunk's declared length and CRC — the placeholder
+        // must be parseable by a real decoder, not just sniffable.
+        let b = &png.payload[..];
+        let mut off = 8;
+        let mut chunks = 0;
+        while off < b.len() {
+            let len = u32::from_be_bytes(b[off..off + 4].try_into().unwrap()) as usize;
+            let ty = &b[off + 4..off + 8];
+            let crc_stored =
+                u32::from_be_bytes(b[off + 8 + len..off + 12 + len].try_into().unwrap());
+            assert_eq!(crc32(&b[off + 4..off + 8 + len]), crc_stored, "{ty:?}");
+            chunks += 1;
+            off += 12 + len;
+        }
+        assert_eq!(chunks, 3); // IHDR + IDAT + IEND
+        assert_eq!(off, b.len()); // no trailing bytes
+    }
+
+    /// Reference CRC-32 (ISO 3309, as PNG requires) used only by the
+    /// chunk-integrity test above.
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in data {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    #[test]
+    fn placeholder_format_matches_the_requested_kind() {
+        assert_eq!(
+            GenerationKind::TextToImage.placeholder_format(),
+            AssetFormat::Image
+        );
+        assert_eq!(
+            GenerationKind::TextTo3d.placeholder_format(),
+            AssetFormat::Glb
+        );
+        assert_eq!(
+            GenerationKind::TextToVideo.placeholder_format(),
+            AssetFormat::Video
+        );
     }
 
     #[test]
@@ -462,7 +605,9 @@ mod tests {
     #[test]
     fn capabilities_gate_kinds() {
         assert!(ProviderCapabilities::ALL.supports(GenerationKind::TextTo3d));
+        assert!(ProviderCapabilities::ALL.supports(GenerationKind::TextToImage));
         let none = ProviderCapabilities::default();
         assert!(!none.supports(GenerationKind::ImageToVideo));
+        assert!(!none.supports(GenerationKind::TextToImage));
     }
 }

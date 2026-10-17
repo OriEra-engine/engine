@@ -39,7 +39,7 @@ OriEra 不是又一个游戏引擎。它是一个 **AI 原生、虚实融合、�
 | L5 | 渲染内核：Pass 图、帧提交 | `crates/oriera-render` | ✅ 骨架 | `BuildFrameGraph` `AddPass` `SetQuality` |
 | L6 | 子系统服务：物理/动画/音频/UI/网络同步 | `crates/oriera-subsys` | ✅ 物理 | `StepPhysics` `SampleAnimation`(规划) `SyncState`(规划) |
 | L7 | AI 推理运行时：命令执行、端云路由 | `crates/oriera-infer` | ✅ 可用 | `SubmitInference` `ReportInferenceMetrics` |
-| L8 | 生成式 AI：文生 3D 管线 | `crates/oriera-genai` | ✅ 骨架（ADR 0003，2028 做深） | `RequestGeneration` `ValidateAsset` |
+| L8 | 生成式 AI：文生图 + 文生 3D + 文生视频 | `crates/oriera-genai` | ✅ 表达链路已通（RFC 0001 + demo 13，2028 做深） | `RequestGeneration` `ValidateAsset` |
 | L9 | Agent 层：意图→命令 | `crates/oriera-agent` | ✅ 可用 | `InvokeTool`（v1 规则解析 + 认知系统） |
 | L10 | AR/VR 交互：多模态感知 | — | 📋 2027 H2 | 手势/眼动经 L1 `SpatialInputEvent` 进来 |
 | L11 | 应用与 UGC 创作生态 | `platforms/*` + `examples/*` | ✅ 壳 | 同源编辑器（规划） |
@@ -112,14 +112,20 @@ v0.2 落地帧预算命令队列（`deferred` 计数，命令洪峰摊到后续�
 与 `UsageMeter` / `last_usage()` 计量；20s 超时防挂死。
 **Key 只存在平台壳**（浏览器 localStorage / 环境变量），永不入仓。
 
-### L8 · oriera-genai — 生成式 AI（骨架已落地，ADR 0003）
+### L8 · oriera-genai — 生成式 AI（表达链路已通，ADR 0003 + RFC 0001）
 
 **生成是独立边界，不走 L7 推理**（ADR 0003）：`GenerationProvider` trait + `MockProvider`
-+ `validate_asset` 校验；Tripo / Seedance 协议适配器随 `providers` feature 门控
++ `validate_asset` 校验；CogView（文生图，OpenAI images 方言）/ Tripo（文生 3D）/
+Seedance（文生视频）协议适配器随 `providers` feature 门控
 （只定义 JSON shape，零 HTTP client——transport 由壳层注入，wasm 体积可控）。
+`text_to_image` 种类是 RFC 0001 的加法式契约扩展——小 3D 游戏的表达主力
+（天空/地面/海报/精灵图）。占位降级按种类匹配格式：失败的照片落
+真实可解码的 1×1 PNG，失败的网格落空场景 GLB。
 引擎环集成：`GenAiSystem` 限量轮询生成任务 → 校验 → `PendingSwaps` + `AssetLanded` 事件，
 壳层 `hot_swap::apply_pending` 把结果落入 L4 命名资产（demo：`cargo run -p oriera-genai --example hotswap`）。
-L9 已有生成意图入口。契约落在 `contracts/oriera/genai/v1`。深管线（六段式生成→修复）2028 做。
+浏览器侧镜像 `examples/13-genai-gallery/engine/genai.js`（边界词汇一一对照，
+fetch Promise settling 取代轮询节拍）+ `ArtDirectorSystem` 美术导演（提示词形状归引擎）
++ demo 13 全链实跑。契约落在 `contracts/oriera/genai/v1`。深管线（六段式生成→修复）2028 做。
 
 ### L9 · oriera-agent — 意图到命令
 

@@ -36,9 +36,9 @@ Architecturally it is an **11-layer stack** with five first-class platforms.
 
 ## Try it (zero install)
 
-**🌐 https://oriera-engine.github.io/engine/** — 12 playable demos in your browser.
+**🌐 https://oriera-engine.github.io/engine/** — 13 playable demos in your browser.
 
-New: [Memory Atlas](https://oriera-engine.github.io/engine/examples/12-memory-atlas/index.html) — record NPC memories, recall relevant episodes, and explore recency offline using the existing browser kernel.
+New: [Memory Atlas](https://oriera-engine.github.io/engine/examples/12-memory-atlas/index.html) — record NPC memories, recall relevant episodes, and explore recency offline using the existing browser kernel. New: [Generative Gallery](https://oriera-engine.github.io/engine/examples/13-genai-gallery/index.html) — type a theme, the engine's L8 generates sky / ground / posters and hot-swaps them into a small 3D world (offline procedural fallback; bring a CogView/Tripo key for real generation).
 
 ## Architecture
 

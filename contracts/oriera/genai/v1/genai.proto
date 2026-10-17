@@ -15,6 +15,11 @@ enum GenerationKind {
   IMAGE_TO_3D = 2;  // image   -> GLB/USDZ mesh
   TEXT_TO_VIDEO = 3; // prompt -> MP4/WebM (e.g. Seedance)
   IMAGE_TO_VIDEO = 4;
+  // prompt -> PNG/JPEG still (e.g. CogView, any OpenAI-images-dialect
+  // endpoint). Highest-leverage kind for small 3D games: skydomes,
+  // ground albedo, posters, sprite sheets are all stills.
+  // Additive to v1 per RFC 0001 (docs/rfcs/0001-genai-text-to-image.md).
+  TEXT_TO_IMAGE = 5;
 }
 
 enum AssetFormat {
@@ -67,6 +72,8 @@ message ProviderCapabilities {
   bool image_to_3d = 2;
   bool text_to_video = 3;
   bool image_to_video = 4;
+  // Additive to v1 per RFC 0001 — old readers see it as unset (false).
+  bool text_to_image = 5;
 }
 
 service GenerativeAssets {
