@@ -220,6 +220,20 @@ export function createGenerationProvider(cfg) {
   return cfg.key ? new CogViewProvider(cfg) : new ProceduralProvider();
 }
 
+/** L7 聊天选型 → L8 图像提供商的引擎内映射（厂商知识不进应用）：
+ *  智谱/OpenAI 的 Key 直接复用为 CogView/images 生成；其余厂商（无
+ *  images 方言端点）与无 Key 情况降级为程序化后端——离线也是表达。 */
+export function imageProviderFromChatConfig(cfg) {
+  // 只有这两家的 Key 能直接复用为 images 方言端点；其余厂商与无 Key
+  // 情况降级为程序化后端——离线也是表达（ADR 0003 判据 3）。
+  if (!cfg || !cfg.key) return new ProceduralProvider();
+  if (cfg.kind === "openai")
+    return new CogViewProvider({ key: cfg.key, model: "gpt-image-1", base: "https://api.openai.com/v1" });
+  if (cfg.kind === "zhipu")
+    return new CogViewProvider({ key: cfg.key, model: "cogview-3-flash", base: "https://open.bigmodel.cn/api/paas/v4" });
+  return new ProceduralProvider();
+}
+
 /* ---------- L4 · 命名资产库（↔ oriera-asset insert_named 热替换） ---------- */
 export class AssetStore {
   constructor() { this.named = new Map(); this.version = 0; this.subs = []; }
@@ -322,6 +336,34 @@ export class ArtDirectorSystem {
       names.push("hero.prop");
     (world.events = world.events || []).push({ type: "art-retheme", theme, names });
     return names;
+  }
+}
+
+/* ---------- L8 · 分镜画系统（剧情驱动的持续生成，引擎系统） ----------
+ * 与 ArtDirectorSystem（一句话主题装帧）互补：这个系统**观察世界**——
+ * 盯住 L9 导演推进的剧情拍点（world.story.beats，kernel.js DirectorSystem
+ * 的世界词汇），每逢第 N 拍为命名槽位提交一张「此刻的故事」插画。
+ * 提示词形状（插画该长什么样）是引擎知识；世界只提供事实（beat 文本）。
+ * ------------------------------------------------------------------------ */
+export class StoryboardArtSystem {
+  constructor(genai, { name = "wall.art", every = 2 } = {}) {
+    this.genai = genai; this.name_ = name; this.every = Math.max(1, every | 0);
+    this.seen = -1; // 已观察到的 beat 下标
+  }
+  get name() { return "l8-storyboard-art"; }
+  tick(world) {
+    const beats = world.story && world.story.beats;
+    if (!beats || !beats.length) return;
+    const idx = beats.length - 1;
+    if (this.seen === idx) return; // 没有新拍点
+    const first = this.seen < 0;
+    this.seen = idx;
+    // 首次观察立即生成（世界装载即有画）；此后每逢第 N 拍换新
+    if (!first && idx % this.every !== 0) return;
+    const beat = String(beats[idx]).slice(0, 60);
+    this.genai.submit(textToImage(this.name_,
+      `咖啡馆墙面装饰插画，描绘此刻店里发生的故事瞬间：「${beat}」。暖色咖啡馆氛围，有生活气息，横构图，无文字无水印。`));
+    (world.events = world.events || []).push({ type: "art-beat", name: this.name_, beat });
   }
 }
 
