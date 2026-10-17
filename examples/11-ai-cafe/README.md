@@ -5,7 +5,9 @@
 
 [▶ 本地运行](http://127.0.0.1:8123/examples/11-ai-cafe/)：`python -m http.server` 后打开本页。
 右上 ⚙ 填入智谱 API Key（只存本浏览器 localStorage，仓库不含任何密钥）即点亮大模型；
-不填则整条链路自动降级为规则引擎，功能完整。
+不填则整条链路自动降级为规则引擎，功能完整。**同一 Key 还会点亮 L8 生成式墙面**：
+AI 导演每推进两拍剧情，两窗之间的墙上插画就按「此刻的故事」换新
+（无 Key / 非 images 厂商 → 确定性程序化装帧；生成失败 → 保持原画不崩）。
 
 ## 架构（这是本 demo 的全部意义）
 
@@ -16,7 +18,11 @@ engine/kernel.js（引擎层，与 Rust crate 一一对照）      Rust 侧
 │                                              ↔  crates/oriera-agent/src/memory.rs
 ├─ CognitionSystem  L9 认知（每 tick 一位 NPC 说话） ↔  crates/oriera-agent/src/cognition.rs
 ├─ DirectorSystem   L9 AI 导演（推进世界 beat/日）  ↔  同上
-└─ Scheduler        L2 调度                       ↔  crates/oriera-core
+├─ Scheduler        L2 调度                       ↔  crates/oriera-core
+│
+├─ StoryboardArtSystem  L8 分镜画（剧情拍点→墙面插画）  ↔  oriera-genai 消费端
+│   （自 ../13-genai-gallery/engine/genai.js 引入，与 Rust L8 镜像同源）
+└─ GenAiSystem/AssetStore/SlotBindings  L8→L4→L5 生成热替换链
 
 index.html（应用层，443 行）——Three.js 咖啡馆、NPC 化身、UI、客人插话。
 它 import 引擎服务，不 import 任何 fetch/Key/prompt。

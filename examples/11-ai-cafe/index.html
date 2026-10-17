@@ -94,7 +94,7 @@
   世界进程：<span class="beat" id="w-beat">故事即将开始…</span><br/>
   L7 推理 <span class="state-dot" id="dot"></span><span id="llm-name">规则引擎（未配置大模型）</span>
 </div>
-<div id="en-hint">AI NPCs chat, remember each other &amp; a director drives the story — all as engine systems. Works offline; add any OpenAI-compatible key in ⚙ for full LLM.</div>
+<div id="en-hint">AI NPCs chat, remember each other &amp; a director drives the story — all as engine systems. The same L8 pipeline also repaints the wall art as the story unfolds. Works offline; add any OpenAI-compatible key in ⚙ for full LLM.</div>
 
 <div id="npcs"></div>
 <div id="log"></div>
@@ -104,13 +104,14 @@
   <button id="guest-send">插话 ⏎</button>
 </div>
 <button class="gear" id="gear" title="设置">⚙</button>
-<div id="llmstats">L7 calls <b id="s-calls">0</b> · errors <b id="s-err">0</b> · tokens <b id="s-tok">0</b> &middot; mem episodes <b id="s-mem">0</b></div>
+<div id="llmstats">L7 calls <b id="s-calls">0</b> · errors <b id="s-err">0</b> · tokens <b id="s-tok">0</b> &middot; mem episodes <b id="s-mem">0</b><br/>L8 墙面画廊 <b id="s-art">…</b></div>
 
 <div class="modal-bg" id="settings-bg"><div class="modal">
   <h3>⚙ L7 推理运行时 · 设置</h3>
   <p style="color:#8a90a6;font-size:10.5px;line-height:1.8">
     Key 只存本浏览器 localStorage，用于直连智谱开放平台；本仓库不含任何密钥。
-    不填 Key 时 demo 以规则引擎运行，功能完整。</p>
+    不填 Key 时 demo 以规则引擎运行，功能完整。<br/>
+    同一 Key（智谱/OpenAI）也会点亮 L8 生成式墙面：AI 导演每推进一段剧情，墙上插画换新（其余厂商或无 Key 时离线程序化装帧）。</p>
   <label>API Key（智谱 bigmodel.cn）</label>
   <input id="set-key" type="password" placeholder="粘贴你的 Key" />
   <label>大模型提供商（创作者自选，引擎只认 L7 边界）</label>
@@ -154,6 +155,7 @@ import * as THREE from "three";
 import { OrbitControls } from "./vendor/OrbitControls.js";
 import { GLTFLoader } from "./vendor/GLTFLoader.js";
 import { MemoryStore, HttpChatProvider, createProvider, PROVIDER_PRESETS, CognitionSystem, DirectorSystem, Scheduler } from "./engine/kernel.js";
+import { GenAiSystem, StoryboardArtSystem, AssetStore, SlotBindings, applyPending, imageProviderFromChatConfig } from "../13-genai-gallery/engine/genai.js";
 
 const $ = id => document.getElementById(id);
 
@@ -191,6 +193,16 @@ box(13, 4, .25, dark, 0, 2, -4.7);
 box(.25, 4, 9.5, dark, -6.4, 2, 0); box(.25, 4, 9.5, dark, 6.4, 2, 0);
 box(3.4, 1.6, .1, new THREE.MeshStandardMaterial({ color:0x0e1420, emissive:0x1a2c4a, emissiveIntensity:.9 }), -3.6, 2.2, -4.56);
 box(3.4, 1.6, .1, new THREE.MeshStandardMaterial({ color:0x0e1420, emissive:0x1a2c4a, emissiveIntensity:.9 }),  3.6, 2.2, -4.56);
+/* 墙面画廊槽位（L8 分镜画落位处）：两窗之间的暖色底板，生成物热替换其贴图 */
+const ART_FLAT = 0x4a3b2a;
+const artMat = new THREE.MeshStandardMaterial({ color: ART_FLAT, roughness: .85 });
+const wallArt = new THREE.Mesh(new THREE.PlaneGeometry(2.0, 1.4), artMat);
+wallArt.position.set(0, 2.15, -4.55); scene.add(wallArt);
+const artFrame = new THREE.Mesh(new THREE.PlaneGeometry(2.24, 1.64),
+  new THREE.MeshStandardMaterial({ color: 0x2a2018, roughness: .6 }));
+artFrame.position.set(0, 2.15, -4.56); scene.add(artFrame);
+const artSpot = new THREE.SpotLight(0xffe2b8, 14, 6, .6, .6);
+artSpot.position.set(0, 3.6, -3.4); artSpot.target = wallArt; scene.add(artSpot);
 box(6.4, 1.05, 1.1, wood2, 0, .52, -3.4);
 box(6.4, .12, 1.35, wood, 0, 1.11, -3.4);
 box(1.5, .95, .8, metal, -1.6, 1.62, -3.5);
@@ -288,6 +300,7 @@ for (const n of NPCS) {
 }
 const v3 = new THREE.Vector3();
 const clock = new THREE.Clock();
+let artTick = null; // L8 泵启动闸：装配完成后接入世界泵（pump），与回合同节拍
 function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
@@ -374,6 +387,41 @@ const scheduler = new Scheduler();
 scheduler.add(cognition);
 scheduler.add(director);
 
+/* ---------- L8 装配：同一 Key 顺手点亮生成式墙面（应用仍零模型代码） ----------
+ * 提供商映射（聊天 Key → 图像端点）与剧情→插画的提示词形状都在引擎侧
+ * （genai.js 的 imageProviderFromChatConfig / StoryboardArtSystem）。 */
+let genProvider = imageProviderFromChatConfig(cfg);
+const genai = new GenAiSystem(genProvider, { maxInFlight: 1 });
+const storyboard = new StoryboardArtSystem(genai, { name: "wall.art", every: 2 });
+const artStore = new AssetStore();
+const artSlots = new SlotBindings(artStore);
+const artLoader = new THREE.TextureLoader();
+artSlots.bind("wall.art", a => {
+  if (a.placeholder) { // 生成失败：保持暖色底板，不挂黑图（降级也是表达）
+    artMat.map = null; artMat.color.setHex(ART_FLAT); artMat.needsUpdate = true;
+    logLine("sys", `🖼 墙面画廊生成失败，保持原画（${(a.provider_id || "placeholder")}）`);
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([a.payload], { type: "image/png" }));
+  artLoader.load(url, t => {
+    t.colorSpace = THREE.SRGBColorSpace;
+    if (artMat.map) artMat.map.dispose();
+    artMat.map = t; artMat.color.setHex(0xffffff); artMat.needsUpdate = true;
+    URL.revokeObjectURL(url);
+  });
+});
+function artPump() {
+  storyboard.tick(world); genai.tick(world); applyPending(artStore, world);
+  for (const e of (world.events || []).splice(0)) {
+    if (e.type === "art-beat") logLine("sys", `🖼 分镜画受理：为「${e.beat}」装帧墙面…`);
+    else if (e.type === "genai-landed" && !e.placeholder)
+      logLine("dir", `🖼 墙面画廊换新（${e.provider} · ${Math.round((artStore.getNamed(e.name)?.payload.length || 0) / 1024)}KB）`);
+  }
+  $("s-art").textContent = `${genProvider.id}${genProvider.ready ? "" : "（离线）"}${world.genaiMeter ? ` · ${world.genaiMeter.succeeded}张` : ""}`;
+}
+artTick = artPump; // L8 装配完成，泵接入世界回合
+window.__cafe = { genai, storyboard, artStore, world, genProvider }; // console 调试出口
+
 function refreshDot() {
   $("dot").classList.toggle("live", provider.ready);
   $("llm-name").textContent = provider.ready ? `${PROVIDER_PRESETS[cfg.kind]?.label || cfg.kind} · ${cfg.model}（引擎 L7）` : "规则引擎（未配置大模型）";
@@ -396,6 +444,9 @@ async function pump() {
     localStorage.setItem("aicafe.world.v1", JSON.stringify({ turn: world.turn, story: world.story, rel: world.rel }));
     renderWorld(); renderNPCs();
   } finally { pumping = false; }
+  // L8 与世界同泵（不是渲染帧）：生成是世界模拟的一部分——导演拍点
+  // 观察、任务提交、落地换芯在回合同节拍推进，后台标签照常工作。
+  artTick && artTick();
 }
 setInterval(pump, provider.ready ? 3600 : 2600);
 
@@ -440,6 +491,9 @@ $("set-save").onclick = async () => {
   // 替换运行中的 provider 引用：认知/导演闭包持有同一对象，这里直接改字段
   if (fresh) { Object.setPrototypeOf(provider, Object.getPrototypeOf(fresh)); Object.assign(provider, fresh); }
   provider.cfg = { ...cfg }; provider.ready = !!cfg.key;
+  // L8 同步换芯：聊天 Key 变更即时反映到墙面生成（引擎侧映射）
+  genProvider = imageProviderFromChatConfig(cfg);
+  genai.provider = genProvider;
   refreshDot();
 };
 $("mem-export").onclick = () => {
