@@ -6,6 +6,14 @@ metadata:
   owner: engine-team
 spec:
   provides:
+    - id: oriera.subsys.rigid.v1
+      contract: rust:oriera_subsys::RigidBodySystem
+      stability: stable
+      note: rapier2d rigid-body backend (#80, feature `rigid`, Apache-2.0
+        dep). Same System<World>/Gravity/TimeScale/bounds contract as the
+        particle integrator; world<->body sync adopts external velocity
+        writes (Nudge), purges dead handles, clamps containment; NOT
+        bit-compatible with the integrator — a vertical picks one.
     - id: oriera.subsys.physics.v1
       contract: rust:oriera_subsys::{PhysicsSystem,Gravity}
       stability: stable

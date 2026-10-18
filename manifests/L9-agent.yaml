@@ -14,6 +14,14 @@ spec:
       stability: stable
       note: NL → GenerationRequest bridge into L8 (rule-based v1,
         negation-aware); apps try generation first, commands second
+    - id: oriera.agent.embodied-recorder.v1
+      contract: rust:oriera_agent::embodied::{EpisodeRecorder,Observation,Transition}
+      stability: stable
+      note: world-as-benchmark data export (#80) — LeRobotDataset v3
+        aligned JSONL (episode_index/step_index/observation.state/
+        action.continuous/next_observation.state/reward/done) plus
+        meta/info.json carrying per-episode World::state_hash receipts;
+        hand-serialized numeric rows, zero new dependencies
     - id: oriera.agent.memory-json.v1
       contract: rust:oriera_agent::MemoryStore::{to_json,from_json}
       stability: stable

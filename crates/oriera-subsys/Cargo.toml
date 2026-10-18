@@ -14,3 +14,12 @@ path = "src/lib.rs"
 oriera-common.workspace = true
 oriera-core.workspace = true
 oriera-ecs.workspace = true
+# #80 L6 rigid-body backend (feature `rigid`): pure-Rust physics, no C
+# toolchain (unlike MuJoCo bindings), same-build deterministic — pairs
+# with Scheduler::with_fixed_dt for replayable embodied data collection.
+# Apache-2.0. Optional: default builds stay dependency-free.
+rapier2d = { workspace = true, optional = true }
+
+[features]
+default = []
+rigid = ["dep:rapier2d"]
