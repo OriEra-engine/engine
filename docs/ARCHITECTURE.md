@@ -266,6 +266,7 @@ L9 的 Agent 是引擎系统（挂调度器、吃帧预算、有世界状态）�
 - [COMPUTE-BUDGET.md](COMPUTE-BUDGET.md)：算力分拨管线地图（五个微模型 + 植入模型三步）
 - [STUDIO-PIPELINE.md](STUDIO-PIPELINE.md)：Studio 六区 ↔ 十一层衔接管线（P1 建游 / P2 模型 / P3 运行时 / P4 观测）
 - [VERTICALS.md](VERTICALS.md)：AI 产业八赛道垂直版矩阵 + 接模型/接 agent 指南 + 三轮测试计划
+- [OPEN-MODEL-MATRIX.md](OPEN-MODEL-MATRIX.md)：八赛道开源底座 × 大厂预留 API 矩阵（L7 PROVIDER_PRESETS 13 行）
 - [ADR 0001](adr/0001-five-platforms-capability-bitmap.md)：五端一等公民与能力位图
 - [ADR 0002](adr/0002-neural-rendering-runtime-invariants.md)：神经渲染运行时不变量
 - [ADR 0003](adr/0003-l8-native-generative-ai.md)：L8 原生生成式 AI 边界

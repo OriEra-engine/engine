@@ -237,13 +237,172 @@ impl ProviderKind {
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
             "zhipu" => Some(ProviderKind::Zhipu),
-            "openai-compat" | "openai" | "deepseek" | "moonshot" | "groq" | "openrouter" => {
+            "openai-compat" | "openai" | "deepseek" | "moonshot" | "groq" | "openrouter"
+            | "qwen" | "ollama" | "vllm" | "llamacpp" | "lmstudio" => {
                 Some(ProviderKind::OpenAiCompat)
             }
             "anthropic" => Some(ProviderKind::Anthropic),
             "rule" => Some(ProviderKind::Rule),
             _ => None,
         }
+    }
+}
+
+/// One row of the provider preset table. Mirrors the browser kernel's
+/// `PROVIDER_PRESETS` (examples/11-ai-cafe/engine/kernel.js) and extends
+/// it with the open-source local serving stack — the "geek rows": the
+/// same table drives the Studio model center, the Rust-side smoke
+/// harness and the free-tier matrix (docs/OPEN-MODEL-MATRIX.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderPreset {
+    /// Stable id used in configs, env vars and UI rows.
+    pub id: &'static str,
+    /// Human label for the model center.
+    pub label: &'static str,
+    pub kind: ProviderKind,
+    /// Suggested first model (free tier where one exists).
+    pub model: &'static str,
+    /// Default base URL; empty for the offline rule row.
+    pub base_url: &'static str,
+    /// `true` for local open-source serving (no key, no egress): the
+    /// rows the companion/edu tracks pin for privacy and compliance.
+    pub local: bool,
+}
+
+/// The preset table. Order is the model-center display order: offline
+/// row first (never fails), then cloud vendors, then local open-source
+/// rows. Cloud rows are **reserved interfaces** — the big-vendor API
+/// endpoints are pinned here so plugging a vendor key is a one-field
+/// edit; local rows point at the standard OpenAI-compatible endpoints
+/// of ollama / vLLM / llama.cpp / LM Studio.
+pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
+    // ── offline ──
+    ProviderPreset {
+        id: "rule",
+        label: "离线规则引擎",
+        kind: ProviderKind::Rule,
+        model: "rule-v1",
+        base_url: "",
+        local: true,
+    },
+    // ── cloud vendors (reserved API interfaces; key in the shell) ──
+    ProviderPreset {
+        id: "zhipu",
+        label: "智谱 GLM",
+        kind: ProviderKind::Zhipu,
+        model: "glm-4-flash",
+        base_url: "https://open.bigmodel.cn/api/paas/v4",
+        local: false,
+    },
+    ProviderPreset {
+        id: "openai",
+        label: "OpenAI",
+        kind: ProviderKind::OpenAiCompat,
+        model: "gpt-4o-mini",
+        base_url: "https://api.openai.com/v1",
+        local: false,
+    },
+    ProviderPreset {
+        id: "qwen",
+        label: "Qwen 通义",
+        kind: ProviderKind::OpenAiCompat,
+        model: "qwen-plus",
+        base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        local: false,
+    },
+    ProviderPreset {
+        id: "deepseek",
+        label: "DeepSeek",
+        kind: ProviderKind::OpenAiCompat,
+        model: "deepseek-chat",
+        base_url: "https://api.deepseek.com/v1",
+        local: false,
+    },
+    ProviderPreset {
+        id: "moonshot",
+        label: "Moonshot Kimi",
+        kind: ProviderKind::OpenAiCompat,
+        model: "moonshot-v1-8k",
+        base_url: "https://api.moonshot.cn/v1",
+        local: false,
+    },
+    ProviderPreset {
+        id: "groq",
+        label: "Groq",
+        kind: ProviderKind::OpenAiCompat,
+        model: "llama-3.1-8b-instant",
+        base_url: "https://api.groq.com/openai/v1",
+        local: false,
+    },
+    ProviderPreset {
+        id: "openrouter",
+        label: "OpenRouter",
+        kind: ProviderKind::OpenAiCompat,
+        model: "openrouter/auto",
+        base_url: "https://openrouter.ai/api/v1",
+        local: false,
+    },
+    ProviderPreset {
+        id: "anthropic",
+        label: "Anthropic",
+        kind: ProviderKind::Anthropic,
+        model: "claude-3-5-haiku-latest",
+        base_url: "https://api.anthropic.com/v1",
+        local: false,
+    },
+    // ── local open-source serving (no key, no egress) ──
+    ProviderPreset {
+        id: "ollama",
+        label: "Ollama 本地",
+        kind: ProviderKind::OpenAiCompat,
+        model: "qwen3:8b",
+        base_url: "http://127.0.0.1:11434/v1",
+        local: true,
+    },
+    ProviderPreset {
+        id: "vllm",
+        label: "vLLM 本地",
+        kind: ProviderKind::OpenAiCompat,
+        model: "Qwen/Qwen3-8B",
+        base_url: "http://127.0.0.1:8000/v1",
+        local: true,
+    },
+    ProviderPreset {
+        id: "llamacpp",
+        label: "llama.cpp 本地",
+        kind: ProviderKind::OpenAiCompat,
+        model: "glm-4-9b-chat",
+        base_url: "http://127.0.0.1:8080/v1",
+        local: true,
+    },
+    ProviderPreset {
+        id: "lmstudio",
+        label: "LM Studio 本地",
+        kind: ProviderKind::OpenAiCompat,
+        model: "minicpm-v",
+        base_url: "http://127.0.0.1:1234/v1",
+        local: true,
+    },
+];
+
+impl ProviderConfig {
+    /// Build a config from a preset row (`id` matches
+    /// [`ProviderPreset::id`]). The API key is left empty — the shell
+    /// is the only place a key ever lives; local rows never need one.
+    pub fn preset(id: &str) -> Option<ProviderConfig> {
+        PROVIDER_PRESETS
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| ProviderConfig {
+                kind: p.kind,
+                model: p.model.to_string(),
+                api_key: String::new(),
+                base_url: if p.base_url.is_empty() {
+                    None
+                } else {
+                    Some(p.base_url.to_string())
+                },
+            })
     }
 }
 
@@ -301,5 +460,85 @@ mod choice_tests {
         assert!(ProviderKind::Anthropic
             .default_base_url()
             .contains("anthropic"));
+    }
+}
+
+#[cfg(test)]
+mod preset_tests {
+    use super::*;
+
+    #[test]
+    fn preset_table_is_well_formed() {
+        let mut ids = PROVIDER_PRESETS.iter().map(|p| p.id).collect::<Vec<_>>();
+        let n = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), n, "preset ids must be unique");
+        // The offline row leads, and every cloud row pins a base URL.
+        assert_eq!(PROVIDER_PRESETS[0].id, "rule");
+        for p in PROVIDER_PRESETS {
+            if !p.local {
+                assert!(!p.base_url.is_empty(), "{} needs a base URL", p.id);
+            }
+        }
+    }
+
+    #[test]
+    fn kernel_js_parity_plus_geek_rows() {
+        // The eight rows the browser kernel serves (kernel.js
+        // PROVIDER_PRESETS) all resolve, plus the qwen reserved row and
+        // the four local open-source serving rows.
+        for id in [
+            "rule",
+            "zhipu",
+            "openai",
+            "deepseek",
+            "moonshot",
+            "groq",
+            "openrouter",
+            "anthropic",
+        ] {
+            assert!(
+                ProviderConfig::preset(id).is_some(),
+                "kernel row {id} missing"
+            );
+        }
+        for id in ["qwen", "ollama", "vllm", "llamacpp", "lmstudio"] {
+            assert!(
+                ProviderConfig::preset(id).is_some(),
+                "geek row {id} missing"
+            );
+        }
+        assert_eq!(PROVIDER_PRESETS.len(), 13);
+    }
+
+    #[test]
+    fn preset_builds_a_config_with_no_key_inside() {
+        let cfg = ProviderConfig::preset("ollama").unwrap();
+        assert_eq!(cfg.kind, ProviderKind::OpenAiCompat);
+        assert_eq!(cfg.model, "qwen3:8b");
+        assert_eq!(cfg.base_url.as_deref(), Some("http://127.0.0.1:11434/v1"));
+        assert!(cfg.api_key.is_empty(), "presets never carry a key");
+
+        let qwen = ProviderConfig::preset("qwen").unwrap();
+        assert_eq!(
+            qwen.base_url.as_deref(),
+            Some("https://dashscope.aliyuncs.com/compatible-mode/v1")
+        );
+
+        let rule = ProviderConfig::preset("rule").unwrap();
+        assert_eq!(rule.kind, ProviderKind::Rule);
+        assert!(rule.base_url.is_none());
+        assert!(ProviderConfig::preset("nope").is_none());
+    }
+
+    #[test]
+    fn local_rows_are_flagged_for_privacy_pinning() {
+        let local: Vec<_> = PROVIDER_PRESETS
+            .iter()
+            .filter(|p| p.local)
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(local, ["rule", "ollama", "vllm", "llamacpp", "lmstudio"]);
     }
 }
