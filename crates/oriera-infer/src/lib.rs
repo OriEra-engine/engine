@@ -15,7 +15,9 @@
 pub mod provider;
 
 pub use oriera_common::TokenUsage;
-pub use provider::{ChatMessage, InferError, ModelProvider, Role, RuleProvider};
+pub use provider::{
+    ChatMessage, InferError, ModelProvider, ProviderPreset, Role, RuleProvider, PROVIDER_PRESETS,
+};
 
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Position, Velocity, World};
