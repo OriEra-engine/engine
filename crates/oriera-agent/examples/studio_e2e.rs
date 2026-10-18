@@ -16,7 +16,7 @@ use oriera_agent::{
 };
 use oriera_common::Timestamp;
 use oriera_core::{AllocatorConfig, FrameCtx, Scheduler, System};
-use oriera_ecs::{Position, World};
+use oriera_ecs::World;
 use oriera_infer::{InferSystem, ModelProvider, RuleProvider, Stats, UsageMeter};
 use oriera_render::RenderSystem;
 use oriera_subsys::{Gravity, PhysicsSystem, TimeScale};
@@ -216,7 +216,8 @@ fn scenario_companion() {
 fn scenario_twin() {
     banner("场景 C · 数字孪生赛道（确定性回放地基）");
 
-    let run_once = |freeze_midway: bool| -> Vec<(u32, u32)> {
+    // 直调路径（固定 FrameCtx）：命令流 + 固定步长。
+    let run_once = |freeze_midway: bool| -> u64 {
         let mut world = World::new();
         world.insert_resource(Gravity(9.8));
         let mut infer = InferSystem::new();
@@ -234,28 +235,21 @@ fn scenario_twin() {
             "  冻结注入={freeze_midway} · 空转跳过 {frozen} 帧 · 实体 {}",
             world.len()
         );
-        world
-            .query::<Position>()
-            .map(|(_e, p)| (p.x.to_bits(), p.y.to_bits()))
-            .collect()
+        world.state_hash() // #67: 世界指纹，替代手搓位收集
     };
 
     let a = run_once(false);
     let b = run_once(false);
     assert_eq!(a, b, "同种子两次运行必须逐位一致");
-    assert_eq!(a.len(), 25);
 
     // 冻结注入的差异是可观测且可解释的：30 帧冻结 = 30 帧零位移。
     let c = run_once(true);
-    assert_eq!(c.len(), 25);
-    println!(
-        "  ✓ 两次运行逐位一致（{} 个实体）· 冻结注入产生可解释差异",
-        a.len()
-    );
+    assert_ne!(a, c);
+    println!("  ✓ 两次运行指纹一致（{a:016x}）· 冻结注入产生可解释差异");
 
     // 真实调度器路径（issue #66 验收腿）：with_fixed_dt 钉住步长，
     // 两次运行注入不同的 sleep 抖动，物理积分不再随墙钟发散。
-    let sched_run = |jitter_us: u64| -> Vec<(u32, u32)> {
+    let sched_run = |jitter_us: u64| -> u64 {
         let mut world = World::new();
         world.insert_resource(Gravity(9.8));
         let mut infer = InferSystem::new();
@@ -268,18 +262,12 @@ fn scenario_twin() {
             sched.tick(&mut world);
             std::thread::sleep(std::time::Duration::from_micros(jitter_us));
         }
-        world
-            .query::<Position>()
-            .map(|(_e, p)| (p.x.to_bits(), p.y.to_bits()))
-            .collect()
+        world.state_hash()
     };
     let r1 = sched_run(200);
     let r2 = sched_run(900); // 4.5 倍负载差异
     assert_eq!(r1, r2, "#66: 固定 dt 下真实调度路径必须逐位一致");
-    println!(
-        "  ✓ #66 真实调度路径：抖动 200µs vs 900µs，{} 实体逐位一致",
-        r1.len()
-    );
+    println!("  ✓ #66 真实调度路径：抖动 200µs vs 900µs，指纹一致 {r1:016x}");
 }
 
 fn main() {

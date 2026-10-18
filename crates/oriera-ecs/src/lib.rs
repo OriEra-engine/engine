@@ -480,6 +480,75 @@ impl World {
         (entity.index as usize) < self.generations.len()
             && self.generations[entity.index as usize] == entity.generation
     }
+
+    /// A reproducible fingerprint of the world's simulation state
+    /// (issue #67). FNV-1a over, in fixed order: live entity count,
+    /// then the [`Position`] column, then the [`Velocity`] column —
+    /// each present component hashed as (entity index, value bits) in
+    /// index order.
+    ///
+    /// Deliberately **not** included: generations, free-list layout,
+    /// resources, events — layout noise an A/B comparison of the same
+    /// command stream must not see. NaNs hash by their bit pattern, so
+    /// two worlds are equal iff their hashed columns are
+    /// bit-equal. New engine-standard columns join the fixed order in
+    /// a documented sequence (a change here is a hash-domain change:
+    /// bump the seed constant and note it in the release notes).
+    ///
+    /// This is the cheap prerequisite for #12 (full snapshot
+    /// serialize/deserialize): evaluation and regression loops get a
+    /// one-call world equality check today.
+    pub fn state_hash(&self) -> u64 {
+        // Seed spells "oriera" in ASCII — a deliberate, documented
+        // constant; changing it changes every fingerprint ever taken.
+        let mut h: u64 = 0x0000_6f72_6965_7261;
+        mix(&mut h, self.live_count as u64);
+        for (ty, bits_of) in [
+            (
+                TypeId::of::<Position>(),
+                (|any: &dyn Any| -> Vec<(usize, u64, u64)> {
+                    column_bits::<Position>(any, |p| (p.x.to_bits() as u64, p.y.to_bits() as u64))
+                }) as fn(&dyn Any) -> Vec<(usize, u64, u64)>,
+            ),
+            (
+                TypeId::of::<Velocity>(),
+                |any: &dyn Any| -> Vec<(usize, u64, u64)> {
+                    column_bits::<Velocity>(any, |v| (v.vx.to_bits() as u64, v.vy.to_bits() as u64))
+                },
+            ),
+        ] {
+            if let Some(col) = self.columns.get(&ty) {
+                for (idx, a, b) in bits_of(col.as_any()) {
+                    mix(&mut h, idx as u64);
+                    mix(&mut h, a);
+                    mix(&mut h, b);
+                }
+            }
+        }
+        h
+    }
+}
+
+/// One FNV-1a mix step.
+fn mix(h: &mut u64, word: u64) {
+    *h ^= word;
+    *h = h.wrapping_mul(0x100000001b3);
+}
+
+/// Read one typed column as (entity index, value-word pairs) in index
+/// order, skipping empty slots. Shared by [`World::state_hash`].
+fn column_bits<T: 'static>(
+    any: &dyn Any,
+    words: impl Fn(&T) -> (u64, u64),
+) -> Vec<(usize, u64, u64)> {
+    match any.downcast_ref::<Vec<Option<T>>>() {
+        Some(col) => col
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, slot)| slot.as_ref().map(|v| (idx, words(v).0, words(v).1)))
+            .collect(),
+        None => Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +577,86 @@ pub struct Velocity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn populated_world() -> World {
+        let mut w = World::new();
+        for i in 0..5u32 {
+            let e = w.spawn();
+            w.insert(
+                e,
+                Position {
+                    x: i as f32 * 3.0,
+                    y: 100.0 - i as f32,
+                },
+            );
+            w.insert(
+                e,
+                Velocity {
+                    vx: 0.5,
+                    vy: -0.25 * i as f32,
+                },
+            );
+        }
+        w
+    }
+
+    #[test]
+    fn state_hash_is_reproducible_across_identical_worlds() {
+        assert_eq!(
+            populated_world().state_hash(),
+            populated_world().state_hash()
+        );
+    }
+
+    #[test]
+    fn empty_world_hash_is_stable_and_nonzero() {
+        let h1 = World::new().state_hash();
+        let h2 = World::new().state_hash();
+        assert_eq!(h1, h2);
+        assert_ne!(h1, 0);
+    }
+
+    #[test]
+    fn one_flipped_bit_changes_the_hash() {
+        let a = populated_world();
+        let mut b = populated_world();
+        // Flip the lowest mantissa bit of entity 0's Position.x.
+        let e = Entity {
+            index: 0,
+            generation: 0,
+        };
+        let mut p = b.get::<Position>(e).copied().unwrap();
+        p.x = f32::from_bits(p.x.to_bits() ^ 1);
+        b.insert(e, p);
+        assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn layout_noise_is_ignored_but_layout_itself_is_not() {
+        // Same values, same slots → same hash even after unrelated
+        // churn (a despawned entity's free index stays out of the mix).
+        let mut a = populated_world();
+        let mut b = populated_world();
+        let extra_a = a.spawn();
+        a.insert(extra_a, Position { x: 0.0, y: 0.0 });
+        let extra_b = b.spawn();
+        b.insert(extra_b, Position { x: 0.0, y: 0.0 });
+        a.despawn(extra_a);
+        b.despawn(extra_b);
+        assert_eq!(a.state_hash(), b.state_hash());
+
+        // The entity INDEX participates: same values at a different
+        // index are a different world state for comparison purposes.
+        let mut c = World::new();
+        let filler = c.spawn(); // occupies index 0, no components
+        let _ = filler;
+        let e1 = c.spawn();
+        c.insert(e1, Position { x: 9.0, y: 9.0 });
+        let mut d = World::new();
+        let e0 = d.spawn();
+        d.insert(e0, Position { x: 9.0, y: 9.0 });
+        assert_ne!(c.state_hash(), d.state_hash());
+    }
 
     #[test]
     fn spawn_empty() {
