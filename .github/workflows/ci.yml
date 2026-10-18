@@ -39,6 +39,8 @@ jobs:
         run: cargo test -p oriera-agent --features json
       - name: Test (infer native-http feature)
         run: cargo test -p oriera-infer --features native-http
+      - name: Test (subsys rigid feature)
+        run: cargo test -p oriera-subsys --features rigid
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy (genai providers feature)
@@ -47,6 +49,10 @@ jobs:
         run: cargo clippy -p oriera-agent --all-targets --features json -- -D warnings
       - name: Clippy (infer native-http feature)
         run: cargo clippy -p oriera-infer --all-targets --features native-http -- -D warnings
+      - name: Clippy (subsys+agent rigid feature)
+        run: cargo clippy -p oriera-subsys --all-targets --features rigid -- -D warnings
+      - name: Clippy (agent rigid example)
+        run: cargo clippy -p oriera-agent --all-targets --features rigid -- -D warnings
 
   manifests:
     runs-on: ubuntu-latest

@@ -27,6 +27,7 @@ Community License）= 可用但条款自读；GPL 工具（Blender）= 只做进
 |---|---|---|---|
 | 1 游戏 | Qwen3（Apache-2.0，ollama/vLLM 起） | Stanford generative-agents（MIT，NPC 社会模拟） | 智谱 GLM / DeepSeek / Kimi（ProviderKind 已接） |
 | 2 具身 | LeRobot（Apache-2.0，策略训练/评测） | Genesis（Apache-2.0，物理仿真）+ MuJoCo（Apache-2.0） | 端侧 NPU 推理 API（L1 route 预留） |
+| **Rapier** | 刚体物理（引擎内嵌 L6 后端，feature `rigid`） | Apache-2.0 | 已接入：`RigidBodySystem`，纯 Rust 零 C 工具链 |
 | 3 AIGC | TripoSR（MIT，图生 3D） | InstantMesh（Apache-2.0）· TRELLIS（MIT）· Hunyuan3D-2（社区许可） | Tripo / Seedance（L8 适配器已有） |
 | 4 孪生 | ROS 2（Apache-2.0，设备桥） | OpenUSD（Apache-2.0，场景描述）· Eclipse Ditto（EPL-2.0，数字孪生服务） | AWS IoT TwinMaker / Azure Digital Twins（L1 net 适配） |
 | 5 教育 | MiniCPM（Apache-2.0，端侧零合规） | Qwen3 本地行 | —（教育版钉死本地，合规即卖点） |

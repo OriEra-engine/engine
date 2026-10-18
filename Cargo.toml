@@ -49,6 +49,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # fits System::run's synchronous shape — no async runtime enters L7.
 # rustls via webpki-roots, no native TLS, no compression extras.
 ureq = { version = "2.10", default-features = false, features = ["tls"] }
+# L6 rigid backend (#80): pure Rust, Apache-2.0, 2026 roadmap targets
+# robotics accuracy. Feature-gated per crate (`rigid`).
+rapier2d = "0.36"
 criterion = "0.5"
 
 [profile.release]

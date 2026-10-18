@@ -24,6 +24,9 @@ serde_json = { workspace = true, optional = true }
 [features]
 default = []
 json = ["dep:serde_json"]
+# Passthrough to the dev-depended L6 crate: examples/tests opt into the
+# rapier2d backend through THIS feature (required-features).
+rigid = ["oriera-subsys/rigid"]
 
 [dev-dependencies]
 oriera-render = { path = "../oriera-render" }
@@ -36,3 +39,12 @@ path = "examples/cafe.rs"
 [[example]]
 name = "studio_e2e"
 path = "examples/studio_e2e.rs"
+
+# #80: rapier2d comes from oriera-subsys' `rigid` feature — the
+# example only builds when that (and json, unused here but kept for
+# symmetry with the collection harness docs) is enabled.
+[[example]]
+name = "embodied_collect"
+path = "examples/embodied_collect.rs"
+required-features = ["rigid"]
+

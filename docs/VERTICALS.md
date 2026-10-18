@@ -73,7 +73,12 @@ OriEra 不只是游戏引擎。世界引擎的本质产品是**一个会演化�
   > 评测/回放负载请 `with_fixed_dt` + `state_hash` 成对使用。
   > ✅ 逐实体动作词汇已兑现（#69）：`Command::Nudge` + 
   > `SpawnedThisFrame` 句柄资源——策略的「对某个 agent 施加某物」
-  > 从 L7 就有了（传感器/刚体仍在 L6 Jolt 位，独立 issue）。
+  > 从 L7 就有了。
+  > ✅ 刚体后端与数据出口已兑现（#80）：L6 `rigid`（rapier2d，纯
+  > Rust/Apache-2.0，`RigidBodySystem` 与积分器同契约）× L9
+  > `EpisodeRecorder`（LeRobotDataset v3 列对齐 JSONL + 每集
+  > state_hash 回执），采集示例双跑逐位一致——world as benchmark
+  > 的最小闭环。管线地图见 [EMBODIED-PIPELINES.md](EMBODIED-PIPELINES.md)。
 - **为什么是 OriEra**：确定性回放（书 T5）+ 预算分拨（v0.4）正是
   sim2real 评测场的两个硬前提。
 
