@@ -120,6 +120,9 @@ OriEra 不只是游戏引擎。世界引擎的本质产品是**一个会演化�
   注意力节拍器（v0.4 已落：安静时 ×(1/throttle) 降频，WakeEvent 即回）。
 - **首版**：demo 11 换端侧小模型行（ollama/小参数量 API）+ 跨会话记忆
   持久化（localStorage 已有，v0.5 换 L1 storage 通道）。
+  > ✅ 原生侧跨会话记忆最小可用版已兑现（#70，PR 见 issue）：
+  > `MemoryStore::to_json/from_json`（feature `json`）——引擎出口是
+  > 一个字符串，壳层拿到爱存哪存哪；L1 storage 文件后端仍是 v0.5。
 - **为什么是 OriEra**：陪伴产品的两个死穴——记忆丢失与费钱——
   分别被 L3/L9 记忆架构与 L2 分拨正面解决。
 

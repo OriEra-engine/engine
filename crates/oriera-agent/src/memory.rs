@@ -90,6 +90,99 @@ impl MemoryStore {
     }
 }
 
+/// Cross-session persistence: `to_json`/`from_json` behind the optional
+/// `json` feature (#70). The shell owns where the string lives (file,
+/// localStorage, L1 storage later) — the engine only promises the pair
+/// round-trips and never panics on bad input.
+#[cfg(feature = "json")]
+impl MemoryStore {
+    /// Compact JSON snapshot. Agents are emitted in sorted order, so the
+    /// same store always serializes to the same string — friendly to
+    /// hashing, diffing and replay assertions.
+    pub fn to_json(&self) -> String {
+        use serde_json::{Map, Value};
+        let mut root = Map::new();
+        root.insert("version".into(), Value::from(1u64));
+        let mut agents: Vec<&String> = self.memories.keys().collect();
+        agents.sort();
+        for agent in agents {
+            let episodes: Vec<Value> = self.memories[agent]
+                .iter()
+                .map(|e| {
+                    let mut m = Map::new();
+                    m.insert("turn".into(), Value::from(e.turn));
+                    m.insert("day".into(), Value::from(e.day));
+                    m.insert("about".into(), Value::from(e.about.clone()));
+                    m.insert("text".into(), Value::from(e.text.clone()));
+                    m.insert("importance".into(), Value::from(e.importance));
+                    Value::Object(m)
+                })
+                .collect();
+            root.insert(agent.clone(), Value::Array(episodes));
+        }
+        Value::Object(root).to_string()
+    }
+
+    /// Rebuild a store from [`MemoryStore::to_json`] output. Malformed
+    /// input of any kind is `Err` — never a panic; callers keep their
+    /// old store and carry on (self-healing philosophy). Episodes are
+    /// re-`record`ed, so the 60-per-agent sliding window invariant
+    /// applies to imports exactly as it does to live writes.
+    pub fn from_json(s: &str) -> Result<Self, String> {
+        use serde_json::Value;
+        let v: Value =
+            serde_json::from_str(s).map_err(|e| format!("memory json: parse error: {e}"))?;
+        let obj = v
+            .as_object()
+            .ok_or_else(|| "memory json: top level must be an object".to_string())?;
+        let mut store = MemoryStore::new();
+        for (agent, episodes) in obj {
+            if agent == "version" {
+                continue; // reserved, forward-compat slot
+            }
+            let arr = episodes.as_array().ok_or_else(|| {
+                format!("memory json: agent '{agent}' must map to an episode array")
+            })?;
+            for ep in arr {
+                let o = ep.as_object().ok_or_else(|| {
+                    format!("memory json: agent '{agent}' has a non-object episode")
+                })?;
+                let field = |k: &str| {
+                    o.get(k).ok_or_else(|| {
+                        format!("memory json: agent '{agent}' episode missing field '{k}'")
+                    })
+                };
+                let u64_field = |k: &str| -> Result<u64, String> {
+                    field(k)?.as_u64().ok_or_else(|| {
+                        format!("memory json: field '{k}' must be a non-negative integer")
+                    })
+                };
+                let str_field = |k: &str| -> Result<String, String> {
+                    field(k)?
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("memory json: field '{k}' must be a string"))
+                };
+                let importance = u64_field("importance")?;
+                let importance = u8::try_from(importance)
+                    .map_err(|_| "memory json: field 'importance' must fit in u8")?;
+                store.record(
+                    agent,
+                    Episode {
+                        turn: u64_field("turn")?,
+                        day: u32::try_from(u64_field("day")?)
+                            .map_err(|_| "memory json: field 'day' must fit in u32")?,
+                        about: str_field("about")?,
+                        text: str_field("text")?,
+                        importance,
+                    },
+                );
+            }
+        }
+        Ok(store)
+    }
+}
+
 /// CJK bigrams + latin words — the cheap deterministic tokenizer the
 /// wasm kernel mirrors (`zhBigrams`).
 fn bigrams(s: &str) -> Vec<String> {
@@ -158,5 +251,83 @@ mod tests {
         assert!(MemoryStore::new()
             .retrieve("nobody", "", "", 0, 3)
             .is_empty());
+    }
+
+    // ---- #70: MemoryStore ↔ JSON (feature `json`) ----
+
+    #[cfg(feature = "json")]
+    fn seeded_store() -> MemoryStore {
+        let mut m = MemoryStore::new();
+        m.record("aria", ep(1, "老周", "老周记得每个人的口味", 4));
+        m.record("aria", ep(9, "world", "雨季来了，店里放起了爵士", 2));
+        m.record("老周", ep(3, "Aria", "Aria 总在窗边画到打烊", 5));
+        m.record("老周", ep(7, "aria", "双份浓缩是她的老样子", 3));
+        m
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn json_round_trip_preserves_retrieval() {
+        let m = seeded_store();
+        let restored = MemoryStore::from_json(&m.to_json()).unwrap();
+        assert_eq!(restored.len_total(), m.len_total());
+        // Same questions → same answers, same order.
+        assert_eq!(
+            restored.retrieve("aria", "老周", "口味", 100, 2),
+            m.retrieve("aria", "老周", "口味", 100, 2)
+        );
+        assert_eq!(
+            restored.retrieve("老周", "Aria", "窗边 画", 100, 1),
+            m.retrieve("老周", "Aria", "窗边 画", 100, 1)
+        );
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn bad_json_is_err_never_panic() {
+        assert!(MemoryStore::from_json("").is_err());
+        assert!(MemoryStore::from_json("{not json").is_err());
+        assert!(MemoryStore::from_json("[]").is_err()); // top level must be object
+        assert!(MemoryStore::from_json(r#"{"version":1,"a":"nope"}"#).is_err()); // episodes must be array
+        assert!(MemoryStore::from_json(r#"{"a":[{"turn":"x"}]}"#).is_err()); // wrong type
+        assert!(MemoryStore::from_json(r#"{"a":[{"turn":1}]}"#).is_err()); // missing fields
+        assert!(MemoryStore::from_json(
+            r#"{"a":[{"turn":1,"day":1,"about":"","text":"","importance":999}]}"#
+        )
+        .is_err()); // u8 overflow
+                    // Empty store round-trips too.
+        assert!(MemoryStore::from_json(&MemoryStore::new().to_json())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn to_json_is_stable_regardless_of_agent_insertion_order() {
+        let a = seeded_store();
+        let mut b = MemoryStore::new();
+        // Same episodes, same per-agent history order — only the order
+        // the two AGENTS were first recorded differs. Episode order is
+        // the store's history and is deliberately preserved, not sorted.
+        b.record("老周", ep(3, "Aria", "Aria 总在窗边画到打烊", 5));
+        b.record("老周", ep(7, "aria", "双份浓缩是她的老样子", 3));
+        b.record("aria", ep(1, "老周", "老周记得每个人的口味", 4));
+        b.record("aria", ep(9, "world", "雨季来了，店里放起了爵士", 2));
+        assert_eq!(a.to_json(), b.to_json());
+        assert_eq!(a.to_json(), a.to_json()); // idempotent string
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn import_honors_the_sliding_window() {
+        let mut m = MemoryStore::new();
+        for i in 0..80 {
+            m.record("z", ep(i, "world", &format!("事件{i}"), 1));
+        }
+        let restored = MemoryStore::from_json(&m.to_json()).unwrap();
+        assert_eq!(restored.len_total(), 60); // cap survives the round trip
+        assert!(restored.retrieve("z", "world", "事件79", 100, 1)[0]
+            .text
+            .contains("79"));
     }
 }
