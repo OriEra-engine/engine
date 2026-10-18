@@ -153,6 +153,10 @@ cargo clippy --workspace -- -D warnings
 
 我们欢迎任何形式的贡献——修 bug、写文档、加 demo、提 RFC。
 
+### 🖥️ 不想装工具链？用官方辅助工具 OriEra Studio
+
+[OriEra Studio](https://github.com/OriEra-engine/studio)（Windows 桌面端）把引擎打包成双击即用的形态：内置全部示例离线运行、按硬件推荐并植入模型、五步生成自己的 AI 原生游戏原型——无需科学上网、无需 GitHub、无需命令行。遇到问题可以直接从 Studio 桌面端把反馈（自动附环境信息）提交到本仓库 issues。[下载 v0.3.0](https://github.com/OriEra-engine/studio/releases/latest)。
+
 ### 🎃 Hacktoberfest 2026 进行中
 
 10 月 31 日截止前，本仓库所有 `good first issue` 均参与 Hacktoberfest（每个任务都写了涉及文件与验收标准，15 分钟指南带你走完全流程）：
