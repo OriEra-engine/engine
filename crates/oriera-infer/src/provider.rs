@@ -4,9 +4,10 @@
 //! (L9 agents, L11 apps) talk to [`ModelProvider`] through the inference
 //! runtime; they never see HTTP, keys or model names. Browser/wasm builds
 //! implement this trait over `fetch` (see examples/11-ai-cafe engine
-//! kernel); native builds plug in an async client behind a feature flag
-//! (ROADMAP v0.6). `RuleProvider` is the deterministic offline backend
-//! that keeps tests hermetic and lets the engine run without a key.
+//! kernel); native builds get the blocking HTTP adapter behind the
+//! `native-http` feature (#68, design discussions/78). `RuleProvider`
+//! is the deterministic offline backend that keeps tests hermetic and
+//! lets the engine run without a key.
 
 use oriera_common::TokenUsage;
 use std::fmt;
@@ -42,16 +43,41 @@ pub enum Role {
 
 /// Why a completion failed. Keys and transport details stay inside the
 /// provider — they never leak into layer-9 prompt code.
+///
+/// `Network`/`Timeout`/`Status`/`Parse` are the native-HTTP adapter's
+/// classification (#68, design discussions/78): the distinction is
+/// actionable — Network means "never reached the far side", Timeout
+/// means "the far side is alive but slow" (a budget signal, not a bug),
+/// Status carries the provider's answer (4xx/5xx + scrubbed body
+/// snippet), Parse means the provider answered garbage (a bug, never
+/// retried). `Provider` stays as the catch-all for config-level and
+/// backend-specific failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InferError {
     /// The provider refused / errored / timed out.
     Provider(String),
+    /// Connection never made it to the far side (DNS / TCP / TLS).
+    /// Never carries key material.
+    Network(String),
+    /// The far side was alive but slow — the request hit its deadline.
+    /// This is a compute-budget signal, not a fault to hide.
+    Timeout,
+    /// The provider answered with a non-2xx status. `detail` is a
+    /// redacted body snippet (plus `retry-after:` when the provider
+    /// sent one) — api keys are scrubbed before it is built.
+    Status { code: u16, detail: String },
+    /// 2xx but the payload did not parse — never retried; surface it.
+    Parse(String),
 }
 
 impl fmt::Display for InferError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             InferError::Provider(m) => write!(f, "provider error: {m}"),
+            InferError::Network(m) => write!(f, "network unreachable: {m}"),
+            InferError::Timeout => write!(f, "timeout: far side alive but slow (budget signal)"),
+            InferError::Status { code, detail } => write!(f, "http {code}: {detail}"),
+            InferError::Parse(m) => write!(f, "malformed provider payload: {m}"),
         }
     }
 }
@@ -406,14 +432,27 @@ impl ProviderConfig {
     }
 }
 
-/// Resolve a creator's choice into a provider. Native HTTP clients land
-/// behind per-kind feature flags (ROADMAP v0.6); until then remote kinds
-/// resolve to their wasm/browser implementation (kernel.js
-/// `createProvider` mirrors this factory 1:1) and native builds get the
-/// rule backend with the choice recorded for observability.
+/// Resolve a creator's choice into a provider.
+///
+/// With the `native-http` feature (#68, design discussions/78) remote
+/// kinds get the blocking HTTP adapter (ureq + rustls, 20s/5s timeouts,
+/// key only from the shell). Without the feature — the default — remote
+/// kinds resolve to the rule backend with the choice recorded for
+/// observability, and the browser kernel (kernel.js `createProvider`)
+/// remains the mirror implementation of this factory.
 pub fn create_provider(cfg: &ProviderConfig) -> std::sync::Arc<dyn ModelProvider> {
     match cfg.kind {
         ProviderKind::Rule => std::sync::Arc::new(RuleProvider::new()),
+        #[cfg(feature = "native-http")]
+        kind => {
+            tracing::info!(
+                provider = kind.id(),
+                model = %cfg.model,
+                "L7 native HTTP provider armed (feature native-http)"
+            );
+            std::sync::Arc::new(crate::http::HttpProvider::new(cfg.clone()))
+        }
+        #[cfg(not(feature = "native-http"))]
         kind => {
             tracing::info!(
                 provider = kind.id(),

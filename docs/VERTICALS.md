@@ -159,6 +159,9 @@ OriEra 不只是游戏引擎。世界引擎的本质产品是**一个会演化�
 
 1. **v0.5 主线：原生 HTTP provider 适配器**（transport 注入，ADR 0003
    模式）——解锁模型中心七条远程行，这是所有赛道共用的最大缺口。
+   > ✅ 已实现（#68，PR 待设计评论期后合入 discussions/78）：feature
+   > `native-http`，ureq 阻塞式 + 四分类错误（Network/Timeout/Status/
+   > Parse），9 个 mock-server 测试。
 2. **确定性 tick 模式** `Scheduler::with_fixed_dt`——影视/科学/孪生
    三条赛道的共同地基，改动只在 L2。
 3. **`World::serialize`**——「我的项目」存档与所有赛道的会话恢复。

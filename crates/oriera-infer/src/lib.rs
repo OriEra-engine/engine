@@ -12,8 +12,12 @@
 //! Natural-language parsing does NOT live here — that is the L9 agent's
 //! job (`oriera-agent`). This layer only executes what it is given.
 
+#[cfg(feature = "native-http")]
+pub mod http;
 pub mod provider;
 
+#[cfg(feature = "native-http")]
+pub use http::HttpProvider;
 pub use oriera_common::TokenUsage;
 pub use provider::{
     ChatMessage, InferError, ModelProvider, ProviderPreset, Role, RuleProvider, PROVIDER_PRESETS,
