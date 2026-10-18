@@ -17,10 +17,10 @@
 | L4 资产管线 | 生成式资产（文生 3D/文生图/音效）流水线，校验后命名热替换入库 | ✅ L8 供给 → `PendingSwaps` → `apply_pending` 原位换芯；浏览器镜像 `AssetStore.insertNamed`（demo 13 全链实跑） | `GenerateAsset(prompt, 约束, 预算)` |
 | L5 渲染内核 | 神经渲染（3DGS/NeRF 混合几何）；AI 超分与注视点优化；生成资产的槽位消费 | 📋 神经渲染位图已含；✅ 槽位消费已落地（JS `SlotBindings`：命名资产→材质/网格，Rust 侧随 wgpu 窗口落地） | 绑定槽位名，落地自动换芯 |
 | L6 子系统 | AI 动画（语音驱动口型/程序化动作选择）；空间音频场景理解 | ✅ 动作选择已由认知输出 action 驱动 | NPC 输出 `wave/dance/...` 自动映射 |
-| L7 推理运行时 | **模型生命周期唯一入口**：提供商注册表、请求队列、重试、指标、降级链 | ✅ `ModelProvider` + `create_provider`（8 家）+ 浏览器 Http/Anthropic 实现 | 装配期一行选厂商 |
-| L8 生成式 AI | 世界内容生成：文生图（天空/地面/海报/精灵图）+ 文生 3D 道具 + 文生视频（NPC 台词归 L9） | ✅ 五种类类齐全（RFC 0001 增 `text_to_image`）：Rust `GenerationProvider` 边界 + CogView/Tripo/Seedance 适配器 + 按格式匹配的占位降级；浏览器镜像 `engine/genai.js`（demo 13 实跑） | 装配期选供应商，`ArtDirectorSystem` 一句话主题装帧世界 |
+| L7 推理运行时 | **模型生命周期唯一入口**：提供商注册表、请求队列、重试、指标、降级链 | ✅ `ModelProvider` + `create_provider` + 预设 13 行（离线 rule 1 + 云端 8 + 本地开源 4，`PROVIDER_PRESETS` 有测试钉死行数）+ 浏览器 Http/Anthropic 实现 | 装配期一行选厂商 |
+| L8 生成式 AI | 世界内容生成：文生图（天空/地面/海报/精灵图）+ 文生 3D 道具 + 文生视频（NPC 台词归 L9） | ✅ 五种类类齐全（RFC 0001 增 `text_to_image`）：Rust `GenerationProvider` 边界 + CogView/Tripo/Seedance 适配器 + 按格式匹配的占位降级；离线确定性后端 Rust 名 `MockProvider`、浏览器镜像名 `ProceduralProvider`（同一角色）；浏览器镜像 `engine/genai.js`（demo 13 实跑） | 装配期选供应商，`ArtDirectorSystem` 一句话主题装帧世界 |
 | L9 Agent | **认知/长期记忆/AI 导演**：`CognitionSystem`、`MemoryStore`、`DirectorSystem` 全部是 `System<World>` | ✅ Rust + kernel.js 双侧同构 | 注册系统即得会思考的 NPC |
-| L10 交互层 | 多模态入言：语音/眼动/手势转成自然语言意图进 L9 | 📋 SpatialInputEvent 已就绪 | 说话即操作 |
+| L10 交互层 | 多模态入言：语音/眼动/手势转成自然语言意图进 L9 | 📋 SpatialInputEvent 已就绪；层 manifest 随实现补齐（当前实装 L0–L9 共 10 份，见 `manifests/`） | 说话即操作 |
 | L11 应用/UGC | 自然语言创作：言灵世界（法则即语句）与咖啡馆（对话即内容）两个范式 | ✅ demo 10 / demo 11 | 创作者写剧本=写提示词 |
 | 横切 | 推理可观测（calls/errors/降级计数）、Token 成本计量、内容安全护栏 | ✅ 指标已埋；计量见 SECURITY.md 边界 | 全层只读指标 |
 
@@ -29,7 +29,8 @@
 - **言灵世界（demo 10）**：AI 原生*玩法*——玩家语句经 L9 规则解析变为 L7 命令，
   改写 L6 物理法则。展示「自然语言 → 引擎命令」通道。
 - **隅角咖啡馆（demo 11）**：AI 原生*世界*——认知/记忆/导演是引擎系统，
-  应用零 AI 代码。展示「引擎内嵌 AI」的完整形态。
+  应用零推理管线（⚙ 面板的一次连通性 ping 与 key 存取属壳层配置职责，
+  prompt 拼装与对话循环都在 kernel.js）。展示「引擎内嵌 AI」的完整形态。
 
 两者共用同一条 L7 边界；把咖啡馆的 `CognitionSystem` 换成言灵的
 `parse()`，就是创作一个新的 AI 原生玩法——**这就是降低创作门槛的含义**。
