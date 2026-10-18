@@ -14,12 +14,16 @@
 
 ## 0. Studio 是什么、不是什么
 
-Studio（工作台 v0.1 设计稿）是一个**桌面/网页壳**：本地起一个服务
+Studio 已是实物：[OriEra-engine/studio](https://github.com/OriEra-engine/studio)
+（Windows 桌面端，v0.3.0 发布版，双击即用、内置模型推荐、反馈直达
+本仓库 issues）。它是一个**桌面/网页壳**：本地起一个服务
 （如 `127.0.0.1:62105`），内置一份引擎快照（v0.3.0 全家 11 crate），
 让非程序员用「新建游戏五步向导 + 模型中心 + 命令面板」把一个世界从
 零跑到有。它和 `platforms/pc` 是**同一物种**：应用壳持有 World(L3)
 与 Scheduler(L2)，自己不写一行 AI 逻辑——这不是巧合，是架构规则的
 验收（ARCHITECTURE.md 硬规则 5：AI 是引擎系统）。
+本文即该壳与引擎层栈之间的**管线契约**：studio 仓库按此对齐，
+新界面元素一律沿本文的管线进引擎，追不到管线的按钮不许上屏。
 
 ```
 OriEra Studio（壳，等价 platforms/* 的角色）
@@ -134,7 +138,7 @@ key 的旅行路线**只有一条**：浏览器 localStorage / 壳进程环境 �
 | 原生 HTTP provider 适配器 | 模型中心远程行 | kernel.js 承载 | v0.5，transport 注入（同 L8 ADR 0003 模式） |
 | `World::serialize` | 我的项目存档 | 句柄已稳定 | v0.5，L3 manifest 已列 |
 | L9 `Goal` 组件 + 规划器 | 向导②「角色目标」 | `WorldStory.beats` 顶位 | v0.5–v0.6 |
-| Studio 壳本体 | 全部六区 | 设计稿 + 本文档管线契约 | 独立仓库 `studio`（同源编辑器书 T14） |
+| Studio 壳本体 | 全部六区 | **已上线** github.com/OriEra-engine/studio（v0.3.0） | 按本文管线契约对齐 + 补契约测试 |
 | wgpu 真窗口 | 仪表盘画面区 | 统计式渲染 | P2 工程计划（growth/PLAN-engineering-nov） |
 
 一句话收束：**界面是层栈的索引——Studio 的每个按钮都能沿管线追到
