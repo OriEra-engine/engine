@@ -14,6 +14,14 @@ spec:
       stability: stable
       note: NL → GenerationRequest bridge into L8 (rule-based v1,
         negation-aware); apps try generation first, commands second
+    - id: oriera.agent.memory-json.v1
+      contract: rust:oriera_agent::MemoryStore::{to_json,from_json}
+      stability: stable
+      note: cross-session memory persistence pair (#70); optional
+        feature `json` (serde_json), mirrors genai `providers` gating;
+        to_json emits agents sorted so output is stable/diffable;
+        from_json is Result-based and never panics; the 60-per-agent
+        sliding window applies to imports as to live writes
     - id: oriera.agent.cadence.v1
       contract: rust:oriera_agent::{WakeEvent,CognitionSystem}
       stability: stable

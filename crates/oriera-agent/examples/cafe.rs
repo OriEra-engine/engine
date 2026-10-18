@@ -125,5 +125,18 @@ fn main() {
     for hit in mem.retrieve("老周", "Aria", "口味 浓缩", 40, 2) {
         println!("  老周的记忆 → {}", hit.text);
     }
+    #[cfg(feature = "json")]
+    {
+        // #70: the persistence pair the shell needs for cross-session
+        // memory — engine exports a string, the shell decides where it
+        // lives (file / localStorage / L1 storage later).
+        let snapshot = mem.to_json();
+        let restored = MemoryStore::from_json(&snapshot).unwrap();
+        println!(
+            "  记忆 JSON 快照 {} 字节 · 往返恢复 {} 条（feature json）",
+            snapshot.len(),
+            restored.len_total()
+        );
+    }
     println!("\n✅ NPC 对话 = 引擎系统；应用只注册组件、读资源。这就是 AI 内嵌于引擎架构。");
 }
