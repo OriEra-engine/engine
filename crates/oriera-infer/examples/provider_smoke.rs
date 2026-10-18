@@ -9,12 +9,16 @@
 //! ORIERA_SMOKE_BASE_URL  网关/本地端点覆盖
 //! ```
 //!
-//! 诚实边界（截至 v0.4）：原生侧的远程 HTTP 适配器尚未落地
-//! （`create_provider` 对远程 kind 返回 RuleProvider 占位），真实网络腿
-//! 由浏览器 kernel（demo 11 ⚙ 填 key）承载。因此本 harness 在原生侧
-//! 验证的是**接入链路的全部本地环节**——预设解析、base URL、工厂
-//! 边界、complete 调用、usage 计量——远程腿给出明确的
-//! `PENDING-NATIVE-HTTP` 而不是假装通过。
+//! 远程腿（#68 后的分水岭）：
+//!
+//! - 默认（无 feature）：原生远程 HTTP 适配器不编译，`create_provider`
+//!   对远程 kind 返回 RuleProvider 占位，远程腿给出明确的
+//!   `PENDING-NATIVE-HTTP` 而不是假装通过；真实调用走浏览器 kernel。
+//! - `--features native-http`：远程腿点亮——`complete` 即真实网络
+//!   往返（20s 超时，四分类错误）。本地行零 key：
+//!   `ORIERA_SMOKE_PROVIDER=ollama cargo run -p oriera-infer --example
+//!   provider_smoke --features native-http`（先起 ollama serve）。
+//!   云端行：再加 `ORIERA_SMOKE_API_KEY=<key>`。
 //!
 //! 运行：`cargo run -p oriera-infer --example provider_smoke`
 
@@ -51,6 +55,8 @@ fn main() {
 
     let raw_kind = std::env::var("ORIERA_SMOKE_PROVIDER").unwrap_or_else(|_| "rule".into());
     let mut pass = 0usize;
+    // native-http 点亮后远程腿不再 PENDING，计数器只剩读取。
+    #[cfg_attr(feature = "native-http", allow(unused_mut))]
     let mut pending = 0usize;
 
     // 1. 预设/kind 解析
@@ -143,9 +149,18 @@ fn main() {
 
     // 6. 远程网络腿的诚实状态
     if cfg.kind != ProviderKind::Rule {
-        println!("  [PENDING-NATIVE-HTTP] 远程网络腿：原生 HTTP 适配器 v0.5 落地；");
-        println!("           当前真实调用走浏览器 kernel（examples/11-ai-cafe ⚙ 填 key）");
-        pending += 1;
+        #[cfg(feature = "native-http")]
+        {
+            // 第 5 步的 complete 已经是真实网络往返：成功即 PASS，
+            // 失败按四分类报错退出（Network/Timeout/Status/Parse）。
+            println!("  [NATIVE-HTTP] 远程腿已点亮（feature native-http）——上面那次 complete 就是真实往返");
+        }
+        #[cfg(not(feature = "native-http"))]
+        {
+            println!("  [PENDING-NATIVE-HTTP] 远程网络腿：feature native-http 未启用；");
+            println!("           当前真实调用走浏览器 kernel（examples/11-ai-cafe ⚙ 填 key）");
+            pending += 1;
+        }
     }
 
     // 7. 矩阵：预设表即认领表（云端=大厂预留接口，本地=开源底座）

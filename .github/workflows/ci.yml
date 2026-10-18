@@ -37,12 +37,16 @@ jobs:
         run: cargo test -p oriera-genai --features providers
       - name: Test (agent json feature)
         run: cargo test -p oriera-agent --features json
+      - name: Test (infer native-http feature)
+        run: cargo test -p oriera-infer --features native-http
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy (genai providers feature)
         run: cargo clippy -p oriera-genai --all-targets --features providers -- -D warnings
       - name: Clippy (agent json feature)
         run: cargo clippy -p oriera-agent --all-targets --features json -- -D warnings
+      - name: Clippy (infer native-http feature)
+        run: cargo clippy -p oriera-infer --all-targets --features native-http -- -D warnings
 
   manifests:
     runs-on: ubuntu-latest

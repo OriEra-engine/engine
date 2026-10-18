@@ -45,6 +45,10 @@ bitflags = "2.6"
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# L7 native HTTP adapter (feature `native-http`, #68): blocking client
+# fits System::run's synchronous shape — no async runtime enters L7.
+# rustls via webpki-roots, no native TLS, no compression extras.
+ureq = { version = "2.10", default-features = false, features = ["tls"] }
 criterion = "0.5"
 
 [profile.release]

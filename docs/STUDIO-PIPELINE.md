@@ -91,8 +91,9 @@ key 的旅行路线**只有一条**：浏览器 localStorage / 壳进程环境 �
 
 **免费版矩阵**（模型中心首批预置行）：见 `crates/oriera-infer/examples/provider_smoke.rs`
 内的 FREE_TIER_MATRIX——离线 rule 行永远可跑，七家远程行待厂商认领
-（Round 3，VERTICALS.md 附录 C）。诚实边界：原生 HTTP 适配器 v0.5 落地，
-当前真实网络腿由浏览器 kernel（demo 11）承载。
+（Round 3，VERTICALS.md 附录 C）。原生 HTTP 已落地（#68，feature
+`native-http`，PR #79）：Rust 侧 complete 即真实往返；不开 feature 时
+真实网络腿仍由浏览器 kernel（demo 11）承载。
 
 **接一个新模型 = 三步，引擎层零改动**（COMPUTE-BUDGET.md §4）：
 实现 `ModelProvider`（含如实的 `last_usage`）→ 壳层 `ProviderConfig` →
@@ -135,7 +136,7 @@ key 的旅行路线**只有一条**：浏览器 localStorage / 壳进程环境 �
 
 | 缺口 | 阻塞的界面 | 现状 | 计划 |
 |---|---|---|---|
-| 原生 HTTP provider 适配器 | 模型中心远程行 | kernel.js 承载 | v0.5，transport 注入（同 L8 ADR 0003 模式） |
+| ~~原生 HTTP provider 适配器~~ | 模型中心远程行 | **已落地**（#68 → PR #79，feature `native-http`，四分类错误+脱敏） | 剩余：#64 厂商认领真网验证 |
 | `World::serialize` | 我的项目存档 | 句柄已稳定 | v0.5，L3 manifest 已列 |
 | L9 `Goal` 组件 + 规划器 | 向导②「角色目标」 | `WorldStory.beats` 顶位 | v0.5–v0.6 |
 | Studio 壳本体 | 全部六区 | **已上线** github.com/OriEra-engine/studio（v0.3.0） | 按本文管线契约对齐 + 补契约测试 |

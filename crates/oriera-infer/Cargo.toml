@@ -16,3 +16,12 @@ oriera-core.workspace = true
 oriera-ecs.workspace = true
 oriera-subsys.workspace = true
 tracing.workspace = true
+# #68 native HTTP adapter (feature `native-http`, design discussions/78):
+# ureq blocking client + serde_json for request/response shapes. Both
+# optional — wasm budget and default builds stay exactly as they were.
+ureq = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[features]
+default = []
+native-http = ["dep:ureq", "dep:serde_json"]
