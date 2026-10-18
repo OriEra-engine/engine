@@ -209,10 +209,9 @@ fn scenario_companion() {
 // ─────────────────────────────────────────────────────────────────
 // 场景 C · 孪生/仿真赛道：同种子两次运行，世界逐位一致
 //
-// 诚实边界：本场景用固定 FrameCtx 直调系统（dt 恒 1/60）。走真实
-// Scheduler::tick 时 dt 来自墙钟，物理积分会随负载发散——确定性
-// tick（issue #66 with_fixed_dt）落地前，本场景证明的是「命令流 +
-// 固定步长下可复现」，不是「调度器路径可复现」。
+// 边界（#66 已落地）：上半段用固定 FrameCtx 直调；下半段走真实
+// Scheduler::tick + with_fixed_dt，注入不同负载抖动仍逐位一致。
+// 确定性是显式选择——默认（墙钟 dt）面向实时应用，仍不承诺复现。
 // ─────────────────────────────────────────────────────────────────
 fn scenario_twin() {
     banner("场景 C · 数字孪生赛道（确定性回放地基）");
@@ -252,6 +251,34 @@ fn scenario_twin() {
     println!(
         "  ✓ 两次运行逐位一致（{} 个实体）· 冻结注入产生可解释差异",
         a.len()
+    );
+
+    // 真实调度器路径（issue #66 验收腿）：with_fixed_dt 钉住步长，
+    // 两次运行注入不同的 sleep 抖动，物理积分不再随墙钟发散。
+    let sched_run = |jitter_us: u64| -> Vec<(u32, u32)> {
+        let mut world = World::new();
+        world.insert_resource(Gravity(9.8));
+        let mut infer = InferSystem::new();
+        infer.submit(parse("spawn 25 particles"));
+        let mut sched: Scheduler<World> =
+            Scheduler::with_budget_ns(16_666_666).with_fixed_dt(1.0 / 60.0);
+        sched.add_system(Box::new(infer));
+        sched.add_system(Box::new(PhysicsSystem::new(800.0, 600.0)));
+        for _ in 0..60 {
+            sched.tick(&mut world);
+            std::thread::sleep(std::time::Duration::from_micros(jitter_us));
+        }
+        world
+            .query::<Position>()
+            .map(|(_e, p)| (p.x.to_bits(), p.y.to_bits()))
+            .collect()
+    };
+    let r1 = sched_run(200);
+    let r2 = sched_run(900); // 4.5 倍负载差异
+    assert_eq!(r1, r2, "#66: 固定 dt 下真实调度路径必须逐位一致");
+    println!(
+        "  ✓ #66 真实调度路径：抖动 200µs vs 900µs，{} 实体逐位一致",
+        r1.len()
     );
 }
 

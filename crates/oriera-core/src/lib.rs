@@ -61,6 +61,11 @@ pub struct Scheduler<W> {
     /// AI-native apps that is usually cognition or inference. Names
     /// are captured once at `add_system`; ticks only rewrite the ms.
     system_ms: Vec<(String, f32)>,
+    /// Fixed simulation step (issue #66). `Some(dt)` makes every
+    /// `FrameCtx::dt` exactly `dt` regardless of wall-clock pacing —
+    /// the determinism dial for replay/evaluation workloads. `None`
+    /// (default) keeps wall-clock dt for real-time apps.
+    fixed_dt: Option<f32>,
     /// Frame-budget arbiter (compute slicing). Regulates on observed
     /// per-system cost; see [`BudgetAllocator`].
     allocator: BudgetAllocator,
@@ -88,9 +93,32 @@ impl<W> Scheduler<W> {
             budget_warnings: 0,
             budget_ns: budget_ns.max(1),
             system_ms: Vec::new(),
+            fixed_dt: None,
             allocator: BudgetAllocator::default(),
             grant_table: Vec::new(),
         }
+    }
+
+    /// Pin the simulation step (issue #66): every tick hands systems
+    /// exactly `dt` in [`FrameCtx`], so physics integration and every
+    /// other dt-consumer become independent of wall-clock pacing — two
+    /// runs of the same command stream produce bit-identical worlds,
+    /// on any machine, under any load. Frame time, budget accounting
+    /// and allocator observation still use the real clock: regulation
+    /// stays honest while semantics become reproducible
+    /// (COMPUTE-BUDGET.md §5).
+    ///
+    /// Values ≤ 0 clamp to 1e-6 (a zero step would silently freeze the
+    /// world; freezing is L6 `TimeScale(0.0)`'s job, visibly).
+    pub fn with_fixed_dt(mut self, dt: f32) -> Self {
+        self.fixed_dt = Some(dt.max(1e-6));
+        self
+    }
+
+    /// The pinned step, if any (for observability; systems read
+    /// `ctx.dt`, not this).
+    pub fn fixed_dt(&self) -> Option<f32> {
+        self.fixed_dt
     }
 
     /// Replace the allocator tuning (e.g. `AllocatorConfig::off()` for
@@ -146,7 +174,10 @@ impl<W> Scheduler<W> {
     /// cost model. Regulation leads, observation closes the loop.
     pub fn tick(&mut self, world: &mut W) -> f32 {
         let start = Timestamp::now();
-        let dt = start.elapsed(self.last);
+        // Semantics vs regulation (issue #66): with a pinned step the
+        // ctx carries exactly that dt; the wall delta is still measured
+        // below for frame accounting and the allocator.
+        let dt = self.fixed_dt.unwrap_or_else(|| start.elapsed(self.last));
         self.last = start;
 
         self.allocator
@@ -331,6 +362,55 @@ mod tests {
         assert!(!sched.grants().is_empty());
         assert!(sched.grants().is_managed("noop"));
         assert_eq!(sched.grants().throttle_of("noop"), 1.0);
+    }
+
+    /// Records every ctx.dt it receives (world = the log itself).
+    struct DtRecorder;
+
+    impl System<Vec<f32>> for DtRecorder {
+        fn name(&self) -> &str {
+            "dt-recorder"
+        }
+        fn run(&mut self, ctx: &FrameCtx, world: &mut Vec<f32>) {
+            world.push(ctx.dt);
+        }
+    }
+
+    #[test]
+    fn fixed_dt_pins_the_step_under_wall_clock_noise() {
+        let mut sched: Scheduler<Vec<f32>> = Scheduler::new().with_fixed_dt(1.0 / 60.0);
+        sched.add_system(Box::new(DtRecorder));
+        let mut log = Vec::new();
+        for _ in 0..3 {
+            sched.tick(&mut log);
+            std::thread::sleep(std::time::Duration::from_millis(7)); // jitter
+        }
+        assert_eq!(log, vec![1.0 / 60.0; 3], "noise must not leak into ctx.dt");
+        assert_eq!(sched.fixed_dt(), Some(1.0 / 60.0));
+    }
+
+    #[test]
+    fn default_keeps_wall_clock_dt() {
+        let mut sched: Scheduler<Vec<f32>> = Scheduler::new();
+        assert_eq!(sched.fixed_dt(), None);
+        sched.add_system(Box::new(DtRecorder));
+        let mut log = Vec::new();
+        sched.tick(&mut log);
+        std::thread::sleep(std::time::Duration::from_millis(6));
+        sched.tick(&mut log);
+        // First dt is construction-to-first-tick (>0); second covers the
+        // sleep — wall clock, and definitely not a pinned 1/60.
+        assert!(log.iter().all(|dt| *dt > 0.0));
+        assert!(log[1] > 0.005, "expected wall-measured dt, got {}", log[1]);
+    }
+
+    #[test]
+    fn non_positive_fixed_dt_clamps_instead_of_freezing() {
+        let mut sched: Scheduler<Vec<f32>> = Scheduler::new().with_fixed_dt(0.0);
+        sched.add_system(Box::new(DtRecorder));
+        let mut log = Vec::new();
+        sched.tick(&mut log);
+        assert_eq!(log[0], 1e-6);
     }
 
     struct Noop;
