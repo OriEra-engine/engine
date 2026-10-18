@@ -23,8 +23,18 @@
 //! - **timeouts** — 20s overall (kernel.js parity), 5s of it budgeted
 //!   for the connect phase;
 //! - **key hygiene** — the key lives in `ProviderConfig` and nowhere
-//!   else: never in logs, never in error details (scrubbed), never in
+//!   else: never in logs, never in error details (scrubbed, including
+//!   the request URL ureq embeds in transport messages), never in
 //!   metrics ids beyond `kind:model`.
+
+// Native-only feature: the wasm channel is the kernel.js mirror, and
+// ureq does not compile for wasm targets — fail fast with a message
+// that says which channel to use instead of a wall of foreign errors.
+#[cfg(target_family = "wasm")]
+compile_error!(
+    "oriera-infer `native-http` is native-only; wasm builds use the \
+     kernel.js HttpChatProvider mirror (examples/11-ai-cafe/engine/kernel.js)"
+);
 
 use crate::provider::{ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, Role};
 use oriera_common::TokenUsage;
@@ -206,15 +216,25 @@ impl HttpProvider {
         }
     }
 
-    /// Strip the api key (and Bearer forms of it) from anything that is
-    /// about to become an error detail. Keys never leave the provider.
+    /// Strip secrets from anything that is about to become an error
+    /// detail. Two surfaces: the api key itself (and Bearer forms), and
+    /// the request URL — ureq transport messages embed it verbatim, and
+    /// a gateway base_url may carry a query-string credential that must
+    /// not round-trip into logs. Keys and URLs never leave the provider
+    /// in raw form.
     fn scrub(&self, s: String) -> String {
-        let key = self.cfg.api_key.trim();
-        if key.is_empty() {
-            return s;
+        let mut out = s;
+        if let Some(cut) = self.url.find('?') {
+            let sanitized = &self.url[..cut];
+            out = out.replace(self.url.as_str(), sanitized);
         }
-        s.replace(key, "***")
-            .replace(&format!("Bearer {key}"), "Bearer ***")
+        let key = self.cfg.api_key.trim();
+        if !key.is_empty() {
+            out = out
+                .replace(key, "***")
+                .replace(&format!("Bearer {key}"), "Bearer ***");
+        }
+        out
     }
 
     fn parse_reply(&self, raw: String) -> Result<(String, TokenUsage), InferError> {
@@ -269,12 +289,16 @@ impl ModelProvider for HttpProvider {
         let body = self.build_request(messages);
         // Zero retries by design; one immediate exception for a
         // non-timeout transport blip (design §5, widened — see module
-        // docs). Status/Parse/Timeout never retry.
+        // docs). Status/Parse/Timeout never retry. If the retry itself
+        // hits the deadline, that is the more severe signal — report
+        // Timeout, not the first attempt's Network.
         let raw = match self.attempt(&body) {
             Ok(raw) => raw,
-            Err(InferError::Network(msg)) => self
-                .attempt(&body)
-                .map_err(|_| InferError::Network(msg.clone()))?,
+            Err(InferError::Network(msg)) => match self.attempt(&body) {
+                Ok(raw) => raw,
+                Err(InferError::Timeout) => return Err(InferError::Timeout),
+                Err(_) => return Err(InferError::Network(msg)),
+            },
             Err(e) => return Err(e),
         };
         let (text, usage) = self.parse_reply(raw)?;
@@ -636,5 +660,61 @@ mod tests {
             Err(InferError::Provider(m)) => assert!(m.contains("no api key")),
             other => panic!("expected Provider(no key), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn url_query_secret_is_scrubbed_from_network_details() {
+        // A gateway base_url carrying a query credential: ureq embeds
+        // the full URL in transport messages — the query must not
+        // survive into the error detail.
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(format!("http://127.0.0.1:{port}/v1?token=gw-secret-42")),
+            },
+            Duration::from_secs(2),
+        );
+        match p.complete(&[ChatMessage::user("x")]) {
+            Err(InferError::Network(detail)) => {
+                assert!(!detail.contains("gw-secret-42"), "query leaked: {detail}");
+                assert!(!detail.contains("test-key"), "key leaked: {detail}");
+            }
+            other => panic!("expected Network, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_that_hits_the_deadline_reports_timeout() {
+        // First attempt: transport blip (connection slammed shut).
+        // Retry: connects, but the far side stalls past the deadline —
+        // the reported error must be the more severe Timeout, not the
+        // first attempt's Network.
+        let mock = Mock::spawn(vec![
+            Step::CloseAbrupt,
+            Step::SleepThenReply(
+                600,
+                200,
+                r#"{"choices":[{"message":{"content":"late"}}"#.into(),
+            ),
+        ]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_millis(150),
+        );
+        match p.complete(&[ChatMessage::user("x")]) {
+            Err(InferError::Timeout) => {}
+            other => panic!("expected Timeout from the retry, got {other:?}"),
+        }
+        assert_eq!(mock.requests().len(), 2);
     }
 }
