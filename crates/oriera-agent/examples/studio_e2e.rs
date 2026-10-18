@@ -16,8 +16,10 @@ use oriera_agent::{
 };
 use oriera_common::Timestamp;
 use oriera_core::{AllocatorConfig, FrameCtx, Scheduler, System};
-use oriera_ecs::World;
-use oriera_infer::{InferSystem, ModelProvider, RuleProvider, Stats, UsageMeter};
+use oriera_ecs::{Velocity, World};
+use oriera_infer::{
+    Command, InferSystem, ModelProvider, RuleProvider, SpawnedThisFrame, Stats, UsageMeter,
+};
 use oriera_render::RenderSystem;
 use oriera_subsys::{Gravity, PhysicsSystem, TimeScale};
 use std::rc::Rc;
@@ -122,6 +124,43 @@ fn scenario_game() {
     assert_eq!(stats, Some(60));
     assert!(w.resource::<Gravity>().unwrap().0 - 1.6 < 1e-6);
     assert!(!sched.grants().is_empty());
+
+    // #69 逐实体命令验收腿（具身策略的最小动作空间）：
+    // spawn → 读 SpawnedThisFrame 句柄 → Nudge 指定实体 → 只它动。
+    {
+        let mut w2 = World::new();
+        let mut inf = InferSystem::new();
+        inf.submit(parse("spawn 3 particles"));
+        inf.run(&fixed_ctx(0), &mut w2);
+        let handles = w2.resource::<SpawnedThisFrame>().unwrap().0.clone();
+        assert_eq!(handles.len(), 3, "Spawn 暴露实体句柄");
+
+        let target = handles[1];
+        let before: Vec<Velocity> = handles
+            .iter()
+            .map(|&e| *w2.get::<Velocity>(e).unwrap())
+            .collect();
+        inf.submit(Command::Nudge {
+            entity: target,
+            fx: 0.25,
+            fy: -0.5,
+        });
+        inf.run(&fixed_ctx(1), &mut w2);
+
+        let mut correct = 0;
+        for (i, &e) in handles.iter().enumerate() {
+            let v = *w2.get::<Velocity>(e).unwrap();
+            let ok = if e == target {
+                v.vx == before[i].vx + 0.25 && v.vy == before[i].vy - 0.5
+            } else {
+                v == before[i]
+            };
+            correct += ok as usize;
+        }
+        assert_eq!(correct, 3, "目标实体恰好 +impulse，其余逐位不动");
+        println!("  Nudge 句柄 {target:?} → 只它动；SpawnedThisFrame 下一帧复位");
+        assert!(w2.resource::<SpawnedThisFrame>().unwrap().0.is_empty());
+    }
 }
 
 struct SharedRender(Rc<std::cell::RefCell<RenderSystem>>);

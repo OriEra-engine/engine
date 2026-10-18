@@ -12,6 +12,14 @@ spec:
     - id: oriera.infer.usage.v1
       contract: rust:oriera_infer::{UsageMeter,ModelProvider::last_usage}
       stability: stable
+    - id: oriera.infer.per-entity.v1
+      contract: rust:oriera_infer::{Command::Nudge,SpawnedThisFrame}
+      stability: stable
+      note: per-entity action space (#69) — Nudge adds impulse to ONE
+        entity's velocity (dead handle = deterministic no-op);
+        SpawnedThisFrame resets each frame and lists this frame's spawn
+        handles in replay-identical LCG order; Nudge never coalesces
+        (float-sensitive, same rule as Teleport/SetSpeed)
       note: frame-budgeted queue (deferred counter) + token metering
     - id: oriera.infer.adaptive.v1
       contract: rust:oriera_infer::InferSystem

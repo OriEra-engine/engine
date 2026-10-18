@@ -20,7 +20,7 @@ pub use provider::{
 };
 
 use oriera_core::{FrameCtx, System};
-use oriera_ecs::{Position, Velocity, World};
+use oriera_ecs::{Entity, Position, Velocity, World};
 use oriera_subsys::Gravity;
 
 /// A structured engine command. Produced by the L9 agent, executed here.
@@ -38,9 +38,23 @@ pub enum Command {
     Count,
     /// Scale every velocity by `k` ("speed 2x").
     SetSpeed(f32),
+    /// Add impulse `(fx, fy)` to ONE entity's velocity — the per-entity
+    /// action space (#69): a policy's first sentence is "do something
+    /// TO that agent", and now the agent exists in the vocabulary.
+    /// A dead/stale handle is a deterministic no-op, never a panic.
+    Nudge { entity: Entity, fx: f32, fy: f32 },
     /// Unrecognized intent — counted by `rejected`, never executed.
     Unknown(String),
 }
+
+/// Entities spawned by [`Command::Spawn`] during THIS frame's drain
+/// (#69). Reset to empty at the start of every `InferSystem::run`, so a
+/// frame without spawns reads empty — never yesterday's handles. The
+/// LCG draw order is fixed, so the handle sequence is replay-identical.
+/// Shells/policies read it after the tick, then [`Command::Nudge`] those
+/// handles on a later frame.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SpawnedThisFrame(pub Vec<Entity>);
 
 /// Singleton resource written by `Command::Count`; the app/UI layer
 /// reads it to answer "how many entities are alive?".
@@ -145,7 +159,9 @@ impl InferSystem {
     /// point addition and multiplication are not associative, so
     /// `(x + dx1) + dx2` can differ from `x + (dx1 + dx2)` in the last
     /// bit, and anything that changes observable floats is not waste
-    /// removal, it is a behavior change.
+    /// removal, it is a behavior change. [`Command::Nudge`] falls under
+    /// the same rule: same-target impulses must accumulate in submission
+    /// order, bit for bit.
     pub fn submit(&mut self, cmd: Command) {
         if let Some(tail) = self.queue.last_mut() {
             let merged = match (tail, &cmd) {
@@ -189,6 +205,10 @@ impl System<World> for InferSystem {
         "infer"
     }
     fn run(&mut self, ctx: &FrameCtx, world: &mut World) {
+        // #69: every frame starts from an empty handle list — "this
+        // frame" means this frame. A frame without spawns reads empty;
+        // stale handles are a shell bug, not an engine state.
+        world.insert_resource(SpawnedThisFrame::default());
         // The allocator's dial for this frame: budget × throttle, never
         // below one command. Unmanaged (allocator off / not registered)
         // reads throttle 1.0 and behaves exactly like the static cap.
@@ -202,8 +222,10 @@ impl System<World> for InferSystem {
         for cmd in batch.drain(..) {
             match cmd {
                 Command::Spawn(n) => {
+                    let mut handles = Vec::with_capacity(n);
                     for _ in 0..n {
                         let e = world.spawn();
+                        handles.push(e);
                         let r1 = self.rand();
                         let r2 = self.rand();
                         world.insert(
@@ -221,6 +243,14 @@ impl System<World> for InferSystem {
                             },
                         );
                     }
+                    // The RNG stream is untouched by bookkeeping, so the
+                    // handle order (and thus replay) is identical with or
+                    // without this extension.
+                    world
+                        .resource_mut::<SpawnedThisFrame>()
+                        .expect("reset at frame start")
+                        .0
+                        .extend(handles);
                     self.processed += 1;
                 }
                 Command::Clear => {
@@ -248,6 +278,17 @@ impl System<World> for InferSystem {
                         v.vx *= k;
                         v.vy *= k;
                     });
+                    self.processed += 1;
+                }
+                Command::Nudge { entity, fx, fy } => {
+                    // Additive on the target's velocity only. A dead
+                    // handle (despawned, cleared, stale generation) is a
+                    // deterministic no-op — the command still executed,
+                    // it just had nothing to land on.
+                    if let Some(v) = world.get_mut::<Velocity>(entity) {
+                        v.vx += fx;
+                        v.vy += fy;
+                    }
                     self.processed += 1;
                 }
                 Command::Unknown(_) => {
@@ -566,5 +607,140 @@ mod tests {
         sys.submit(Command::Spawn(2)); // tail is Count, not Spawn
         assert_eq!(sys.pending(), 3);
         assert_eq!(sys.coalesced, 0);
+    }
+
+    // ---- #69: per-entity command vocabulary ----
+
+    #[test]
+    fn nudge_moves_only_the_targeted_entity() {
+        let mut world = World::new();
+        let mut sys = InferSystem::new();
+        sys.submit(Command::Spawn(3));
+        sys.run(&ctx(), &mut world);
+        let handles = world.resource::<SpawnedThisFrame>().unwrap().0.clone();
+        assert_eq!(handles.len(), 3, "spawn exposes its handles");
+
+        let before: Vec<(f32, f32)> = handles
+            .iter()
+            .map(|&e| {
+                let v = world.get::<Velocity>(e).unwrap();
+                (v.vx, v.vy)
+            })
+            .collect();
+
+        let target = handles[1];
+        sys.submit(Command::Nudge {
+            entity: target,
+            fx: 0.5,
+            fy: -0.25,
+        });
+        sys.run(&ctx(), &mut world);
+
+        for (i, &e) in handles.iter().enumerate() {
+            let v = world.get::<Velocity>(e).unwrap();
+            if e == target {
+                assert_eq!((v.vx, v.vy), (before[i].0 + 0.5, before[i].1 - 0.25));
+            } else {
+                assert_eq!((v.vx, v.vy), before[i], "only the target may move");
+            }
+        }
+        // Positions are untouched — Nudge is an impulse, not a teleport.
+        assert_eq!(sys.processed, 2);
+    }
+
+    #[test]
+    fn spawned_this_frame_resets_each_frame() {
+        let mut world = World::new();
+        let mut sys = InferSystem::new();
+        sys.submit(Command::Spawn(5));
+        sys.run(&ctx(), &mut world);
+        assert_eq!(world.resource::<SpawnedThisFrame>().unwrap().0.len(), 5);
+
+        // A frame with no spawns must read empty — never stale handles.
+        sys.run(&ctx(), &mut world);
+        assert!(world.resource::<SpawnedThisFrame>().unwrap().0.is_empty());
+
+        // Two Spawn commands in one frame accumulate into one list.
+        sys.submit(Command::Spawn(2));
+        sys.submit(Command::Count); // interleave so nothing coalesces
+        sys.submit(Command::Spawn(3));
+        sys.run(&ctx(), &mut world);
+        assert_eq!(world.resource::<SpawnedThisFrame>().unwrap().0.len(), 5);
+    }
+
+    #[test]
+    fn nudge_never_coalesces() {
+        let mut sys = InferSystem::new();
+        let e = Entity {
+            index: 0,
+            generation: 0,
+        };
+        sys.submit(Command::Nudge {
+            entity: e,
+            fx: 0.1,
+            fy: 0.0,
+        });
+        sys.submit(Command::Nudge {
+            entity: e,
+            fx: 0.2,
+            fy: 0.0,
+        });
+        assert_eq!(sys.pending(), 2, "float-sensitive: never merged");
+        assert_eq!(sys.coalesced, 0);
+    }
+
+    #[test]
+    fn nudge_on_a_dead_handle_is_a_deterministic_noop() {
+        let mut world = World::new();
+        let mut sys = InferSystem::new();
+        sys.submit(Command::Spawn(1));
+        sys.run(&ctx(), &mut world);
+        let stale = world.resource::<SpawnedThisFrame>().unwrap().0[0];
+
+        sys.submit(Command::Clear);
+        sys.run(&ctx(), &mut world); // generations bumped: stale now dead
+
+        sys.submit(Command::Nudge {
+            entity: stale,
+            fx: 1.0,
+            fy: 1.0,
+        });
+        sys.run(&ctx(), &mut world);
+        assert_eq!(sys.processed, 3); // executed, nothing to land on
+        assert_eq!(sys.rejected, 0);
+        assert!(world.is_empty());
+    }
+
+    #[test]
+    fn spawn_then_nudge_replays_bit_identically() {
+        let run = || {
+            let mut world = World::new();
+            let mut sys = InferSystem::new();
+            sys.submit(Command::Spawn(4));
+            sys.run(&ctx(), &mut world);
+            let handles = world.resource::<SpawnedThisFrame>().unwrap().0.clone();
+            sys.submit(Command::Nudge {
+                entity: handles[0],
+                fx: 0.3,
+                fy: 0.7,
+            });
+            sys.submit(Command::Nudge {
+                entity: handles[2],
+                fx: -0.1,
+                fy: 0.0,
+            });
+            sys.run(&ctx(), &mut world);
+            (
+                handles, // entity sequence
+                world
+                    .query::<Velocity>()
+                    .map(|(_e, v)| (v.vx.to_bits(), v.vy.to_bits()))
+                    .collect::<Vec<_>>(), // final state, bit for bit
+            )
+        };
+        let (h1, s1) = run();
+        let (h2, s2) = run();
+        assert_eq!(h1, h2, "entity sequence replays identically");
+        assert_eq!(s1, s2, "final velocities bit-identical");
     }
 }
