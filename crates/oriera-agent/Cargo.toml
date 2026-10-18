@@ -17,6 +17,14 @@ oriera-ecs.workspace = true
 oriera-genai.workspace = true
 oriera-infer.workspace = true
 
+[dev-dependencies]
+oriera-render = { path = "../oriera-render" }
+oriera-subsys = { path = "../oriera-subsys" }
+
 [[example]]
 name = "cafe"
 path = "examples/cafe.rs"
+
+[[example]]
+name = "studio_e2e"
+path = "examples/studio_e2e.rs"
