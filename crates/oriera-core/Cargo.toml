@@ -13,3 +13,5 @@ path = "src/lib.rs"
 [dependencies]
 oriera-common.workspace = true
 tracing.workspace = true
+
+web-time = "1.1"

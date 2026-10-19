@@ -25,7 +25,7 @@ pub mod net;
 pub mod storage;
 pub mod xr;
 
-pub use capability::{Capabilities, PlatformProfile};
+pub use capability::{BrowserCapabilities, Capabilities, PlatformFamily, PlatformProfile};
 pub use gfx::{GfxBackend, GfxBackendKind, NullGfxBackend, SubmitResult};
 pub use input::{
     EyeGazeEvent, HandPoseEvent, InputBody, InputSource, KeyEvent, NullInputSource, PointerEvent,
@@ -38,47 +38,17 @@ pub use net::{
 pub use storage::{MemoryStorage, Storage, StorageTier};
 pub use xr::{HeadPose, NoXrSession, XrSession};
 
-/// Detect the current platform and return its capability bitmap.
-/// Called exactly once at startup; the result is immutable thereafter.
+/// Select an OS baseline, not a hardware or permission probe.
+/// Browser hosts refine this with `PlatformProfile::web_with_capabilities`.
+/// WASI is not a browser and deliberately receives the unknown profile.
 pub fn detect_platform() -> PlatformProfile {
-    #[cfg(target_os = "windows")]
-    {
-        PlatformProfile::pc("windows")
+    if cfg!(all(target_family = "wasm", target_os = "unknown")) {
+        return PlatformProfile::web();
     }
-    #[cfg(target_os = "macos")]
-    {
-        PlatformProfile::pc("macos")
-    }
-    #[cfg(target_os = "linux")]
-    {
-        PlatformProfile::pc("linux")
-    }
-    #[cfg(target_os = "ios")]
-    {
-        PlatformProfile::mobile("ios")
-    }
-    #[cfg(target_os = "android")]
-    {
-        PlatformProfile::mobile("android")
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        PlatformProfile::web()
-    }
-    #[cfg(target_os = "visionos")]
-    {
-        PlatformProfile::ar_glasses("visionos")
-    }
-    #[cfg(not(any(
-        target_os = "windows",
-        target_os = "macos",
-        target_os = "linux",
-        target_os = "ios",
-        target_os = "android",
-        target_arch = "wasm32",
-        target_os = "visionos"
-    )))]
-    {
-        PlatformProfile::unknown()
+    match std::env::consts::OS {
+        "windows" | "macos" | "linux" => PlatformProfile::pc(std::env::consts::OS),
+        "ios" | "android" => PlatformProfile::mobile(std::env::consts::OS),
+        "visionos" => PlatformProfile::ar_glasses("visionos"),
+        _ => PlatformProfile::unknown(),
     }
 }
