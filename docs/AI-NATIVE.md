@@ -7,7 +7,8 @@
 > 永不进入引擎层、世界状态或仓库。
 
 选型入口：Rust `oriera_infer::{ProviderConfig, ProviderKind, create_provider}`；
-浏览器 `engine/kernel.js :: createProvider(cfg) + PROVIDER_PRESETS`（一一对应）。
+浏览器 `engine/kernel.js :: createProvider(cfg) + PROVIDER_PRESETS`（v2 起 13 行逐行对齐，
+命令通道 `parseIntent/CommandQueue` 镜像 Rust `parse/InferSystem`——七赛道实战反哺，见 release-notes/v0.6.0-browser-parity.md）。
 
 | 层 | 内嵌的 AI 能力 | 现状 | 消费方式（创作者视角） |
 |---|---|---|---|

@@ -22,9 +22,21 @@ pub struct Episode {
 }
 
 /// Per-agent episodic memory with keyword-recency-importance retrieval.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct MemoryStore {
     memories: HashMap<String, Vec<Episode>>,
+    /// Sliding-window cap per agent; `Default` = 60 (the long-standing
+    /// semantic, kept for every existing caller).
+    capacity: usize,
+}
+
+impl Default for MemoryStore {
+    fn default() -> Self {
+        Self {
+            memories: HashMap::new(),
+            capacity: 60,
+        }
+    }
 }
 
 impl MemoryStore {
@@ -32,13 +44,24 @@ impl MemoryStore {
         Self::default()
     }
 
+    /// Per-agent capacity override (#81 kernel-v2 mirror): the browser
+    /// kernel's `new MemoryStore(key, capacity)` needs the same knob
+    /// here — the 60 hardcode was flagged by every vertical demo as the
+    /// first thing an embodied/companion product raises.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            ..Self::default()
+        }
+    }
+
     /// Record an episode for `agent`.
     pub fn record(&mut self, agent: &str, episode: Episode) {
         let v = self.memories.entry(agent.to_string()).or_default();
         v.push(episode);
         let len = v.len();
-        if len > 60 {
-            v.drain(0..len - 60);
+        if len > self.capacity {
+            v.drain(0..len - self.capacity);
         }
     }
 
@@ -244,6 +267,28 @@ mod tests {
         assert!(m.retrieve("z", "world", "事件79", 100, 1)[0]
             .text
             .contains("79"));
+    }
+
+    #[test]
+    fn capacity_is_parameterizable_with_sane_default() {
+        // Default stays 60 (every existing caller's semantic).
+        let mut d = MemoryStore::new();
+        for i in 0..70 {
+            d.record("z", ep(i, "world", &format!("e{i}"), 1));
+        }
+        assert_eq!(d.len_total(), 60);
+        // Raised cap honored (kernel-v2 mirror).
+        let mut big = MemoryStore::with_capacity(200);
+        for i in 0..70 {
+            big.record("z", ep(i, "world", &format!("e{i}"), 1));
+        }
+        assert_eq!(big.len_total(), 70);
+        // json round trip keeps the default capacity semantics
+        #[cfg(feature = "json")]
+        {
+            let restored = MemoryStore::from_json(&big.to_json()).unwrap();
+            assert_eq!(restored.len_total(), 70);
+        }
     }
 
     #[test]
