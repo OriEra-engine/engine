@@ -20,7 +20,8 @@ pub mod provider;
 pub use http::HttpProvider;
 pub use oriera_common::TokenUsage;
 pub use provider::{
-    ChatMessage, InferError, ModelProvider, ProviderPreset, Role, RuleProvider, PROVIDER_PRESETS,
+    ChatMessage, InferError, ModelProvider, ProviderOptions, ProviderPreset, Role, RuleProvider,
+    PROVIDER_PRESETS,
 };
 
 use oriera_core::{FrameCtx, System};
