@@ -18,6 +18,8 @@ jobs:
           node-version: "22"
       - name: Agent physics command regression tests
         run: node --test examples/06-agent-physics/intent.test.mjs
+      - name: Browser kernel v2 tests (node, no browser)
+        run: node --test examples/11-ai-cafe/engine/kernel.test.mjs
 
   rust:
     runs-on: ubuntu-latest
