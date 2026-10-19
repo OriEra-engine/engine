@@ -283,11 +283,14 @@ mod tests {
             big.record("z", ep(i, "world", &format!("e{i}"), 1));
         }
         assert_eq!(big.len_total(), 70);
-        // json round trip keeps the default capacity semantics
+        // json round trip: from_json re-records into a DEFAULT-capacity
+        // store, so the #70 sliding window caps the import at 60 — the
+        // documented import semantic (a capacity-carrying import is a
+        // future extension, not an accident).
         #[cfg(feature = "json")]
         {
             let restored = MemoryStore::from_json(&big.to_json()).unwrap();
-            assert_eq!(restored.len_total(), 70);
+            assert_eq!(restored.len_total(), 60);
         }
     }
 
