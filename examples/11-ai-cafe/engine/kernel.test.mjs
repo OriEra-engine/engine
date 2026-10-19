@@ -145,14 +145,15 @@ test("导演系统：注入 ruleBeats 生效", async () => {
   assert.equal(beat, "甲事件");
 });
 
-/* ---- 预设表：13 行与 Rust PROVIDER_PRESETS 对齐 ---- */
-test("预设表 13 行（rule 领头 + 云端 8 + 本地开源 4）", () => {
+/* ---- 预设表：14 行与 Rust PROVIDER_PRESETS 对齐 ---- */
+test("预设表 14 行（rule 领头 + 云端 9 + 本地开源 4）", () => {
   const ids = Object.keys(PROVIDER_PRESETS);
-  assert.equal(ids.length, 13);
+  assert.equal(ids.length, 14);
   assert.equal(ids[0], "rule");
-  for (const id of ["qwen", "ollama", "vllm", "llamacpp", "lmstudio"]) assert.ok(ids.includes(id), id);
+  for (const id of ["qwen", "stepfun", "ollama", "vllm", "llamacpp", "lmstudio"]) assert.ok(ids.includes(id), id);
   assert.equal(PROVIDER_PRESETS.ollama.base, "http://127.0.0.1:11434/v1");
   assert.equal(PROVIDER_PRESETS.qwen.base, "https://dashscope.aliyuncs.com/compatible-mode/v1");
+  assert.equal(PROVIDER_PRESETS.stepfun.base, "https://api.stepfun.com/v1");
 });
 
 test("createProvider 兼容：rule/无 key 返回 null 走降级", () => {
