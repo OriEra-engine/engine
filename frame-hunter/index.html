@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>帧猎 FRAME HUNTER · 白老师的 bug 大追缉</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; overflow: hidden; background: #0d1017; color: #e6e8ef;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif; touch-action: none; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+  /* ---- HUD ---- */
+  #hud { position: absolute; top: 10px; left: 12px; right: 12px; display: flex; gap: 8px;
+    align-items: flex-start; pointer-events: none; flex-wrap: wrap; z-index: 5; }
+  .chip { background: rgba(13,16,23,.85); border: 1px solid #2a3a5c; border-radius: 18px;
+    padding: 5px 12px; font-size: 13px; color: #aeb6cc; }
+  .chip b { color: #9fc3ff; }
+  #combo { position: absolute; top: 68px; left: 18px; font-size: 34px; font-weight: 900;
+    color: #7ed9a8; text-shadow: 0 0 18px rgba(126,217,168,.7); opacity: 0; transition: opacity .3s;
+    z-index: 5; pointer-events: none; }
+  #shield { letter-spacing: 3px; font-size: 15px; }
+  #progress { position: absolute; top: 52px; left: 12px; right: 12px; height: 4px;
+    background: #1a2440; border-radius: 3px; z-index: 5; }
+  #prog-in { height: 100%; width: 0%; background: linear-gradient(90deg, #3568b3, #7ed9a8);
+    border-radius: 3px; }
+  #boss-hud { position: absolute; top: 66px; left: 50%; transform: translateX(-50%);
+    width: min(480px, 70vw); display: none; z-index: 6; text-align: center; }
+  #boss-hud .bn { color: #e07a7a; font-weight: 900; font-size: 15px; letter-spacing: 2px; }
+  #boss-bar { height: 10px; background: #2a1220; border: 1px solid #6b2a3a; border-radius: 6px;
+    margin-top: 4px; overflow: hidden; }
+  #boss-in { height: 100%; width: 100%; background: #e05a5a; transition: width .4s; }
+  /* 掌握度迷你条 */
+  #mastery { position: absolute; right: 12px; top: 92px; z-index: 5; pointer-events: none; }
+  .mrow { display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
+    font-size: 11px; color: #7c86a3; justify-content: flex-end; }
+  .mbar { width: 72px; height: 5px; background: #1a2440; border-radius: 3px; overflow: hidden; }
+  .min { height: 100%; background: #7eb8ff; }
+  /* ---- 覆盖层 ---- */
+  .ov { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    z-index: 20; background: rgba(13,16,23,.72); backdrop-filter: blur(3px); }
+  .ov.on { display: flex; }
+  .panel { width: min(620px, 92vw); max-height: 92vh; overflow-y: auto; background: #12151f;
+    border: 1px solid #2a3a5c; border-radius: 18px; padding: 26px 28px; }
+  .panel h1 { font-size: 40px; letter-spacing: 3px; }
+  .panel h1 b { color: #7eb8ff; }
+  .story { font-size: 14.5px; line-height: 1.9; color: #aeb6cc; margin: 14px 0;
+    border-left: 3px solid #7ed9a8; padding-left: 14px; }
+  .keys { font-size: 12.5px; color: #7c86a3; line-height: 1.9; }
+  .keys b { color: #e6e8ef; }
+  .go { width: 100%; margin-top: 16px; padding: 13px; background: #2d5b9e; border: none;
+    color: #fff; border-radius: 10px; font-size: 17px; font-weight: 700; cursor: pointer; }
+  .go:hover { background: #3568b3; }
+  .foot { font-size: 11px; color: #5f6b8a; margin-top: 12px; line-height: 1.7; }
+  /* 题目卡 */
+  #q-portrait { position: absolute; right: -8px; top: -74px; width: 96px; border-radius: 16px;
+    border: 3px solid rgba(126,184,255,.95); box-shadow: 0 10px 30px rgba(80,140,255,.4); }
+  .qskill { font-size: 11.5px; color: #7c86a3; display: flex; justify-content: space-between; }
+  .qstem { font-size: 17px; font-weight: 700; margin: 10px 0 14px; line-height: 1.7; }
+  .opt { display: block; width: 100%; text-align: left; background: #0d1017;
+    border: 1px solid #2a3a5c; color: #e6e8ef; border-radius: 9px; padding: 10px 13px;
+    font-size: 14px; cursor: pointer; margin-bottom: 7px; }
+  .opt:hover:not(:disabled) { border-color: #7eb8ff; }
+  #miscon { display: none; margin-top: 10px; background: #2a1220; border: 1px solid #6b2a3a;
+    border-radius: 10px; padding: 10px 13px; font-size: 13px; color: #e0a0a0; line-height: 1.8; }
+  #miscon b { color: #e07a7a; }
+  #qtimer { height: 5px; background: #1a2440; border-radius: 3px; margin-top: 12px; overflow: hidden; }
+  #qtimer-in { height: 100%; width: 100%; background: #7ed9a8; }
+  /* 结算 */
+  #report { font-family: Consolas, monospace; font-size: 13.5px; line-height: 1.9;
+    white-space: pre-wrap; color: #b6bfd6; background: #0d1017; border: 1px solid #1e3428;
+    border-radius: 12px; padding: 14px 16px; margin-top: 12px; }
+  .btn2 { display: inline-block; margin: 14px 8px 0 0; padding: 11px 20px; background: #2d5b9e;
+    color: #fff; border: none; border-radius: 10px; font-size: 14.5px; cursor: pointer; }
+  .btn2.alt { background: #10231c; border: 1px solid #2f6b52; color: #7ed9a8; }
+  /* 浮动得分 */
+  .pop { position: absolute; font-weight: 900; font-size: 19px; color: #7ed9a8; z-index: 8;
+    pointer-events: none; text-shadow: 0 0 12px rgba(126,217,168,.8); }
+  #fallback { position: fixed; inset: 0; background: #0d1017ee; display: none; align-items: center;
+    justify-content: center; z-index: 99; text-align: center; padding: 40px; line-height: 2; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="hud">
+  <div class="chip">🎯 <b id="score">0</b></div>
+  <div class="chip" id="shield">🛡🛡🛡</div>
+  <div class="chip">🧩 <b id="frags">0</b></div>
+  <div class="chip">🌍 修复度 <b id="repair">60%</b></div>
+  <div class="chip"><span id="mute" style="cursor:pointer;pointer-events:auto">🔊</span></div>
+</div>
+<div id="progress"><div id="prog-in"></div></div>
+<div id="combo"></div>
+<div id="mastery"></div>
+<div id="boss-hud"><div class="bn">谬误核心 · CORRUPTION CORE</div><div id="boss-bar"><div id="boss-in"></div></div></div>
+
+<!-- 开始 -->
+<div id="ov-start" class="ov on"><div class="panel">
+  <h1>帧猎 <b>FRAME HUNTER</b></h1>
+  <div style="font-size:13px;color:#8a93ad;margin-top:4px">白老师的 bug 大追缉 · OriEra 世界引擎</div>
+  <div class="story">
+    2149 年，「谬误病毒」污染了世界的知识库——凡是学错的概念，都会变成街游荡的<b style="color:#e07a7a">谬误体</b>。<br>
+    审计局 AI <b style="color:#9fc3ff">白老师</b> 逐帧追踪到病毒核心，但她需要一名人类搭档：<b>你</b>。<br>
+    收集决策帧碎片，撞碎谬误之门，在追缉终点净化「谬误核心」——<b>每一个你答对的概念，世界就修复一分。</b>
+  </div>
+  <div class="keys">
+    <b>← → / A D</b> 切换车道 · <b>空格 / ↑</b> 跳跃（空中可二段跳） · <b>手机</b>：左右滑动切道，上滑跳跃<br>
+    🟩 决策帧碎片 +10 分 · 连击 ≥2 自动吸附碎片（磁铁） · 🟥 谬误弹掉护盾 · 🚪 谬误之门 = 答题挑战<br>
+    答错不扣分——白老师会当场把<b>错因</b>讲给你听（这就是装备）。
+  </div>
+  <button class="go" id="btn-go">▶ 开始修复世界</button>
+  <div class="foot">立绘形象风格参考：抖音 @冬冰（dongbing2297）DeepSeek 拟人二创（原作参考 B 站 zipzippipe），仅非商业演示。
+  题库与「透明家教」同源（OriEra 世界引擎 · 决策帧账本）。全部数据只存本浏览器。</div>
+</div></div>
+
+<!-- 答题 -->
+<div id="ov-q" class="ov"><div class="panel" style="position:relative">
+  <img id="q-portrait" src="expr-gentle.jpg" alt="白老师">
+  <div class="qskill"><span id="q-tag">📘 技能</span><span id="q-src">谬误之门</span></div>
+  <div class="qstem" id="q-stem">…</div>
+  <div id="q-opts"></div>
+  <div id="miscon"></div>
+  <div id="qtimer" style="display:none"><div id="qtimer-in"></div></div>
+</div></div>
+
+<!-- 结算 -->
+<div id="ov-end" class="ov"><div class="panel">
+  <h1 id="end-title">审计完成 <b>✅</b></h1>
+  <div id="report"></div>
+  <button class="btn2" id="btn-again">🔁 再跑一次（题序重排）</button>
+  <button class="btn2 alt" id="btn-tutor">🎓 去上完整辅导课</button>
+</div></div>
+
+<div id="fallback"><div>
+  <div style="font-size:40px">🛰️</div>
+  <h2 style="margin:12px 0">请通过静态服务器打开本项目</h2>
+  <p style="color:#8a93ad">依赖 ES Module 相对路径（vendor/）——file:// 直开会被浏览器拦截。</p>
+</div></div>
+
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+<script type="module">
+import * as THREE from "three";
+
+/* ============ 题库（与「透明家教」同源 · 分数课 12 题） ============ */
+const ITEMS = [
+  { id:"i01", skill:"s1", stem:"「3/4」这个分数表示什么？", options:["把单位「1」平均分成 4 份，取其中的 3 份","把 3 个单位平均分成 4 份，取其中 1 份","4 份中的第 3 份，按顺序数","3 份加上 4 份，共 7 份"], answer:"把单位「1」平均分成 4 份，取其中的 3 份", mis:"整体与份数角色混淆", hint:"分母管「怎么分」，分子管「取几份」。" },
+  { id:"i02", skill:"s1", stem:"「5/8」中的 8 叫什么？表示什么？", options:["分母，表示把单位「1」平均分成 8 份","分子，表示取了 8 份","分数线，表示相除","分母，表示取了 8 份"], answer:"分母，表示把单位「1」平均分成 8 份", mis:"名称与含义错位", hint:"下面的数管「分」——分成多少份。" },
+  { id:"i03", skill:"s1", stem:"一卷彩带剪成同样长的 6 小段，每段是全长的几分之几？", options:["1/6","6/1","1/5","6/6"], answer:"1/6", mis:"把刀数当份数", hint:"6 段取 1 段，每段是 1/6。" },
+  { id:"i04", skill:"s2", stem:"2/7 + 3/7 = ?", options:["5/7","5/14","6/7","1/7"], answer:"5/7", mis:"分母也跟着相加", hint:"同分母相加：分母不变，分子相加。" },
+  { id:"i05", skill:"s2", stem:"5/9 − 2/9 = ?", options:["3/9","3/0","3/18","7/9"], answer:"3/9", mis:"分母参与运算", hint:"分母不变，分子相减。" },
+  { id:"i06", skill:"s2", stem:"3/8 + 7/8 = ?", options:["10/8","10/16","1/8","21/8"], answer:"10/8", mis:"以为分数必须小于 1", hint:"假分数是合法答案，10/8 没问题。" },
+  { id:"i07", skill:"s3", stem:"1/2 + 1/3 = ?", options:["5/6","2/5","1/5","2/6"], answer:"5/6", mis:"分子分母分别相加", hint:"先通分：1/2=3/6，1/3=2/6。" },
+  { id:"i08", skill:"s3", stem:"3/4 − 1/6 = ?", options:["7/12","2/12","2/24","1/2"], answer:"7/12", mis:"公分母找对但分子忘了换", hint:"3/4=9/12，1/6=2/12，再减。" },
+  { id:"i09", skill:"s3", stem:"把 5/6 与 7/9 通分，最小公分母是？", options:["18","54","9","15"], answer:"18", mis:"分母相乘当最小公分母", hint:"最小公倍数是 18，不是 54。" },
+  { id:"i10", skill:"s4", stem:"比较大小：3/5 ○ 4/5", options:["<",">","＝","无法比较"], answer:"<", mis:"没有「每份一样大只比份数」的直觉", hint:"分母相同，3 份 < 4 份。" },
+  { id:"i11", skill:"s4", stem:"比较大小：2/3 ○ 3/5", options:[">","<","＝","无法比较"], answer:">", mis:"分母大就大", hint:"通分：2/3=10/15 > 3/5=9/15。" },
+  { id:"i12", skill:"s4", stem:"比较大小：1/4 ○ 1/6", options:[">","<","＝","无法比较"], answer:">", mis:"分母大分数大", hint:"份数越多每份越小，1/4 > 1/6。" },
+];
+const SKILLS = { s1:"分数的意义", s2:"同分母加减", s3:"通分与异分母", s4:"分数比大小" };
+const BKT = { pInit:0.3, pTransit:0.12, pSlip:0.12, pGuess:0.25 };
+function bktUpdate(p, correct) {
+  const pl = correct
+    ? (p*(1-BKT.pSlip)) / (p*(1-BKT.pSlip) + (1-p)*BKT.pGuess)
+    : (p*BKT.pSlip) / (p*BKT.pSlip + (1-p)*(1-BKT.pGuess));
+  return pl + (1-pl)*BKT.pTransit;
+}
+const CHAIN_GENESIS = "00000000";
+function fnv1a(s) { let h=0x811c9dc5; for (let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=(h*0x01000193)>>>0;} return ("0000000"+h.toString(16)).slice(-8); }
+
+/* ============ 音效（WebAudio 合成，零素材） ============ */
+let AC = null, muted = false;
+function ac() { if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)(); return AC; }
+function tone(freq, dur, type="sine", gain=.16, slide=0) {
+  if (muted) return;
+  try {
+    const a = ac(), o = a.createOscillator(), g = a.createGain();
+    o.type = type; o.frequency.value = freq;
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq+slide), a.currentTime+dur);
+    g.gain.setValueAtTime(gain, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001, a.currentTime+dur);
+    o.connect(g).connect(a.destination); o.start(); o.stop(a.currentTime+dur);
+  } catch {}
+}
+const SFX = {
+  frag: c => { tone(760 + Math.min(12,c)*40, .09, "sine", .12); tone(1140 + Math.min(12,c)*60, .12, "sine", .07); },
+  hit:  () => tone(130, .3, "sawtooth", .2, -70),
+  gateOk: () => { tone(520,.1,"square",.1); setTimeout(()=>tone(660,.1,"square",.1),90); setTimeout(()=>tone(880,.16,"square",.12),180); },
+  gateNo: () => { tone(220,.22,"square",.13,-60); },
+  bossHit: () => { tone(90,.5,"sawtooth",.24,-40); tone(60,.5,"square",.14,-20); },
+  win: () => [440,554,659,880].forEach((f,i)=>setTimeout(()=>tone(f,.22,"triangle",.14), i*130)),
+  lose: () => [330,262,208,165].forEach((f,i)=>setTimeout(()=>tone(f,.26,"triangle",.13), i*150)),
+};
+/* 芯片音 BGM：四小节循环（贝斯 + 琶音），音量克制；muted 键通用 */
+let bgmTimer = null, bgmStep = 0;
+const BGM_BASS = [110, 110, 146.8, 98];
+function bgmStart() {
+  if (bgmTimer) return;
+  bgmTimer = setInterval(() => {
+    if (muted) return;
+    try {
+      const bar = Math.floor(bgmStep / 8) % 4, step = bgmStep % 8;
+      if (step === 0) tone(BGM_BASS[bar], .3, "triangle", .05);
+      if (step === 4) tone(BGM_BASS[bar] * 1.5, .2, "triangle", .04);
+      tone(220 * Math.pow(2, [0, 3, 7, 12][step % 4] / 12), .11, "square", .02);
+      bgmStep++;
+    } catch {}
+  }, 160);
+}
+function bgmStop() { clearInterval(bgmTimer); bgmTimer = null; }
+
+/* ============ 场景 ============ */
+const W = () => innerWidth, H = () => innerHeight;
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(W(), H()); renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.getElementById("app").appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1017);
+scene.fog = new THREE.Fog(0x0d1017, 60, 150);
+const camera = new THREE.PerspectiveCamera(58, W()/H(), .1, 300);
+const CAM_BASE = new THREE.Vector3(0, 4.6, 8.6);
+camera.position.copy(CAM_BASE);
+scene.add(new THREE.HemisphereLight(0x8fb5ff, 0x22283a, 1.15));
+const sun = new THREE.DirectionalLight(0xffe9c4, 1.5); sun.position.set(6, 12, 6); scene.add(sun);
+const playerLight = new THREE.PointLight(0x9fc3ff, 26, 16); scene.add(playerLight);   // 跟随补光：主角可读性
+
+/* 星空与星云 */
+{ const n = 700, pos = new Float32Array(n*3);
+  for (let i=0;i<n;i++){ const r=50+Math.random()*70, t=Math.random()*6.283, ph=Math.acos(2*Math.random()-1);
+    pos[i*3]=r*Math.sin(ph)*Math.cos(t); pos[i*3+1]=Math.abs(r*Math.cos(ph))*.6+2; pos[i*3+2]=r*Math.sin(ph)*Math.sin(t)-40; }
+  const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(pos,3));
+  var stars = new THREE.Points(g, new THREE.PointsMaterial({ color:0x9fc3ff, size:.4, transparent:true, opacity:.8 }));
+  scene.add(stars); }
+function glowSprite(inner, opacity=.5) {
+  const cv = document.createElement("canvas"); cv.width = cv.height = 256;
+  const cx = cv.getContext("2d");
+  const g = cx.createRadialGradient(128,128,10,128,128,128);
+  g.addColorStop(0, inner); g.addColorStop(1, "rgba(0,0,0,0)");
+  cx.fillStyle = g; cx.fillRect(0,0,256,256);
+  return new THREE.Sprite(new THREE.SpriteMaterial({ map:new THREE.CanvasTexture(cv), transparent:true,
+    opacity, depthWrite:false, blending:THREE.AdditiveBlending }));
+}
+const neb1 = glowSprite("rgba(80,140,255,.85)", .45); neb1.position.set(-22,12,-60); neb1.scale.set(70,70,1); scene.add(neb1);
+const neb2 = glowSprite("rgba(175,120,255,.75)", .4); neb2.position.set(24,15,-70); neb2.scale.set(80,80,1); scene.add(neb2);
+
+/* 天桥：地面网格（滚动贴图）+ 两侧光轨 */
+const LANES = [-2.8, 0, 2.8], ROAD_W = 9;
+const gridCv = document.createElement("canvas"); gridCv.width = 128; gridCv.height = 128;
+{ const cx = gridCv.getContext("2d");
+  cx.fillStyle = "#111624"; cx.fillRect(0,0,128,128);
+  cx.strokeStyle = "#243158"; cx.lineWidth = 2;
+  cx.strokeRect(0,0,128,128); cx.beginPath();
+  cx.moveTo(64,0); cx.lineTo(64,128); cx.moveTo(0,64); cx.lineTo(128,64); cx.stroke();
+  cx.strokeStyle = "#1b2a4a"; cx.beginPath();
+  cx.moveTo(32,0); cx.lineTo(32,128); cx.moveTo(96,0); cx.lineTo(96,128);
+  cx.moveTo(0,32); cx.lineTo(128,32); cx.moveTo(0,96); cx.lineTo(128,96); cx.stroke(); }
+const gridTex = new THREE.CanvasTexture(gridCv);
+gridTex.wrapS = gridTex.wrapT = THREE.RepeatWrapping; gridTex.repeat.set(3, 60);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_W, 480).rotateX(-Math.PI/2),
+  new THREE.MeshBasicMaterial({ map: gridTex }));
+floor.position.set(0, 0, -180); scene.add(floor);
+[-ROAD_W/2, ROAD_W/2].forEach(x => {
+  const rail = new THREE.Mesh(new THREE.BoxGeometry(.14, .16, 480),
+    new THREE.MeshBasicMaterial({ color: 0x3568b3 }));
+  rail.position.set(x, .08, -180); scene.add(rail);
+  const glow = glowSprite("rgba(80,140,255,.8)", .5);
+  glow.scale.set(2.4, 2.4, 1); glow.position.set(x, .3, -180); scene.add(glow);
+});
+
+/* ============ 白老师：3D Q 版 chibi（程序化，跑酷专用） ============
+   表情立绘退居「头顶情绪卡」——判分/受击时弹出。形象风格参考同前。 */
+const loadImg = src => new Promise(res => { const im = new Image(); im.onload = () => res(im); im.src = src; });
+function roundRectPath(cx, x, y, w, h, r) {
+  if (cx.roundRect) { cx.beginPath(); cx.roundRect(x, y, w, h, r); return; }
+  cx.beginPath(); cx.moveTo(x+r,y); cx.arcTo(x+w,y,x+w,y+h,r); cx.arcTo(x+w,y+h,x,y+h,r);
+  cx.arcTo(x,y+h,x,y,r); cx.arcTo(x,y,x+w,y,r); cx.closePath();
+}
+const EXPRS = {};
+await Promise.all(["gentle","excited","strict","tired"].map(async k => EXPRS[k] = await loadImg("./expr-"+k+".jpg")));
+function cardTexture(k, border) {
+  const im = EXPRS[k], w = 512, h = Math.round(512*im.height/im.width);
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h+16;
+  const cx = cv.getContext("2d");
+  roundRectPath(cx, 3, 3, w-6, h-6, 34);
+  cx.save(); cx.clip(); cx.drawImage(im, 0, 0, w, h); cx.restore();
+  cx.shadowColor = border; cx.shadowBlur = 20;
+  cx.strokeStyle = border; cx.lineWidth = 5;
+  roundRectPath(cx, 3, 3, w-6, h-6, 34); cx.stroke();
+  return new THREE.CanvasTexture(cv);
+}
+const TUT = {
+  gentle: cardTexture("gentle", "rgba(126,184,255,.95)"),
+  excited: cardTexture("excited", "rgba(126,217,168,.95)"),
+  strict: cardTexture("strict", "rgba(224,122,122,.95)"),
+  tired: cardTexture("tired", "rgba(150,150,170,.9)"),
+};
+function buildChibiFallback() {
+  const g = new THREE.Group();
+  const m = new THREE.Mesh(new THREE.SphereGeometry(.55, 18, 14),
+    new THREE.MeshStandardMaterial({ color: 0x4a7fd6, roughness: .7 }));
+  m.position.y = .6; g.add(m);
+  return g;
+}
+/* ============ 玩家：大肥鱼（Quaternius Cute Fish · CC0，绑骨动画） ============
+ * 动画映射：Out_Of_Water=跑酷扑腾（循环） · Swimming_Fast=高连击 · Death=败局。
+ * 形象设定参考：抖音 @冬冰（dongbing2297）「蓝色大肥鱼」DeepSeek 拟人二创。 */
+const player = new THREE.Group();
+player.position.set(0, 0, 0); scene.add(player);
+let fishMixer = null, fishActs = {}, fishOk = false;
+try {
+  const { GLTFLoader } = await import("./vendor/GLTFLoader.js");
+  const glb = await new Promise((res, rej) => {
+    new GLTFLoader().load("./assets/fish/Blobfish.glb", res, undefined, rej);
+    setTimeout(() => rej(new Error("fish load timeout")), 20000);
+  });
+  const fish = glb.scene;
+  const box = new THREE.Box3().setFromObject(fish);
+  fish.scale.setScalar(1.55 / Math.max(0.001, box.max.y - box.min.y));
+  const box2 = new THREE.Box3().setFromObject(fish);
+  const c = box2.getCenter(new THREE.Vector3());
+  fish.position.set(-c.x, -box2.min.y, -c.z);
+  player.add(fish);
+  fishOk = true;
+  fishMixer = new THREE.AnimationMixer(fish);
+  for (const clip of glb.animations) fishActs[clip.name.split("|").pop()] = fishMixer.clipAction(clip);
+  const play = n => { const a = fishActs[n]; if (a) { fishMixer.stopAllAction(); a.reset().play(); } };
+  fishActs._play = play;
+  play("Out_Of_Water");
+} catch (e) {
+  (window.__fhErrs = window.__fhErrs || []).push("fish: " + String(e && e.message || e));
+  player.add(buildChibiFallback());   // 加载失败 → 蓝色圆球占位
+}
+
+/* ============ 两翼风景（Quaternius nature/simple/cyberpunk · CC0） ============ */
+const sceneryProto = [];
+try {
+  const { GLTFLoader: GL } = await import("./vendor/GLTFLoader.js");
+  await Promise.all([
+    ["simple_nature_pack__Tree1", 1.0], ["simple_nature_pack__Tree2", 1.1],
+    ["simple_nature_pack__Tree3", 1.0], ["nature_pack__BirchTree_Autumn_1", 1.0],
+    ["simple_nature_pack__Rock1", .9], ["simple_nature_pack__Rock2", .9],
+    ["simple_nature_pack__Bush1", .8], ["cyberpunk_pack__Antenna_1", 1.3],
+  ].map(([n, s]) => new Promise(res => {
+    new GL().load(`./assets/scenery/${n}.glb`, g => {
+      sceneryProto.push({ g: g.scene, s }); res();
+    }, undefined, () => res());
+  })));
+} catch {}
+let sceneryTo = 0;
+const scenery = [];
+function spawnScenery(d) {
+  if (!sceneryProto.length) return;
+  const p = sceneryProto[Math.floor(Math.random() * sceneryProto.length)];
+  const side = Math.random() < .5 ? -1 : 1;
+  const m = p.g.clone(true);
+  m.position.set(side * (8.2 + Math.random() * 7), 0, 0);
+  m.rotation.y = Math.random() * Math.PI * 2;
+  m.scale.setScalar(p.s * (.75 + Math.random() * .7));
+  scene.add(m);
+  scenery.push({ m, d });
+}
+const moodSpr = new THREE.Sprite(new THREE.SpriteMaterial({ map: TUT.gentle, transparent: true, depthTest: false }));
+moodSpr.scale.set(1.0, 1.0, 1); moodSpr.visible = false; moodSpr.position.set(0, 2.75, 0); scene.add(moodSpr);
+let moodTimer = null;
+const footGlow = glowSprite("rgba(126,184,255,.9)", .55);
+footGlow.scale.set(2.6, 1.4, 1); footGlow.position.set(0, .25, 0); scene.add(footGlow);
+let curExpr = "gentle", exprTimer = null;
+function setExpr(k, hold = 0) {
+  moodSpr.material.map = TUT[k];
+  moodSpr.visible = true;
+  clearTimeout(exprTimer);
+  exprTimer = setTimeout(() => {
+    moodSpr.visible = false;
+    if (shield <= 1) setExpr("tired", 900);
+  }, hold > 0 ? hold : 900);
+  curExpr = k;
+}
+
+/* ============ 实体池 ============ */
+const fragGeo = new THREE.OctahedronGeometry(.34);
+const fragMat = new THREE.MeshBasicMaterial({ color: 0x35d07f });
+const ballGeoA = new THREE.IcosahedronGeometry(.44, 0);
+const ballMatW = new THREE.MeshBasicMaterial({ color: 0xe05a5a, wireframe: true });
+const ballMatI = new THREE.MeshBasicMaterial({ color: 0x4a1420 });
+const puddleGeo = new THREE.PlaneGeometry(2.1, 2.8).rotateX(-Math.PI/2);
+const puddleMat = new THREE.MeshBasicMaterial({ color: 0xa83a3a, transparent: true, opacity: .85 });
+const ents = [];   // { kind:'frag'|'ball'|'puddle'|'gate', d, mesh, lane, taken }
+function spawnEnt(kind, d, lane) {
+  let mesh;
+  if (kind === "frag") { mesh = new THREE.Mesh(fragGeo, fragMat); mesh.position.y = 1.15; }
+  else if (kind === "ball") {
+    mesh = new THREE.Group();
+    mesh.add(new THREE.Mesh(ballGeoA, ballMatW));
+    mesh.add(new THREE.Mesh(ballGeoA, ballMatI));
+    mesh.children[1].scale.setScalar(.7);
+    mesh.position.y = 1.25;
+  } else if (kind === "puddle") { mesh = new THREE.Mesh(puddleGeo, puddleMat); mesh.position.y = .04; }
+  else { /* gate */
+    mesh = new THREE.Group();
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(3.9, .16, 10, 42),
+      new THREE.MeshBasicMaterial({ color: 0xe05a5a }));
+    mesh.add(ring);
+    const g = glowSprite("rgba(224,90,90,.75)", .55); g.scale.set(9, 9, 1); mesh.add(g);
+    mesh.position.y = 2.2;
+  }
+  mesh.position.x = LANES[lane] ?? 0;
+  scene.add(mesh);
+  ents.push({ kind, d, lane: lane ?? -1, mesh, taken: false });
+}
+/* 粒子池 */
+const parts = [];
+const partGeo = new THREE.TetrahedronGeometry(.16);
+for (let i = 0; i < 48; i++) {
+  const m = new THREE.Mesh(partGeo, new THREE.MeshBasicMaterial({ color: 0x35d07f, transparent: true }));
+  m.visible = false; scene.add(m);
+  parts.push({ m, v: new THREE.Vector3(), life: 0 });
+}
+function burst(x, y, z, color, n = 10, power = 5) {
+  let used = 0;
+  for (const p of parts) {
+    if (p.life > 0) continue;
+    p.m.visible = true; p.m.position.set(x, y, z);
+    p.m.material.color.setHex(color); p.m.material.opacity = 1;
+    p.v.set((Math.random()-.5)*power, Math.random()*power*.8+1, (Math.random()-.5)*power);
+    p.life = .7 + Math.random()*.4;
+    if (++used >= n) break;
+  }
+}
+/* Boss：谬误核心 */
+const boss = new THREE.Group();
+{ const outer = new THREE.Mesh(new THREE.IcosahedronGeometry(2.3, 0),
+    new THREE.MeshBasicMaterial({ color: 0xe05a5a, wireframe: true }));
+  const inner = new THREE.Mesh(new THREE.IcosahedronGeometry(1.25, 0),
+    new THREE.MeshBasicMaterial({ color: 0x4a1420 }));
+  const g = glowSprite("rgba(224,90,90,.8)", .6); g.scale.set(10, 10, 1);
+  boss.add(outer, inner, g);
+  boss.userData = { outer, inner };
+  for (let i = 0; i < 3; i++) {
+    const shard = new THREE.Mesh(new THREE.TetrahedronGeometry(.5),
+      new THREE.MeshBasicMaterial({ color: 0xe05a5a, wireframe: true }));
+    shard.userData.orbit = i * 2.094;
+    boss.add(shard);
+  }
+  boss.visible = false; scene.add(boss); }
+
+/* ============ 状态 ============ */
+const BOSS_D = 880;
+const GATE_DS = [130, 250, 370, 490, 610, 720, 810];
+let state = "menu";         // menu | run | question | boss | end
+let dist = 0, speed = 15, lane = 1, laneX = 0, py = 0, vy = 0, jumping = false;
+let score = 0, frags = 0, combo = 0, maxCombo = 0, shield = 3, repair = 60;
+let shake = 0, invuln = 0, gateIdx = 0, spawnedTo = 30, usedItems = new Set();
+let airJumps = 0;   // 二段跳计数（天天酷跑式）
+let bossPhase = 0, bossQ = null, bossDeadline = 0;
+let frames = [], ansRight = 0, ansAll = 0;
+const pMap = { s1: BKT.pInit, s2: BKT.pInit, s3: BKT.pInit, s4: BKT.pInit };
+const $ = id => document.getElementById(id);
+const esc = s => (s||"").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+
+function pushFrame(f) {
+  f.seq = frames.length + 1;
+  f.prevHash = frames.length ? frames[frames.length-1].hash : CHAIN_GENESIS;
+  f.hash = fnv1a(f.prevHash + "|" + JSON.stringify(f));
+  frames.push(f);
+}
+function popText(txt, color = "#7ed9a8") {
+  const d = document.createElement("div");
+  d.className = "pop"; d.textContent = txt; d.style.color = color;
+  d.style.left = (W()/2 - 40 + (Math.random()-.5)*120) + "px";
+  d.style.top = (H()*.42) + "px";
+  document.body.appendChild(d);
+  let t = 0; const iv = setInterval(() => {
+    t += .05; d.style.transform = `translateY(${-t*90}px)`; d.style.opacity = 1 - t;
+    if (t >= 1) { clearInterval(iv); d.remove(); }
+  }, 33);
+}
+function showCombo() {
+  const el = $("combo");
+  if (combo >= 3) { el.textContent = "COMBO ×" + combo; el.style.opacity = 1;
+    clearTimeout(showCombo.t); showCombo.t = setTimeout(() => el.style.opacity = 0, 1500); }
+}
+function hurt(reason) {
+  if (invuln > 0) return;
+  shield--; invuln = 1.2; combo = 0; shake = .5;
+  setExpr("strict", 1500);
+  player.userData.squash = 1;
+  SFX.hit();
+  renderShield();
+  burst(player.position.x, 1.6, 0, 0xe05a5a, 12, 6);
+  if (shield <= 0) endGame(false, reason);
+}
+
+/* ---- 题目 ---- */
+function openQuestion(item, src, isBoss) {
+  state = isBoss ? "boss" : "question";
+  bossQ = isBoss ? { item, deadline: performance.now() + 15000 } : null;
+  $("q-tag").textContent = "📘 " + SKILLS[item.skill];
+  $("q-src").textContent = src;
+  $("q-stem").textContent = item.stem;
+  $("miscon").style.display = "none";
+  const box = $("q-opts"); box.innerHTML = "";
+  const shuffled = item.options.map(o => ({ o, k: Math.random() })).sort((a,b) => a.k-b.k).map(x => x.o);
+  shuffled.forEach(o => {
+    const b = document.createElement("button");
+    b.className = "opt"; b.textContent = o;
+    b.onclick = () => answer(item, o, isBoss);
+    box.appendChild(b);
+  });
+  $("qtimer").style.display = isBoss ? "block" : "none";
+  $("qtimer-in").style.width = "100%";
+  $("q-portrait").src = "./expr-gentle.jpg";
+  $("ov-q").classList.add("on");
+}
+function answer(item, choice, isBoss) {
+  const correct = choice === item.answer;
+  const pB = pMap[item.skill];
+  const pA = bktUpdate(pB, correct);
+  pMap[item.skill] = pA;
+  ansAll++; if (correct) ansRight++;
+  repair = correct ? Math.min(100, repair + 3) : Math.max(0, repair - 8);
+  renderRepair();
+  pushFrame({ day: 1, itemId: item.id, input: choice, correct,
+    pBefore: +pB.toFixed(4), pAfter: +pA.toFixed(4), repairAfter: repair,
+    source: "game", reason: correct ? "答对，谬误净化" : "错因：" + item.mis });
+  document.querySelectorAll("#q-opts .opt").forEach(b => b.disabled = true);
+  if (correct) {
+    combo++; maxCombo = Math.max(maxCombo, combo);
+    setExpr("excited", 2200);
+    burst(player.position.x, 1.8, -2, 0x35d07f, 14, 7);
+      if (isBoss) {
+        score += 300; bossPhase++;
+        renderHUD();
+      $("boss-in").style.width = (100 - bossPhase/3*100) + "%";
+      SFX.bossHit();
+      burst(boss.position.x, boss.position.y, boss.position.z, 0xe05a5a, 18, 9);
+      shake = .6;
+      $("miscon").style.display = "block";
+      $("miscon").innerHTML = `<b>💥 净化成功！</b>核心结构崩塌 ${bossPhase}/3 —— ${item.hint}`;
+      $("q-portrait").src = "./expr-excited.jpg";
+      setTimeout(() => { $("ov-q").classList.remove("on");
+        if (bossPhase >= 3) endGame(true); else askBoss(); }, 1900);
+      } else {
+        score += 150 + combo*25;
+        renderHUD();
+        SFX.gateOk(); popText("+" + (150 + combo*25));
+      showCombo();
+        $("ov-q").classList.remove("on");
+        state = "run"; invuln = 1;
+      }
+  } else {
+    combo = 0;
+    setExpr("strict");
+    $("q-portrait").src = "./expr-strict.jpg";
+    SFX.gateNo();
+    $("miscon").style.display = "block";
+    $("miscon").innerHTML = `<b>白老师的错因诊断：</b>${esc(item.mis)}——${esc(item.hint)}`;
+    const back = () => {
+      $("ov-q").classList.remove("on");
+      if (repair <= 0) { endGame(false, "world"); return; }
+      if (isBoss) askBoss();
+      else state = "run";
+    };
+    if (isBoss) setTimeout(back, 3400); else setTimeout(back, 3000);
+  }
+  renderMastery(); persist();
+}
+function askBoss() {
+  const pool = ITEMS.filter(i => i.skill !== "s1" && !usedItems.has(i.id));
+  const item = pool[Math.floor(Math.random()*pool.length)] || ITEMS[Math.floor(Math.random()*ITEMS.length)];
+  usedItems.add(item.id);
+  openQuestion(item, "谬误核心 · 第 " + (bossPhase+1) + " 层", true);
+}
+
+/* ---- 开始/结束 ---- */
+function resetRun() {
+  ents.forEach(e => scene.remove(e.mesh)); ents.length = 0;
+  scenery.forEach(s => scene.remove(s.m)); scenery.length = 0; sceneryTo = 0;
+  dist = 0; speed = 15; lane = 1; laneX = 0; py = 0; vy = 0; jumping = false;
+  score = 0; frags = 0; combo = 0; maxCombo = 0; shield = 3; repair = 60;
+  shake = 0; invuln = 0; gateIdx = 0; spawnedTo = 30; usedItems = new Set();
+  bossPhase = 0; frames = []; ansRight = 0; ansAll = 0;
+  Object.keys(pMap).forEach(k => pMap[k] = BKT.pInit);
+  boss.visible = false; $("boss-hud").style.display = "none";
+  setExpr("gentle");
+  renderShield(); renderMastery();
+}
+function startGame() {
+  resetRun();
+  $("ov-start").classList.remove("on");
+  $("ov-end").classList.remove("on");
+  state = "run";
+  try { ac().resume(); } catch {}
+  bgmStart();
+  tone(520, .12, "triangle", .12);
+}
+function endGame(win, reason = "") {
+  state = "end";
+  bgmStop();
+  win ? SFX.win() : SFX.lose();
+  setExpr(win ? "excited" : "tired");
+  if (!win && fishActs.Death) { fishMixer.stopAllAction(); fishActs.Death.reset().play(); }
+  let chainOk = true, prev = CHAIN_GENESIS;
+  for (const f of frames) {
+    const { hash, ...rest } = f;
+    if (f.prevHash !== prev || fnv1a(prev + "|" + JSON.stringify(rest)) !== hash) { chainOk = false; break; }
+    prev = hash;
+  }
+  const acc = ansAll ? Math.round(ansRight/ansAll*100) : 0;
+  const lines = [];
+  const REASON_ZH = { gate: "在谬误之门连错倒下", boss: "被谬误核心击倒", world: "世界修复度归零", "谬误弹": "撞上谬误弹", "地面裂缝": "坠入地面裂缝" };
+  lines.push(`结算：${win ? "✅ 谬误核心已净化" : "⛔ 审计中止"}` + (reason ? `（${REASON_ZH[reason] || reason}）` : ""));
+  lines.push(`世界修复度：开局 60% → ${repair}%${win ? " ✅ 入账" : ""}`);
+  lines.push(`得分 ${score} · 决策帧碎片 ${frags} · 最高连击 ×${maxCombo} · 答对率 ${acc}%（${ansRight}/${ansAll}）`);
+  for (const s of Object.keys(SKILLS)) lines.push(`  ${SKILLS[s]}：p ${BKT.pInit.toFixed(2)} → ${pMap[s].toFixed(2)}`);
+  lines.push(`决策帧账本：${frames.length} 帧入链 · FNV-1a 逐帧校验 ${chainOk ? "✅ 通过" : "❌ 断链"}`);
+  lines.push(win ? "白老师：「搭档，干得漂亮。下一片污染区，还找我们。」"
+                 : "白老师：「回审计局补给——错过的题我已经记进你的帧里了。」");
+  $("end-title").innerHTML = win ? "审计完成 <b>✅</b>" : "搭档撤回 <b style='color:#e07a7a'>⛔</b>";
+  $("report").textContent = lines.join("\n");
+  $("ov-end").classList.add("on");
+  persist();
+}
+  function renderShield() { $("shield").textContent = "🛡".repeat(Math.max(0, shield)) + "▫".repeat(Math.max(0, 4 - shield)); }
+  function renderRepair() {
+    const el = $("repair");
+    el.textContent = repair + "%";
+    el.style.color = repair < 30 ? "#e07a7a" : "#7ed9a8";
+  }
+  function renderHUD() {
+    $("score").textContent = score;
+    $("frags").textContent = frags;
+  }
+function renderMastery() {
+  $("mastery").innerHTML = Object.entries(SKILLS).map(([k, n]) =>
+    `<div class="mrow"><span>${n}</span><div class="mbar"><div class="min" style="width:${Math.round(pMap[k]*100)}%"></div></div><span>${pMap[k].toFixed(2)}</span></div>`).join("");
+}
+function persist() {
+  try {
+    const old = JSON.parse(localStorage.getItem("framehunter.save.v1") || "{}");
+    localStorage.setItem("framehunter.save.v1", JSON.stringify({ best: Math.max(old.best || 0, score), frames }));
+  } catch {}
+}
+
+/* ---- 输入 ---- */
+function moveLane(dir) {
+  if (state !== "run") return;
+  const nl = Math.max(0, Math.min(2, lane + dir));
+  if (nl !== lane) { lane = nl; tone(340, .06, "sine", .07); }
+}
+function doJump() {
+  if (state !== "run") return;
+  if (!jumping) { jumping = true; airJumps = 0; vy = 9; tone(500, .14, "sine", .1, 260); }
+  else if (airJumps < 1) {   // 二段跳
+    airJumps++; vy = 8.2;
+    tone(620, .12, "sine", .1, 240);
+    burst(player.position.x, py + .8, 0, 0x9fc3ff, 6, 3);
+  }
+}
+addEventListener("keydown", e => {
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (k === "arrowleft" || k === "a") moveLane(-1);
+  else if (k === "arrowright" || k === "d") moveLane(1);
+  else if (k === " " || k === "arrowup" || k === "w") { e.preventDefault(); doJump(); }
+  else if (k === "m") toggleMute();
+});
+let tX = 0, tY = 0, tT = 0;
+addEventListener("touchstart", e => { tX = e.touches[0].clientX; tY = e.touches[0].clientY; tT = Date.now(); }, { passive: true });
+addEventListener("touchend", e => {
+  const dx = e.changedTouches[0].clientX - tX, dy = e.changedTouches[0].clientY - tY;
+  if (Math.abs(dx) < 24 && Math.abs(dy) < 24) { if (Date.now() - tT < 300) doJump(); return; }
+  if (Math.abs(dx) > Math.abs(dy)) moveLane(dx > 0 ? 1 : -1);
+  else if (dy < 0) doJump();
+}, { passive: true });
+/* 桌面点按分区：左 1/3 左移 · 右 1/3 右移 · 中间跳（录制/触屏通用） */
+renderer.domElement.addEventListener("pointerdown", e => {
+  if (e.pointerType === "touch") return;   // 触屏走 swipe 通路
+  const r = renderer.domElement.getBoundingClientRect();
+  const rx = (e.clientX - r.left) / r.width;
+  if (rx < .38) moveLane(-1);
+  else if (rx > .62) moveLane(1);
+  else doJump();
+});
+function toggleMute() { muted = !muted; $("mute").textContent = muted ? "🔇" : "🔊"; }
+$("mute").onclick = toggleMute;
+$("btn-go").onclick = startGame;
+$("btn-again").onclick = startGame;
+$("btn-tutor").onclick = () => { location.href = "https://github.com/OriEra-engine/engine"; };
+
+/* ---- 生成与碰撞 ---- */
+function spawnAhead() {
+  while (sceneryTo < dist + 220) {
+    sceneryTo += 7 + Math.random() * 9;
+    if (Math.random() < .8) spawnScenery(sceneryTo);
+  }
+  while (spawnedTo < dist + 170) {
+    if (gateIdx < GATE_DS.length && spawnedTo >= GATE_DS[gateIdx]) {
+      spawnEnt("gate", GATE_DS[gateIdx], -1);
+      gateIdx++; spawnedTo += 16; continue;
+    }
+    const r = Math.random();
+    if (r < .62) {           // 碎片行
+      const l = Math.floor(Math.random()*3), n = 3 + Math.floor(Math.random()*2);
+      for (let i = 0; i < n; i++) spawnEnt("frag", spawnedTo + i*3.4, l);
+      spawnedTo += n*3.4 + 4;
+    } else if (r < .88 && spawnedTo > 120) {   // 前 120 单位新手区：只给碎片不给弹
+      const l = Math.floor(Math.random()*3);
+      spawnEnt(Math.random() < .55 ? "ball" : "puddle", spawnedTo, l);
+      spawnedTo += 9;
+    } else spawnedTo += 12;
+  }
+}
+function collide(dt) {
+  for (const e of ents) {
+    const rel = e.d - dist;
+    if (e.taken) continue;
+    /* 磁铁（连击 ≥2）：前方碎片弯向本车道 */
+    if (e.kind === "frag" && rel > -2 && rel < 18 && combo >= 2 &&
+        Math.abs(e.mesh.position.x - laneX) < 4.8) {
+      e.mesh.position.x += (laneX - e.mesh.position.x) * Math.min(1, dt * 4);
+      e.mesh.position.y += (1.15 - e.mesh.position.y) * Math.min(1, dt * 2.5);
+    }
+    if (rel < -6 || rel > 4) continue;
+    e.mesh.position.z = -rel;
+    if (e.kind === "gate") {
+      if (rel < 2.5) {
+        e.taken = true; e.mesh.visible = false;
+        burst(e.mesh.position.x, 2.2, e.mesh.position.z, 0xe05a5a, 14, 7);
+        const skill = gateSkill(gateIdxOf(e));
+        const pool = ITEMS.filter(i => i.skill === skill && !usedItems.has(i.id));
+        const item = pool[Math.floor(Math.random()*pool.length)] || ITEMS.filter(i => i.skill === skill)[0];
+        usedItems.add(item.id);
+        SFX.gateNo(); tone(200, .3, "sawtooth", .1);
+        openQuestion(item, "谬误之门 · " + SKILLS[skill], false);
+        break;
+      }
+      continue;
+    }
+    if (Math.abs(e.mesh.position.x - player.position.x) > 1.15) continue;
+    if (e.kind === "frag") {
+      if (Math.abs(rel) < 1.4 && Math.abs(1.15 + py - 0) < 2.4) {
+        e.taken = true; e.mesh.visible = false;
+        frags++; combo++; maxCombo = Math.max(maxCombo, combo);
+        score += 10;
+        renderHUD();
+        SFX.frag(combo); showCombo();
+        burst(e.mesh.position.x, 1.2, e.mesh.position.z, 0x35d07f, 5, 3);
+        if (combo > 0 && combo % 5 === 0) setExpr("excited", 1400);
+        if (frags > 0 && frags % 25 === 0 && shield < 4) { shield++; renderShield(); popText("🛡 +1", "#9fc3ff"); }
+      }
+    } else if (e.kind === "ball") {
+      if (Math.abs(rel) < 1.1 && !jumping) hurt("谬误弹");
+    } else if (e.kind === "puddle") {
+      if (Math.abs(rel) < 1.3 && (!jumping || py < .5)) hurt("地面裂缝");
+    }
+  }
+  while (ents.length && (ents[0].d - dist) < -8) { scene.remove(ents[0].mesh); ents.shift(); }
+}
+function gateSkill(i) { return ["s1", "s2", "s3", "s4", "s2", "s3", "s4"][i] || "s2"; }   // 相邻门技能不重复
+function gateIdxOf(gateEnt) { return GATE_DS.indexOf(gateEnt.d); }
+
+/* ---- Boss 战 ---- */
+function updateBoss() {
+  if (state === "run" && dist >= BOSS_D) {
+    state = "boss";
+    boss.visible = true;
+    boss.position.set(0, 2.6, -16);
+    $("boss-hud").style.display = "block";
+    $("boss-in").style.width = "100%";
+    speed = 0;
+    npcSay("白老师", "追到终点了——「谬误核心」就在眼前。它有三层结构，每层一道题。答对一层，剥掉一层！小心，它只剩 15 秒的耐心。");
+    setTimeout(askBoss, 1600);
+  }
+  if (boss.visible) {
+    const t = performance.now()/1000;
+    boss.userData.outer.rotation.y += .012; boss.userData.outer.rotation.x += .007;
+    boss.userData.inner.rotation.y -= .02;
+    boss.children.forEach(c => { if (c.userData.orbit !== undefined) {
+      c.position.set(Math.cos(t*1.6 + c.userData.orbit)*3.4, Math.sin(t*1.1 + c.userData.orbit)*1.1, Math.sin(t*1.6 + c.userData.orbit)*3.4); } });
+    if (state === "boss" && bossQ) {
+      const left = bossQ.deadline - performance.now();
+      $("qtimer-in").style.width = Math.max(0, left/15000*100) + "%";
+      if (left <= 0) answer(bossQ.item, "__timeout__", true);
+    }
+  }
+}
+function npcSay(name, text) {
+  const d = document.createElement("div");
+  d.className = "pop"; d.style.cssText =
+    `left:50%;top:16%;transform:translateX(-50%);max-width:76vw;background:rgba(13,16,23,.92);
+     border:1px solid #2a3a5c;border-radius:12px;padding:10px 16px;font-size:14px;font-weight:400;
+     color:#cdd6ec;text-shadow:none;line-height:1.8;white-space:normal;text-align:left`;
+  d.innerHTML = `<b style="color:#9fc3ff">${esc(name)}</b>：${esc(text)}`;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 4200);
+}
+
+/* ---- 主循环 ---- */
+const clock = new THREE.Clock();
+window.__fh = {
+  get state() { return state; }, get dist() { return dist; }, get score() { return score; },
+  /* 调试快进：warp 到指定里程（生成器会自动补齐沿途实体） */
+  warp(n) { dist = Math.max(dist, n); spawnedTo = Math.max(spawnedTo, dist + 5); },
+};
+let lastFrameAt = 0;
+function tick() {
+  lastFrameAt = performance.now();
+  requestAnimationFrame(tick);
+  try { tickBody(); } catch (e) {
+    (window.__fhErrs = window.__fhErrs || []).push(String(e && e.message || e));
+    if (window.__fhErrs.length > 4) throw e;
+  }
+}
+/* 后台标签 rAF 冻结看门狗：前台 60fps 不受影响，隐藏时 20fps 兜底（录制/切页照样可玩） */
+setInterval(() => {
+  if (performance.now() - lastFrameAt < 120 || state === "menu") return;
+  lastFrameAt = performance.now();
+  try { tickBody(); } catch (e) {
+    (window.__fhErrs = window.__fhErrs || []).push(String(e && e.message || e));
+  }
+}, 50);
+function tickBody() {
+  const dt = Math.min(.05, clock.getDelta());
+  const t = clock.elapsedTime;
+  if (state === "run" || state === "boss") {
+    if (state === "run") {
+      speed = Math.min(21, 15 + dist/300*3);
+      dist += speed*dt;
+      $("prog-in").style.width = Math.min(100, dist/BOSS_D*100) + "%";
+      spawnAhead();
+    }
+    // 车道插值 / 跳跃
+    laneX += (LANES[lane] - laneX) * Math.min(1, dt*12);
+    if (jumping) { py += vy*dt; vy -= 24*dt; if (py <= 0) { py = 0; jumping = false; airJumps = 0; } }
+    /* 大肥鱼：离水扑腾步点 + 游速跟车速 */
+    player.position.x = laneX;
+    player.position.y = py + Math.abs(Math.sin(t * 14)) * .08;
+    player.rotation.z = (LANES[lane] - laneX) * -.16;
+    if (fishMixer) fishMixer.update(dt * (.6 + speed / 25));
+    camera.fov = 58 + Math.min(9, combo * .5);       // 连击 FOV 速度感
+    camera.updateProjectionMatrix();
+    if (player.userData.squash > 0) {
+      player.userData.squash = Math.max(0, player.userData.squash - dt * 3);
+      const s = player.userData.squash;
+      player.scale.set(1 + s * .18, 1 - s * .22, 1 + s * .18);
+    }
+    moodSpr.position.set(laneX, 2.75 + py, 0);
+    footGlow.position.set(laneX, .25, 0);
+    playerLight.position.set(laneX, 2.2, 2.2);
+    gridTex.offset.y -= speed*dt/8;
+    stars.rotation.y += dt*.02;
+    // 实体
+    for (const e of ents) e.mesh.position.z = -(e.d - dist);
+    for (const s of scenery) s.m.position.z = -(s.d - dist);
+    while (scenery.length && (scenery[0].d - dist) < -26) { scene.remove(scenery[0].m); scenery.shift(); }
+    collide(dt);
+    // 收集体动画
+    for (const e of ents) if (!e.taken && e.kind === "frag") e.mesh.rotation.y += dt*3;
+    updateBoss();
+    if (invuln > 0) invuln -= dt;
+    player.visible = invuln > 0 ? Math.sin(t * 24) > -.4 : true;
+  }
+  // 相机震动
+  if (shake > 0) {
+    shake -= dt;
+    camera.position.set(CAM_BASE.x + (Math.random()-.5)*shake, CAM_BASE.y + (Math.random()-.5)*shake*.6, CAM_BASE.z);
+  } else camera.position.copy(CAM_BASE);
+  camera.lookAt(0, 1.5, -12);
+  // 粒子
+  for (const p of parts) {
+    if (p.life <= 0) continue;
+    p.life -= dt;
+    p.v.y -= 9*dt;
+    p.m.position.addScaledVector(p.v, dt);
+    p.m.material.opacity = Math.max(0, p.life);
+    p.m.rotation.x += dt*7; p.m.rotation.y += dt*5;
+    if (p.life <= 0) p.m.visible = false;
+  }
+  renderer.render(scene, camera);
+}
+addEventListener("resize", () => {
+  camera.aspect = W()/H(); camera.updateProjectionMatrix();
+  renderer.setSize(W(), H());
+});
+renderMastery(); renderShield(); renderRepair();
+try {
+  const best = (JSON.parse(localStorage.getItem("framehunter.save.v1") || "{}").best) || 0;
+  if (best > 0) document.querySelector("#ov-start .keys").insertAdjacentHTML("afterend",
+    `<div style="text-align:center;color:#e8d78a;font-size:14.5px;margin-top:12px">🏆 历史最佳：${best}</div>`);
+} catch {}
+if (location.search.includes("auto")) startGame();   // 调试/CI：?auto 跳过开始界面
+tick();
+</script>
+</body>
+</html>
