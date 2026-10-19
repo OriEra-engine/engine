@@ -8,7 +8,7 @@
  *   parseIntent      ↔ crates/oriera-agent/src/lib.rs::parse (L7 命令通道)
  *   CommandQueue     ↔ crates/oriera-infer/src/lib.rs::InferSystem (L7 队列)
  * v2（2026-10-19，八赛道实战反馈）：命令通道 / 认知参数化（场景·台词库·
- * RNG·max 可注入）/ 记忆容量参数化 / seed·thinking 透传 / 预设表 13 行。
+ * RNG·max 可注入）/ 记忆容量参数化 / seed·thinking 透传 / 预设表 14 行。
  * 全部加法式：不传新参数时行为与 v1 逐位一致。
  * 应用（index.html）只 import 这些服务——应用代码里不允许出现
  * 任何模型调用、Key、prompt 拼装。
@@ -365,6 +365,7 @@ export const PROVIDER_PRESETS = {
   zhipu:       { label: "智谱 GLM",       base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash" },
   openai:      { label: "OpenAI",         base: "https://api.openai.com/v1",             model: "gpt-4o-mini" },
   qwen:        { label: "Qwen 通义",      base: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
+  stepfun:     { label: "阶跃 Step",      base: "https://api.stepfun.com/v1",            model: "step-3.7-flash" },
   deepseek:    { label: "DeepSeek",       base: "https://api.deepseek.com/v1",           model: "deepseek-chat" },
   moonshot:    { label: "Moonshot Kimi",  base: "https://api.moonshot.cn/v1",            model: "moonshot-v1-8k" },
   groq:        { label: "Groq",           base: "https://api.groq.com/openai/v1",        model: "llama-3.1-8b-instant" },

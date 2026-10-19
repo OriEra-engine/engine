@@ -264,7 +264,7 @@ impl ProviderKind {
         match id {
             "zhipu" => Some(ProviderKind::Zhipu),
             "openai-compat" | "openai" | "deepseek" | "moonshot" | "groq" | "openrouter"
-            | "qwen" | "ollama" | "vllm" | "llamacpp" | "lmstudio" => {
+            | "qwen" | "stepfun" | "ollama" | "vllm" | "llamacpp" | "lmstudio" => {
                 Some(ProviderKind::OpenAiCompat)
             }
             "anthropic" => Some(ProviderKind::Anthropic),
@@ -334,6 +334,14 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         kind: ProviderKind::OpenAiCompat,
         model: "qwen-plus",
         base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        local: false,
+    },
+    ProviderPreset {
+        id: "stepfun",
+        label: "阶跃 Step",
+        kind: ProviderKind::OpenAiCompat,
+        model: "step-3.7-flash",
+        base_url: "https://api.stepfun.com/v1",
         local: false,
     },
     ProviderPreset {
@@ -579,9 +587,9 @@ mod preset_tests {
 
     #[test]
     fn kernel_js_parity_plus_geek_rows() {
-        // The eight rows the browser kernel serves (kernel.js
-        // PROVIDER_PRESETS) all resolve, plus the qwen reserved row and
-        // the four local open-source serving rows.
+        // The nine offline/cloud rows the browser kernel serves
+        // (kernel.js PROVIDER_PRESETS) all resolve, plus the qwen and
+        // stepfun reserved rows and the four local open-source rows.
         for id in [
             "rule",
             "zhipu",
@@ -590,6 +598,7 @@ mod preset_tests {
             "moonshot",
             "groq",
             "openrouter",
+            "stepfun",
             "anthropic",
         ] {
             assert!(
@@ -603,7 +612,7 @@ mod preset_tests {
                 "geek row {id} missing"
             );
         }
-        assert_eq!(PROVIDER_PRESETS.len(), 13);
+        assert_eq!(PROVIDER_PRESETS.len(), 14);
     }
 
     #[test]
