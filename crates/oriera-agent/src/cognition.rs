@@ -140,6 +140,9 @@ pub struct CognitionSystem<P: ModelProvider> {
     cursor: usize,
     /// Cached speaker order (rebuilt when the roster changes).
     order: Vec<oriera_ecs::Entity>,
+    /// v2.1 mirror of kernel-v2 injectables: world prefix in the system
+    /// prompt. Default keeps every existing caller byte-compatible.
+    pub scene: String,
 }
 
 impl<P: ModelProvider> CognitionSystem<P> {
@@ -150,7 +153,15 @@ impl<P: ModelProvider> CognitionSystem<P> {
             max_stretch: 8,
             cursor: 0,
             order: Vec::new(),
+            scene: "隅角咖啡馆".to_string(),
         }
+    }
+
+    /// Scene override (kernel-v2 parity): one string relocates the cast —
+    /// the verticals' "Studio skin" knob on the Rust side.
+    pub fn with_scene(mut self, scene: impl Into<String>) -> Self {
+        self.scene = scene.into();
+        self
     }
 
     fn roster(&mut self, world: &World) {
@@ -234,7 +245,7 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
             .collect();
 
         let sys = format!(
-            "你是「{name}」，{role}，活在 OriEra 世界引擎的隅角咖啡馆。\n性格：{desc}\n\
+            "你是「{name}」，{role}，活在 OriEra 世界引擎的{scene}。\n性格：{desc}\n\
              世界进度：第 {day} 世界日，{beat}\n对话对象：「{pname}」（{prole}）。\n\
              你的相关记忆：\n{mems}\n最近对话：\n{recent}\n\
              请以 {name} 的口吻说 1~2 句话，随后在同一行以 | 分隔给出 \
@@ -247,6 +258,7 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
             beat = beat,
             pname = partner.name,
             prole = partner.role,
+            scene = self.scene,
             mems = if mem_lines.is_empty() {
                 "-（暂无）".into()
             } else {
@@ -335,6 +347,9 @@ pub struct DirectorSystem<P: ModelProvider> {
     /// Cap on budget-pressure stretch, same default as cognition.
     pub max_stretch: u32,
     beat_idx: usize,
+    /// Offline fallback beats, injectable (kernel-v2 parity). Default:
+    /// the café bank, byte-compatible for existing callers.
+    pub rule_beats: Vec<String>,
 }
 
 impl<P: ModelProvider> DirectorSystem<P> {
@@ -344,7 +359,15 @@ impl<P: ModelProvider> DirectorSystem<P> {
             interval: interval.max(1),
             max_stretch: 8,
             beat_idx: 0,
+            rule_beats: DEFAULT_BEATS.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+    /// Offline beat-bank override (kernel-v2 parity).
+    pub fn with_rule_beats(mut self, beats: Vec<String>) -> Self {
+        assert!(!beats.is_empty(), "rule_beats must not be empty");
+        self.rule_beats = beats;
+        self
     }
 }
 
@@ -380,7 +403,7 @@ impl<P: ModelProvider> System<World> for DirectorSystem<P> {
             .map(|s| s.trim().trim_matches('"').to_string())
             .filter(|s| !s.is_empty() && s.chars().count() < 60)
             .unwrap_or_else(|| {
-                let b = DEFAULT_BEATS[self.beat_idx % DEFAULT_BEATS.len()].to_string();
+                let b = self.rule_beats[self.beat_idx % self.rule_beats.len()].to_string();
                 self.beat_idx += 1;
                 b
             });
@@ -459,6 +482,94 @@ mod tests {
             cog.run(ctx, &mut w);
         }
         w.resource::<DialogueLog>().unwrap().turns.len()
+    }
+
+    /// Wraps RuleProvider, capturing the last system prompt (scene tests).
+    struct CaptureProvider {
+        inner: RuleProvider,
+        last_system: std::sync::Mutex<String>,
+    }
+    impl ModelProvider for CaptureProvider {
+        fn id(&self) -> &str {
+            "capture"
+        }
+        fn complete(
+            &self,
+            messages: &[oriera_infer::ChatMessage],
+        ) -> Result<String, oriera_infer::InferError> {
+            if let Some(m) = messages
+                .iter()
+                .find(|m| m.role == oriera_infer::Role::System)
+            {
+                *self.last_system.lock().unwrap() = m.content.clone();
+            }
+            self.inner.complete(messages)
+        }
+    }
+
+    fn capture_run(scene: Option<&str>) -> String {
+        let mut w = cafe_world();
+        let cap = std::sync::Arc::new(CaptureProvider {
+            inner: RuleProvider::new(),
+            last_system: std::sync::Mutex::new(String::new()),
+        });
+        let mut cog = match scene {
+            Some(s) => CognitionSystem::new(cap.clone(), 1).with_scene(s),
+            None => CognitionSystem::new(cap.clone(), 1),
+        };
+        cog.run(&ctx(), &mut w);
+        let x = cap.last_system.lock().unwrap().clone();
+        x
+    }
+
+    #[test]
+    fn scene_is_injectable_and_default_stays_the_cafe() {
+        let customized = capture_run(Some("环形太空站"));
+        assert!(
+            customized.contains("环形太空站"),
+            "injected scene must appear"
+        );
+        assert!(
+            !customized.contains("隅角咖啡馆"),
+            "old scene must not leak"
+        );
+        let default_sys = capture_run(None);
+        assert!(
+            default_sys.contains("隅角咖啡馆"),
+            "default stays byte-compatible"
+        );
+    }
+
+    /// Always fails: drives the director into its offline fallback bank.
+    struct DownProvider;
+    impl ModelProvider for DownProvider {
+        fn id(&self) -> &str {
+            "down"
+        }
+        fn complete(
+            &self,
+            _m: &[oriera_infer::ChatMessage],
+        ) -> Result<String, oriera_infer::InferError> {
+            Err(oriera_infer::InferError::Provider(
+                "test: provider down".into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn director_rule_beats_are_injectable() {
+        let mut w = cafe_world();
+        let mut d = DirectorSystem::new(Arc::new(DownProvider), 8)
+            .with_rule_beats(vec!["甲事件".into(), "乙事件".into()]);
+        {
+            // director increments turn then gates on turn % interval —
+            // seed 7 so the run lands on 8.
+            let story = w.resource_mut::<WorldStory>().unwrap();
+            story.turn = 7;
+        }
+        d.run(&ctx(), &mut w);
+        let story = w.resource::<WorldStory>().unwrap();
+        assert_eq!(story.beats.last().map(String::as_str), Some("甲事件"));
     }
 
     fn cafe_world() -> World {

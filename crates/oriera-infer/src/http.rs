@@ -36,7 +36,9 @@ compile_error!(
      kernel.js HttpChatProvider mirror (examples/11-ai-cafe/engine/kernel.js)"
 );
 
-use crate::provider::{ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, Role};
+use crate::provider::{
+    ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, ProviderOptions, Role,
+};
 use oriera_common::TokenUsage;
 use serde_json::{json, Value};
 use std::io::Read;
@@ -73,12 +75,36 @@ pub struct HttpProvider {
     url: String,
     label: String,
     usage: Mutex<TokenUsage>,
+    options: ProviderOptions,
 }
 
 impl HttpProvider {
     /// 20s overall / 5s connect — kernel.js parity (design §5).
     pub fn new(cfg: ProviderConfig) -> Self {
         Self::with_timeouts(cfg, Duration::from_secs(20), Duration::from_secs(5))
+    }
+
+    /// Wire options (v2.1 kernel-v2 parity): seed / thinking / json.
+    pub fn with_options(cfg: ProviderConfig, options: ProviderOptions) -> Self {
+        Self::with_timeouts_and_options(
+            cfg,
+            options,
+            Duration::from_secs(20),
+            Duration::from_secs(5),
+        )
+    }
+
+    /// Options + timeout override for constrained shells and tests.
+    pub fn with_timeouts_and_options(
+        cfg: ProviderConfig,
+        options: ProviderOptions,
+        overall: Duration,
+        connect: Duration,
+    ) -> Self {
+        Self {
+            options,
+            ..Self::with_timeouts(cfg, overall, connect)
+        }
     }
 
     /// Timeout override for constrained shells and tests.
@@ -104,6 +130,7 @@ impl HttpProvider {
             dialect,
             label,
             usage: Mutex::new(TokenUsage::ZERO),
+            options: ProviderOptions::default(),
         }
     }
 
@@ -115,16 +142,28 @@ impl HttpProvider {
 
     fn build_request(&self, messages: &[ChatMessage]) -> String {
         match self.dialect {
-            Dialect::OpenAi => json!({
-                "model": self.cfg.model,
-                "messages": messages
-                    .iter()
-                    .map(|m| json!({ "role": role_str(m.role), "content": m.content }))
-                    .collect::<Vec<_>>(),
-                "temperature": 0.85,   // kernel.js parity
-                "max_tokens": 260,
-            })
-            .to_string(),
+            Dialect::OpenAi => {
+                let mut body = json!({
+                    "model": self.cfg.model,
+                    "messages": messages
+                        .iter()
+                        .map(|m| json!({ "role": role_str(m.role), "content": m.content }))
+                        .collect::<Vec<_>>(),
+                    "temperature": 0.85,   // kernel.js parity
+                    "max_tokens": 260,
+                });
+                // v2.1 kernel-v2 parity: construction-time wire options.
+                if let Some(seed) = self.options.seed {
+                    body["seed"] = json!(seed);
+                }
+                if self.options.thinking_disabled {
+                    body["thinking"] = json!({ "type": "disabled" });
+                }
+                if self.options.json_mode {
+                    body["response_format"] = json!({ "type": "json_object" });
+                }
+                body.to_string()
+            }
             Dialect::Anthropic => {
                 let system = messages
                     .iter()
@@ -420,6 +459,13 @@ mod tests {
         HttpProvider::with_timeouts(cfg, overall, Duration::from_millis(500))
     }
 
+    impl HttpProvider {
+        fn set_timeouts_for_test(&self, _overall: Duration) {
+            // timeouts are baked into the agent at construction; this shim
+            // exists only to keep the options test explicit about intent.
+        }
+    }
+
     #[test]
     fn openai_compat_round_trip_with_usage() {
         let mock = Mock::spawn(vec![Step::Reply(
@@ -660,6 +706,66 @@ mod tests {
             Err(InferError::Provider(m)) => assert!(m.contains("no api key")),
             other => panic!("expected Provider(no key), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn wire_options_reach_the_request_body_and_default_is_clean() {
+        let mock = Mock::spawn(vec![
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"content":"a"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#.into(),
+            ),
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"content":"b"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#.into(),
+            ),
+        ]);
+        let cfg = ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            model: "m".into(),
+            api_key: "test-key".into(),
+            base_url: Some(mock.base_url()),
+        };
+        // with options: seed/thinking/json all present
+        let with = HttpProvider::with_options(
+            cfg.clone(),
+            ProviderOptions {
+                seed: Some(7),
+                thinking_disabled: true,
+                json_mode: true,
+            },
+        );
+        with.set_timeouts_for_test(Duration::from_secs(5));
+        let _ = with.complete(&[ChatMessage::user("x")]).unwrap();
+
+        // default: none of them leak into the wire
+        let without =
+            HttpProvider::with_timeouts(cfg, Duration::from_secs(5), Duration::from_millis(500));
+        let _ = without.complete(&[ChatMessage::user("x")]).unwrap();
+
+        let reqs = mock.requests();
+        assert!(reqs[0].contains(r#""seed":7"#), "seed missing: {}", reqs[0]);
+        assert!(
+            reqs[0].contains(r#""thinking":{"type":"disabled"}"#),
+            "thinking missing"
+        );
+        assert!(
+            reqs[0].contains(r#""response_format":{"type":"json_object"}"#),
+            "json missing"
+        );
+        assert!(
+            !reqs[1].contains("\"seed\""),
+            "default must not send seed: {}",
+            reqs[1]
+        );
+        assert!(
+            !reqs[1].contains("thinking"),
+            "default must not send thinking"
+        );
+        assert!(
+            !reqs[1].contains("response_format"),
+            "default must not send response_format"
+        );
     }
 
     #[test]

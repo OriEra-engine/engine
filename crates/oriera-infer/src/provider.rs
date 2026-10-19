@@ -440,6 +440,61 @@ impl ProviderConfig {
 /// kinds resolve to the rule backend with the choice recorded for
 /// observability, and the browser kernel (kernel.js `createProvider`)
 /// remains the mirror implementation of this factory.
+/// [`create_provider`] with wire options (v2.1 kernel-v2 parity):
+/// seed / thinking / json_mode for the native HTTP adapter. Without
+/// the `native-http` feature this behaves exactly like
+/// [`create_provider`] (options are recorded but there is no wire).
+/// Construction-time wire options for the native HTTP adapter
+/// (v2.1, kernel-v2 parity): reproducibility seed, thinking-mode
+/// control and JSON mode — the browser kernel passes these per call
+/// (`opts.seed/opts.thinking/opts.json`); the Rust trait's
+/// `complete(&self, messages)` has no per-call channel, so they live
+/// at construction here. OpenAI-compatible dialect only; Anthropic
+/// requests are untouched.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProviderOptions {
+    /// Provider-side sampling seed (reproducibility; best-effort —
+    /// vendors may still drift, see the twin demo's honesty note).
+    pub seed: Option<u64>,
+    /// Send `thinking: {"type":"disabled"}` — reasoning models
+    /// (DeepSeek-V4 default-high) otherwise burn max_tokens into
+    /// hidden reasoning and return empty/short bodies.
+    pub thinking_disabled: bool,
+    /// Send `response_format: {"type":"json_object"}`.
+    pub json_mode: bool,
+}
+
+pub fn create_provider_with_options(
+    cfg: &ProviderConfig,
+    opts: &ProviderOptions,
+) -> std::sync::Arc<dyn ModelProvider> {
+    match cfg.kind {
+        ProviderKind::Rule => std::sync::Arc::new(RuleProvider::new()),
+        #[cfg(feature = "native-http")]
+        kind => {
+            tracing::info!(
+                provider = kind.id(),
+                model = %cfg.model,
+                "L7 native HTTP provider armed with wire options"
+            );
+            std::sync::Arc::new(crate::http::HttpProvider::with_options(
+                cfg.clone(),
+                opts.clone(),
+            ))
+        }
+        #[cfg(not(feature = "native-http"))]
+        kind => {
+            let _ = opts; // options take effect once native-http lands
+            tracing::info!(
+                provider = kind.id(),
+                model = %cfg.model,
+                "L7 remote provider selected; options recorded, native HTTP adapter pending"
+            );
+            std::sync::Arc::new(RuleProvider::new())
+        }
+    }
+}
+
 pub fn create_provider(cfg: &ProviderConfig) -> std::sync::Arc<dyn ModelProvider> {
     match cfg.kind {
         ProviderKind::Rule => std::sync::Arc::new(RuleProvider::new()),

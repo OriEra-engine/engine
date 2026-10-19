@@ -48,7 +48,7 @@ export class MemoryStore {
       .map(e => {
         const text = bigrams(e.text + e.about);
         let hits = 0; for (const g of q) if (text.has(g)) hits++;
-        const recency = 1 / (1 + (now - e.turn));
+        const recency = 1 / (1 + Math.max(0, now - e.turn)); // v2.1: 未来 turn 钳 0，防 Infinity 恒霸榜
         const aboutBonus = e.about === about ? 1.2 : 0;
         return { e, score: hits * 1.6 + e.imp * 0.45 + recency * 2 + aboutBonus };
       })
@@ -308,7 +308,8 @@ const CMD_INTENTS = ["spawn", "放", "生成", "clear", "清空", "清屏", "gra
   "teleport", "传送", "how many", "多少", "speed", "速度", "倍速"];
 
 export function parseIntent(input) {
-  const lower = String(input).toLowerCase();
+  // 全角数字归一（v2.1，极客评测 P2：中文输入法「放５个」常见）
+  const lower = String(input).toLowerCase().replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
   const firstNeg = CMD_NEGATIONS.map(n => lower.indexOf(n)).filter(i => i >= 0);
   const firstKw = CMD_INTENTS.map(k => lower.indexOf(k)).filter(i => i >= 0);
   if (firstNeg.length && firstKw.length && Math.min(...firstNeg) < Math.min(...firstKw))
@@ -374,7 +375,13 @@ export const PROVIDER_PRESETS = {
   llamacpp:    { label: "llama.cpp 本地",  base: "http://127.0.0.1:8080/v1",              model: "glm-4-9b-chat", local: true },
   lmstudio:    { label: "LM Studio 本地",  base: "http://127.0.0.1:1234/v1",              model: "minicpm-v", local: true },
 };
+const KNOWN_KINDS = new Set([...Object.keys(PROVIDER_PRESETS), "openai-compat"]);
 export function createProvider(cfg) {
   if (!cfg.kind || cfg.kind === "rule" || !cfg.key) return null; // 认知系统自动降级
+  // v2.1 白名单（极客评测 P2）：拼错 kind 不再静默按 openai-compat 发请求
+  if (!KNOWN_KINDS.has(cfg.kind)) {
+    if (typeof console !== "undefined") console.warn("[oriera] unknown provider kind: " + cfg.kind + " — degraded to offline rule engine");
+    return null;
+  }
   return new HttpChatProvider(cfg);
 }

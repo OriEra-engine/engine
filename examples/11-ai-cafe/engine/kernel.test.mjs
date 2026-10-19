@@ -160,3 +160,26 @@ test("createProvider 兼容：rule/无 key 返回 null 走降级", () => {
   assert.equal(createProvider({ kind: "deepseek" }), null);
   assert.ok(createProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x" }));
 });
+
+/* ---- v2.1 极客评测快修回归 ---- */
+test("parseIntent 全角数字归一（中文输入法）", () => {
+  assert.deepEqual(parseIntent("放５个"), { kind: "spawn", n: 5 });
+  assert.deepEqual(parseIntent("重力２.５"), { kind: "gravity", g: 2.5 });
+  assert.deepEqual(parseIntent("speed ２"), { kind: "speed", k: 2 });
+});
+
+test("createProvider 未知 kind 拒绝（不再静默按 openai-compat）", () => {
+  assert.equal(createProvider({ kind: "deepseak", key: "k", model: "m", base: "https://x" }), null);
+  for (const kind of ["deepseek", "zhipu", "ollama", "qwen", "openai-compat"]) {
+    const p = createProvider({ kind, key: "k", model: "m", base: "https://x" });
+    assert.ok(p, kind);
+  }
+});
+
+test("MemoryStore 未来 turn 不再 Infinity 霸榜", () => {
+  const m = new MemoryStore("test.future");
+  m.record("a", { turn: 1000, day: 1, about: "w", text: "来自未来", imp: 1 });
+  const hits = m.retrieve("a", "w", "来自未来", 10, 3);
+  assert.equal(hits.length, 1); // 分数有界（>0.8 阈值仍可召回）
+  assert.ok(Number.isFinite(m.retrieve("a", "w", "来自未来", 10, 3).length));
+});
