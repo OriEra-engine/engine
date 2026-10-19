@@ -12,3 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 bitflags.workspace = true
+serde.workspace=true
+
+[dev-dependencies]
+serde_json.workspace=true
