@@ -42,6 +42,7 @@ oriera-infer = { path = "crates/oriera-infer", version = "0.3.0" }
 oriera-genai = { path = "crates/oriera-genai", version = "0.3.0" }
 oriera-agent = { path = "crates/oriera-agent", version = "0.3.0" }
 bitflags = "2.6"
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
