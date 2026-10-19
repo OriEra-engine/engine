@@ -20,7 +20,11 @@ jobs:
         run: node --test examples/06-agent-physics/intent.test.mjs
 
   rust:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -74,3 +78,42 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: ECS benchmarks (report-only)
         run: cargo bench -p oriera-ecs
+
+  cross-check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [wasm32-unknown-unknown, wasm32-wasip1, aarch64-linux-android, aarch64-apple-ios]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      # native-http deliberately rejects Wasm and needs native TLS build tools.
+      - name: Cross-compile portable engine features (no device linking)
+        run: cargo check --workspace --exclude oriera-pc --exclude oriera-web --features oriera-genai/providers,oriera-agent/json,oriera-agent/rigid --target ${{ matrix.target }}
+      - name: Browser Wasm host
+        if: matrix.target == 'wasm32-unknown-unknown'
+        run: cargo build -p oriera-web --target wasm32-unknown-unknown
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Browser capability fallback tests
+        run: node --test platforms/web/src/probe.test.mjs
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+      - name: Browser clock and host smoke tests
+        run: wasm-pack test --headless --chrome platforms/web

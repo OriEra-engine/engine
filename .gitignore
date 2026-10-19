@@ -28,3 +28,6 @@ Thumbs.db
 out/
 build/
 *.log
+
+# Generated wasm-pack packages
+platforms/web/pkg/

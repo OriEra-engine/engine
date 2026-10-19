@@ -11,3 +11,4 @@ name = "oriera_common"
 path = "src/lib.rs"
 
 [dependencies]
+web-time = "1.1"
