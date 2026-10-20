@@ -115,10 +115,12 @@ test("provider 透传 schema 为 json_schema，且优先于 json_object（B6）"
   } finally { globalThis.fetch = origFetch; }
 });
 
-test("provider 缓存命中 tokens 进 stats.cached（DeepSeek/OpenAI/Anthropic 三风格，B5）", async () => {
+test("provider 缓存命中 tokens 进 stats.cached（DeepSeek/OpenAI + 谎报钳制，B5）", async () => {
   const replies = [
     { choices: [{ message: { content: "a" } }], usage: { total_tokens: 108, prompt_tokens: 100, completion_tokens: 8, prompt_cache_hit_tokens: 92 } },
     { choices: [{ message: { content: "b" } }], usage: { total_tokens: 54, prompt_tokens: 50, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 30 } } },
+    // 谎报厂商：cached 999 > prompt 10 → 按 prompt 钳制（与 Rust 对镜）
+    { choices: [{ message: { content: "c" } }], usage: { total_tokens: 11, prompt_tokens: 10, completion_tokens: 1, prompt_cache_hit_tokens: 999 } },
   ];
   let i = 0;
   const origFetch = globalThis.fetch;
@@ -129,6 +131,22 @@ test("provider 缓存命中 tokens 进 stats.cached（DeepSeek/OpenAI/Anthropic 
     assert.equal(p.stats.cached, 92);
     await p.complete([{ role: "user", content: "x" }]);
     assert.equal(p.stats.cached, 122, "两次调用累加（92 + 30）");
+    await p.complete([{ role: "user", content: "x" }]);
+    assert.equal(p.stats.cached, 132, "谎报被钳到 prompt（122 + 10）");
+  } finally { globalThis.fetch = origFetch; }
+});
+
+test("Anthropic 方言：cache_read_input_tokens 进 stats.cached", async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ content: [{ text: "在场" }], usage: { input_tokens: 40, output_tokens: 5, cache_read_input_tokens: 25 } }),
+  });
+  try {
+    const p = new HttpChatProvider({ kind: "anthropic", key: "k", model: "claude", base: "https://x" });
+    const out = await p.complete([{ role: "user", content: "x" }]);
+    assert.equal(out, "在场");
+    assert.equal(p.stats.cached, 25);
   } finally { globalThis.fetch = origFetch; }
 });
 
@@ -193,6 +211,31 @@ test("认知系统：注入 rng 后离线台词可复现", () => {
     return c._rule({ id: "zhou", name: "老周" }, { name: "客人" }, world).say;
   };
   assert.equal(run(), run());
+});
+
+test("稳定前缀（B5）：system 跨拍字节不变，易变内容走 user", async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, o) => {
+    const b = JSON.parse(o.body);
+    calls.push({ sys: b.messages[0].content, user: b.messages[1].content });
+    return { ok: true, json: async () => ({ choices: [{ message: { content: '{"say":"好","action":"idle","mood":"neutral","remember":"","to":"客人"}' } }], usage: {} }) };
+  };
+  try {
+    const world = { turn: 0, npcs: [{ id: "zhou", name: "老周", role: "老板", description: "手冲派", mood: "neutral" }], dialogue: [], story: { day: 1, beats: [] }, guestQueue: [] };
+    const c = new CognitionSystem(
+      new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x" }),
+      new MemoryStore("test.stable"), {},
+    );
+    await c.tick(world);
+    world.story.day = 2;                       // 世界在动
+    world.dialogue.push({ speaker: "客人", to: "老周", text: "今天豆子如何？" });
+    await c.tick(world);
+    assert.equal(calls[0].sys, calls[1].sys, "system prompt 必须字节稳定（前缀缓存契约）");
+    assert.ok(!calls[1].sys.includes("世界进度"), "易变内容不得进 system");
+    assert.ok(calls[1].user.includes("第 2 世界日"), "易变内容在 user");
+    assert.ok(calls[1].user.includes("今天豆子如何"), "对话在 user");
+  } finally { globalThis.fetch = origFetch; }
 });
 
 test("导演系统：注入 ruleBeats 生效", async () => {

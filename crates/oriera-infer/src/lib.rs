@@ -113,6 +113,19 @@ pub struct CostMeter {
     saved_num: u128,
 }
 
+/// Resolve a provider's `ModelProvider::id()` label (`"kind:model"`,
+/// e.g. `"openai-compat:deepseek-chat"`) back to its preset row's
+/// registered price — the missing join between meters and the price
+/// table. Matches kind id and model against [`PROVIDER_PRESETS`]; the
+/// offline rule row and unknown labels read unpriced.
+pub fn price_for_label(label: &str) -> Option<&'static ModelPrice> {
+    let (kind, model) = label.split_once(':')?;
+    PROVIDER_PRESETS
+        .iter()
+        .find(|p| p.kind.id() == kind && p.model == model)
+        .and_then(|p| p.price.as_ref())
+}
+
 impl CostMeter {
     /// Record one call's usage at the row's registered price.
     pub fn record(&mut self, usage: TokenUsage, price: Option<&ModelPrice>) {
@@ -131,10 +144,14 @@ impl CostMeter {
         self.spent_num += billed * p.prompt_micro_per_m as u128
             + usage.completion as u128 * p.completion_micro_per_m as u128;
         // What the cached slice would have cost at miss price — the
-        // saving the stable-prefix convention earns. A row pricing
-        // cache ≥ miss simply saves zero (saturating).
-        self.saved_num += usage.cached as u128
-            * p.prompt_micro_per_m.saturating_sub(p.cached_micro_per_m) as u128;
+        // saving the stable-prefix convention earns. The cached count is
+        // re-clamped here (paranoid: the type already clamps at parse
+        // time) so a lying vendor can never price savings above the
+        // whole call's prompt. A row pricing cache ≥ miss simply saves
+        // zero (saturating).
+        let cached = usage.cached.min(usage.prompt) as u128;
+        self.saved_num +=
+            cached * p.prompt_micro_per_m.saturating_sub(p.cached_micro_per_m) as u128;
     }
 
     /// Total spend in micro-currency units (1e-6 of `currency`).
@@ -148,15 +165,19 @@ impl CostMeter {
     }
 
     /// Shell/UI display: "$0.0750" / "¥1.2300" / "USD 0.0750".
+    /// Mixed-currency ledgers are marked `[mixed] ` — the number only
+    /// covers the first currency's calls, and showing it unmarked would
+    /// silently under-report.
     pub fn display(&self) -> String {
         if self.currency.is_empty() {
             return "—".into();
         }
         let amount = self.total_micro() as f64 / 1_000_000.0;
+        let prefix = if self.mixed_currency { "[mixed] " } else { "" };
         match self.currency {
-            "USD" => format!("${amount:.4}"),
-            "CNY" => format!("¥{amount:.4}"),
-            other => format!("{other} {amount:.4}"),
+            "USD" => format!("{prefix}${amount:.4}"),
+            "CNY" => format!("{prefix}¥{amount:.4}"),
+            other => format!("{prefix}{other} {amount:.4}"),
         }
     }
 }
@@ -910,5 +931,67 @@ mod tests {
         let (h2, s2) = run();
         assert_eq!(h1, h2, "entity sequence replays identically");
         assert_eq!(s1, s2, "final velocities bit-identical");
+    }
+
+    #[test]
+    fn cost_meter_saved_side_never_exceeds_the_whole_call() {
+        let mut m = CostMeter::default();
+        // A lying vendor reports cached=999 against prompt=100: spent
+        // clamps to zero via billed_prompt, and the savings side must
+        // price at most the whole prompt — never 999 tokens worth.
+        m.record(
+            TokenUsage {
+                prompt: 100,
+                completion: 0,
+                cached: 999,
+            },
+            Some(&deepseek_price()),
+        );
+        assert_eq!(m.total_micro(), 0);
+        // 100 cached × ($0.15 − $0.003)/M = $0.0147
+        assert_eq!(m.saved_micro(), 14);
+    }
+
+    #[test]
+    fn price_for_label_joins_meter_labels_back_to_preset_rows() {
+        // HttpProvider::id() is "kind:model" — the resolver is the
+        // bridge from meter labels to registered prices.
+        let ds = price_for_label("openai-compat:deepseek-chat").expect("deepseek priced");
+        assert_eq!(ds.currency, "USD");
+        let oai = price_for_label("openai-compat:gpt-4o-mini").expect("openai priced");
+        assert_eq!(oai.cached_micro_per_m, 75_000);
+        // Unpriced rows and garbage labels read unpriced — never guessed.
+        assert!(price_for_label("zhipu:glm-4-flash").is_none());
+        assert!(price_for_label("openai-compat:rule-v1").is_none());
+        assert!(price_for_label("rule:rule-v1").is_none());
+        assert!(price_for_label("no-colon-here").is_none());
+    }
+
+    #[test]
+    fn display_marks_mixed_currency_ledgers() {
+        let mut m = CostMeter::default();
+        m.record(
+            TokenUsage {
+                prompt: 1_000_000,
+                completion: 0,
+                cached: 0,
+            },
+            Some(&deepseek_price()),
+        );
+        let eur = ModelPrice {
+            currency: "EUR",
+            prompt_micro_per_m: 100_000,
+            completion_micro_per_m: 300_000,
+            cached_micro_per_m: 10_000,
+        };
+        m.record(
+            TokenUsage {
+                prompt: 1_000_000,
+                completion: 0,
+                cached: 0,
+            },
+            Some(&eur),
+        );
+        assert!(m.display().starts_with("[mixed] "), "{}", m.display());
     }
 }

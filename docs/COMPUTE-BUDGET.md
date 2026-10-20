@@ -163,3 +163,12 @@ PC 壳（`platforms/pc`）是全量接线示范：报告区直接打印 allocati
 
 一句话收束：**算力分拨不是让引擎变省，而是让浪费无处藏身——
 每一毫秒先有出处，每一次省略都可证明，每一次压制都可恢复。**
+
+## v0.7 成本记账（PLAN-deepseek-upgrade B5）
+
+算力分拨管「这一帧花多少」，v0.7 的 `CostMeter` 管「这一局花多少钱」：
+`UsageMeter` 计 tokens，`CostMeter` 按 `PROVIDER_PRESETS.price` 登记牌价
+折算成钱——`TokenUsage.cached`（前缀缓存命中）按缓存价计，省下的部分
+单列 `saved_micro`。未登记牌价的行照计量、记 `unpriced_calls`（本地行
+电费口径）；跨币种不求和（`mixed_currency` 拒绝外汇幻觉）。分拨管节流，
+账本管复盘，两本账互不越位。

@@ -110,9 +110,11 @@ export class HttpChatProvider {
         const u = data.usage || {};
         this.stats.tokens = (this.stats.tokens || 0)
           + ((u.total_tokens ?? u.input_tokens) || 0);
-        this.stats.cached = (this.stats.cached || 0)
-          + (u.prompt_cache_hit_tokens ?? (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens)
-             ?? u.cache_read_input_tokens ?? 0);
+        // 与 Rust usage_cached 对镜：谎报厂商按 prompt 钳制，省钱额
+        // 永远不可能超过整次调用的满价。
+        const rawCached = (u.prompt_cache_hit_tokens ?? (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens)
+          ?? u.cache_read_input_tokens ?? 0);
+        this.stats.cached = (this.stats.cached || 0) + Math.min(rawCached, u.prompt_tokens ?? u.input_tokens ?? rawCached);
         return anthropic ? data.content[0].text : data.choices[0].message.content;
       } catch (e) {
         if (attempt) { this.stats.errors++; throw e; }
@@ -188,24 +190,30 @@ export class CognitionSystem {
     const recent = world.dialogue.slice(-6).map(t => `${t.speaker}：${t.text}`);
     const beat = world.story.beats.at(-1) || "平静的日常";
 
+    // v0.7 稳定前缀惯例（PLAN-deepseek-upgrade B5，与 Rust cognition.rs
+    // 对镜）：system 消息对该 NPC 恒定——身份、人设、输出格式——让端点
+    // 前缀缓存每拍命中（DeepSeek 缓存命中约为 miss 的 1/50 价）；世界日、
+    // 剧情拍、心情、客人插话、对话对象、记忆、最近对话全部易变内容走
+    // user 消息。字节稳定是测试契约（kernel.test.mjs 双拍断言）。
     const sys = `你是「${speaker.name}」，${speaker.role}，活在 OriEra 世界引擎的${this.scene}里。
 性格：${speaker.description}
-当前心情：${speaker.mood}。世界进度：第 ${world.story.day} 世界日，${beat}
-${guest ? "刚才一位客人说：" + guest + "\n" : ""}
+以 ${speaker.name} 的口吻说 1~3 句口语化的话（可引用记忆细节），严格只输出 JSON：
+{"say":"...","action":"${ACTIONS.join("|")}","mood":"${MOODS.join("|")}","remember":"≤30字本轮要点，没有则空串","to":"对话对象的名字"}`;
+    const user = `世界进度：第 ${world.story.day} 世界日，${beat}
+${guest ? "刚才一位客人说：" + String(guest).slice(0, 200) + "\n" : ""}当前你的心情：${speaker.mood}
 对话对象：「${partner.name}」（${partner.role}）。
 你的相关记忆：
 ${mems.length ? mems.map(m => `- (第${m.day}日) ${m.text}`).join("\n") : "-（暂无，可能是第一次聊这个）"}
 最近对话：
 ${recent.join("\n") || "（对话刚开始）"}
-以 ${speaker.name} 的口吻说 1~3 句口语化的话（可引用记忆细节），严格只输出 JSON：
-{"say":"...","action":"${ACTIONS.join("|")}","mood":"${MOODS.join("|")}","remember":"≤30字本轮要点，没有则空串","to":"${partner.name}"}`;
+${guest ? "（客人刚说完，请回应客人）" : `（请对${partner.name}说下一句话）`}`;
 
     let res;
     if (this.provider.ready) {
       try {
         const out = await this.provider.complete([
           { role: "system", content: sys },
-          { role: "user", content: guest ? "（客人刚说完，请回应客人）" : `（请对${partner.name}说下一句话）` },
+          { role: "user", content: user },
         ], { json: true, temp: 0.9, max: this.maxTokens });
         const j = extractJSON(out) || {};
         let say = String(j.say || "……").slice(0, 140);

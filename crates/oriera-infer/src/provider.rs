@@ -935,6 +935,8 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
             image_input: true,
             prompt_cache: true,
         },
+        // 登记牌价（2026-10 检索 OpenAI 公开 pricing 页，gpt-4o-mini 一口价
+        // 无峰谷）：miss $0.15 / hit $0.075 / out $0.60 每百万 tokens，B8 复核。
         price: Some(ModelPrice {
             currency: "USD",
             prompt_micro_per_m: 150_000,     // $0.15 / 1M miss
@@ -1377,6 +1379,17 @@ mod preset_tests {
         );
         let oai = PROVIDER_PRESETS.iter().find(|p| p.id == "openai").unwrap();
         assert!(oai.caps.structured_output && oai.price.is_some());
+        // zhipu is tools-only (schema support unverified — stay false).
+        let zhipu = PROVIDER_PRESETS.iter().find(|p| p.id == "zhipu").unwrap();
+        assert!(zhipu.caps.tools && !zhipu.caps.structured_output);
+        // anthropic: no response_format on the wire, cache reads parsed.
+        let ant = PROVIDER_PRESETS
+            .iter()
+            .find(|p| p.id == "anthropic")
+            .unwrap();
+        assert!(!ant.caps.structured_output && ant.caps.prompt_cache);
+        assert_eq!(ant.caps.context_window, Some(200_000));
+        assert!(ant.price.is_none());
 
         // Unregistered rows stay conservative — no invented vendor
         // facts. (zhipu IS registered, tools only — GLM function calling

@@ -74,9 +74,8 @@ fn corrupt_payload_never_reaches_l4_named_storage() {
     let req = GenerationRequest::text_to_3d("broken", "x");
     let task = provider.request_generation(&req).unwrap();
     let done = loop {
-        match provider.poll_task(&task).unwrap() {
-            TaskStatus::Succeeded(a) => break a,
-            _ => {}
+        if let TaskStatus::Succeeded(a) = provider.poll_task(&task).unwrap() {
+            break a;
         }
     };
     let mut truncated = done.payload.clone();
