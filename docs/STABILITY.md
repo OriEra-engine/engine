@@ -54,5 +54,6 @@
   (不支持的后端 `supports_tools()=false` 诚实上报、默认降级纯文本);
   L9 工具桥 EngineTools 需 json feature(浏览器内核在 JS 侧实现同一循环);
 - `platforms/web` 为 9 行壳,无 wasm 产物;
-- GLB 解码只取 POSITION/三角索引(深校验),材质/纹理/蒙皮未解码;
+- GLB 解码取 POSITION/NORMAL/三角索引 + 材质基础色 baseColorFactor(深校验;
+  顶点兰伯特光照已闭环,像素级验证),纹理贴图/蒙皮/KHR 扩展未解码;
   生成→落地→解码→GPU 出图全链已闭环(示例 `glb_headless --from-l8`,3 项集成测试)。

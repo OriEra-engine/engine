@@ -157,7 +157,7 @@ impl HttpProvider {
                 "model": self.cfg.model,
                 "messages": messages
                     .iter()
-                    .map(|m| json!({ "role": role_str(m.role), "content": m.content }))
+                    .map(message_openai)
                     .collect::<Vec<_>>(),
                 "temperature": 0.85,
                 "max_tokens": 260,
@@ -179,7 +179,7 @@ impl HttpProvider {
                     "messages": messages
                         .iter()
                         .filter(|m| m.role != Role::System)
-                        .map(|m| json!({ "role": role_str(m.role), "content": m.content }))
+                        .map(message_anthropic)
                         .collect::<Vec<_>>(),
                 })
             }
@@ -376,6 +376,85 @@ fn role_str(r: Role) -> &'static str {
         Role::System => "system",
         Role::User => "user",
         Role::Assistant => "assistant",
+        Role::Tool => "tool",
+    }
+}
+
+/// 引擎中立的工具调用历史 → 单条 OpenAI wire tool_call。
+fn tool_call_openai(v: &Value) -> Value {
+    json!({
+        "id": v["id"],
+        "type": "function",
+        "function": {
+            "name": v["name"],
+            "arguments": v["arguments_json"].as_str().unwrap_or("{}"),
+        }
+    })
+}
+
+/// 引擎中立的工具调用历史 → 单条 Anthropic tool_use 块。
+fn tool_call_anthropic(v: &Value) -> Value {
+    json!({
+        "type": "tool_use",
+        "id": v["id"],
+        "name": v["name"],
+        "input": serde_json::from_str::<Value>(v["arguments_json"].as_str().unwrap_or("{}"))
+            .unwrap_or_else(|_| json!({})),
+    })
+}
+
+/// 按 OpenAI 方言渲染一条消息(工具轮的粘合历史)。
+fn message_openai(m: &ChatMessage) -> Value {
+    match m.role {
+        Role::Tool => json!({
+            "role": "tool",
+            "tool_call_id": m.tool_call_id.clone().unwrap_or_default(),
+            "content": m.content,
+        }),
+        Role::Assistant if m.tool_calls_json.is_some() => {
+            let calls: Vec<Value> =
+                serde_json::from_str::<Value>(m.tool_calls_json.as_deref().unwrap_or("[]"))
+                    .ok()
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default()
+                    .iter()
+                    .map(tool_call_openai)
+                    .collect();
+            json!({
+                "role": "assistant",
+                "content": m.content,
+                "tool_calls": calls,
+            })
+        }
+        _ => json!({ "role": role_str(m.role), "content": m.content }),
+    }
+}
+
+/// 按 Anthropic 方言渲染一条消息(工具结果= user 帧内的 tool_result 块)。
+fn message_anthropic(m: &ChatMessage) -> Value {
+    match m.role {
+        Role::Tool => json!({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
+                "content": m.content,
+            }],
+        }),
+        Role::Assistant if m.tool_calls_json.is_some() => {
+            let mut blocks = vec![json!({ "type": "text", "text": m.content })];
+            if let Some(arr) =
+                serde_json::from_str::<Value>(m.tool_calls_json.as_deref().unwrap_or("[]"))
+                    .ok()
+                    .and_then(|v| v.as_array().cloned())
+            {
+                for c in &arr {
+                    blocks.push(tool_call_anthropic(c));
+                }
+            }
+            json!({ "role": "assistant", "content": blocks })
+        }
+        _ => json!({ "role": role_str(m.role), "content": m.content }),
     }
 }
 
@@ -1211,6 +1290,107 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
         assert_eq!(chunks, vec!["灯", "亮着"]);
         assert_eq!(p.last_usage().prompt, 11);
         assert_eq!(p.last_usage().completion, 4);
+    }
+
+    #[test]
+    fn openai_multi_round_tool_history_on_the_wire() {
+        // 第二轮请求必须携带:assistant 的 tool_calls 原文 + role:"tool"
+        // 结果帧(tool_call_id 对上)——OpenAI 的硬协议要求。
+        let mock = Mock::spawn(vec![
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_9","type":"function","function":{"name":"spawn","arguments":"{\"count\":2}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":4}}"#.into(),
+            ),
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"role":"assistant","content":"布置完成。"}}],"usage":{"prompt_tokens":40,"completion_tokens":5}}"#.into(),
+            ),
+        ]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let tools = tool_defs();
+        let first = p
+            .complete_with_tools(&[ChatMessage::user("布置 2 个")], &tools)
+            .unwrap();
+        let crate::provider::ToolOutcome::ToolCalls(calls) = first else {
+            panic!("round 1 should request the tool");
+        };
+
+        // 引擎侧执行后组第二轮消息(与 run_tool_agent 同构)
+        let neutral: Vec<Value> = calls
+            .iter()
+            .map(|c| json!({ "id": c.id, "name": c.name, "arguments_json": c.arguments_json }))
+            .collect();
+        let round2 = vec![
+            ChatMessage::user("布置 2 个"),
+            ChatMessage::assistant_with_tools(serde_json::to_string(&neutral).unwrap()),
+            ChatMessage::tool(&calls[0].id, "已提交:下一帧生成 2 个实体"),
+        ];
+        let second = p.complete_with_tools(&round2, &tools).unwrap();
+        assert_eq!(
+            second,
+            crate::provider::ToolOutcome::Text("布置完成。".into())
+        );
+
+        let req2 = mock.requests()[1].clone();
+        assert!(req2.contains("\"role\":\"tool\""), "tool result frame");
+        assert!(req2.contains("\"tool_call_id\":\"call_9\""));
+        assert!(
+            req2.contains("\"tool_calls\""),
+            "assistant history carries calls"
+        );
+    }
+
+    #[test]
+    fn anthropic_multi_round_tool_history_on_the_wire() {
+        let mock = Mock::spawn(vec![
+            Step::Reply(
+                200,
+                r#"{"content":[{"type":"tool_use","id":"tu_9","name":"spawn","input":{"count":3}}],"usage":{"input_tokens":9,"output_tokens":3}}"#.into(),
+            ),
+            Step::Reply(
+                200,
+                r#"{"content":[{"type":"text","text":"完成。"}],"usage":{"input_tokens":30,"output_tokens":2}}"#.into(),
+            ),
+        ]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::Anthropic,
+                model: "claude".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let tools = tool_defs();
+        let first = p
+            .complete_with_tools(&[ChatMessage::user("来 3 个")], &tools)
+            .unwrap();
+        let crate::provider::ToolOutcome::ToolCalls(calls) = first else {
+            panic!("round 1 should request the tool");
+        };
+        let neutral = json!([{ "id": calls[0].id, "name": calls[0].name, "arguments_json": calls[0].arguments_json }]);
+        let round2 = vec![
+            ChatMessage::user("来 3 个"),
+            ChatMessage::assistant_with_tools(serde_json::to_string(&neutral).unwrap()),
+            ChatMessage::tool(&calls[0].id, "已提交"),
+        ];
+        let second = p.complete_with_tools(&round2, &tools).unwrap();
+        assert_eq!(second, crate::provider::ToolOutcome::Text("完成。".into()));
+        let req2 = mock.requests()[1].clone();
+        assert!(req2.contains("tool_result"), "anthropic tool result block");
+        assert!(req2.contains("tool_use_id"));
+        assert!(
+            req2.contains("tool_use"),
+            "assistant history as tool_use block"
+        );
     }
 
     #[test]

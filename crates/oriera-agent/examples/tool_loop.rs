@@ -10,7 +10,7 @@
 use oriera_agent::tools::EngineTools;
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::World;
-use oriera_infer::{ChatMessage, InferSystem, ModelProvider, RuleProvider, ToolOutcome};
+use oriera_infer::{InferSystem, ModelProvider, RuleProvider};
 use std::sync::Arc;
 
 fn ctx() -> FrameCtx<'static> {
@@ -39,47 +39,26 @@ fn main() {
     let user_text = "推进演出:spawn {\"count\":12},再看看情况。";
     println!("\n🧑 玩家:{user_text}");
 
-    let outcome = provider
-        .complete_with_tools(
-            &[
-                ChatMessage::system("你是世界导演,可以通过给出的工具操作世界。"),
-                ChatMessage::user(user_text),
-            ],
-            &tools,
-        )
-        .expect("tool-enabled completion");
+    // run_tool_agent:完成 → 调工具 → 结算一帧 → 结果回话 → 再完成,
+    // 直到模型自己决定"说完了" —— AI 自主调控的运行时形态。
+    let report = oriera_agent::tools::run_tool_agent(
+        &*provider,
+        user_text,
+        6,
+        &mut infer,
+        &mut world,
+        &ctx(),
+    )
+    .expect("agent loop converges");
+    println!("🤖 导演汇报:{report}");
+    println!("");
+    println!("🌍 世界实体数:{}", world.len());
 
-    match outcome {
-        ToolOutcome::ToolCalls(calls) => {
-            for call in &calls {
-                println!("🤖 模型请求工具:{} args={}", call.name, call.arguments_json);
-                let ack = EngineTools::dispatch(call, &mut infer);
-                println!("⚙️  引擎:{ack}");
-            }
-        }
-        ToolOutcome::Text(t) => println!("🤖 模型(纯文本):{t}"),
-    }
-
-    // 命令在下一帧落地 —— AI 的决定真正改变了世界
-    infer.run(&ctx(), &mut world);
-    println!("\n🌍 世界实体数:{}", world.len());
-
-    // 结果回话:统计一次,把世界状态讲回对话
-    let outcome = provider.complete_with_tools(
-        &[ChatMessage::user(format!(
-            "现在世界里有多少实体?执行 count_entities {{}} 查一下。(当前 {})",
-            world.len()
-        ))],
-        &tools,
-    );
-    if let Ok(ToolOutcome::ToolCalls(calls)) = outcome {
-        for call in &calls {
-            let ack = EngineTools::dispatch(call, &mut infer);
-            println!("⚙️  引擎:{ack}");
-        }
-    }
+    // 顺手读一次世界状态,证明循环的每一步都真实落地
+    infer.submit(oriera_infer::Command::Count);
     infer.run(&ctx(), &mut world);
     let stats = world.resource::<oriera_infer::Stats>().copied();
     println!("📊 Stats 资源:{stats:?}");
-    println!("\n✅ 工具闭环完成:模型的决定 → 引擎命令 → 世界改变 → 状态可回读。");
+    println!("");
+    println!("✅ 多轮工具代理完成:模型自主决定调什么、看结果、何时收口。");
 }

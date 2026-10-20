@@ -18,6 +18,11 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlbMesh {
     pub positions: Vec<[f32; 3]>,
+    /// 顶点法线(VEC3 / f32);None = 文件未提供,渲染端自行退化。
+    pub normals: Option<Vec<[f32; 3]>>,
+    /// 材质基础色 RGBA(pbrMetallicRoughness.baseColorFactor);
+    /// None = 无材质声明,渲染端用默认着色。
+    pub base_color: Option<[f32; 4]>,
     /// 为空 = 非索引网格,按顶点序绘制。
     pub indices: Vec<u32>,
     /// 实算包围盒(渲染端归一化用)。
@@ -136,6 +141,39 @@ pub fn decode_glb_mesh(bytes: &[u8]) -> Result<GlbMesh, GlbError> {
         return Err(GlbError::MissingMesh);
     }
 
+    // 法线可选:声明了就必须与 POSITION 等长(坏文件直接拒绝)。
+    let normals = match primitive
+        .pointer("/attributes/NORMAL")
+        .and_then(Value::as_u64)
+    {
+        Some(idx) => {
+            let n = read_positions(accessors, buffer_views, idx as usize, bin)?;
+            if n.len() != positions.len() {
+                return Err(GlbError::Unsupported("NORMAL count mismatches POSITION"));
+            }
+            Some(n)
+        }
+        None => None,
+    };
+
+    // 材质基础色:materials[primitive.material].pbrMetallicRoughness
+    // .baseColorFactor(线性 RGBA,glTF 2.0 规范)。纹理贴图未解码
+    // —— 依赖图像解码器,留给渲染端需要时再议(诚实边界)。
+    let base_color = primitive
+        .get("material")
+        .and_then(Value::as_u64)
+        .and_then(|mi| doc.pointer(&format!("/materials/{mi}")))
+        .and_then(|m| m.pointer("/pbrMetallicRoughness/baseColorFactor"))
+        .and_then(Value::as_array)
+        .and_then(|arr| {
+            let f: Vec<f32> = arr
+                .iter()
+                .filter_map(Value::as_f64)
+                .map(|x| x as f32)
+                .collect();
+            (f.len() == 4).then_some([f[0], f[1], f[2], f[3]])
+        });
+
     let indices = match primitive.get("indices").and_then(Value::as_u64) {
         Some(idx) => read_indices(accessors, buffer_views, idx as usize, bin)?,
         None => Vec::new(),
@@ -152,6 +190,8 @@ pub fn decode_glb_mesh(bytes: &[u8]) -> Result<GlbMesh, GlbError> {
     }
     Ok(GlbMesh {
         positions,
+        normals,
+        base_color,
         indices,
         min,
         max,
@@ -291,6 +331,97 @@ mod tests {
         out.extend_from_slice(bin);
         out.extend(std::iter::repeat_n(0, bin_pad - bin.len()));
         out
+    }
+
+    /// 三角网格 + 法线 + 材质基础色 的完整文档。
+    fn shaded_triangle_doc() -> Value {
+        serde_json::json!({
+            "asset": {"version": "2.0"},
+            "scene": 0,
+            "scenes": [{"nodes": [{"mesh": 0}]}],
+            "meshes": [{
+                "primitives": [{
+                    "attributes": {"POSITION": 0, "NORMAL": 1},
+                    "indices": 2,
+                    "material": 0
+                }]
+            }],
+            "materials": [{
+                "pbrMetallicRoughness": {
+                    "baseColorFactor": [0.8, 0.2, 0.1, 1.0]
+                }
+            }],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 2, "componentType": 5125, "count": 3, "type": "SCALAR"}
+            ],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 36, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 72, "byteLength": 12}
+            ],
+            "buffers": [{"byteLength": 84}]
+        })
+    }
+
+    #[test]
+    fn normals_and_base_color_decode() {
+        let mut bin = Vec::new();
+        for v in [[0.0f32, -0.6, 0.0], [0.8, 0.6, 0.0], [-0.8, 0.6, 0.0]] {
+            for c in v {
+                bin.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        for v in [[0.0f32, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]] {
+            for c in v {
+                bin.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        for i in [0u32, 1, 2] {
+            bin.extend_from_slice(&i.to_le_bytes());
+        }
+        let glb = build_glb(&shaded_triangle_doc(), &bin);
+        let mesh = decode_glb_mesh(&glb).unwrap();
+        assert_eq!(mesh.normals.as_deref().unwrap()[1], [0.0, 0.0, 1.0]);
+        assert_eq!(mesh.base_color, Some([0.8, 0.2, 0.1, 1.0]));
+    }
+
+    #[test]
+    fn missing_normals_or_material_stay_none() {
+        let doc = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "scene": 0,
+            "scenes": [{"nodes": [{"mesh": 0}]}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}
+            ],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}],
+            "buffers": [{"byteLength": 36}]
+        });
+        let mut bin = Vec::new();
+        for v in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+            for c in v {
+                bin.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        let mesh = decode_glb_mesh(&build_glb(&doc, &bin)).unwrap();
+        assert!(mesh.normals.is_none());
+        assert!(mesh.base_color.is_none());
+    }
+
+    #[test]
+    fn normal_count_mismatch_is_rejected() {
+        let mut doc = shaded_triangle_doc();
+        // NORMAL accessor 声明 count=2 与 POSITION=3 不符
+        doc["accessors"][1]["count"] = serde_json::json!(2);
+        let mut bin = vec![0u8; 84];
+        let glb = build_glb(&doc, &bin);
+        match decode_glb_mesh(&glb) {
+            Err(GlbError::Unsupported(msg)) => assert!(msg.contains("NORMAL")),
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
     }
 
     /// 一个标准三角网格文档:3 顶点 + 3 索引,bufferView 严格衔接。

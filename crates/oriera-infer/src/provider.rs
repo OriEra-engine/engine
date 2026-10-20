@@ -17,6 +17,15 @@ use std::fmt;
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
+    /// role=Tool:这帧内容是哪次调用的结果(多轮工具循环的粘合剂;
+    /// 其他角色恒 None,构造子保证)。
+    pub tool_call_id: Option<String>,
+    /// role=Assistant:该轮请求过的工具调用历史,格式为引擎中立的
+    /// JSON 数组 `[{"id","name","arguments_json"}]`(即 `Vec<ToolCall>`
+    /// 的字段形状)。HTTP 方言在 build 时重排为厂商 wire 原文 ——
+    /// OpenAI 要求 tool 消息前的 assistant 消息携带 tool_calls,
+    /// Anthropic 要求 tool_use/tool_result 块,这里一并提供。
+    pub tool_calls_json: Option<String>,
 }
 
 impl ChatMessage {
@@ -24,12 +33,43 @@ impl ChatMessage {
         Self {
             role: Role::System,
             content: content.into(),
+            tool_call_id: None,
+            tool_calls_json: None,
         }
     }
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: Role::User,
             content: content.into(),
+            tool_call_id: None,
+            tool_calls_json: None,
+        }
+    }
+    /// Assistant 的纯文本轮。
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls_json: None,
+        }
+    }
+    /// Assistant 的工具调用轮:`calls_json` 见字段文档。
+    pub fn assistant_with_tools(calls_json: impl Into<String>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: String::new(),
+            tool_call_id: None,
+            tool_calls_json: Some(calls_json.into()),
+        }
+    }
+    /// 回传一次工具调用的执行结果。
+    pub fn tool(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            tool_call_id: Some(call_id.into()),
+            tool_calls_json: None,
         }
     }
 }
@@ -39,6 +79,9 @@ pub enum Role {
     System,
     User,
     Assistant,
+    /// 工具结果帧(多轮工具循环);HTTP 方言映射为 OpenAI `tool` /
+    /// Anthropic `tool_result`。
+    Tool,
 }
 
 /// Why a completion failed. Keys and transport details stay inside the
@@ -393,10 +436,12 @@ impl ModelProvider for RuleProvider {
         messages: &[ChatMessage],
         tools: &[ToolDef],
     ) -> Result<ToolOutcome, InferError> {
+        // 多轮循环:Tool 结果帧不参与判定,轮末上下文是 assistant
+        // 的调用摘要 —— 第二轮没有标记即自然收敛为纯文本。
         let last = messages
             .iter()
             .rev()
-            .find(|m| m.role == Role::User || m.role == Role::System)
+            .find(|m| m.role != Role::Tool)
             .map(|m| m.content.as_str())
             .unwrap_or("");
         for tool in tools {

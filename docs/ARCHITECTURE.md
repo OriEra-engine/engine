@@ -101,6 +101,8 @@ v0.3 落地 **wgpu 最小无头闭环**（feature `render-wgpu`，按 GOVERNANCE
 `gpu::HeadlessRenderer` 走 真 GPU pass（WGSL 顶点渐变着色）→ 索引绘制 → 像素回读，
 配合 L4 `oriera_asset::glb::decode_glb_mesh`（GLB POSITION/索引最小解码，深校验）打通
 「GLB 文件 → 真实 mesh → GPU 光栅化 → BMP 出图」全链路。
+v0.3 追加顶点材质光照：GLB 的 NORMAL + baseColorFactor 解码后 CPU 烘焙
+兰伯特顶点色（无材质走旧位置渐变，公式不变），`render_mesh_shaded` 承接。
 注意：windows-gnu（MinGW）工具链下 wgpu DX12/Vulkan 适配器枚举实测崩溃，
 默认后端被 cfg 钳制为 GL（`WGPU_BACKEND` 环境变量可覆盖）；MSVC 工具链不受此限。
 
@@ -157,7 +159,10 @@ fetch Promise settling 取代轮询节拍）+ `ArtDirectorSystem` 美术导演�
   `cargo run -p oriera-agent --example cafe`；
 - **工具桥**（v0.3，feature `json`）：`EngineTools::definitions()` 把引擎命令词表
   暴露给任意厂商模型，`dispatch` 把模型的工具调用翻译成 `Command` 提交 L7——
-  模型从「会说」到「会做」，坏参数返回自愈说明永不 panic。离线闭环演示：
+  模型从「会说」到「会做」，坏参数返回自愈说明永不 panic。
+  `run_tool_agent` 把循环装成运行时：完成 → 调工具 → 结算一帧 → 结果回话 →
+  再完成，直到纯文本收敛或超轮显式报错（L7 双方言 wire 携带 tool_calls
+  历史 / Tool 帧满足 OpenAI/Anthropic 协议）。离线闭环演示：
   `cargo run -p oriera-agent --example tool_loop --features json`。
 
 v0.2 润滑剂：认知/导演自愈启动（裸世界 boot 是测试契约）+ 否定语义解析

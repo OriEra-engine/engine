@@ -14,7 +14,11 @@
 //! 需要 `json` feature(serde_json 解析参数;浏览器内核在 JS 侧
 //! 实现同一循环,不引入此依赖)。
 
-use oriera_infer::{Command, InferSystem, ToolCall, ToolDef};
+use oriera_core::{FrameCtx, System};
+use oriera_ecs::World;
+use oriera_infer::{
+    ChatMessage, Command, InferError, InferSystem, ModelProvider, ToolCall, ToolDef, ToolOutcome,
+};
 
 /// 引擎命令词表 ↔ 模型工具调用的翻译器。无状态,零构造成本。
 pub struct EngineTools;
@@ -132,6 +136,78 @@ fn require_f64(args: &serde_json::Value, key: &str) -> Result<f64, String> {
     args.get(key)
         .and_then(|v| v.as_f64())
         .ok_or_else(|| format!("缺少或非法的数值参数 {key}"))
+}
+
+/// 多轮工具代理循环(RFC-3「AI 自主调控」的运行时形态):
+/// `完成 → 模型请求工具 → 引擎派发 → 结算一帧 → 结果回话 → 再完成`,
+/// 直到模型给出纯文本(收敛)或超过 `max_rounds` 轮(显式报错,
+/// 绝不无限循环)。每一轮的结算帧让命令真正落地,世界状态摘要
+/// 随工具结果一起回传 —— 模型看得到自己行为的后果。
+///
+/// 规则后端离线可测:第一轮消息带 `工具名 {json}` 标记触发调用,
+/// 工具结果回话后标记不再出现在轮末上下文,自然收敛为文本。
+pub fn run_tool_agent<P: ModelProvider>(
+    provider: &P,
+    user_text: &str,
+    max_rounds: usize,
+    infer: &mut InferSystem,
+    world: &mut World,
+    ctx: &FrameCtx,
+) -> Result<String, InferError> {
+    let tools = EngineTools::definitions();
+    let mut messages = vec![
+        ChatMessage::system(
+            "你是 OriEra 世界引擎的运营导演。可以用给出的工具操作世界,
+             查看执行结果与世界状态后再决定下一步;目标达成后用纯文本向玩家汇报。",
+        ),
+        ChatMessage::user(user_text),
+    ];
+    for _ in 0..max_rounds {
+        match provider.complete_with_tools(&messages, &tools)? {
+            ToolOutcome::Text(report) => return Ok(report),
+            ToolOutcome::ToolCalls(calls) => {
+                // assistant 历史:引擎中立 JSON(方言重排交给 L7 HTTP 层)
+                let neutral: Vec<serde_json::Value> = calls
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "id": c.id,
+                            "name": c.name,
+                            "arguments_json": c.arguments_json,
+                        })
+                    })
+                    .collect();
+                messages.push(ChatMessage::assistant_with_tools(
+                    serde_json::to_string(&neutral).unwrap_or_else(|_| "[]".into()),
+                ));
+                for call in &calls {
+                    let ack = EngineTools::dispatch(call, infer);
+                    // 结算帧:命令落地,随后把世界现状一起回话
+                    infer.run(ctx, world);
+                    let state = world_state(world);
+                    messages.push(ChatMessage::tool(
+                        &call.id,
+                        format!(
+                            "{ack}
+世界现状:{state}"
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Err(InferError::Provider(format!(
+        "工具循环超过 {max_rounds} 轮仍未收敛(可能需要更多轮次或收紧指令)"
+    )))
+}
+
+/// 给模型看的世界状态摘要(每轮结算后回传)。
+fn world_state(world: &World) -> String {
+    let stats = world.resource::<oriera_infer::Stats>().map(|s| s.entities);
+    match stats {
+        Some(n) => format!("实体 {n} 个(Stats 最近一次统计)",),
+        None => format!("实体 {} 个", world.len()),
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +348,94 @@ mod tests {
         for t in EngineTools::definitions() {
             assert!(serde_json::from_str::<serde_json::Value>(&t.parameters_json).is_ok());
         }
+    }
+
+    fn ctx_frame() -> FrameCtx<'static> {
+        use oriera_common::{FrameIndex, Grants, Timestamp};
+        FrameCtx {
+            frame: FrameIndex(0),
+            dt: 0.0,
+            now: Timestamp(0),
+            grants: Grants::EMPTY,
+        }
+    }
+
+    #[test]
+    fn tool_agent_converges_and_changes_the_world() {
+        let provider = RuleProvider::new();
+        let mut infer = InferSystem::new();
+        let mut world = World::new();
+        let report = run_tool_agent(
+            &provider,
+            "开演:spawn {\"count\":7}",
+            4,
+            &mut infer,
+            &mut world,
+            &ctx_frame(),
+        )
+        .unwrap();
+        assert!(!report.is_empty(), "agent must return the model's text");
+        assert_eq!(world.len(), 7, "the loop landed the commands");
+    }
+
+    #[test]
+    fn tool_agent_errors_after_exhausting_rounds() {
+        /// 永远请求工具、永不收敛的病态后端 —— 循环上限必须兜底。
+        struct NeverConverge;
+        impl ModelProvider for NeverConverge {
+            fn id(&self) -> &str {
+                "never"
+            }
+            fn complete(&self, _m: &[ChatMessage]) -> Result<String, InferError> {
+                Ok("不该走到这里".into())
+            }
+            fn supports_tools(&self) -> bool {
+                true
+            }
+            fn complete_with_tools(
+                &self,
+                _m: &[ChatMessage],
+                tools: &[ToolDef],
+            ) -> Result<ToolOutcome, InferError> {
+                Ok(ToolOutcome::ToolCalls(vec![ToolCall {
+                    id: "loop".into(),
+                    name: tools[0].name.clone(),
+                    arguments_json: r#"{"count":1}"#.into(),
+                }]))
+            }
+        }
+        let mut infer = InferSystem::new();
+        let mut world = World::new();
+        let err = run_tool_agent(
+            &NeverConverge,
+            "别停",
+            3,
+            &mut infer,
+            &mut world,
+            &ctx_frame(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("3 轮"), "{err}");
+    }
+
+    #[test]
+    fn tool_agent_reports_world_state_back_to_the_model() {
+        // 多轮消息序列:assistant 调用帧 + tool 结果帧确实在对话里
+        // (由收敛行为间接验证:规则后端第二轮看不到标记才收敛)。
+        let provider = RuleProvider::new();
+        let mut infer = InferSystem::new();
+        let mut world = World::new();
+        let report = run_tool_agent(
+            &provider,
+            "两步走:先 spawn {\"count\":2}",
+            3,
+            &mut infer,
+            &mut world,
+            &ctx_frame(),
+        )
+        .unwrap();
+        assert_eq!(world.len(), 2);
+        assert!(!report.is_empty());
     }
 
     // 占位:Arc<RuleProvider> 也满足 'static,证明异步作业层

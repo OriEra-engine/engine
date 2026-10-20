@@ -389,12 +389,17 @@ fn glb_header_is_sane(b: &[u8]) -> bool {
 /// L8→L4→L5 chain proof: `oriera_asset::glb::decode_glb_mesh` parses
 /// it into 3 vertices / 3 indices.
 pub(crate) fn tiny_glb() -> Vec<u8> {
-    let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[{"mesh":0}]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","max":[0.8,0.6,0.0],"min":[-0.8,-0.6,0.0]},{"bufferView":1,"componentType":5125,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":12}],"buffers":[{"byteLength":48}]}"#;
+    let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[{"mesh":0}]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2,"material":0}]}],"materials":[{"pbrMetallicRoughness":{"baseColorFactor":[0.85,0.16,0.12,1.0]}}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","max":[0.8,0.6,0.0],"min":[-0.8,-0.6,0.0]},{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":2,"componentType":5125,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},{"buffer":0,"byteOffset":72,"byteLength":12}],"buffers":[{"byteLength":84}]}"#;
     let json_len = json.len().div_ceil(4) * 4; // JSON chunk pads with spaces
-                                               // BIN: 3 × VEC3 f32 (36B) + 3 × u32 indices (12B) = 48B,已 4 对齐。
-    let mut bin = Vec::with_capacity(48);
+                                               // BIN: 3 × pos(36B) + 3 × normal(36B,朝镜头) + 3 × u32(12B) = 84B。
+    let mut bin = Vec::with_capacity(84);
     for v in [[0.0f32, -0.6, 0.0], [0.8, 0.6, 0.0], [-0.8, 0.6, 0.0]] {
         for c in v {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    for _ in 0..3 {
+        for c in [0.0f32, 0.0, 1.0] {
             bin.extend_from_slice(&c.to_le_bytes());
         }
     }

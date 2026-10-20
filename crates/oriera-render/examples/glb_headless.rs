@@ -18,7 +18,7 @@ const H: u32 = 600;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let (positions, indices, label) = match args.get(1).map(String::as_str) {
+    let (positions, indices, normals, base_color, label) = match args.get(1).map(String::as_str) {
         Some("--from-l8") => {
             use oriera_genai::GenerationProvider as _;
             // 生成管线全链:离线 MockProvider 出占位三角(ADR 0003:断电
@@ -46,7 +46,13 @@ fn main() {
                 mesh.positions.len(),
                 mesh.indices.len()
             );
-            (mesh.positions, mesh.indices, "l8-chain".to_string())
+            (
+                mesh.positions,
+                mesh.indices,
+                mesh.normals,
+                mesh.base_color,
+                "l8-chain".to_string(),
+            )
         }
         Some(path) => {
             let bytes =
@@ -60,13 +66,21 @@ fn main() {
                 mesh.min,
                 mesh.max
             );
-            (mesh.positions, mesh.indices, path.to_string())
+            (
+                mesh.positions,
+                mesh.indices,
+                mesh.normals,
+                mesh.base_color,
+                path.to_string(),
+            )
         }
         None => {
             println!("未指定 GLB,渲染内置三角(传入路径可渲染任意 GLB)");
             (
                 vec![[-1.0, -0.5, 0.0], [1.0, -0.5, 0.0], [0.0, 0.8, 0.0]],
                 vec![0, 1, 2],
+                None,
+                None,
                 "builtin-triangle".to_string(),
             )
         }
@@ -80,7 +94,7 @@ fn main() {
     println!("适配器: {}", renderer.adapter_info());
 
     let img = renderer
-        .render_mesh(&positions, &indices, W, H)
+        .render_mesh_shaded(&positions, normals.as_deref(), base_color, &indices, W, H)
         .unwrap_or_else(|e: GpuError| die(&format!("渲染失败: {e}")));
 
     write_bmp(&out, &img).unwrap_or_else(|e| die(&format!("写 BMP 失败: {e}")));
