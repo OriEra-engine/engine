@@ -10,7 +10,7 @@ use oriera_agent::parse;
 use oriera_asset::AssetStore;
 use oriera_core::Scheduler;
 use oriera_ecs::{Position, Velocity, World};
-use oriera_infer::{InferSystem, Stats};
+use oriera_infer::{CostMeter, InferSystem, Stats, UsageMeter};
 use oriera_render::RenderSystem;
 use oriera_subsys::{Gravity, PhysicsSystem, TimeScale};
 
@@ -169,6 +169,29 @@ fn main() {
             g.share_ms,
             g.throttle * 100.0
         );
+    }
+    // v0.7 (PLAN-deepseek-upgrade B5): the AI money readout, through the
+    // same door any shell uses — UsageMeter counts tokens, CostMeter
+    // values them. This offline demo makes no model calls, so both read
+    // empty; the read path itself is the contract shells wire into.
+    println!();
+    println!("  ── AI meter (B5 cache/cost accounting) ──");
+    match world.resource::<UsageMeter>() {
+        Some(m) if m.calls > 0 => println!(
+            "    tokens : {} prompt ({} cached) + {} completion in {} calls",
+            m.total.prompt, m.total.cached, m.total.completion, m.calls
+        ),
+        _ => println!("    tokens : no model calls this run"),
+    }
+    match world.resource::<CostMeter>() {
+        Some(c) if c.calls > 0 => println!(
+            "    spend  : {} (cache saved {} µ{}, {} unpriced calls)",
+            c.display(),
+            c.saved_micro(),
+            c.currency,
+            c.unpriced_calls
+        ),
+        _ => println!("    spend  : no model calls this run"),
     }
     println!();
     println!("  ✅ Closed loop: L9 parse → L7 execute → L6 integrate → L5 count");

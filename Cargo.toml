@@ -50,6 +50,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # fits System::run's synchronous shape — no async runtime enters L7.
 # rustls via webpki-roots, no native TLS, no compression extras.
 ureq = { version = "2.10", default-features = false, features = ["tls"] }
+# A1 (PLAN-deepseek-upgrade): DeepSeek 官方协议类型层（conversation/
+# ReasoningEffort 等），MIT。只取 core——主 crate 拖 tokenizers/jsonschema
+# 且无 feature 可关，core 仅依赖 macros+serde+serde_json，近乎零增量。
+# caret 0.2 = 锁 0.2.x，上游 0.3 升级走独立 commit 留观察窗。
+deepseek-recipe-core = "0.2"
 # L6 rigid backend (#80): pure Rust, Apache-2.0, 2026 roadmap targets
 # robotics accuracy. Feature-gated per crate (`rigid`).
 rapier2d = "0.36"

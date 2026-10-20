@@ -9,7 +9,9 @@
  *   CommandQueue     ↔ crates/oriera-infer/src/lib.rs::InferSystem (L7 队列)
  * v2（2026-10-19，八赛道实战反馈）：命令通道 / 认知参数化（场景·台词库·
  * RNG·max 可注入）/ 记忆容量参数化 / seed·thinking 透传 / 预设表 14 行。
- * 全部加法式：不传新参数时行为与 v1 逐位一致。
+ * v0.7（2026-10-21，PLAN-deepseek-upgrade 第一批）：opts.schema 透传
+ * （json_schema 优先于 json_object）/ stats.cached 缓存命中计量 / 预设行
+ * caps·price 能力与牌价元数据。全部加法式：不传新参数时行为与 v1 逐位一致。
  * 应用（index.html）只 import 这些服务——应用代码里不允许出现
  * 任何模型调用、Key、prompt 拼装。
  * ============================================================ */
@@ -89,7 +91,10 @@ export class HttpChatProvider {
           messages: messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content })) })
       : JSON.stringify({ model: this.cfg.model, messages,
           temperature: opts.temp ?? 0.85, max_tokens: opts.max ?? 260,
-          ...(opts.json ? { response_format: { type: "json_object" } } : {}),
+          // v0.7 (PLAN-deepseek-upgrade B6)：schema 优先于 json（json_object ⊆
+          // json_schema），与 Rust ProviderOptions.response_schema 对镜。
+          ...(opts.schema ? { response_format: { type: "json_schema", json_schema: { name: "reply", strict: true, schema: opts.schema } } }
+            : opts.json ? { response_format: { type: "json_object" } } : {}),
           // v2 透传：seed（复现性，OpenAI 兼容方言）与 thinking（推理型
           // 模型如 DeepSeek-V4 默认 high 档会吃掉 max_tokens 预算，NPC
           // 对话显式关）。anthropic 分支不动——其协议无对应参数。
@@ -100,8 +105,14 @@ export class HttpChatProvider {
         const r = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(20000) });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const data = await r.json();
+        // v0.7 (B5)：缓存命中 tokens 单独累计（三种厂商字段风格，与
+        // Rust http.rs parse_reply 一一对照），供 UI 显示省钱额。
+        const u = data.usage || {};
         this.stats.tokens = (this.stats.tokens || 0)
-          + ((data.usage && (data.usage.total_tokens ?? data.usage.input_tokens)) || 0);
+          + ((u.total_tokens ?? u.input_tokens) || 0);
+        this.stats.cached = (this.stats.cached || 0)
+          + (u.prompt_cache_hit_tokens ?? (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens)
+             ?? u.cache_read_input_tokens ?? 0);
         return anthropic ? data.content[0].text : data.choices[0].message.content;
       } catch (e) {
         if (attempt) { this.stats.errors++; throw e; }
@@ -359,22 +370,35 @@ export class CommandQueue {
   }
 }
 
-/* ---------- L7 · 提供商工厂（镜像 Rust create_provider） ---------- */
+/* ---------- L7 · 提供商工厂（镜像 Rust create_provider） ----------
+ * v0.7：已核实行带 caps（能力元数据，镜像 Rust ModelCaps——结构化输出/
+ * 工具/图像/缓存/上下文窗），未核实行不带（保守缺省，与 Rust
+ * UNREGISTERED 对齐）；deepseek/openai 另带登记牌价 price（µ 货币单位
+ * /百万 tokens，B5 成本记账）。 */
 export const PROVIDER_PRESETS = {
   rule:        { label: "离线规则引擎",    base: "",                                        model: "rule-v1", local: true },
-  zhipu:       { label: "智谱 GLM",       base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash" },
-  openai:      { label: "OpenAI",         base: "https://api.openai.com/v1",             model: "gpt-4o-mini" },
+  zhipu:       { label: "智谱 GLM",       base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash", caps: { tools: true } },
+  openai:      { label: "OpenAI",         base: "https://api.openai.com/v1",             model: "gpt-4o-mini",
+                 caps: { contextWindow: 128000, structuredOutput: true, tools: true, imageInput: true, promptCache: true },
+                 price: { currency: "USD", promptMicroPerM: 150000, completionMicroPerM: 600000, cachedMicroPerM: 75000 } },
   qwen:        { label: "Qwen 通义",      base: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
   stepfun:     { label: "阶跃 Step",      base: "https://api.stepfun.com/v1",            model: "step-3.7-flash" },
-  deepseek:    { label: "DeepSeek",       base: "https://api.deepseek.com/v1",           model: "deepseek-chat" },
+  deepseek:    { label: "DeepSeek",       base: "https://api.deepseek.com/v1",           model: "deepseek-chat",
+                 caps: { contextWindow: 1000000, structuredOutput: true, tools: true, imageInput: true, promptCache: true },
+                 price: { currency: "USD", promptMicroPerM: 150000, completionMicroPerM: 600000, cachedMicroPerM: 3000 } },
   moonshot:    { label: "Moonshot Kimi",  base: "https://api.moonshot.cn/v1",            model: "moonshot-v1-8k" },
   groq:        { label: "Groq",           base: "https://api.groq.com/openai/v1",        model: "llama-3.1-8b-instant" },
   openrouter:  { label: "OpenRouter",     base: "https://openrouter.ai/api/v1",          model: "openrouter/auto" },
-  anthropic:   { label: "Anthropic",      base: "https://api.anthropic.com/v1",          model: "claude-3-5-haiku-latest" },
-  ollama:      { label: "Ollama 本地",     base: "http://127.0.0.1:11434/v1",             model: "qwen3:8b", local: true },
-  vllm:        { label: "vLLM 本地",       base: "http://127.0.0.1:8000/v1",              model: "Qwen/Qwen3-8B", local: true },
-  llamacpp:    { label: "llama.cpp 本地",  base: "http://127.0.0.1:8080/v1",              model: "glm-4-9b-chat", local: true },
-  lmstudio:    { label: "LM Studio 本地",  base: "http://127.0.0.1:1234/v1",              model: "minicpm-v", local: true },
+  anthropic:   { label: "Anthropic",      base: "https://api.anthropic.com/v1",          model: "claude-3-5-haiku-latest",
+                 caps: { contextWindow: 200000, tools: true, imageInput: true, promptCache: true } },
+  ollama:      { label: "Ollama 本地",     base: "http://127.0.0.1:11434/v1",             model: "qwen3:8b", local: true,
+                 caps: { structuredOutput: true, tools: true } },
+  vllm:        { label: "vLLM 本地",       base: "http://127.0.0.1:8000/v1",              model: "Qwen/Qwen3-8B", local: true,
+                 caps: { structuredOutput: true, tools: true } },
+  llamacpp:    { label: "llama.cpp 本地",  base: "http://127.0.0.1:8080/v1",              model: "glm-4-9b-chat", local: true,
+                 caps: { structuredOutput: true } },
+  lmstudio:    { label: "LM Studio 本地",  base: "http://127.0.0.1:1234/v1",              model: "minicpm-v", local: true,
+                 caps: { structuredOutput: true } },
 };
 const KNOWN_KINDS = new Set([...Object.keys(PROVIDER_PRESETS), "openai-compat"]);
 export function createProvider(cfg) {

@@ -358,6 +358,7 @@ impl RuleProvider {
         TokenUsage {
             prompt: (prompt_chars as u64) / 4,
             completion: (completion_chars as u64) / 4,
+            cached: 0, // offline backend has no provider cache to hit
         }
     }
 }
@@ -552,7 +553,7 @@ mod tests {
         let out = p
             .complete_with_tools(
                 &[ChatMessage::user("导演说:spawn {\"count\":3},再来点气氛")],
-                &[spawn.clone()],
+                std::slice::from_ref(&spawn),
             )
             .unwrap();
         match out {
@@ -720,7 +721,8 @@ mod tests {
             p.last_usage(),
             TokenUsage {
                 prompt: 1,
-                completion: (out.chars().count() / 4) as u64
+                completion: (out.chars().count() / 4) as u64,
+                cached: 0,
             }
         );
         assert!(p.last_usage().total() > 0);
@@ -801,6 +803,57 @@ impl ProviderKind {
     }
 }
 
+/// What a preset row's endpoint can do, declared per row (v0.7,
+/// PLAN-deepseek-upgrade A1). Data, not behavior: B6 (structured
+/// output), B4 (memory budgeting by context window) and B8 (the model
+/// bench) read this instead of hardcoding vendor facts. Conservative
+/// by default — `false`/`None` means "unknown, don't assume", so a
+/// wrong row degrades a feature visibly instead of misfiring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ModelCaps {
+    /// Context window in tokens, when the row's default model has a
+    /// published one. `None` = not registered (yet).
+    pub context_window: Option<u64>,
+    /// Accepts `response_format: json_schema` (B6 structured output).
+    pub structured_output: bool,
+    /// Accepts tool/function definitions (the B1 reserved contract).
+    pub tools: bool,
+    /// Accepts image input (L10's future entry point).
+    pub image_input: bool,
+    /// Reports prompt-cache hits and bills them cheaper — the B5
+    /// stable-prefix convention pays off only on these rows.
+    pub prompt_cache: bool,
+}
+
+impl ModelCaps {
+    /// The unregistered row: nothing assumed. Const twin of
+    /// `default()` for use inside the `PROVIDER_PRESETS` table.
+    pub const UNREGISTERED: ModelCaps = ModelCaps {
+        context_window: None,
+        structured_output: false,
+        tools: false,
+        image_input: false,
+        prompt_cache: false,
+    };
+}
+
+/// Registered price for a preset row (v0.7, B5 cost accounting):
+/// micro-currency units (= 1e-6 of `currency`) **per 1M tokens**.
+/// Integers, so `ProviderPreset` stays `Eq`. Registered entries carry
+/// a date in the table comment; prices drift, treat rows as dated
+/// snapshots and re-verify at B8 (model bench) time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelPrice {
+    /// ISO currency code of all three fields ("USD", "CNY", …).
+    pub currency: &'static str,
+    /// Cache-miss prompt price, µ-currency per 1M tokens.
+    pub prompt_micro_per_m: u64,
+    /// Completion price, µ-currency per 1M tokens.
+    pub completion_micro_per_m: u64,
+    /// Cache-hit prompt price, µ-currency per 1M tokens.
+    pub cached_micro_per_m: u64,
+}
+
 /// One row of the provider preset table. Mirrors the browser kernel's
 /// `PROVIDER_PRESETS` (examples/11-ai-cafe/engine/kernel.js) and extends
 /// it with the open-source local serving stack — the "geek rows": the
@@ -820,6 +873,11 @@ pub struct ProviderPreset {
     /// `true` for local open-source serving (no key, no egress): the
     /// rows the companion/edu tracks pin for privacy and compliance.
     pub local: bool,
+    /// Declared endpoint capabilities (v0.7 A1) — see [`ModelCaps`].
+    pub caps: ModelCaps,
+    /// Registered price (v0.7 B5); `None` = 牌价待登记 (cost meters
+    /// count the call, price it as unpriced).
+    pub price: Option<ModelPrice>,
 }
 
 /// The preset table. Order is the model-center display order: offline
@@ -828,6 +886,15 @@ pub struct ProviderPreset {
 /// endpoints are pinned here so plugging a vendor key is a one-field
 /// edit; local rows point at the standard OpenAI-compatible endpoints
 /// of ollama / vLLM / llama.cpp / LM Studio.
+///
+/// Caps/price registration policy (v0.7 A1): rows get `caps` only for
+/// facts this project verified (deepseek: the V4.1-Flash /v1/models
+/// market check + official pricing page 2026-10) or that are safe
+/// defaults; unregistered rows read `ModelCaps::default()` (all
+/// conservative) and `price: None` (成本计量照走，计为 unpriced).
+/// Local rows' structured-output flag follows each server's own docs
+/// and drifts with the endpoint version — trust the endpoint's answer
+/// over the table.
 pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
     // ── offline ──
     ProviderPreset {
@@ -837,6 +904,8 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "rule-v1",
         base_url: "",
         local: true,
+        caps: ModelCaps::UNREGISTERED,
+        price: None,
     },
     // ── cloud vendors (reserved API interfaces; key in the shell) ──
     ProviderPreset {
@@ -846,6 +915,11 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "glm-4-flash",
         base_url: "https://open.bigmodel.cn/api/paas/v4",
         local: false,
+        caps: ModelCaps {
+            tools: true,
+            ..ModelCaps::UNREGISTERED
+        },
+        price: None, // 牌价待登记（B8 核价）
     },
     ProviderPreset {
         id: "openai",
@@ -854,6 +928,19 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "gpt-4o-mini",
         base_url: "https://api.openai.com/v1",
         local: false,
+        caps: ModelCaps {
+            context_window: Some(128_000),
+            structured_output: true,
+            tools: true,
+            image_input: true,
+            prompt_cache: true,
+        },
+        price: Some(ModelPrice {
+            currency: "USD",
+            prompt_micro_per_m: 150_000,     // $0.15 / 1M miss
+            completion_micro_per_m: 600_000, // $0.60 / 1M
+            cached_micro_per_m: 75_000,      // $0.075 / 1M hit
+        }),
     },
     ProviderPreset {
         id: "qwen",
@@ -862,6 +949,8 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "qwen-plus",
         base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
         local: false,
+        caps: ModelCaps::UNREGISTERED, // 待登记
+        price: None,
     },
     ProviderPreset {
         id: "stepfun",
@@ -870,6 +959,8 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "step-3.7-flash",
         base_url: "https://api.stepfun.com/v1",
         local: false,
+        caps: ModelCaps::UNREGISTERED, // 待登记
+        price: None,
     },
     ProviderPreset {
         id: "deepseek",
@@ -878,6 +969,24 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "deepseek-chat",
         base_url: "https://api.deepseek.com/v1",
         local: false,
+        caps: ModelCaps {
+            // deepseek-chat = V4.1-Flash 别名：1M 上下文 + 图像输入
+            // （2026-10-19 /v1/models 行情实测，aigame 会话）。
+            context_window: Some(1_000_000),
+            structured_output: true,
+            tools: true,
+            image_input: true,
+            prompt_cache: true,
+        },
+        // 登记牌价（2026-10 检索官方 pricing 页，V4.1-Flash 谷时口径；
+        // 峰时约 ×2，以官方页为准，B8 复核）：miss $0.15 / hit $0.003 /
+        // out $0.60 每百万 tokens。
+        price: Some(ModelPrice {
+            currency: "USD",
+            prompt_micro_per_m: 150_000,
+            completion_micro_per_m: 600_000,
+            cached_micro_per_m: 3_000,
+        }),
     },
     ProviderPreset {
         id: "moonshot",
@@ -886,6 +995,8 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "moonshot-v1-8k",
         base_url: "https://api.moonshot.cn/v1",
         local: false,
+        caps: ModelCaps::UNREGISTERED, // 待登记
+        price: None,
     },
     ProviderPreset {
         id: "groq",
@@ -894,6 +1005,8 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "llama-3.1-8b-instant",
         base_url: "https://api.groq.com/openai/v1",
         local: false,
+        caps: ModelCaps::UNREGISTERED, // 待登记
+        price: None,
     },
     ProviderPreset {
         id: "openrouter",
@@ -902,6 +1015,8 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "openrouter/auto",
         base_url: "https://openrouter.ai/api/v1",
         local: false,
+        caps: ModelCaps::UNREGISTERED, // 透传网关：能力随路由模型浮动，不预设
+        price: None,
     },
     ProviderPreset {
         id: "anthropic",
@@ -910,6 +1025,14 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "claude-3-5-haiku-latest",
         base_url: "https://api.anthropic.com/v1",
         local: false,
+        caps: ModelCaps {
+            context_window: Some(200_000),
+            structured_output: false, // messages 协议无 response_format
+            tools: true,
+            image_input: true,
+            prompt_cache: true, // cache_read_input_tokens 已解析
+        },
+        price: None, // 牌价待登记
     },
     // ── local open-source serving (no key, no egress) ──
     ProviderPreset {
@@ -919,6 +1042,12 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "qwen3:8b",
         base_url: "http://127.0.0.1:11434/v1",
         local: true,
+        caps: ModelCaps {
+            structured_output: true,
+            tools: true,
+            ..ModelCaps::UNREGISTERED
+        },
+        price: None, // 本地推理：电费口径，不记账
     },
     ProviderPreset {
         id: "vllm",
@@ -927,6 +1056,12 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "Qwen/Qwen3-8B",
         base_url: "http://127.0.0.1:8000/v1",
         local: true,
+        caps: ModelCaps {
+            structured_output: true,
+            tools: true,
+            ..ModelCaps::UNREGISTERED
+        },
+        price: None,
     },
     ProviderPreset {
         id: "llamacpp",
@@ -935,6 +1070,11 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "glm-4-9b-chat",
         base_url: "http://127.0.0.1:8080/v1",
         local: true,
+        caps: ModelCaps {
+            structured_output: true,
+            ..ModelCaps::UNREGISTERED
+        },
+        price: None,
     },
     ProviderPreset {
         id: "lmstudio",
@@ -943,6 +1083,11 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         model: "minicpm-v",
         base_url: "http://127.0.0.1:1234/v1",
         local: true,
+        caps: ModelCaps {
+            structured_output: true,
+            ..ModelCaps::UNREGISTERED
+        },
+        price: None,
     },
 ];
 
@@ -979,6 +1124,30 @@ impl ProviderConfig {
 /// seed / thinking / json_mode for the native HTTP adapter. Without
 /// the `native-http` feature this behaves exactly like
 /// [`create_provider`] (options are recorded but there is no wire).
+/// Protocol-independent reasoning effort, mirroring
+/// `deepseek-recipe-core::conversation::ReasoningEffort` (the official
+/// `reasoning_effort` wire field, snake_case). Our own copy keeps this
+/// crate dependency-free below the `native-http` feature; the adapter
+/// converts to the recipe type for the wire (A1, PLAN-deepseek-upgrade).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    Low,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl ReasoningEffort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::High => "high",
+            ReasoningEffort::Xhigh => "xhigh",
+            ReasoningEffort::Max => "max",
+        }
+    }
+}
+
 /// Construction-time wire options for the native HTTP adapter
 /// (v2.1, kernel-v2 parity): reproducibility seed, thinking-mode
 /// control and JSON mode — the browser kernel passes these per call
@@ -986,6 +1155,12 @@ impl ProviderConfig {
 /// `complete(&self, messages)` has no per-call channel, so they live
 /// at construction here. OpenAI-compatible dialect only; Anthropic
 /// requests are untouched.
+///
+/// v0.7 additions (PLAN-deepseek-upgrade B6, pre-B1 transition): the
+/// schema rides construction-time options until B1's `InferRequest`
+/// gives the trait a per-call channel. `response_schema` carries the
+/// raw JSON Schema text; the adapter validates it eagerly (fail-fast
+/// before any network) and sends `response_format: json_schema`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProviderOptions {
     /// Provider-side sampling seed (reproducibility; best-effort —
@@ -993,10 +1168,21 @@ pub struct ProviderOptions {
     pub seed: Option<u64>,
     /// Send `thinking: {"type":"disabled"}` — reasoning models
     /// (DeepSeek-V4 default-high) otherwise burn max_tokens into
-    /// hidden reasoning and return empty/short bodies.
+    /// hidden reasoning and return empty/short bodies. Proven on the
+    /// wire; kept alongside `reasoning_effort` (the recipe-shaped
+    /// effort dial) — they answer different questions: on/off vs how hard.
     pub thinking_disabled: bool,
     /// Send `response_format: {"type":"json_object"}`.
     pub json_mode: bool,
+    /// Reasoning effort dial (`reasoning_effort` wire field, recipe-core
+    /// semantics). Semantically exclusive with `thinking_disabled`; if
+    /// both are set the explicit disable wins and a warning is traced.
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// Raw JSON Schema the reply must satisfy — sent as
+    /// `response_format: {"type":"json_schema", ...}`. Supersedes
+    /// `json_mode` when both are set (json_object ⊆ json_schema).
+    /// Invalid JSON fails the call before any network is touched.
+    pub response_schema: Option<String>,
 }
 
 pub fn create_provider_with_options(
@@ -1172,5 +1358,42 @@ mod preset_tests {
             .map(|p| p.id)
             .collect();
         assert_eq!(local, ["rule", "ollama", "vllm", "llamacpp", "lmstudio"]);
+    }
+
+    #[test]
+    fn caps_and_prices_are_registered_where_claimed() {
+        // deepseek is the measured row: V4.1-Flash market facts + dated price.
+        let ds = PROVIDER_PRESETS
+            .iter()
+            .find(|p| p.id == "deepseek")
+            .unwrap();
+        assert_eq!(ds.caps.context_window, Some(1_000_000));
+        assert!(ds.caps.structured_output && ds.caps.prompt_cache);
+        let price = ds.price.expect("deepseek carries the dated price");
+        assert_eq!(price.currency, "USD");
+        assert!(
+            price.cached_micro_per_m < price.prompt_micro_per_m,
+            "a cache hit must price below a miss — that's the whole B5 point"
+        );
+        let oai = PROVIDER_PRESETS.iter().find(|p| p.id == "openai").unwrap();
+        assert!(oai.caps.structured_output && oai.price.is_some());
+
+        // Unregistered rows stay conservative — no invented vendor
+        // facts. (zhipu IS registered, tools only — GLM function calling
+        // is documented; schema support is unverified so structured_output
+        // stays false.)
+        for id in ["rule", "qwen", "stepfun", "moonshot", "groq", "openrouter"] {
+            let row = PROVIDER_PRESETS.iter().find(|p| p.id == id).unwrap();
+            assert_eq!(
+                row.caps,
+                ModelCaps::default(),
+                "{id} must stay unregistered"
+            );
+            assert!(row.price.is_none(), "{id} must carry no price");
+        }
+        // Local serving is electricity, not billing — never priced.
+        for row in PROVIDER_PRESETS.iter().filter(|p| p.local) {
+            assert!(row.price.is_none(), "{} local must be unpriced", row.id);
+        }
     }
 }

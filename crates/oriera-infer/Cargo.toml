@@ -19,9 +19,12 @@ tracing.workspace = true
 # #68 native HTTP adapter (feature `native-http`, design discussions/78):
 # ureq blocking client + serde_json for request/response shapes. Both
 # optional — wasm budget and default builds stay exactly as they were.
+# A1 (PLAN-deepseek-upgrade) adds deepseek-recipe-core: the official
+# protocol type layer (ReasoningEffort wire shaping), same feature gate.
 ureq = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+deepseek-recipe-core = { workspace = true, optional = true }
 
 [features]
 default = []
-native-http = ["dep:ureq", "dep:serde_json"]
+native-http = ["dep:ureq", "dep:serde_json", "dep:deepseek-recipe-core"]

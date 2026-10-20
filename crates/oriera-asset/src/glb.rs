@@ -259,7 +259,9 @@ fn read_positions(
     let range = locate(accessors, views, idx, COMPONENT_FLOAT, 4, 3, bin)?;
     let raw = &bin[range];
     Ok(raw
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .map(|c| {
             [
                 f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
@@ -285,14 +287,18 @@ fn read_indices(
         COMPONENT_UINT32 => {
             let range = locate(accessors, views, idx, COMPONENT_UINT32, 4, 1, bin)?;
             Ok(bin[range]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect())
         }
         COMPONENT_UINT16 => {
             let range = locate(accessors, views, idx, COMPONENT_UINT16, 2, 1, bin)?;
             Ok(bin[range]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| u16::from_le_bytes([c[0], c[1]]) as u32)
                 .collect())
         }
@@ -416,7 +422,7 @@ mod tests {
         let mut doc = shaded_triangle_doc();
         // NORMAL accessor 声明 count=2 与 POSITION=3 不符
         doc["accessors"][1]["count"] = serde_json::json!(2);
-        let mut bin = vec![0u8; 84];
+        let bin = vec![0u8; 84];
         let glb = build_glb(&doc, &bin);
         match decode_glb_mesh(&glb) {
             Err(GlbError::Unsupported(msg)) => assert!(msg.contains("NORMAL")),
