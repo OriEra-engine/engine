@@ -129,6 +129,12 @@ Anthropic `input_schema` 双方言 wire；RuleProvider 用 `spawn {"count":N}` �
 确定性模拟，离线可测）；HttpProvider `complete_stream` 原生 SSE 增量流
 （逐 delta 分块、终帧计量 usage，双方言事件）。
 **Key 只存在平台壳**（浏览器 localStorage / 环境变量），永不入仓。
+v0.7（DeepSeek 升级第一批）：`TokenUsage.cached` 前缀缓存计量 +
+`CostMeter` 成本账本（缓存折扣显示成钱）+ `response_format: json_schema`
+（非法 schema 零网络 fail-fast）+ `ReasoningEffort` 经 deepseek-recipe-core
+规范枚举（MIT，仅 native-http feature，wasm 零增量）+ 预设行 caps/price
+能力与牌价元数据；smoke 加缓存双连发验收腿。生态位：**OriEra 不做推理
+引擎，做推理引擎的好客户端**（见 AI-NATIVE.md v0.7 节）。
 
 ### L8 · oriera-genai — 生成式 AI（表达链路已通，ADR 0003 + RFC 0001）
 
@@ -241,6 +247,15 @@ L9 DirectorSystem 调度 NPC 行为 → L6 动作/物理 → L5 画质迟滞调�
   `WakeEvent` 玩家一碰世界立即回满速
 - L8 `GenAiLimits` 拨杆感知：in-flight 上限与轮询间隔随压力缩放（缓不降级）
 
+### v0.7 缓存·成本·结构化输出契约（2026-10-21「好客户端」）
+
+- L0 `TokenUsage.cached`：缓存命中 prompt tokens（⊆ prompt，`billed_prompt()` 钳制谎报）
+- L7 `CostMeter`：µ 货币成本账本，`saved_micro` 显示缓存省钱；跨币种不求和
+- L7 `response_format: json_schema` + `ReasoningEffort`（recipe-core 规范枚举）
+- L7 `ProviderPreset.caps/price`：14 行能力与牌价登记（未核实 = 留空，不发明厂商事实）
+- L9 **稳定前缀惯例**：system 对 NPC 恒定、易变走 user（Rust+JS 双侧，字节稳定是测试契约）+ 注入用例集
+- 完整地图：AI-NATIVE.md v0.7 节 / OPEN-MODEL-MATRIX.md §0.5-0.6
+
 ## 7. 治理：LayerManifest 与架构门禁（T3 §3.8.3）
 
 每层在 `manifests/` 声明机器可读的清单（L0–L9 共 10 份 YAML，含 L08-genai）：
@@ -268,7 +283,7 @@ assets/          logo、hero GIF 等品牌资产
 
 ## 9. 测试、CI 与性能
 
-- 全仓 **279 个测试**（CI 实测口径：`cargo test --workspace` 172 + genai `providers` 50 + agent `json` 32 + subsys `rigid` 14 + infer `native-http` 11 + kernel node 测试 12，2026-10-19 核对），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
+- 全仓 **423 个测试**（CI 实测口径：`cargo test --workspace` 213 + genai `providers` 53 + agent `json` 53 + subsys `rigid` 14 + infer `native-http` 71 + kernel node 测试 19，2026-10-21 核对，含 RFC-3 工具调用/流式/异步作业与 v0.7 缓存计量批次），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
 - 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 / v0.2.0 / v0.3.0）。
 - 基准怎么跑、当前参考数据见 [PERF.md](PERF.md)。
 

@@ -95,3 +95,26 @@ L2 仲裁器按各系统的平滑实测成本切分帧预算（带 5% 保底）�
 一句话：**世界的外观也是生成系统的输出**——引擎负责让这份输出
 可控（校验）、可负担（计量/降级）、可落位（热替换），创作者只说
 「我要一个什么样的世界」。
+
+## v0.7 缓存·成本·结构化输出（2026-10-21，PLAN-deepseek-upgrade 第一批）
+
+借 DeepSeek 开源双仓库（DeepInfer 借思想 / deepseek-recipe 直接用）的
+第一批落地。生态位声明也在此立字：
+
+> **OriEra 不做推理引擎，做推理引擎的好客户端。** 供给侧（把模型跑快
+> 跑稳）交给 vLLM / DeepInfer / SGLang；OriEra 把模型输出当作世界模拟
+> 的一种**预算内资源**来调度——这回答了「为什么引擎里没有 CUDA kernel」。
+
+| 层 | v0.7 契约 | 意义 |
+|---|---|---|
+| L0 | `TokenUsage.cached`：缓存命中 prompt tokens（⊆ prompt） | 前缀缓存折扣首次成为全链路词汇 |
+| L7 | `CostMeter`：成本账本（µ 货币累积器），`saved_micro` 把缓存省钱显示成钱 | 「缓存命中 ≈ 1/50 价」从营销话术变成仪表盘读数 |
+| L7 | `ProviderOptions.response_schema` → `response_format: json_schema`（非法 schema 零网络 fail-fast） | 模型输出形状的请求权交到引擎手里（per-call 等 B1） |
+| L7 | `ReasoningEffort` 经 deepseek-recipe-core 规范枚举上线 | DeepSeek 官方协议类型层首次进依赖（MIT，仅 native-http，wasm 零增量） |
+| L7 | `PROVIDER_PRESETS.caps/price` 能力与牌价元数据 | 厂商事实从代码注释升格为带日期的登记数据 |
+| L9 | **稳定前缀惯例**：system 消息对 NPC 恒定（人设+格式），世界日/剧情拍/记忆/对话全走 user 消息（Rust+JS 双侧，字节稳定是测试契约） | 咖啡馆的认知调用从「缓存零命中」变「每拍命中」——引擎替模型管住 prefill |
+| L9 | 注入用例集：玩家输入是不可信数据；三道防线 = schema/形状校验（B6）+ L2 预算帽 + 否定语义 | 对抗语料钉进测试，防回归 |
+
+一句话：**AI 的输出是概率性的，但它的账单必须是确定性的**——
+计量的归计量（cached/total），算钱的归算钱（saved/unpriced），
+形状的归形状（schema/校验），谁也不许含糊。

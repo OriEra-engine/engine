@@ -21,6 +21,15 @@ spec:
         handles in replay-identical LCG order; Nudge never coalesces
         (float-sensitive, same rule as Teleport/SetSpeed)
       note: frame-budgeted queue (deferred counter) + token metering
+    - id: oriera.infer.cache-cost.v1
+      contract: rust:oriera_infer::{CostMeter,ModelCaps,ModelPrice,ReasoningEffort,ProviderOptions}
+      stability: stable
+      note: v0.7 (PLAN-deepseek-upgrade B5/B6/A1) — prompt-cache hit
+        metering (L0 TokenUsage.cached), registered preset prices and
+        capability metadata (unverified = UNREGISTERED, no invented
+        vendor facts), response_format json_schema (invalid schema
+        fails before any network), reasoning_effort shaped via
+        deepseek-recipe-core (native-http only, wasm zero-increment)
     - id: oriera.infer.adaptive.v1
       contract: rust:oriera_infer::InferSystem
       stability: stable

@@ -195,6 +195,31 @@ test("认知系统：注入 rng 后离线台词可复现", () => {
   assert.equal(run(), run());
 });
 
+test("稳定前缀（B5）：system 跨拍字节不变，易变内容走 user", async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, o) => {
+    const b = JSON.parse(o.body);
+    calls.push({ sys: b.messages[0].content, user: b.messages[1].content });
+    return { ok: true, json: async () => ({ choices: [{ message: { content: '{"say":"好","action":"idle","mood":"neutral","remember":"","to":"客人"}' } }], usage: {} }) };
+  };
+  try {
+    const world = { turn: 0, npcs: [{ id: "zhou", name: "老周", role: "老板", description: "手冲派", mood: "neutral" }], dialogue: [], story: { day: 1, beats: [] }, guestQueue: [] };
+    const c = new CognitionSystem(
+      new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x" }),
+      new MemoryStore("test.stable"), {},
+    );
+    await c.tick(world);
+    world.story.day = 2;                       // 世界在动
+    world.dialogue.push({ speaker: "客人", to: "老周", text: "今天豆子如何？" });
+    await c.tick(world);
+    assert.equal(calls[0].sys, calls[1].sys, "system prompt 必须字节稳定（前缀缓存契约）");
+    assert.ok(!calls[1].sys.includes("世界进度"), "易变内容不得进 system");
+    assert.ok(calls[1].user.includes("第 2 世界日"), "易变内容在 user");
+    assert.ok(calls[1].user.includes("今天豆子如何"), "对话在 user");
+  } finally { globalThis.fetch = origFetch; }
+});
+
 test("导演系统：注入 ruleBeats 生效", async () => {
   const d = new DirectorSystem({ ready: false }, new MemoryStore("test.dir"), { ruleBeats: ["甲事件", "乙事件"] });
   const world = { turn: 0, dialogue: [], story: { day: 1, beats: [] } };
