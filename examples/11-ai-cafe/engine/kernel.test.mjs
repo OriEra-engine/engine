@@ -115,10 +115,12 @@ test("provider 透传 schema 为 json_schema，且优先于 json_object（B6）"
   } finally { globalThis.fetch = origFetch; }
 });
 
-test("provider 缓存命中 tokens 进 stats.cached（DeepSeek/OpenAI/Anthropic 三风格，B5）", async () => {
+test("provider 缓存命中 tokens 进 stats.cached（DeepSeek/OpenAI + 谎报钳制，B5）", async () => {
   const replies = [
     { choices: [{ message: { content: "a" } }], usage: { total_tokens: 108, prompt_tokens: 100, completion_tokens: 8, prompt_cache_hit_tokens: 92 } },
     { choices: [{ message: { content: "b" } }], usage: { total_tokens: 54, prompt_tokens: 50, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 30 } } },
+    // 谎报厂商：cached 999 > prompt 10 → 按 prompt 钳制（与 Rust 对镜）
+    { choices: [{ message: { content: "c" } }], usage: { total_tokens: 11, prompt_tokens: 10, completion_tokens: 1, prompt_cache_hit_tokens: 999 } },
   ];
   let i = 0;
   const origFetch = globalThis.fetch;
@@ -129,6 +131,22 @@ test("provider 缓存命中 tokens 进 stats.cached（DeepSeek/OpenAI/Anthropic 
     assert.equal(p.stats.cached, 92);
     await p.complete([{ role: "user", content: "x" }]);
     assert.equal(p.stats.cached, 122, "两次调用累加（92 + 30）");
+    await p.complete([{ role: "user", content: "x" }]);
+    assert.equal(p.stats.cached, 132, "谎报被钳到 prompt（122 + 10）");
+  } finally { globalThis.fetch = origFetch; }
+});
+
+test("Anthropic 方言：cache_read_input_tokens 进 stats.cached", async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ content: [{ text: "在场" }], usage: { input_tokens: 40, output_tokens: 5, cache_read_input_tokens: 25 } }),
+  });
+  try {
+    const p = new HttpChatProvider({ kind: "anthropic", key: "k", model: "claude", base: "https://x" });
+    const out = await p.complete([{ role: "user", content: "x" }]);
+    assert.equal(out, "在场");
+    assert.equal(p.stats.cached, 25);
   } finally { globalThis.fetch = origFetch; }
 });
 

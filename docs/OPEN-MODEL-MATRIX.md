@@ -30,7 +30,8 @@ image_input / prompt_cache）与**登记牌价 `price`**（整数 µ 货币单�
 - **只登记核实过的事实**：deepseek 行按 2026-10 官方 pricing 页谷时口径
   登记（V4.1-Flash：miss \$0.15 / hit \$0.003 / out \$0.60 每百万，
   峰时约 ×2）+ 2026-10-19 `/v1/models` 行情实测（deepseek-chat =
-  V4.1-Flash 别名，1M 上下文、图像输入）；openai 行按 gpt-4o-mini 公开价。
+  V4.1-Flash 别名，1M 上下文、图像输入）；openai 行按 2026-10 检索的
+  gpt-4o-mini 公开一口价登记（无峰谷）。两行均 B8 复核。
 - **未核实 = 留空**：caps 读 `UNREGISTERED`（全保守）、price 读 `None`
   （成本照计量，记 `unpriced_calls`）——不发明厂商事实。
 - **牌价是带日期的快照**：上游随时调价，B8（模型验收评测套件）落地时

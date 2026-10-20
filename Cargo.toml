@@ -54,6 +54,9 @@ ureq = { version = "2.10", default-features = false, features = ["tls"] }
 # ReasoningEffort 等），MIT。只取 core——主 crate 拖 tokenizers/jsonschema
 # 且无 feature 可关，core 仅依赖 macros+serde+serde_json，近乎零增量。
 # caret 0.2 = 锁 0.2.x，上游 0.3 升级走独立 commit 留观察窗。
+# 已知边界（2026-10-21 安全评审）：当前仅用 ReasoningEffort 的官方
+# 序列化形状（本地 as_str() 等价）——去依赖化是候选项，待创始人拍板
+# （A1 拍板的是「直接依赖官方协议层」，删除需重新拍板）。
 deepseek-recipe-core = "0.2"
 # L6 rigid backend (#80): pure Rust, Apache-2.0, 2026 roadmap targets
 # robotics accuracy. Feature-gated per crate (`rigid`).

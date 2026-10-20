@@ -334,7 +334,7 @@ impl HttpProvider {
         reader
             .take(64 * 1024)
             .read_to_end(&mut buf)
-            .map_err(|e| InferError::Network(e.to_string()))?;
+            .map_err(|e| InferError::Network(self.scrub(e.to_string())))?;
         Ok(String::from_utf8_lossy(&buf).into_owned())
     }
 
@@ -426,11 +426,29 @@ impl HttpProvider {
                 .ok_or_else(|| InferError::Parse("no content[0].text".into()))?,
         }
         .to_string();
-        let prompt = v
-            .pointer("/usage/prompt_tokens")
-            .or_else(|| v.pointer("/usage/input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        // Anthropic bills `input_tokens` and `cache_read_input_tokens`
+        // as DISJOINT slices of the prompt — normalize here so the
+        // engine-wide invariant "cached ⊆ prompt" is manufactured at the
+        // parse boundary instead of trusting the vendor's shape (the
+        // min() clamp alone would truncate real cache reads to the
+        // fresh-token count and misbill the world).
+        let (prompt, cached) = if self.dialect == Dialect::Anthropic {
+            let fresh = v
+                .pointer("/usage/input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let read = v
+                .pointer("/usage/cache_read_input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            (fresh + read, read)
+        } else {
+            let p = v
+                .pointer("/usage/prompt_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            (p, v.pointer("/usage").map_or(0, |u| usage_cached(u, p)))
+        };
         let usage = TokenUsage {
             prompt,
             completion: v
@@ -438,7 +456,7 @@ impl HttpProvider {
                 .or_else(|| v.pointer("/usage/output_tokens"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
-            cached: v.pointer("/usage").map_or(0, |u| usage_cached(u, prompt)),
+            cached,
         };
         Ok((text, usage))
     }
@@ -603,7 +621,7 @@ impl ModelProvider for HttpProvider {
             line.clear();
             let n = reader
                 .read_line(&mut line)
-                .map_err(|e| InferError::Network(e.to_string()))?;
+                .map_err(|e| InferError::Network(self.scrub(e.to_string())))?;
             if n == 0 {
                 break; // EOF before [DONE]/message_stop — take what landed
             }
@@ -650,10 +668,18 @@ impl ModelProvider for HttpProvider {
                         }
                     }
                     Some("message_start") => {
-                        usage.prompt = v
+                        // Disjoint slices, same normalization as the
+                        // blocking parse path (cached ⊆ prompt).
+                        let fresh = v
                             .pointer("/message/usage/input_tokens")
                             .and_then(Value::as_u64)
                             .unwrap_or(0);
+                        let read = v
+                            .pointer("/message/usage/cache_read_input_tokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0);
+                        usage.prompt = fresh + read;
+                        usage.cached = read;
                     }
                     Some("message_delta") => {
                         usage.completion = v
@@ -701,11 +727,29 @@ impl HttpProvider {
     fn parse_tool_reply(&self, raw: String) -> Result<ToolOutcome, InferError> {
         let v: Value =
             serde_json::from_str(&raw).map_err(|e| InferError::Parse(format!("not json: {e}")))?;
-        let prompt = v
-            .pointer("/usage/prompt_tokens")
-            .or_else(|| v.pointer("/usage/input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        // Anthropic bills `input_tokens` and `cache_read_input_tokens`
+        // as DISJOINT slices of the prompt — normalize here so the
+        // engine-wide invariant "cached ⊆ prompt" is manufactured at the
+        // parse boundary instead of trusting the vendor's shape (the
+        // min() clamp alone would truncate real cache reads to the
+        // fresh-token count and misbill the world).
+        let (prompt, cached) = if self.dialect == Dialect::Anthropic {
+            let fresh = v
+                .pointer("/usage/input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let read = v
+                .pointer("/usage/cache_read_input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            (fresh + read, read)
+        } else {
+            let p = v
+                .pointer("/usage/prompt_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            (p, v.pointer("/usage").map_or(0, |u| usage_cached(u, p)))
+        };
         let usage = TokenUsage {
             prompt,
             completion: v
@@ -713,7 +757,7 @@ impl HttpProvider {
                 .or_else(|| v.pointer("/usage/output_tokens"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
-            cached: v.pointer("/usage").map_or(0, |u| usage_cached(u, prompt)),
+            cached,
         };
         let calls: Vec<ToolCall> = match self.dialect {
             Dialect::OpenAi => v
@@ -1261,7 +1305,7 @@ mod tests {
     fn openai_tool_calls_round_trip() {
         let mock = Mock::spawn(vec![Step::Reply(
             200,
-            r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"spawn","arguments":"{\"count\":3}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":8}}"#.into(),
+            r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"spawn","arguments":"{\"count\":3}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":8,"prompt_cache_hit_tokens":12}}"#.into(),
         )]);
         let p = provider(
             ProviderConfig {
@@ -1286,6 +1330,11 @@ mod tests {
             other => panic!("expected tool calls, got {other:?}"),
         }
         assert_eq!(p.last_usage().prompt, 30);
+        assert_eq!(
+            p.last_usage().cached,
+            12,
+            "tools path meters cache hits too"
+        );
         // wire 侧:tools 词表 + tool_choice 都上链了
         let req = &mock.requests()[0];
         assert!(req.contains("\"tools\""), "tools vocabulary on the wire");
@@ -1327,7 +1376,7 @@ mod tests {
         let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"雨\"}}]}\n\n\
 data: {\"choices\":[{\"delta\":{\"content\":\"停\"}}]}\n\n\
 data: {\"choices\":[{\"delta\":{\"content\":\"了。\"}}]}\n\n\
-data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3}}\n\n\
+data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3,\"prompt_cache_hit_tokens\":7}}\n\n\
 data: [DONE]\n\n";
         let mock = Mock::spawn(vec![Step::Reply(200, sse.into())]);
         let p = provider(
@@ -1344,6 +1393,7 @@ data: [DONE]\n\n";
         assert_eq!(chunks.concat(), "雨停了。");
         assert_eq!(p.last_usage().prompt, 9);
         assert_eq!(p.last_usage().completion, 3);
+        assert_eq!(p.last_usage().cached, 7, "SSE path meters cache hits too");
         // 流式请求带了 stream 标记与 usage 开关
         let req = &mock.requests()[0];
         assert!(req.contains("\"stream\":true"));
@@ -1562,7 +1612,17 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             Duration::from_secs(5),
         );
         let _ = pa.complete(&[ChatMessage::user("x")]).unwrap();
-        assert_eq!(pa.last_usage().cached, 25);
+        // Anthropic's input_tokens (40) and cache_read (25) are disjoint:
+        // normalized prompt = 65, cached = 25 — the clamp must NOT cut
+        // the cache read down to the fresh-token count.
+        assert_eq!(
+            pa.last_usage(),
+            TokenUsage {
+                prompt: 65,
+                completion: 5,
+                cached: 25
+            }
+        );
 
         let pl = provider(
             ProviderConfig {
@@ -1607,11 +1667,19 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
         );
         let _ = p.complete(&[ChatMessage::user("x")]).unwrap();
         let sent = mock.requests()[0].clone();
-        assert!(
-            sent.contains(r#""response_format":{"type":"json_schema","json_schema":{"name":"reply","strict":true,"schema":"#),
-            "schema must ride response_format.json_schema: {sent}"
+        // Structural assertion — immune to serde_json key-order drift.
+        let body: serde_json::Value =
+            serde_json::from_str(sent.split("\r\n\r\n").nth(1).expect("http body"))
+                .expect("wire body is json");
+        let rf = &body["response_format"];
+        assert_eq!(rf["type"], "json_schema");
+        assert_eq!(rf["json_schema"]["name"], "reply");
+        assert_eq!(rf["json_schema"]["strict"], true);
+        assert_eq!(
+            rf["json_schema"]["schema"],
+            serde_json::from_str::<serde_json::Value>(schema).unwrap(),
+            "schema body must survive the round trip intact"
         );
-        assert!(sent.contains(r#""type":"object""#), "schema body missing");
         assert!(
             !sent.contains(r#""json_object""#),
             "json_object must be superseded by the schema"
@@ -1704,5 +1772,76 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             !sent.contains("reasoning_effort"),
             "disable must win: {sent}"
         );
+    }
+
+    #[test]
+    fn anthropic_with_schema_records_but_never_sends_response_format() {
+        // Anthropic 的 messages 协议没有 response_format：schema 经校验
+        // 后记录不上线（caps 行 structured_output: false 的兜底证据）。
+        let mock = Mock::spawn(vec![Step::Reply(
+            200,
+            r#"{"content":[{"type":"text","text":"好"}],"usage":{"input_tokens":1,"output_tokens":1}}"#.into(),
+        )]);
+        let p = HttpProvider::with_options(
+            ProviderConfig {
+                kind: ProviderKind::Anthropic,
+                model: "claude".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            ProviderOptions {
+                response_schema: Some(r#"{"type":"object"}"#.to_string()),
+                ..ProviderOptions::default()
+            },
+        );
+        let _ = p.complete(&[ChatMessage::user("x")]).unwrap();
+        let sent = mock.requests()[0].clone();
+        assert!(
+            !sent.contains("response_format"),
+            "anthropic must not send it: {sent}"
+        );
+    }
+
+    #[test]
+    fn usage_cached_prefers_the_unambiguous_deepseek_field() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"usage":{"prompt_tokens":50,"prompt_cache_hit_tokens":40,"prompt_tokens_details":{"cached_tokens":30},"cache_read_input_tokens":20}}"#,
+        )
+        .unwrap();
+        let u = v.pointer("/usage").unwrap();
+        assert_eq!(usage_cached(u, 50), 40);
+    }
+
+    #[test]
+    fn every_effort_variant_maps_to_the_recipe_snake_case() {
+        for (e, wire) in [
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::High, "high"),
+            (ReasoningEffort::Xhigh, "xhigh"),
+            (ReasoningEffort::Max, "max"),
+        ] {
+            let mock = Mock::spawn(vec![Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#.into(),
+            )]);
+            let p = HttpProvider::with_options(
+                ProviderConfig {
+                    kind: ProviderKind::OpenAiCompat,
+                    model: "m".into(),
+                    api_key: "k".into(),
+                    base_url: Some(mock.base_url()),
+                },
+                ProviderOptions {
+                    reasoning_effort: Some(e),
+                    ..ProviderOptions::default()
+                },
+            );
+            let _ = p.complete(&[ChatMessage::user("x")]).unwrap();
+            let sent = mock.requests()[0].clone();
+            assert!(
+                sent.contains(&format!(r#""reasoning_effort":"{wire}""#)),
+                "{e:?} wire missing: {sent}"
+            );
+        }
     }
 }

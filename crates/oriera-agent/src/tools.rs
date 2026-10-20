@@ -160,7 +160,9 @@ pub fn run_tool_agent<P: ModelProvider>(
             "你是 OriEra 世界引擎的运营导演。可以用给出的工具操作世界,
              查看执行结果与世界状态后再决定下一步;目标达成后用纯文本向玩家汇报。",
         ),
-        ChatMessage::user(user_text),
+        // 不可信输入长度帽（安全审计 P1）：玩家/调用方粘贴的超长文本
+        // 不经截断会把一次工具调用变成无上限计费。
+        ChatMessage::user(user_text.chars().take(4096).collect::<String>()),
     ];
     for _ in 0..max_rounds {
         match provider.complete_with_tools(&messages, &tools)? {

@@ -110,9 +110,11 @@ export class HttpChatProvider {
         const u = data.usage || {};
         this.stats.tokens = (this.stats.tokens || 0)
           + ((u.total_tokens ?? u.input_tokens) || 0);
-        this.stats.cached = (this.stats.cached || 0)
-          + (u.prompt_cache_hit_tokens ?? (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens)
-             ?? u.cache_read_input_tokens ?? 0);
+        // 与 Rust usage_cached 对镜：谎报厂商按 prompt 钳制，省钱额
+        // 永远不可能超过整次调用的满价。
+        const rawCached = (u.prompt_cache_hit_tokens ?? (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens)
+          ?? u.cache_read_input_tokens ?? 0);
+        this.stats.cached = (this.stats.cached || 0) + Math.min(rawCached, u.prompt_tokens ?? u.input_tokens ?? rawCached);
         return anthropic ? data.content[0].text : data.choices[0].message.content;
       } catch (e) {
         if (attempt) { this.stats.errors++; throw e; }
@@ -198,7 +200,7 @@ export class CognitionSystem {
 以 ${speaker.name} 的口吻说 1~3 句口语化的话（可引用记忆细节），严格只输出 JSON：
 {"say":"...","action":"${ACTIONS.join("|")}","mood":"${MOODS.join("|")}","remember":"≤30字本轮要点，没有则空串","to":"对话对象的名字"}`;
     const user = `世界进度：第 ${world.story.day} 世界日，${beat}
-${guest ? "刚才一位客人说：" + guest + "\n" : ""}当前你的心情：${speaker.mood}
+${guest ? "刚才一位客人说：" + String(guest).slice(0, 200) + "\n" : ""}当前你的心情：${speaker.mood}
 对话对象：「${partner.name}」（${partner.role}）。
 你的相关记忆：
 ${mems.length ? mems.map(m => `- (第${m.day}日) ${m.text}`).join("\n") : "-（暂无，可能是第一次聊这个）"}
