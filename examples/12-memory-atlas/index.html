@@ -34,6 +34,14 @@
 <button class="primary" id="record" disabled>记录这段经历</button>
 </form>
 <p id="status" role="status">正在加载 OriEra 内核…</p>
+<div class="controls"><button id="export-save" disabled>导出存档</button><button id="import-save" disabled>导入存档</button></div>
+<input id="save-file" type="file" accept=".json,application/json" hidden>
+<div id="save-preview" hidden>
+<p id="save-summary"></p>
+<div class="controls"><button id="apply-save">确认替换当前记忆</button><button id="cancel-save">取消</button></div>
+</div>
+<p id="save-status" role="status" class="note"></p>
+<p class="note">存档包含全部角色记忆与世界日期。导入将替换当前记忆，请先导出备份。文件仅在本机处理。</p>
 <p class="note">每个角色最多保存 60 条；新记忆写入后会自动召回。记忆只保存在此浏览器，重置仅影响本示例。</p>
 </section>
 </div>
@@ -44,6 +52,7 @@ const $ = id => document.getElementById(id);
 const ns = 'http://www.w3.org/2000/svg';
 try {
   const { MemoryStore, Scheduler } = await import('../11-ai-cafe/engine/kernel.js');
+  const { MAX_SAVE_BYTES, validEpisode, parseSave, serializeSave } = await import('./save-format.mjs');
   const key = 'oriera.memory-atlas.v1';
   let persistent = true;
   // Keep the engine's retrieval/retention logic; degrade only browser persistence.
@@ -53,16 +62,11 @@ try {
   }
   const memory = new DemoMemory(key);
   const names = [...$('agent').options].map(o => o.value);
-  const topics = [...$('about').options].map(o => o.value);
-  // localStorage is untrusted. Only accept this demo's bounded episode schema.
-  const valid = e => e && typeof e.text === 'string' && e.text.length <= 180
-    && topics.includes(e.about) && Number.isSafeInteger(e.turn) && e.turn >= 1 && e.turn <= 1000000
-    && Number.isSafeInteger(e.day) && e.day === e.turn
-    && Number.isInteger(e.imp) && e.imp >= 1 && e.imp <= 5;
+  // Reuse the same episode validation for local storage and portable saves.
   const saved = memory.mem;
   memory.mem = {};
   for (const name of names) {
-    if (Array.isArray(saved?.[name])) memory.mem[name] = saved[name].filter(valid).slice(-60);
+    memory.mem[name] = Array.isArray(saved?.[name]) ? saved[name].filter(validEpisode).slice(-60) : [];
   }
   function seed() {
     memory.clear();
@@ -137,8 +141,61 @@ try {
   $('memory').oninput = () => $('memory').setCustomValidity('');
   $('advance').onclick = async () => { await scheduler.tick(world); render(); };
   $('reset').onclick = () => { seed(); world.turn = latestTurn(); $('query').value = '灯塔'; $('about').value = '灯塔'; render(); };
+  let pendingSave = null;
+  let selection = 0;
+  function cancelImport() {
+    selection++;
+    pendingSave = null;
+    $('save-preview').hidden = true;
+    $('save-file').value = '';
+  }
+  $('export-save').onclick = () => {
+    try {
+      const text = serializeSave(memory.mem, world.turn);
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url; link.download = `oriera-memory-atlas-day-${world.turn}.json`;
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('save-status').textContent = '存档已导出，包含全部角色记忆与当前日期。';
+    } catch (error) { $('save-status').textContent = `导出失败：${error.message}`; }
+  };
+  $('import-save').onclick = () => {
+    cancelImport(); $('save-status').textContent = ''; $('save-file').click();
+  };
+  $('save-file').onchange = async () => {
+    const file = $('save-file').files[0];
+    cancelImport();
+    if (!file) return;
+    const token = selection;
+    try {
+      if (file.size > MAX_SAVE_BYTES) throw new Error('存档不能超过 256 KiB');
+      const data = parseSave(await file.text());
+      if (token !== selection) return;
+      pendingSave = data;
+      const count = Object.values(data.memories).reduce((n, entries) => n + entries.length, 0);
+      $('save-summary').textContent = `第 ${data.turn} 日 · ${count} 段记忆。确认后替换全部角色的当前记忆。`;
+      $('save-preview').hidden = false;
+      $('save-status').textContent = '校验通过，等待确认。';
+      $('apply-save').focus();
+    } catch (error) {
+      if (token === selection) $('save-status').textContent = `导入失败：${error.message}。当前记忆未改动。`;
+    }
+  };
+  $('cancel-save').onclick = () => {
+    cancelImport(); $('save-status').textContent = '已取消，当前记忆未改动。'; $('import-save').focus();
+  };
+  $('apply-save').onclick = () => {
+    if (!pendingSave) return;
+    memory.mem = pendingSave.memories;
+    world.turn = pendingSave.turn;
+    memory._save();
+    cancelImport(); render();
+    $('save-status').textContent = persistent ? '存档已导入。' : '存档已导入本次会话；浏览器存储不可用，请导出备份。';
+    $('import-save').focus();
+  };
   render();
-  for (const id of ['advance', 'reset', 'recall', 'record']) $(id).disabled = false;
+  for (const id of ['advance', 'reset', 'recall', 'record', 'export-save', 'import-save']) $(id).disabled = false;
 } catch (error) {
   $('status').textContent = '内核加载失败。请在仓库根目录运行 python3 -m http.server 8000，再通过 localhost 打开本页。';
 }
