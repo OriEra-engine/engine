@@ -36,7 +36,7 @@ OriEra 不是又一个游戏引擎。它是一个 **AI 原生、虚实融合、�
 | L2 | 核心系统：帧调度、算力分拨、确定性框架 | `crates/oriera-core` | ✅ 骨架 | `BeginFrame` `SubmitTask` `ReportBudget` `BudgetAllocator` |
 | L3 | 对象模型：ECS、资源单例 | `crates/oriera-ecs` | ✅ 可用 | `Spawn` `Query` `Publish`(规划) `Serialize`(规划) |
 | L4 | 资产管线：句柄注册表 | `crates/oriera-asset` | ✅ 骨架 | `ResolveAsset`(哈希即身份，规划) `Prefetch` `Evict` |
-| L5 | 渲染内核：Pass 图、帧提交 | `crates/oriera-render` | ✅ 骨架 | `BuildFrameGraph` `AddPass` `SetQuality` |
+| L5 | 渲染内核：Pass 图、帧提交 | `crates/oriera-render` | ✅ 骨架+GPU 闭环* | `BuildFrameGraph` `AddPass` `SetQuality` `render_mesh`* |
 | L6 | 子系统服务：物理/动画/音频/UI/网络同步 | `crates/oriera-subsys` | ✅ 物理 | `StepPhysics` `SampleAnimation`(规划) `SyncState`(规划) |
 | L7 | AI 推理运行时：命令执行、端云路由 | `crates/oriera-infer` | ✅ 可用 | `SubmitInference` `ReportInferenceMetrics` |
 | L8 | 生成式 AI：文生图 + 文生 3D + 文生视频 | `crates/oriera-genai` | ✅ 表达链路已通（RFC 0001 + demo 13，2028 做深） | `RequestGeneration` `ValidateAsset` |
@@ -96,6 +96,13 @@ v0.2 落地 `insert_named` / `get_named` / `unload`：命名资产热替换，�
 Pass 图（BuildFrameGraph/AddPass）为目标形态，当前 PC 端为统计式渲染系统。
 v0.2 落地 `Quality` + `observe_frame` 迟滞调速器：AI 一重就掉帧时自动降 draw batching（1/4/16），
 有余力再缓慢升档——上层以为画质是恒定的。能力位图已含 3DGS 神经渲染位（未来混合几何）。
+
+v0.3 落地 **wgpu 最小无头闭环**（feature `render-wgpu`，按 GOVERNANCE 默认关）：
+`gpu::HeadlessRenderer` 走 真 GPU pass（WGSL 顶点渐变着色）→ 索引绘制 → 像素回读，
+配合 L4 `oriera_asset::glb::decode_glb_mesh`（GLB POSITION/索引最小解码，深校验）打通
+「GLB 文件 → 真实 mesh → GPU 光栅化 → BMP 出图」全链路。
+注意：windows-gnu（MinGW）工具链下 wgpu DX12/Vulkan 适配器枚举实测崩溃，
+默认后端被 cfg 钳制为 GL（`WGPU_BACKEND` 环境变量可覆盖）；MSVC 工具链不受此限。
 
 ### L6 · oriera-subsys — 子系统服务
 
@@ -160,7 +167,7 @@ InferSystem(L7)   执行命令队列（预算 ×throttle）→ 生成/清除实�
 GenAiSystem(L8)   限量轮询生成任务 → 校验 → PendingSwaps + AssetLanded 事件
                   （壳层随后 hot_swap::apply_pending 把结果落入 L4 命名资产）
 PhysicsSystem(L6) for_each2_mut::<Position,Velocity> 积分 + 边界反弹
-RenderSystem(L5)  统计可见 Position → draw_calls（真实 Pass 图在 ROADMAP）
+RenderSystem(L5)  统计可见 Position → draw_calls（真 GPU 光栅化已在 render-wgpu feature 闭环，Pass 图在 ROADMAP）
   ▼
 调度器回报 frame_ms + system_timings()（L2 观测埋点）
 ```

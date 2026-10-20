@@ -11,6 +11,8 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
+pub mod glb;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AssetHandle(pub u64);
 

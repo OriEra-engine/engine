@@ -45,7 +45,10 @@
 ## 三、已知不稳定边界(诚实清单)
 
 以下能力**尚未达到上述承诺**,使用前须知:
-- L5 渲染为计数占位(无 GPU pass);Rust 引擎与浏览器 demo 之间无编译关系;
+- L5 默认构建仍为计数占位;真 GPU 光栅化已通过 `render-wgpu` feature 无头闭环
+  (wgpu,本机 Intel GL 后端实测出图;windows-gnu 下 DX12/Vulkan 枚举崩溃故默认钳制 GL),
+  但 Pass 图/材质/纹理/相机矩阵尚未落地,且 Rust 引擎与浏览器 demo 之间仍无编译关系;
 - L7 `complete()` 同步阻塞,真 LLM 延迟会阻塞帧(异步化排在 RFC 0002 v0.5);
 - `platforms/web` 为 9 行壳,无 wasm 产物;
-- L8 生成的 GLB 落地后无 Rust 侧解码器消费。
+- GLB 已有 Rust 侧最小解码器(`oriera-asset::glb`,POSITION/索引+深校验,11 单测),
+  但材质/纹理/蒙皮未解码,L8 生成物当前仍只消费几何。

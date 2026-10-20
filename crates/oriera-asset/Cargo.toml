@@ -11,3 +11,4 @@ name = "oriera_asset"
 path = "src/lib.rs"
 
 [dependencies]
+serde_json.workspace = true

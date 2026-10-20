@@ -15,3 +15,18 @@ oriera-common.workspace = true
 oriera-core.workspace = true
 oriera-ecs.workspace = true
 tracing.workspace = true
+wgpu = { version = "30", optional = true }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+
+[features]
+# L5 wgpu 最小无头闭环(GOVERNANCE:不稳的默认关)。真 GPU pass/真 mesh/像素回读。
+render-wgpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+
+[[example]]
+name = "glb_headless"
+required-features = ["render-wgpu"]
+
+[dev-dependencies]
+# 仅供 glb_headless 示例:解码 GLB → 渲染输入(仅路径依赖,无环)
+oriera-asset.workspace = true
