@@ -51,7 +51,7 @@ fn main() {
     )
     .expect("agent loop converges");
     println!("🤖 导演汇报:{report}");
-    println!("");
+    println!();
     println!("🌍 世界实体数:{}", world.len());
 
     // 顺手读一次世界状态,证明循环的每一步都真实落地
@@ -59,6 +59,6 @@ fn main() {
     infer.run(&ctx(), &mut world);
     let stats = world.resource::<oriera_infer::Stats>().copied();
     println!("📊 Stats 资源:{stats:?}");
-    println!("");
+    println!();
     println!("✅ 多轮工具代理完成:模型自主决定调什么、看结果、何时收口。");
 }
