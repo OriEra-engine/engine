@@ -55,7 +55,7 @@ render(L5) → ecs(L3) → core(L2)
 pal(L1)：只被平台壳（platforms/*）引用，不被上层 crate 直接依赖
 ```
 
-五端入口在 `platforms/`：`pc`（可运行）、`web`（Wasm）、`ar_glasses`、`bci_reserved`（仅预留 bit 位）。
+五端入口在 `platforms/`：`pc`（可运行）、`web`（Wasm 壳）；`ar_glasses`、`bci_reserved` 为规划项（目录尚未创建，bit 位已预留）。
 
 ## 4. 逐层详解
 
@@ -229,7 +229,7 @@ CI 门禁分两步走——**静态部分已落地**（`scripts/check_manifests.
 
 ```
 crates/          L0–L9 各层实现（见上表，含 L8 oriera-genai）
-platforms/       五端入口：pc / web / ar_glasses / bci_reserved
+platforms/       五端入口：pc / web（ar_glasses、bci_reserved 规划中，目录未建）
 examples/        浏览器可玩的分层演示（01–11 + _template，见首页 index.html）
 contracts/       跨语言接口契约（Protobuf：pal/v1、genai/v1）
 manifests/       每层的 LayerManifest（provides/requires/budgets/degrade）

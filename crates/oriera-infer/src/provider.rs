@@ -125,6 +125,20 @@ impl ErrorClass {
             ErrorClass::Provider => "provider",
         }
     }
+
+    /// Retry/fallback policy primitive (RFC 0002 P0①): transport-transient
+    /// classes are worth backing off and retrying — or falling through the
+    /// slot's chain; policy refusals and config/billing failures are not,
+    /// because retrying the same payload cannot change the outcome.
+    pub fn retryable(self) -> bool {
+        matches!(
+            self,
+            ErrorClass::RateLimited
+                | ErrorClass::Server
+                | ErrorClass::Network
+                | ErrorClass::Timeout
+        )
+    }
 }
 
 impl InferError {
@@ -174,6 +188,15 @@ pub trait ModelProvider: Send + Sync {
     fn last_usage(&self) -> TokenUsage {
         TokenUsage::ZERO
     }
+
+    /// Why this provider is a stand-in rather than the configured
+    /// backend, if it is one. **Degrade must be visible**: hosts surface
+    /// this in status UI and metrics instead of letting a silent
+    /// fallback pass for the real model (AI-NATIVE: absence degrades,
+    /// but never silently).
+    fn degradation_note(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Deterministic offline backend: picks a canned line by keyword.
@@ -181,6 +204,10 @@ pub trait ModelProvider: Send + Sync {
 pub struct RuleProvider {
     pub id: &'static str,
     usage: std::sync::Mutex<TokenUsage>,
+    /// Set when this instance stands in for a configured remote provider
+    /// that this build cannot serve (native-http feature off) — surfaced
+    /// via [`ModelProvider::degradation_note`].
+    degrade_note: Option<String>,
 }
 
 impl Default for RuleProvider {
@@ -188,6 +215,7 @@ impl Default for RuleProvider {
         Self {
             id: "rule-v1",
             usage: std::sync::Mutex::new(TokenUsage::ZERO),
+            degrade_note: None,
         }
     }
 }
@@ -195,6 +223,19 @@ impl Default for RuleProvider {
 impl RuleProvider {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A rule backend standing in for the configured `from` provider;
+    /// `degradation_note()` tells hosts they are not talking to the
+    /// configured model.
+    pub fn degraded(from: &str) -> Self {
+        Self {
+            degrade_note: Some(format!(
+                "configured provider '{from}' unavailable in this build \
+                 (native-http feature off); serving deterministic rule backend"
+            )),
+            ..Self::default()
+        }
     }
 
     /// Deterministic stand-in for tokenizer output: chars/4 per side.
@@ -209,6 +250,10 @@ impl RuleProvider {
 impl ModelProvider for RuleProvider {
     fn id(&self) -> &str {
         self.id
+    }
+
+    fn degradation_note(&self) -> Option<&str> {
+        self.degrade_note.as_deref()
     }
 
     fn complete(&self, messages: &[ChatMessage]) -> Result<String, InferError> {
@@ -295,6 +340,63 @@ mod tests {
         ] {
             assert_eq!(class.id(), id);
         }
+    }
+
+    #[test]
+    fn retry_policy_splits_transient_from_permanent() {
+        for transient in [
+            ErrorClass::RateLimited,
+            ErrorClass::Server,
+            ErrorClass::Network,
+            ErrorClass::Timeout,
+        ] {
+            assert!(transient.retryable(), "{transient:?} should be retryable");
+        }
+        for permanent in [
+            ErrorClass::ContentModeration,
+            ErrorClass::Auth,
+            ErrorClass::Quota,
+            ErrorClass::Provider,
+        ] {
+            assert!(!permanent.retryable(), "{permanent:?} must not retry");
+        }
+    }
+
+    #[test]
+    fn degrade_is_visible_not_silent() {
+        // 规则后端本身没有降级说明
+        assert_eq!(RuleProvider::new().degradation_note(), None);
+        // 顶替远端厂商时必须可查询到降级事实(含被顶替者 id)
+        let stand_in = RuleProvider::degraded("zhipu");
+        let note = stand_in
+            .degradation_note()
+            .expect("degraded must be visible");
+        assert!(note.contains("zhipu"));
+        assert!(note.contains("rule backend"));
+        // 普通后端走默认实现:None
+        struct Bare;
+        impl ModelProvider for Bare {
+            fn id(&self) -> &str {
+                "bare"
+            }
+            fn complete(&self, _m: &[ChatMessage]) -> Result<String, InferError> {
+                Ok(String::new())
+            }
+        }
+        assert_eq!(Bare.degradation_note(), None);
+    }
+
+    #[cfg(not(feature = "native-http"))]
+    #[test]
+    fn factory_degraded_provider_carries_the_note() {
+        let cfg = ProviderConfig {
+            kind: ProviderKind::Zhipu,
+            model: "glm-4-flash".into(),
+            api_key: String::new(),
+            base_url: None,
+        };
+        let p = create_provider(&cfg);
+        assert!(p.degradation_note().unwrap_or_default().contains("zhipu"));
     }
 
     #[test]
@@ -620,12 +722,13 @@ pub fn create_provider_with_options(
         #[cfg(not(feature = "native-http"))]
         kind => {
             let _ = opts; // options take effect once native-http lands
-            tracing::info!(
+            tracing::warn!(
                 provider = kind.id(),
                 model = %cfg.model,
-                "L7 remote provider selected; options recorded, native HTTP adapter pending"
+                "L7 DEGRADED: remote provider requested but native-http is off; \
+                 serving rule backend — surface degradation_note(), never pass silently"
             );
-            std::sync::Arc::new(RuleProvider::new())
+            std::sync::Arc::new(RuleProvider::degraded(kind.id()))
         }
     }
 }
@@ -644,12 +747,13 @@ pub fn create_provider(cfg: &ProviderConfig) -> std::sync::Arc<dyn ModelProvider
         }
         #[cfg(not(feature = "native-http"))]
         kind => {
-            tracing::info!(
+            tracing::warn!(
                 provider = kind.id(),
                 model = %cfg.model,
-                "L7 remote provider selected; native HTTP adapter pending — browser kernel serves it"
+                "L7 DEGRADED: remote provider requested but native-http is off; \
+                 serving rule backend — surface degradation_note(), never pass silently"
             );
-            std::sync::Arc::new(RuleProvider::new())
+            std::sync::Arc::new(RuleProvider::degraded(kind.id()))
         }
     }
 }
