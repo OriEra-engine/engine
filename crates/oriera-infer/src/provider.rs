@@ -84,6 +84,81 @@ impl fmt::Display for InferError {
 
 impl std::error::Error for InferError {}
 
+/// Vendor-agnostic error class (RFC-3 partner review, P0 item 1):
+/// routing tables, host logs and partner dashboards fold every failure
+/// into one of these public buckets instead of vendor-specific codes.
+/// The mapping is derived from transport facts only — it can never
+/// leak key material because `Status::detail` is scrubbed upstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorClass {
+    /// HTTP 429 / provider busy — back off, then retry or fall through
+    /// the slot's chain.
+    RateLimited,
+    /// The provider refused the content (policy / 合规). Not retryable
+    /// with the same payload; degrade, never crash.
+    ContentModeration,
+    /// 401/403 — key invalid or lacks scope; a config problem.
+    Auth,
+    /// 402 / billing — quota or balance exhausted.
+    Quota,
+    /// 5xx — provider-side fault; safe to fall through the chain.
+    Server,
+    /// DNS/TCP/TLS never reached the far side.
+    Network,
+    /// Deadline hit; a compute-budget signal, not a fault.
+    Timeout,
+    /// Everything else (parse garbage, config errors, unclassified 4xx).
+    Provider,
+}
+
+impl ErrorClass {
+    /// Stable id for metrics labels (`oriera_infer_error{class=...}`).
+    pub fn id(self) -> &'static str {
+        match self {
+            ErrorClass::RateLimited => "rate_limited",
+            ErrorClass::ContentModeration => "content_moderation",
+            ErrorClass::Auth => "auth",
+            ErrorClass::Quota => "quota",
+            ErrorClass::Server => "server",
+            ErrorClass::Network => "network",
+            ErrorClass::Timeout => "timeout",
+            ErrorClass::Provider => "provider",
+        }
+    }
+}
+
+impl InferError {
+    /// Fold into the public [`ErrorClass`]. Only HTTP status plus
+    /// scrubbed-detail keywords participate — vendor-specific codes are
+    /// mapped to `Status` inside adapters, so this stays stable across
+    /// providers.
+    pub fn class(&self) -> ErrorClass {
+        match self {
+            InferError::Timeout => ErrorClass::Timeout,
+            InferError::Network(_) => ErrorClass::Network,
+            InferError::Parse(_) | InferError::Provider(_) => ErrorClass::Provider,
+            InferError::Status { code, detail } => match code {
+                429 => ErrorClass::RateLimited,
+                401 | 403 => ErrorClass::Auth,
+                402 => ErrorClass::Quota,
+                500..=599 => ErrorClass::Server,
+                400..=499 if detail_says_moderation(detail) => ErrorClass::ContentModeration,
+                _ => ErrorClass::Provider,
+            },
+        }
+    }
+}
+
+/// Keyword probe on the already-redacted `Status::detail`; catches the
+/// common policy-refusal phrasings (incl. the 1301-style vendor codes
+/// surfaced in bodies) without coupling to any single vendor.
+fn detail_says_moderation(detail: &str) -> bool {
+    let d = detail.to_ascii_lowercase();
+    ["content", "moderation", "safety", "敏感", "违规", "1301"]
+        .iter()
+        .any(|k| d.contains(k))
+}
+
 /// The model boundary every consumer depends on (L7 contract,
 /// `oriera.infer.provider.v1`).
 pub trait ModelProvider: Send + Sync {
@@ -169,6 +244,58 @@ impl ModelProvider for RuleProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_classes_fold_transport_facts() {
+        let status = |code: u16, detail: &str| InferError::Status {
+            code,
+            detail: detail.into(),
+        };
+        assert_eq!(status(429, "busy").class(), ErrorClass::RateLimited);
+        assert_eq!(status(401, "bad key").class(), ErrorClass::Auth);
+        assert_eq!(status(403, "forbidden").class(), ErrorClass::Auth);
+        assert_eq!(status(402, "balance").class(), ErrorClass::Quota);
+        assert_eq!(status(500, "boom").class(), ErrorClass::Server);
+        assert_eq!(status(503, "down").class(), ErrorClass::Server);
+        assert_eq!(
+            status(400, "prompt violates content policy").class(),
+            ErrorClass::ContentModeration
+        );
+        assert_eq!(
+            status(400, "1301: 敏感内容").class(),
+            ErrorClass::ContentModeration
+        );
+        assert_eq!(status(404, "no such model").class(), ErrorClass::Provider);
+        assert_eq!(InferError::Timeout.class(), ErrorClass::Timeout);
+        assert_eq!(
+            InferError::Network("dns".into()).class(),
+            ErrorClass::Network
+        );
+        assert_eq!(
+            InferError::Parse("garbage".into()).class(),
+            ErrorClass::Provider
+        );
+        assert_eq!(
+            InferError::Provider("cfg".into()).class(),
+            ErrorClass::Provider
+        );
+    }
+
+    #[test]
+    fn error_class_ids_are_stable_and_snake_case() {
+        for (class, id) in [
+            (ErrorClass::RateLimited, "rate_limited"),
+            (ErrorClass::ContentModeration, "content_moderation"),
+            (ErrorClass::Auth, "auth"),
+            (ErrorClass::Quota, "quota"),
+            (ErrorClass::Server, "server"),
+            (ErrorClass::Network, "network"),
+            (ErrorClass::Timeout, "timeout"),
+            (ErrorClass::Provider, "provider"),
+        ] {
+            assert_eq!(class.id(), id);
+        }
+    }
 
     #[test]
     fn rule_provider_is_deterministic_and_keyworded() {
