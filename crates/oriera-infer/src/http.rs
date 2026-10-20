@@ -26,6 +26,13 @@
 //!   else: never in logs, never in error details (scrubbed, including
 //!   the request URL ureq embeds in transport messages), never in
 //!   metrics ids beyond `kind:model`.
+//!
+//! v0.7 (PLAN-deepseek-upgrade): B5 parses the providers' prompt-cache
+//! hit counts into `TokenUsage::cached` (all three wire paths: blocking,
+//! tools, SSE); B6 adds `response_format: json_schema` gated in the wire
+//! builder (a malformed schema fails before any network, on every path);
+//! A1 shapes `reasoning_effort` through `deepseek-recipe-core`'s
+//! canonical enum.
 
 // Native-only feature: the wasm channel is the kernel.js mirror, and
 // ureq does not compile for wasm targets — fail fast with a message
@@ -36,10 +43,40 @@ compile_error!(
      kernel.js HttpChatProvider mirror (examples/11-ai-cafe/engine/kernel.js)"
 );
 
+/// Our dial maps 1:1 onto the recipe's canonical wire enum (A1) — the
+/// copy exists only so the crate stays dependency-free below the
+/// `native-http` feature.
+impl From<ReasoningEffort> for RecipeEffort {
+    fn from(e: ReasoningEffort) -> Self {
+        match e {
+            ReasoningEffort::Low => RecipeEffort::Low,
+            ReasoningEffort::High => RecipeEffort::High,
+            ReasoningEffort::Xhigh => RecipeEffort::Xhigh,
+            ReasoningEffort::Max => RecipeEffort::Max,
+        }
+    }
+}
+
+/// B5: cache-hit prompt tokens, three vendor styles — DeepSeek
+/// `prompt_cache_hit_tokens` first (unambiguous), then OpenAI's nested
+/// details, then Anthropic's cache read. `v` is the usage object (or the
+/// whole payload — pointer paths are root-relative either way for the
+/// first hop `/usage/...`; callers pass the right root). Clamped into
+/// the prompt: a lying vendor is truncated, never propagated.
+fn usage_cached(v: &Value, prompt: u64) -> u64 {
+    v.pointer("/prompt_cache_hit_tokens")
+        .or_else(|| v.pointer("/prompt_tokens_details/cached_tokens"))
+        .or_else(|| v.pointer("/cache_read_input_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min(prompt)
+}
+
 use crate::provider::{
-    ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, ProviderOptions, Role,
-    ToolCall, ToolDef, ToolOutcome,
+    ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, ProviderOptions,
+    ReasoningEffort, Role, ToolCall, ToolDef, ToolOutcome,
 };
+use deepseek_recipe_core::conversation::ReasoningEffort as RecipeEffort;
 use oriera_common::TokenUsage;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read};
@@ -141,7 +178,7 @@ impl HttpProvider {
         self.url.starts_with("http://127.0.0.1") || self.url.starts_with("http://localhost")
     }
 
-    fn build_request(&self, messages: &[ChatMessage]) -> String {
+    fn build_request(&self, messages: &[ChatMessage]) -> Result<String, InferError> {
         self.build_request_ex(messages, None, false)
     }
 
@@ -151,7 +188,7 @@ impl HttpProvider {
         messages: &[ChatMessage],
         tools: Option<&[crate::provider::ToolDef]>,
         stream: bool,
-    ) -> String {
+    ) -> Result<String, InferError> {
         let mut body: Value = match self.dialect {
             Dialect::OpenAi => json!({
                 "model": self.cfg.model,
@@ -184,16 +221,50 @@ impl HttpProvider {
                 })
             }
         };
+        // B6: a malformed schema is a CONFIG error — it fails here,
+        // before any network, before any key is spent (blocking,
+        // tools and SSE paths all route through this builder, so one
+        // gate covers every road).
+        let schema: Option<Value> = match self.options.response_schema.as_deref() {
+            None => None,
+            Some(raw) => match serde_json::from_str(raw) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    return Err(InferError::Provider(format!(
+                        "response_schema is not valid JSON: {e}"
+                    )))
+                }
+            },
+        };
         match self.dialect {
             Dialect::OpenAi => {
                 if let Some(seed) = self.options.seed {
                     body["seed"] = json!(seed);
                 }
                 if self.options.thinking_disabled {
+                    // The explicit off-switch wins over the effort dial
+                    // (semantic exclusivity, documented on ProviderOptions).
                     body["thinking"] = json!({ "type": "disabled" });
+                } else if let Some(effort) = self.options.reasoning_effort {
+                    // A1: the recipe's canonical effort dial on the wire.
+                    body["reasoning_effort"] =
+                        serde_json::to_value(RecipeEffort::from(effort)).unwrap_or(Value::Null);
                 }
-                if self.options.json_mode {
-                    body["response_format"] = json!({ "type": "json_object" });
+                // B6: a schema supersedes plain json mode (json_object ⊆
+                // json_schema). Anthropic has no response_format — a
+                // configured schema is validated above but recorded, not
+                // sent (caps mark the row structured_output: false).
+                match schema.as_ref() {
+                    Some(s) => {
+                        body["response_format"] = json!({
+                            "type": "json_schema",
+                            "json_schema": { "name": "reply", "strict": true, "schema": s },
+                        });
+                    }
+                    None if self.options.json_mode => {
+                        body["response_format"] = json!({ "type": "json_object" });
+                    }
+                    None => {}
                 }
                 if let Some(tools) = tools.filter(|t| !t.is_empty()) {
                     body["tools"] = Value::Array(
@@ -240,7 +311,7 @@ impl HttpProvider {
                 }
             }
         }
-        body.to_string()
+        Ok(body.to_string())
     }
 
     fn apply_headers(&self, req: ureq::Request) -> ureq::Request {
@@ -355,17 +426,19 @@ impl HttpProvider {
                 .ok_or_else(|| InferError::Parse("no content[0].text".into()))?,
         }
         .to_string();
+        let prompt = v
+            .pointer("/usage/prompt_tokens")
+            .or_else(|| v.pointer("/usage/input_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let usage = TokenUsage {
-            prompt: v
-                .pointer("/usage/prompt_tokens")
-                .or_else(|| v.pointer("/usage/input_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
+            prompt,
             completion: v
                 .pointer("/usage/completion_tokens")
                 .or_else(|| v.pointer("/usage/output_tokens"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
+            cached: v.pointer("/usage").map_or(0, |u| usage_cached(u, prompt)),
         };
         Ok((text, usage))
     }
@@ -469,7 +542,7 @@ impl ModelProvider for HttpProvider {
                 "no api key configured — the key only ever enters via the shell (env/UI), never the engine".into(),
             ));
         }
-        let body = self.build_request(messages);
+        let body = self.build_request(messages)?;
         // Zero retries by design; one immediate exception for a
         // non-timeout transport blip (design §5, widened — see module
         // docs). Status/Parse/Timeout never retry. If the retry itself
@@ -507,7 +580,8 @@ impl ModelProvider for HttpProvider {
                 "no api key configured — the key only ever enters via the shell (env/UI), never the engine".into(),
             ));
         }
-        let raw = self.post_json(&self.build_request_ex(messages, Some(tools), false))?;
+        let body = self.build_request_ex(messages, Some(tools), false)?;
+        let raw = self.post_json(&body)?;
         self.parse_tool_reply(raw)
     }
 
@@ -519,7 +593,7 @@ impl ModelProvider for HttpProvider {
                 "no api key configured — the key only ever enters via the shell (env/UI), never the engine".into(),
             ));
         }
-        let body = self.build_request_ex(messages, None, true);
+        let body = self.build_request_ex(messages, None, true)?;
         let resp = self.send(&body)?;
         let mut reader = BufReader::new(resp.into_reader());
         let mut chunks: Vec<String> = Vec::new();
@@ -555,15 +629,17 @@ impl ModelProvider for HttpProvider {
                         }
                     }
                     if let Some(u) = v.pointer("/usage").filter(|u| u.is_object()) {
+                        let prompt = u
+                            .pointer("/prompt_tokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0);
                         usage = TokenUsage {
-                            prompt: u
-                                .pointer("/prompt_tokens")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0),
+                            prompt,
                             completion: u
                                 .pointer("/completion_tokens")
                                 .and_then(Value::as_u64)
                                 .unwrap_or(0),
+                            cached: usage_cached(u, prompt),
                         };
                     }
                 }
@@ -625,17 +701,19 @@ impl HttpProvider {
     fn parse_tool_reply(&self, raw: String) -> Result<ToolOutcome, InferError> {
         let v: Value =
             serde_json::from_str(&raw).map_err(|e| InferError::Parse(format!("not json: {e}")))?;
+        let prompt = v
+            .pointer("/usage/prompt_tokens")
+            .or_else(|| v.pointer("/usage/input_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let usage = TokenUsage {
-            prompt: v
-                .pointer("/usage/prompt_tokens")
-                .or_else(|| v.pointer("/usage/input_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
+            prompt,
             completion: v
                 .pointer("/usage/completion_tokens")
                 .or_else(|| v.pointer("/usage/output_tokens"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
+            cached: v.pointer("/usage").map_or(0, |u| usage_cached(u, prompt)),
         };
         let calls: Vec<ToolCall> = match self.dialect {
             Dialect::OpenAi => v
@@ -834,7 +912,8 @@ mod tests {
             p.last_usage(),
             TokenUsage {
                 prompt: 12,
-                completion: 3
+                completion: 3,
+                cached: 0
             }
         );
 
@@ -889,7 +968,8 @@ mod tests {
             p.last_usage(),
             TokenUsage {
                 prompt: 7,
-                completion: 2
+                completion: 2,
+                cached: 0
             }
         );
 
@@ -1075,6 +1155,7 @@ mod tests {
                 seed: Some(7),
                 thinking_disabled: true,
                 json_mode: true,
+                ..ProviderOptions::default()
             },
         );
         with.set_timeouts_for_test(Duration::from_secs(5));
@@ -1409,5 +1490,219 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             Err(InferError::Parse(msg)) => assert!(msg.contains("no text deltas")),
             other => panic!("expected Parse error, got {other:?}"),
         }
+    }
+
+    // ---- v0.7: B5 cache accounting / B6 schema / A1 effort (PLAN-deepseek-upgrade) ----
+
+    #[test]
+    fn deepseek_style_cache_hits_land_in_token_usage_cached() {
+        let mock = Mock::spawn(vec![Step::Reply(
+            200,
+            r#"{"choices":[{"message":{"content":"缓存命中"}}],"usage":{"prompt_tokens":100,"completion_tokens":8,"prompt_cache_hit_tokens":92}}"#.into(),
+        )]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "deepseek-chat".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let _ = p.complete(&[ChatMessage::user("x")]).unwrap();
+        assert_eq!(
+            p.last_usage(),
+            TokenUsage {
+                prompt: 100,
+                completion: 8,
+                cached: 92
+            }
+        );
+    }
+
+    #[test]
+    fn openai_style_nested_cached_tokens_parse_too() {
+        let mock = Mock::spawn(vec![Step::Reply(
+            200,
+            r#"{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":50,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":30}}}"#.into(),
+        )]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "gpt-4o-mini".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let _ = p.complete(&[ChatMessage::user("x")]).unwrap();
+        assert_eq!(p.last_usage().cached, 30);
+        assert_eq!(p.last_usage().billed_prompt(), 20);
+    }
+
+    #[test]
+    fn anthropic_cache_read_parses_and_a_lying_vendor_is_clamped() {
+        let mock = Mock::spawn(vec![
+            Step::Reply(
+                200,
+                r#"{"content":[{"type":"text","text":"在场"}],"usage":{"input_tokens":40,"output_tokens":5,"cache_read_input_tokens":25}}"#.into(),
+            ),
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"content":"谎报"}}],"usage":{"prompt_tokens":10,"completion_tokens":1,"prompt_cache_hit_tokens":999}}"#.into(),
+            ),
+        ]);
+        let pa = provider(
+            ProviderConfig {
+                kind: ProviderKind::Anthropic,
+                model: "claude".into(),
+                api_key: "test-key-a".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let _ = pa.complete(&[ChatMessage::user("x")]).unwrap();
+        assert_eq!(pa.last_usage().cached, 25);
+
+        let pl = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let _ = pl.complete(&[ChatMessage::user("x")]).unwrap();
+        assert_eq!(pl.last_usage().cached, 10, "cached > prompt is clamped");
+    }
+
+    #[test]
+    fn schema_reaches_the_wire_as_json_schema_and_supersedes_json_mode() {
+        let mock = Mock::spawn(vec![
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"content":"{}"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#.into(),
+            ),
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"content":"{}"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#.into(),
+            ),
+        ]);
+        let cfg = ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            model: "deepseek-chat".into(),
+            api_key: "test-key".into(),
+            base_url: Some(mock.base_url()),
+        };
+        let schema =
+            r#"{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}"#;
+        let p = HttpProvider::with_options(
+            cfg.clone(),
+            ProviderOptions {
+                json_mode: true,
+                response_schema: Some(schema.to_string()),
+                ..ProviderOptions::default()
+            },
+        );
+        let _ = p.complete(&[ChatMessage::user("x")]).unwrap();
+        let sent = mock.requests()[0].clone();
+        assert!(
+            sent.contains(r#""response_format":{"type":"json_schema","json_schema":{"name":"reply","strict":true,"schema":"#),
+            "schema must ride response_format.json_schema: {sent}"
+        );
+        assert!(sent.contains(r#""type":"object""#), "schema body missing");
+        assert!(
+            !sent.contains(r#""json_object""#),
+            "json_object must be superseded by the schema"
+        );
+
+        // Plain json_mode (no schema) still sends the old object form.
+        let q = HttpProvider::with_options(
+            cfg,
+            ProviderOptions {
+                json_mode: true,
+                ..ProviderOptions::default()
+            },
+        );
+        let _ = q.complete(&[ChatMessage::user("x")]).unwrap();
+        assert!(mock.requests()[1].contains(r#""json_object""#));
+    }
+
+    #[test]
+    fn invalid_schema_fails_before_any_network_or_key_spend() {
+        // Zero steps: the mock serves no connections — any request would
+        // hang the server thread, so passing means we never dialed.
+        let mock = Mock::spawn(vec![]);
+        let p = HttpProvider::with_options(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            ProviderOptions {
+                response_schema: Some("{not json".to_string()),
+                ..ProviderOptions::default()
+            },
+        );
+        match p.complete(&[ChatMessage::user("x")]) {
+            Err(InferError::Provider(m)) => assert!(m.contains("response_schema")),
+            other => panic!("expected config-level Provider error, got {other:?}"),
+        }
+        assert_eq!(mock.requests().len(), 0, "no network may be touched");
+    }
+
+    #[test]
+    fn reasoning_effort_rides_the_recipe_field_and_disable_wins() {
+        let mock = Mock::spawn(vec![
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"content":"a"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#.into(),
+            ),
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"content":"b"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#.into(),
+            ),
+        ]);
+        let cfg = ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            model: "deepseek-chat".into(),
+            api_key: "test-key".into(),
+            base_url: Some(mock.base_url()),
+        };
+        let p = HttpProvider::with_options(
+            cfg.clone(),
+            ProviderOptions {
+                reasoning_effort: Some(ReasoningEffort::Low),
+                ..ProviderOptions::default()
+            },
+        );
+        let _ = p.complete(&[ChatMessage::user("x")]).unwrap();
+        assert!(
+            mock.requests()[0].contains(r#""reasoning_effort":"low""#),
+            "recipe-shaped effort field missing: {}",
+            mock.requests()[0]
+        );
+
+        // thinking_disabled is the explicit off-switch: it wins.
+        let both = HttpProvider::with_options(
+            cfg,
+            ProviderOptions {
+                thinking_disabled: true,
+                reasoning_effort: Some(ReasoningEffort::Max),
+                ..ProviderOptions::default()
+            },
+        );
+        let _ = both.complete(&[ChatMessage::user("x")]).unwrap();
+        let sent = mock.requests()[1].clone();
+        assert!(
+            sent.contains(r#""thinking":{"type":"disabled"}"#),
+            "disable dial missing: {sent}"
+        );
+        assert!(
+            !sent.contains("reasoning_effort"),
+            "disable must win: {sent}"
+        );
     }
 }

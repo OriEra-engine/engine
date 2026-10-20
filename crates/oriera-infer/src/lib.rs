@@ -22,8 +22,8 @@ pub use http::HttpProvider;
 pub use jobs::{InferJobs, JobDone};
 pub use oriera_common::TokenUsage;
 pub use provider::{
-    ChatMessage, InferError, ModelProvider, ProviderOptions, ProviderPreset, Role, RuleProvider,
-    ToolCall, ToolDef, ToolOutcome, PROVIDER_PRESETS,
+    ChatMessage, InferError, ModelCaps, ModelPrice, ModelProvider, ProviderOptions, ProviderPreset,
+    ReasoningEffort, Role, RuleProvider, ToolCall, ToolDef, ToolOutcome, PROVIDER_PRESETS,
 };
 
 use oriera_core::{FrameCtx, System};
@@ -85,6 +85,79 @@ impl UsageMeter {
     pub fn record(&mut self, usage: TokenUsage) {
         self.total += usage;
         self.calls += 1;
+    }
+}
+
+/// Cumulative money ledger over model calls (v0.7, PLAN-deepseek-upgrade
+/// B5). Pair with [`UsageMeter`]: usage counts tokens, this counts what
+/// they cost — the cache-hit discount ([`TokenUsage::cached`]) shows up
+/// here as `saved_micro`, because a discount nobody can see is a
+/// discount nobody designs for.
+///
+/// Accumulators hold `tokens × µ-price` numerators and divide by 1e6 at
+/// read time, so per-call truncation never eats small worlds' cents.
+/// One [`CostMeter`] speaks one currency: the first priced row wins,
+/// later rows in another currency flip `mixed_currency` and are skipped
+/// (a sum across currencies is a lie; the flag makes the lie visible).
+#[derive(Debug, Clone, Default)]
+pub struct CostMeter {
+    /// Currency of the accumulation ("" until the first priced call).
+    pub currency: &'static str,
+    /// Calls against rows without a registered price — counted, not
+    /// valued (本地行的口径：电费，不记账).
+    pub unpriced_calls: u64,
+    /// A second currency showed up; those calls are excluded from sums.
+    pub mixed_currency: bool,
+    pub calls: u64,
+    spent_num: u128,
+    saved_num: u128,
+}
+
+impl CostMeter {
+    /// Record one call's usage at the row's registered price.
+    pub fn record(&mut self, usage: TokenUsage, price: Option<&ModelPrice>) {
+        self.calls += 1;
+        let Some(p) = price else {
+            self.unpriced_calls += 1;
+            return;
+        };
+        if self.currency.is_empty() {
+            self.currency = p.currency;
+        } else if self.currency != p.currency {
+            self.mixed_currency = true;
+            return;
+        }
+        let billed = usage.billed_prompt() as u128;
+        self.spent_num += billed * p.prompt_micro_per_m as u128
+            + usage.completion as u128 * p.completion_micro_per_m as u128;
+        // What the cached slice would have cost at miss price — the
+        // saving the stable-prefix convention earns. A row pricing
+        // cache ≥ miss simply saves zero (saturating).
+        self.saved_num += usage.cached as u128
+            * p.prompt_micro_per_m.saturating_sub(p.cached_micro_per_m) as u128;
+    }
+
+    /// Total spend in micro-currency units (1e-6 of `currency`).
+    pub fn total_micro(&self) -> u64 {
+        (self.spent_num / 1_000_000).min(u64::MAX as u128) as u64
+    }
+
+    /// Cache savings in micro-currency units.
+    pub fn saved_micro(&self) -> u64 {
+        (self.saved_num / 1_000_000).min(u64::MAX as u128) as u64
+    }
+
+    /// Shell/UI display: "$0.0750" / "¥1.2300" / "USD 0.0750".
+    pub fn display(&self) -> String {
+        if self.currency.is_empty() {
+            return "—".into();
+        }
+        let amount = self.total_micro() as f64 / 1_000_000.0;
+        match self.currency {
+            "USD" => format!("${amount:.4}"),
+            "CNY" => format!("¥{amount:.4}"),
+            other => format!("{other} {amount:.4}"),
+        }
     }
 }
 
@@ -508,6 +581,94 @@ mod tests {
         meter.record(p.last_usage());
         assert_eq!(meter.calls, 2);
         assert!(meter.total.total() > 0);
+    }
+
+    // ---- v0.7 B5: CostMeter (PLAN-deepseek-upgrade) ----
+
+    fn deepseek_price() -> ModelPrice {
+        ModelPrice {
+            currency: "USD",
+            prompt_micro_per_m: 150_000,
+            completion_micro_per_m: 600_000,
+            cached_micro_per_m: 3_000,
+        }
+    }
+
+    #[test]
+    fn cost_meter_prices_a_cache_heavy_call_exactly() {
+        let mut m = CostMeter::default();
+        // 1M prompt (90% cached), 100k completion, deepseek dated price.
+        m.record(
+            TokenUsage {
+                prompt: 1_000_000,
+                completion: 100_000,
+                cached: 900_000,
+            },
+            Some(&deepseek_price()),
+        );
+        // miss 100k × $0.15/M + 100k × $0.60/M = $0.015 + $0.06 = $0.075
+        assert_eq!(m.total_micro(), 75_000);
+        assert_eq!(m.display(), "$0.0750");
+        // saved: 900k × ($0.15 − $0.003)/M = $0.1323
+        assert_eq!(m.saved_micro(), 132_300);
+        assert_eq!(m.currency, "USD");
+        assert_eq!(m.unpriced_calls, 0);
+        assert!(!m.mixed_currency);
+    }
+
+    #[test]
+    fn cost_meter_never_truncates_small_calls_prematurely() {
+        let mut m = CostMeter::default();
+        let price = deepseek_price();
+        // Ten tiny calls: 33 billed tokens each. Per-call truncation
+        // would read 10 × 4µ = 40µ; the numerator accumulator keeps the
+        // true 49.5µ → 49µ.
+        for _ in 0..10 {
+            m.record(
+                TokenUsage {
+                    prompt: 33,
+                    completion: 0,
+                    cached: 0,
+                },
+                Some(&price),
+            );
+        }
+        assert_eq!(m.total_micro(), 49);
+    }
+
+    #[test]
+    fn unpriced_and_mixed_currency_are_counted_not_invented() {
+        let mut m = CostMeter::default();
+        m.record(TokenUsage::ZERO, None);
+        assert_eq!(m.unpriced_calls, 1);
+        assert_eq!(m.display(), "—", "nothing valued yet");
+
+        m.record(
+            TokenUsage {
+                prompt: 1_000_000,
+                completion: 0,
+                cached: 0,
+            },
+            Some(&deepseek_price()),
+        );
+        let eur = ModelPrice {
+            currency: "EUR",
+            prompt_micro_per_m: 100_000,
+            completion_micro_per_m: 300_000,
+            cached_micro_per_m: 10_000,
+        };
+        m.record(
+            TokenUsage {
+                prompt: 1_000_000,
+                completion: 0,
+                cached: 0,
+            },
+            Some(&eur),
+        );
+        assert!(m.mixed_currency);
+        // The EUR call is flagged and excluded, not FX-guessed.
+        assert_eq!(m.total_micro(), 150_000);
+        assert_eq!(m.calls, 3);
     }
 
     #[test]

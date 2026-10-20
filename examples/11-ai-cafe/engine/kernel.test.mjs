@@ -91,6 +91,64 @@ test("provider 透传 seed 与 thinking（仅 openai 兼容方言）", async () 
   } finally { globalThis.fetch = origFetch; }
 });
 
+/* ---- v0.7（PLAN-deepseek-upgrade）：B6 schema 透传 / B5 缓存计量 ---- */
+test("provider 透传 schema 为 json_schema，且优先于 json_object（B6）", async () => {
+  const bodies = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, o) => {
+    bodies.push(JSON.parse(o.body));
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "{}" } }], usage: {} }) };
+  };
+  try {
+    const p = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x" });
+    const schema = { type: "object", properties: { say: { type: "string" } }, required: ["say"] };
+    await p.complete([{ role: "user", content: "hi" }], { json: true, schema });
+    assert.equal(bodies[0].response_format.type, "json_schema");
+    assert.equal(bodies[0].response_format.json_schema.name, "reply");
+    assert.deepEqual(bodies[0].response_format.json_schema.schema, schema);
+    // 单独 json 仍是旧对象格式
+    await p.complete([{ role: "user", content: "hi" }], { json: true });
+    assert.deepEqual(bodies[1].response_format, { type: "json_object" });
+    // 都不传：线上干净（与 Rust default 分支对镜）
+    await p.complete([{ role: "user", content: "hi" }], {});
+    assert.equal(bodies[2].response_format, undefined);
+  } finally { globalThis.fetch = origFetch; }
+});
+
+test("provider 缓存命中 tokens 进 stats.cached（DeepSeek/OpenAI/Anthropic 三风格，B5）", async () => {
+  const replies = [
+    { choices: [{ message: { content: "a" } }], usage: { total_tokens: 108, prompt_tokens: 100, completion_tokens: 8, prompt_cache_hit_tokens: 92 } },
+    { choices: [{ message: { content: "b" } }], usage: { total_tokens: 54, prompt_tokens: 50, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 30 } } },
+  ];
+  let i = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => replies[i++] });
+  try {
+    const p = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x" });
+    await p.complete([{ role: "user", content: "x" }]);
+    assert.equal(p.stats.cached, 92);
+    await p.complete([{ role: "user", content: "x" }]);
+    assert.equal(p.stats.cached, 122, "两次调用累加（92 + 30）");
+  } finally { globalThis.fetch = origFetch; }
+});
+
+test("预设表带已核实的 caps/price（deepseek/openai），未核实行保持干净", () => {
+  assert.equal(PROVIDER_PRESETS.deepseek.caps.contextWindow, 1000000);
+  assert.ok(PROVIDER_PRESETS.deepseek.caps.promptCache);
+  assert.ok(PROVIDER_PRESETS.deepseek.price.cachedMicroPerM < PROVIDER_PRESETS.deepseek.price.promptMicroPerM,
+    "缓存命中必须比 miss 便宜——这是 B5 的全部意义");
+  assert.ok(PROVIDER_PRESETS.openai.caps.structuredOutput);
+  // 未核实行：不带 caps 也不带 price（镜像 Rust ModelCaps::UNREGISTERED）
+  for (const id of ["rule", "qwen", "stepfun", "moonshot", "groq", "openrouter"]) {
+    assert.equal(PROVIDER_PRESETS[id].caps, undefined, id);
+    assert.equal(PROVIDER_PRESETS[id].price, undefined, id);
+  }
+  // 本地行永不带价（电费口径）
+  for (const id of ["ollama", "vllm", "llamacpp", "lmstudio"]) {
+    assert.equal(PROVIDER_PRESETS[id].price, undefined, id);
+  }
+});
+
 /* ---- CognitionSystem：场景/台词库/RNG/max 注入 ---- */
 test("认知系统：注入场景与 max 后 prompt 走新世界，默认仍是咖啡馆", async () => {
   let capturedSys = null, capturedOpts = null;

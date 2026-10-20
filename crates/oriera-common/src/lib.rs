@@ -32,20 +32,39 @@ pub struct FrameIndex(pub u64);
 /// metering). L7 providers report it, L9 systems accumulate it, the
 /// app/UI layer reads it — one vocabulary across layers, so a usage
 /// meter never re-derives units per provider.
+///
+/// `cached` (v0.7, 前缀缓存计量): tokens of the prompt the provider
+/// served from its prompt cache — DeepSeek's `prompt_cache_hit_tokens`,
+/// OpenAI's `prompt_tokens_details.cached_tokens`, Anthropic's
+/// `cache_read_input_tokens`. It is a **subset of `prompt`**, never
+/// added on top: `total()` stays prompt + completion, and
+/// `prompt - cached` is what was billed at the (full) miss price.
+/// Providers without cache reporting leave it zero — additive, every
+/// existing producer stays valid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TokenUsage {
     pub prompt: u64,
     pub completion: u64,
+    /// Prompt tokens served from the provider's cache (⊆ `prompt`).
+    pub cached: u64,
 }
 
 impl TokenUsage {
     pub const ZERO: TokenUsage = TokenUsage {
         prompt: 0,
         completion: 0,
+        cached: 0,
     };
 
     pub fn total(self) -> u64 {
         self.prompt + self.completion
+    }
+
+    /// Prompt tokens billed at the cache-miss price (`prompt - cached`,
+    /// saturating — a provider reporting `cached > prompt` is clamped,
+    /// not trusted).
+    pub fn billed_prompt(self) -> u64 {
+        self.prompt.saturating_sub(self.cached)
     }
 }
 
@@ -140,6 +159,7 @@ impl std::ops::Add for TokenUsage {
         TokenUsage {
             prompt: self.prompt + rhs.prompt,
             completion: self.completion + rhs.completion,
+            cached: self.cached + rhs.cached,
         }
     }
 }
@@ -148,6 +168,7 @@ impl std::ops::AddAssign for TokenUsage {
     fn add_assign(&mut self, rhs: TokenUsage) {
         self.prompt += rhs.prompt;
         self.completion += rhs.completion;
+        self.cached += rhs.cached;
     }
 }
 
@@ -168,20 +189,49 @@ mod tests {
         let a = TokenUsage {
             prompt: 10,
             completion: 5,
+            cached: 0,
         };
         let mut total = a + TokenUsage::ZERO;
         total += TokenUsage {
             prompt: 1,
             completion: 2,
+            cached: 1,
         };
-        assert_eq!(total.total(), 18);
+        assert_eq!(total.total(), 18); // cached ⊆ prompt: never double-counted
         assert_eq!(
             total,
             TokenUsage {
                 prompt: 11,
-                completion: 7
+                completion: 7,
+                cached: 1
             }
         );
+    }
+
+    #[test]
+    fn cached_is_a_prompt_subset_and_billed_prompt_clamps() {
+        let u = TokenUsage {
+            prompt: 100,
+            completion: 7,
+            cached: 90,
+        };
+        assert_eq!(u.billed_prompt(), 10);
+        assert_eq!(u.total(), 107);
+        // A vendor reporting cached > prompt is clamped, not trusted.
+        let liar = TokenUsage {
+            prompt: 5,
+            completion: 0,
+            cached: 9,
+        };
+        assert_eq!(liar.billed_prompt(), 0);
+        // Providers without cache reporting read as all-miss.
+        assert_eq!(TokenUsage::ZERO.billed_prompt(), 0);
+        let no_cache = TokenUsage {
+            prompt: 42,
+            completion: 3,
+            cached: 0,
+        };
+        assert_eq!(no_cache.billed_prompt(), 42);
     }
 
     #[test]

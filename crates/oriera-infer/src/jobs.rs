@@ -18,7 +18,7 @@
 use crate::provider::{ChatMessage, InferError, ModelProvider};
 use oriera_common::TokenUsage;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 
 /// One completed (or failed) inference job, drained by [`InferJobs::poll`].
@@ -102,17 +102,12 @@ impl<P: ModelProvider + 'static> InferJobs<P> {
     /// blocks: an empty Vec means "nothing landed yet", not "all done".
     pub fn poll(&mut self) -> Vec<JobDone> {
         let mut out = Vec::new();
-        loop {
-            match self.rx.try_recv() {
-                Ok(done) => {
-                    match done.result {
-                        Ok(_) => self.completed += 1,
-                        Err(_) => self.failed += 1,
-                    }
-                    out.push(done);
-                }
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+        while let Ok(done) = self.rx.try_recv() {
+            match done.result {
+                Ok(_) => self.completed += 1,
+                Err(_) => self.failed += 1,
             }
+            out.push(done);
         }
         out
     }
@@ -151,6 +146,7 @@ mod tests {
             TokenUsage {
                 prompt: 8,
                 completion: 8,
+                cached: 0,
             }
         }
     }
@@ -190,7 +186,8 @@ mod tests {
             done.usage,
             TokenUsage {
                 prompt: 8,
-                completion: 8
+                completion: 8,
+                cached: 0
             }
         );
         assert_eq!(jobs.completed, 1);

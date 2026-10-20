@@ -131,13 +131,30 @@ fn main() {
             pass += 1;
             if usage.total() > 0 {
                 println!(
-                    "  [PASS] usage 计量：prompt {} / completion {}",
-                    usage.prompt, usage.completion
+                    "  [PASS] usage 计量：prompt {} / completion {} / cached {}",
+                    usage.prompt, usage.completion, usage.cached
                 );
                 pass += 1;
             } else {
                 println!(
                     "  [WARN] usage 为 0 — 该后端未实现计量（厂商接入要求 last_usage 如实上报）"
+                );
+            }
+            // 5.5 v0.7（PLAN-deepseek-upgrade B5）：缓存双连发——同一前缀
+            // 打两枪，第二枪若命中端点前缀缓存则 cached 增量 > 0（真金
+            // 白银的折扣腿；离线 rule 后端恒 0，如实 WARN 不算 FAIL）。
+            let before = provider.last_usage().cached;
+            let _ = provider.complete(&[
+                ChatMessage::system("你是 OriEra 世界引擎的接入自检员。"),
+                ChatMessage::user("用一句话证明你在线。"),
+            ]);
+            let hit = provider.last_usage().cached.saturating_sub(before);
+            if hit > 0 {
+                println!("  [PASS] 前缀缓存双连发：第二枪命中 {hit} tokens（省钱落账）");
+                pass += 1;
+            } else {
+                println!(
+                    "  [WARN] 前缀缓存零命中 — 本地/离线后端属预期；云端行请检查 system prompt 是否含易变内容（L9 稳定前缀惯例）"
                 );
             }
         }
