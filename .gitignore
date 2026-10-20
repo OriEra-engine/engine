@@ -29,3 +29,5 @@ out/
 build/
 *.log
 .git-msg
+*.py.bak
+patch*.py
