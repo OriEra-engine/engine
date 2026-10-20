@@ -383,22 +383,36 @@ fn glb_header_is_sane(b: &[u8]) -> bool {
     &b[16..20] == b"JSON" && 20 + chunk_len <= b.len() as u64
 }
 
-/// The smallest fully-valid GLB (one empty scene). Doubles as the
-/// **placeholder mesh** for degrade paths (ADR 0003 criterion 3: an
-/// outage lands a placeholder, never a crash) and as the MockProvider
-/// fixture — one payload, provably parseable, tiny enough to inline.
+/// The smallest **visible** GLB: one triangle (ADR 0003 criterion 3,
+/// upgraded — an outage lands a placeholder you can actually see, not
+/// an empty scene). Doubles as the MockProvider fixture and as the
+/// L8→L4→L5 chain proof: `oriera_asset::glb::decode_glb_mesh` parses
+/// it into 3 vertices / 3 indices.
 pub(crate) fn tiny_glb() -> Vec<u8> {
-    let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[]}]}"#;
-    let padded_len = json.len().div_ceil(4) * 4; // JSON chunk pads with spaces
-    let total = 12 + 8 + padded_len;
+    let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[{"mesh":0}]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","max":[0.8,0.6,0.0],"min":[-0.8,-0.6,0.0]},{"bufferView":1,"componentType":5125,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":12}],"buffers":[{"byteLength":48}]}"#;
+    let json_len = json.len().div_ceil(4) * 4; // JSON chunk pads with spaces
+                                               // BIN: 3 × VEC3 f32 (36B) + 3 × u32 indices (12B) = 48B,已 4 对齐。
+    let mut bin = Vec::with_capacity(48);
+    for v in [[0.0f32, -0.6, 0.0], [0.8, 0.6, 0.0], [-0.8, 0.6, 0.0]] {
+        for c in v {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    for i in [0u32, 1, 2] {
+        bin.extend_from_slice(&i.to_le_bytes());
+    }
+    let total = 12 + 8 + json_len + 8 + bin.len();
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(b"glTF");
     out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(&(total as u32).to_le_bytes());
-    out.extend_from_slice(&(padded_len as u32).to_le_bytes());
+    out.extend_from_slice(&(json_len as u32).to_le_bytes());
     out.extend_from_slice(b"JSON");
     out.extend_from_slice(json);
-    out.extend(std::iter::repeat_n(b' ', padded_len - json.len()));
+    out.extend(std::iter::repeat_n(b' ', json_len - json.len()));
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\x00");
+    out.extend_from_slice(&bin);
     out
 }
 

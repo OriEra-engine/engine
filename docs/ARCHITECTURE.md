@@ -117,6 +117,10 @@ zhipu / openai-compat / deepseek / moonshot / groq / openrouter / anthropic / ru
 浏览器侧 `engine/kernel.js :: createProvider(cfg) + PROVIDER_PRESETS` 与 Rust 一一对照。
 v0.2 落地帧预算命令队列（`deferred` 计数，命令洪峰摊到后续帧，消灭帧尖刺）
 与 `UsageMeter` / `last_usage()` 计量；20s 超时防挂死。
+v0.3 落地**异步推理作业**（RFC 0002 v0.5 第一步）：`InferJobs` 把阻塞的模型调用
+搬到后台线程（提交即返回、逐帧 try_recv 收割），认知/导演系统 `with_async()`
+切换后帧循环不再等网络——真 LLM 的 1~5 秒延迟从「卡住的帧」变成「晚一拍落地的对话」；
+`complete_stream()` 流式表面（RFC-3）就位，默认单块诚实表示「此后端不支持流式」。
 **Key 只存在平台壳**（浏览器 localStorage / 环境变量），永不入仓。
 
 ### L8 · oriera-genai — 生成式 AI（表达链路已通，ADR 0003 + RFC 0001）
@@ -127,7 +131,11 @@ Seedance（文生视频）协议适配器随 `providers` feature 门控
 （只定义 JSON shape，零 HTTP client——transport 由壳层注入，wasm 体积可控）。
 `text_to_image` 种类是 RFC 0001 的加法式契约扩展——小 3D 游戏的表达主力
 （天空/地面/海报/精灵图）。占位降级按种类匹配格式：失败的照片落
-真实可解码的 1×1 PNG，失败的网格落空场景 GLB。
+真实可解码的 1×1 PNG，失败的网格落**可见单三角 GLB**（ADR 0003 准则 3 升级：
+断电也有看得见的占位，不再是空场景）。
+v0.3 生成→渲染全链闭环：MockProvider 生成 → `validate_asset` 守门 → L4 命名落地
+→ `glb::decode_glb_mesh` → GPU 光栅化出图，一条命令自证
+（`cargo run -p oriera-render --example glb_headless --features render-wgpu -- --from-l8 out.bmp`）。
 引擎环集成：`GenAiSystem` 限量轮询生成任务 → 校验 → `PendingSwaps` + `AssetLanded` 事件，
 壳层 `hot_swap::apply_pending` 把结果落入 L4 命名资产（demo：`cargo run -p oriera-genai --example hotswap`）。
 浏览器侧镜像 `examples/13-genai-gallery/engine/genai.js`（边界词汇一一对照，

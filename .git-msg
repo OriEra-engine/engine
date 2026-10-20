@@ -1,0 +1,28 @@
+L7 异步推理作业 + 流式表面;L8→L4→L5 生成渲染全链闭环
+
+修测评 P0「AI 同步阻塞帧」与「资产生成链断」的最后一公里。
+
+L7 oriera-infer:
+- 新增 jobs 模块:InferJobs 作业层——阻塞的 complete() 搬到后台
+  线程,submit 即返回、逐帧 try_recv 收割,帧循环不再等网络;
+  并发上限快速失败(InferError::Busy,归 Provider 类不污染厂商计量)。
+- ModelProvider 新增 complete_stream 流式表面(RFC-3):默认单块
+  诚实表示"此后端不支持流式";RuleProvider 覆写为按句分块,
+  拼接与 complete() 逐字节一致。
+
+L9 oriera-agent:
+- CognitionSystem/DirectorSystem 新增 with_async():提交-收割两段式,
+  认知保持单在飞作业,谁说什么/轮转环序与同步路径逐字一致,
+  差异仅为落地相位(测试断言诚实不变量);共享 next_speech/land_reply,
+  两条路话语质量同源。
+
+L8→L4→L5 全链:
+- tiny_glb 升级为可见单三角占位(ADR 0003 准则3:断电也有看得见的
+  占位,不再是空场景);MockProvider 走完整任务生命周期。
+- 新增 genai 集成测试 3 项:生成→validate→L4 命名落地→解码出
+  可渲染 mesh;同位热换;截断载荷被守门拒绝。
+- glb_headless 示例新增 --from-l8:一条命令跑通
+  生成→守门→落地→解码→GPU 光栅化出图(本机 Intel GL 实测通过)。
+
+全仓默认 200 测试通过(+12)。文档同步:ARCHITECTURE L7/L8、
+STABILITY 已知边界(L7 异步已落地/SSE 流式未做/全链闭环)。

@@ -10,8 +10,8 @@
 
 use crate::memory::{Episode, MemoryStore};
 use oriera_core::{FrameCtx, System};
-use oriera_ecs::World;
-use oriera_infer::{ChatMessage, ModelProvider, UsageMeter};
+use oriera_ecs::{Entity, World};
+use oriera_infer::{ChatMessage, InferJobs, ModelProvider, UsageMeter};
 use std::sync::Arc;
 
 /// NPC identity component (L3, registered by the application).
@@ -143,6 +143,33 @@ pub struct CognitionSystem<P: ModelProvider> {
     /// v2.1 mirror of kernel-v2 injectables: world prefix in the system
     /// prompt. Default keeps every existing caller byte-compatible.
     pub scene: String,
+    /// Async job pool: when present, provider calls leave the frame
+    /// loop entirely (submit on this beat, land the reply on whichever
+    /// frame it arrives — RFC 0002 v0.5). Absent = legacy inline call.
+    jobs: Option<InferJobs<P>>,
+    /// The one in-flight speech job (cognition keeps at most one: the
+    /// next speaker is not chosen until the current line lands).
+    pending: Option<PendingSpeech>,
+}
+
+/// Everything needed to land a reply once its job completes.
+struct PendingSpeech {
+    job: u64,
+    speaker: Entity,
+    persona: Persona,
+    partner: Persona,
+    turn: u64,
+    day: u32,
+}
+
+impl<P: ModelProvider + 'static> CognitionSystem<P> {
+    /// Switch to async mode: at most one in-flight call, replies land
+    /// one or more frames later. The frame loop never blocks on the
+    /// network again (STABILITY P0: 同步阻塞).
+    pub fn with_async(mut self) -> Self {
+        self.jobs = Some(InferJobs::new(Arc::clone(&self.provider), 1));
+        self
+    }
 }
 
 impl<P: ModelProvider> CognitionSystem<P> {
@@ -154,6 +181,8 @@ impl<P: ModelProvider> CognitionSystem<P> {
             cursor: 0,
             order: Vec::new(),
             scene: "隅角咖啡馆".to_string(),
+            jobs: None,
+            pending: None,
         }
     }
 
@@ -172,7 +201,7 @@ impl<P: ModelProvider> CognitionSystem<P> {
     }
 }
 
-impl<P: ModelProvider> System<World> for CognitionSystem<P> {
+impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
     fn name(&self) -> &str {
         "l9-cognition"
     }
@@ -194,12 +223,78 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
         } else {
             stretched_interval(self.interval, self.max_stretch, self.name(), ctx)
         };
-        if turn % interval as u64 != 0 {
+        let due = turn % interval as u64 == 0;
+
+        // ---- 异步路径(RFC 0002 v0.5):收割每帧,提交按节拍 ----
+        if self.jobs.is_some() {
+            for done in self.jobs.as_mut().expect("just checked").poll() {
+                if self.pending.as_ref().map(|p| p.job) != Some(done.id) {
+                    continue;
+                }
+                let p = self.pending.take().expect("id matched");
+                if done.usage.total() > 0 {
+                    world.resource_or_default::<UsageMeter>().record(done.usage);
+                }
+                let reply = done.result.unwrap_or_else(|_| "……".into());
+                Self::land_reply(
+                    world, p.speaker, &p.persona, &p.partner, reply, p.turn, p.day,
+                );
+            }
+            if !due || self.pending.is_some() {
+                return; // 网络在路上,帧照常走
+            }
+            if let Some((speaker_e, persona, partner, sys)) =
+                self.next_speech(world, day, &beat, turn)
+            {
+                if let Ok(id) = self.jobs.as_mut().expect("checked above").submit(vec![
+                    ChatMessage::system(sys),
+                    ChatMessage::user("（请接话）"),
+                ]) {
+                    self.pending = Some(PendingSpeech {
+                        job: id,
+                        speaker: speaker_e,
+                        persona,
+                        partner,
+                        turn,
+                        day,
+                    });
+                }
+            }
             return;
         }
+
+        // ---- 同步路径(默认;离线规则后端零成本,既有语义不变) ----
+        if !due {
+            return;
+        }
+        let Some((speaker_e, persona, partner, sys)) = self.next_speech(world, day, &beat, turn)
+        else {
+            return;
+        };
+
+        let reply = self
+            .provider
+            .complete(&[ChatMessage::system(sys), ChatMessage::user("（请接话）")])
+            .unwrap_or_else(|_| "……".into());
+        meter_usage(world, &*self.provider);
+        Self::land_reply(world, speaker_e, &persona, &partner, reply, turn, day);
+    }
+}
+
+impl<P: ModelProvider> CognitionSystem<P> {
+    /// Pick the next speaker round-robin and build their system prompt.
+    /// Shared by the sync and async roads so utterance quality is
+    /// identical whichever way the call is made.
+    fn next_speech(
+        &mut self,
+        world: &World,
+        day: u32,
+        beat: &str,
+        turn: u64,
+    ) -> Option<(Entity, Persona, Persona, String)> {
         self.roster(world);
         if self.order.is_empty() {
-            return;
+            return None;
         }
         let speaker_e = self.order[self.cursor % self.order.len()];
         self.cursor += 1;
@@ -209,7 +304,7 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
             world.get::<Mood>(speaker_e),
         ) {
             (Some(p), m) => (p.clone(), m.copied().unwrap_or(Mood::Neutral)),
-            (None, _) => return,
+            (None, _) => return None,
         };
 
         // Pick a partner: next persona-bearing entity in rotation.
@@ -270,13 +365,22 @@ impl<P: ModelProvider> System<World> for CognitionSystem<P> {
                 recent.join("\n")
             },
         );
+        Some((speaker_e, persona, partner, sys))
+    }
 
-        let reply = self
-            .provider
-            .complete(&[ChatMessage::system(sys), ChatMessage::user("（请接话）")])
-            .unwrap_or_else(|_| "……".into());
-        meter_usage(world, &*self.provider);
-
+    /// Land a reply in the world: parse the action|mood|memory tail,
+    /// write the dialogue log and both memory records. Shared by both
+    /// roads; provider failure degrades to "……" exactly like the
+    /// legacy inline path.
+    fn land_reply(
+        world: &mut World,
+        speaker_e: Entity,
+        persona: &Persona,
+        partner: &Persona,
+        reply: String,
+        turn: u64,
+        day: u32,
+    ) {
         let mut parts = reply.split('|').map(str::trim);
         let say = parts.next().unwrap_or("……").to_string();
         let action = parts.next().unwrap_or("idle").to_string();
@@ -350,6 +454,18 @@ pub struct DirectorSystem<P: ModelProvider> {
     /// Offline fallback beats, injectable (kernel-v2 parity). Default:
     /// the café bank, byte-compatible for existing callers.
     pub rule_beats: Vec<String>,
+    /// Async job pool (RFC 0002 v0.5) — see [`CognitionSystem::with_async`].
+    jobs: Option<InferJobs<P>>,
+    /// The one in-flight beat job.
+    pending: Option<PendingBeat>,
+}
+
+/// In-flight director job bookkeeping: which world turn/day the beat
+/// belongs to (the frame that lands it may be many ticks later).
+struct PendingBeat {
+    job: u64,
+    turn: u64,
+    day: u32,
 }
 
 impl<P: ModelProvider> DirectorSystem<P> {
@@ -360,6 +476,8 @@ impl<P: ModelProvider> DirectorSystem<P> {
             max_stretch: 8,
             beat_idx: 0,
             rule_beats: DEFAULT_BEATS.iter().map(|s| s.to_string()).collect(),
+            jobs: None,
+            pending: None,
         }
     }
 
@@ -371,7 +489,16 @@ impl<P: ModelProvider> DirectorSystem<P> {
     }
 }
 
-impl<P: ModelProvider> System<World> for DirectorSystem<P> {
+impl<P: ModelProvider + 'static> DirectorSystem<P> {
+    /// Switch to async mode: the beat lands on whichever frame the
+    /// model answers; the loop never blocks on the network.
+    pub fn with_async(mut self) -> Self {
+        self.jobs = Some(InferJobs::new(Arc::clone(&self.provider), 1));
+        self
+    }
+}
+
+impl<P: ModelProvider + 'static> System<World> for DirectorSystem<P> {
     fn name(&self) -> &str {
         "l9-director"
     }
@@ -383,11 +510,61 @@ impl<P: ModelProvider> System<World> for DirectorSystem<P> {
             (s.turn, s.day)
         };
         let interval = stretched_interval_u64(self.interval, self.max_stretch, self.name(), ctx);
-        if turn % interval != 0 {
+        let due = turn % interval == 0;
+
+        // ---- 异步路径:收割每帧,提交按节拍 ----
+        if self.jobs.is_some() {
+            for done in self.jobs.as_mut().expect("just checked").poll() {
+                if self.pending.as_ref().map(|p| p.job) != Some(done.id) {
+                    continue;
+                }
+                let p = self.pending.take().expect("id matched");
+                if done.usage.total() > 0 {
+                    world.resource_or_default::<UsageMeter>().record(done.usage);
+                }
+                let beat = done
+                    .result
+                    .ok()
+                    .and_then(Self::shaped_beat)
+                    .unwrap_or_else(|| self.next_rule_beat());
+                self.land_beat(world, beat, p.turn, p.day);
+            }
+            if !due || self.pending.is_some() {
+                return;
+            }
+            let sys = Self::director_prompt(world, day);
+            if let Ok(id) = self
+                .jobs
+                .as_mut()
+                .expect("checked above")
+                .submit(vec![ChatMessage::system(sys)])
+            {
+                self.pending = Some(PendingBeat { job: id, turn, day });
+            }
             return;
         }
+
+        // ---- 同步路径(默认) ----
+        if !due {
+            return;
+        }
+        let sys = Self::director_prompt(world, day);
+        let beat = self
+            .provider
+            .complete(&[ChatMessage::system(sys)])
+            .ok()
+            .and_then(Self::shaped_beat)
+            .unwrap_or_else(|| self.next_rule_beat());
+        meter_usage(world, &*self.provider);
+        self.land_beat(world, beat, turn, day);
+    }
+}
+
+impl<P: ModelProvider> DirectorSystem<P> {
+    /// Recent-dialogue summary fed to the director model.
+    fn director_prompt(world: &World, day: u32) -> String {
         let log = world.resource::<DialogueLog>().cloned().unwrap_or_default();
-        let sys = format!(
+        format!(
             "你是 OriEra 世界引擎的 AI 导演。根据最近对话推进一个小而具体的世界事件，只输出一句话。\n当前第 {} 世界日。最近对话：{}",
             day,
             log.recent(6)
@@ -395,20 +572,25 @@ impl<P: ModelProvider> System<World> for DirectorSystem<P> {
                 .map(|t| format!("{}：{}", t.speaker, t.text))
                 .collect::<Vec<_>>()
                 .join(" / ")
-        );
-        let beat = self
-            .provider
-            .complete(&[ChatMessage::system(sys)])
-            .ok()
-            .map(|s| s.trim().trim_matches('"').to_string())
-            .filter(|s| !s.is_empty() && s.chars().count() < 60)
-            .unwrap_or_else(|| {
-                let b = self.rule_beats[self.beat_idx % self.rule_beats.len()].to_string();
-                self.beat_idx += 1;
-                b
-            });
-        meter_usage(world, &*self.provider);
+        )
+    }
 
+    /// Shape a model reply into one beat; `None` = unusable (empty or
+    /// over 60 chars) → fall back to the rule bank.
+    fn shaped_beat(reply: String) -> Option<String> {
+        let s = reply.trim().trim_matches('"');
+        (!s.is_empty() && s.chars().count() < 60).then(|| s.to_string())
+    }
+
+    fn next_rule_beat(&mut self) -> String {
+        let b = self.rule_beats[self.beat_idx % self.rule_beats.len()].to_string();
+        self.beat_idx += 1;
+        b
+    }
+
+    /// Append the beat to the world story, advance the day on cadence,
+    /// and let every agent remember the world event.
+    fn land_beat(&self, world: &mut World, beat: String, turn: u64, day: u32) {
         let story = world.resource_or_default::<WorldStory>();
         story.beats.push(beat.clone());
         if story.beats.len() > 30 {
@@ -695,5 +877,167 @@ mod tests {
         };
         assert_eq!(run(&ctx()), 10);
         assert_eq!(run(&ctx_throttled("l9-director", 0.5)), 5);
+    }
+
+    // ---- 异步路径(RFC 0002 v0.5):帧不阻塞,回复晚落 ----
+
+    /// Simulates a real LLM: blocks for `delay`, then answers with the
+    /// full say|action|mood|memory tail.
+    struct SlowLlm {
+        delay: std::time::Duration,
+    }
+
+    impl ModelProvider for SlowLlm {
+        fn id(&self) -> &str {
+            "slow-llm-test"
+        }
+        fn complete(
+            &self,
+            _m: &[oriera_infer::ChatMessage],
+        ) -> Result<String, oriera_infer::InferError> {
+            std::thread::sleep(self.delay);
+            Ok("好豆子要等。|wave|happy|今天客人问起埃塞豆".into())
+        }
+    }
+
+    #[test]
+    fn async_cognition_never_blocks_and_lands_one_frame_later() {
+        let mut w = cafe_world();
+        let mut cog = CognitionSystem::new(
+            Arc::new(SlowLlm {
+                delay: std::time::Duration::from_millis(80),
+            }),
+            1,
+        )
+        .with_async();
+
+        // 节拍帧:提交即返回 —— 帧本身绝不能等网络。
+        let t0 = std::time::Instant::now();
+        cog.run(&ctx(), &mut w);
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(30),
+            "submitting frame blocked for {:?}",
+            t0.elapsed()
+        );
+        assert!(
+            w.resource::<DialogueLog>().unwrap().turns.is_empty(),
+            "reply cannot land before the network answers"
+        );
+
+        // 后续帧照常走(收割为空),直到作业完成那一帧落地。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            cog.run(&ctx(), &mut w);
+            if !w.resource::<DialogueLog>().unwrap().turns.is_empty() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "reply never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let log = w.resource::<DialogueLog>().unwrap();
+        assert_eq!(log.turns.len(), 1);
+        assert_eq!(log.turns[0].text, "好豆子要等。");
+        // action|mood|memory 尾巴全部生效。
+        let first_speaker = &log.turns[0].speaker;
+        let spoke = w
+            .query::<Persona>()
+            .find(|(e, p)| {
+                w.get::<Mood>(*e).copied() == Some(Mood::Happy) && &p.name == first_speaker
+            })
+            .is_some();
+        assert!(spoke, "mood tail must land on the speaker");
+        assert!(w.resource::<MemoryStore>().unwrap().len_total() >= 2);
+    }
+
+    #[test]
+    fn async_director_lands_beats_off_the_frame_loop() {
+        let mut w = cafe_world();
+        let mut dir = DirectorSystem::new(
+            Arc::new(SlowLlm {
+                delay: std::time::Duration::from_millis(60),
+            }),
+            1,
+        )
+        .with_async();
+        // 先来一句对话,让导演有素材。
+        w.resource_mut::<DialogueLog>().unwrap().turns.push(Turn {
+            speaker: "老周".into(),
+            to: "Aria".into(),
+            text: "新到的豆子".into(),
+        });
+
+        let t0 = std::time::Instant::now();
+        dir.run(&ctx(), &mut w);
+        assert!(t0.elapsed() < std::time::Duration::from_millis(30));
+        assert!(w.resource::<WorldStory>().unwrap().beats.is_empty());
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while w.resource::<WorldStory>().unwrap().beats.is_empty() {
+            dir.run(&ctx(), &mut w);
+            assert!(std::time::Instant::now() < deadline, "beat never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            w.resource::<WorldStory>()
+                .unwrap()
+                .beats
+                .last()
+                .map(String::as_str),
+            Some("好豆子要等。|wave|happy|今天客人问起埃塞豆")
+        );
+    }
+
+    #[test]
+    fn sync_and_async_paths_say_the_same_things() {
+        // 异步的真实差异是相位:第一条回复晚一两拍落地,所以固定帧数下
+        // 日志窗口的起始点会平移。不变量是「谁说了什么」和轮转环序:
+        // 每个说话者的台词集合一致,且 speakers 严格按同一环循环。
+        let run = |async_mode: bool| {
+            let mut w = cafe_world();
+            let mut cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 1);
+            let mut cog = if async_mode { cog.with_async() } else { cog };
+            for _ in 0..30 {
+                cog.run(&ctx(), &mut w);
+                // 真实帧间隔是毫秒级;给后台线程一点完成时间。
+                if async_mode {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            }
+            w.resource::<DialogueLog>()
+                .unwrap()
+                .turns
+                .iter()
+                .map(|t| (t.speaker.clone(), t.text.clone()))
+                .collect::<Vec<_>>()
+        };
+        let sync = run(false);
+        let asyn = run(true);
+        assert!(!sync.is_empty() && !asyn.is_empty());
+
+        // 每个说话者的台词集合逐字一致。
+        let bag = |rows: &[(String, String)]| {
+            let mut m: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+                Default::default();
+            for (sp, tx) in rows {
+                m.entry(sp.clone()).or_default().insert(tx.clone());
+            }
+            m
+        };
+        assert_eq!(bag(&sync), bag(&asyn), "who says what must not change");
+
+        // 轮转环序一致:async 的 speakers 是 sync 环的循环移位。
+        let cyc: Vec<String> = sync.iter().map(|(s, _)| s.clone()).collect();
+        let next_of = |cur: &str| {
+            let i = cyc.iter().position(|s| s == cur).unwrap();
+            cyc[(i + 1) % cyc.len()].clone()
+        };
+        for pair in asyn.windows(2) {
+            assert_eq!(
+                pair[1].0,
+                next_of(&pair[0].0),
+                "round-robin cycle order must hold"
+            );
+        }
     }
 }

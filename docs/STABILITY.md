@@ -48,7 +48,9 @@
 - L5 默认构建仍为计数占位;真 GPU 光栅化已通过 `render-wgpu` feature 无头闭环
   (wgpu,本机 Intel GL 后端实测出图;windows-gnu 下 DX12/Vulkan 枚举崩溃故默认钳制 GL),
   但 Pass 图/材质/纹理/相机矩阵尚未落地,且 Rust 引擎与浏览器 demo 之间仍无编译关系;
-- L7 `complete()` 同步阻塞,真 LLM 延迟会阻塞帧(异步化排在 RFC 0002 v0.5);
+- L7 同步 `complete()` 仍是默认路径(离线规则后端零成本);异步作业层 `InferJobs` +
+  认知/导演 `with_async()` 已落地(提交-收割,帧不阻塞网络,真 LLM 接入的壳层应启用),
+  但 native-http 的 SSE 真流式尚未实现(`complete_stream` 表面已就位,默认单块=诚实的不支持);
 - `platforms/web` 为 9 行壳,无 wasm 产物;
-- GLB 已有 Rust 侧最小解码器(`oriera-asset::glb`,POSITION/索引+深校验,11 单测),
-  但材质/纹理/蒙皮未解码,L8 生成物当前仍只消费几何。
+- GLB 解码只取 POSITION/三角索引(深校验),材质/纹理/蒙皮未解码;
+  生成→落地→解码→GPU 出图全链已闭环(示例 `glb_headless --from-l8`,3 项集成测试)。

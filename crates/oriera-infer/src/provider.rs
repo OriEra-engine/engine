@@ -68,6 +68,11 @@ pub enum InferError {
     Status { code: u16, detail: String },
     /// 2xx but the payload did not parse — never retried; surface it.
     Parse(String),
+    /// The LOCAL concurrency cap ([`crate::InferJobs`]) is full — this
+    /// frame chose not to enqueue another call. Not a provider fault at
+    /// all; callers handle it structurally ("try again next beat"),
+    /// never by retry loops.
+    Busy,
 }
 
 impl fmt::Display for InferError {
@@ -78,6 +83,10 @@ impl fmt::Display for InferError {
             InferError::Timeout => write!(f, "timeout: far side alive but slow (budget signal)"),
             InferError::Status { code, detail } => write!(f, "http {code}: {detail}"),
             InferError::Parse(m) => write!(f, "malformed provider payload: {m}"),
+            InferError::Busy => write!(
+                f,
+                "busy: local inference concurrency cap reached, skipped this beat"
+            ),
         }
     }
 }
@@ -150,7 +159,12 @@ impl InferError {
         match self {
             InferError::Timeout => ErrorClass::Timeout,
             InferError::Network(_) => ErrorClass::Network,
-            InferError::Parse(_) | InferError::Provider(_) => ErrorClass::Provider,
+            // Busy is our own cap, not the far side's — folded into the
+            // local-catch-all bucket so partner metrics never blame a
+            // vendor for our throttle. Handled structurally by callers.
+            InferError::Busy | InferError::Parse(_) | InferError::Provider(_) => {
+                ErrorClass::Provider
+            }
             InferError::Status { code, detail } => match code {
                 429 => ErrorClass::RateLimited,
                 401 | 403 => ErrorClass::Auth,
@@ -181,6 +195,17 @@ pub trait ModelProvider: Send + Sync {
 
     /// Produce one assistant completion for the chat so far.
     fn complete(&self, messages: &[ChatMessage]) -> Result<String, InferError>;
+
+    /// Streaming surface (RFC-3): the reply split into arrival-order
+    /// chunks. The default returns the whole reply as ONE chunk — an
+    /// honest "this backend does not stream" signal, not a fake stream;
+    /// consumers render `len() == 1` as a plain message. Browser kernels
+    /// stream via `fetch` SSE on their side; native SSE lands with the
+    /// async HTTP adapter (ROADMAP). Chunks always concatenate to the
+    /// `complete()` reply.
+    fn complete_stream(&self, messages: &[ChatMessage]) -> Result<Vec<String>, InferError> {
+        Ok(vec![self.complete(messages)?])
+    }
 
     /// Token usage of the most recent [`ModelProvider::complete`] call.
     /// Provided (zero) so simple backends opt in only when they can
@@ -283,6 +308,29 @@ impl ModelProvider for RuleProvider {
 
     fn last_usage(&self) -> TokenUsage {
         self.usage.lock().map(|u| *u).unwrap_or(TokenUsage::ZERO)
+    }
+
+    /// Simulated stream: the canned reply split at sentence enders, so
+    /// typewriter UI paths are exercised offline deterministically.
+    /// Concatenation is byte-identical to `complete()`.
+    fn complete_stream(&self, messages: &[ChatMessage]) -> Result<Vec<String>, InferError> {
+        let reply = self.complete(messages)?;
+        let mut chunks = Vec::new();
+        let mut buf = String::new();
+        for ch in reply.chars() {
+            buf.push(ch);
+            if matches!(ch, '。' | '！' | '？' | '；' | '\n') {
+                chunks.push(std::mem::take(&mut buf));
+            }
+        }
+        if !buf.is_empty() {
+            chunks.push(buf);
+        }
+        Ok(if chunks.is_empty() {
+            vec![reply]
+        } else {
+            chunks
+        })
     }
 }
 
@@ -397,6 +445,40 @@ mod tests {
         };
         let p = create_provider(&cfg);
         assert!(p.degradation_note().unwrap_or_default().contains("zhipu"));
+    }
+
+    #[test]
+    fn rule_provider_streams_sentence_chunks_that_concatenate() {
+        let p = RuleProvider::new();
+        // 「引擎」关键词的罐头回复含 ！ 与 。 两个句末 → 两块。
+        let chunks = p
+            .complete_stream(&[ChatMessage::user("你们引擎做得怎么样")])
+            .unwrap();
+        assert!(
+            chunks.len() >= 2,
+            "expected 2 sentence chunks, got {chunks:?}"
+        );
+        assert_eq!(
+            chunks.concat(),
+            p.complete(&[ChatMessage::user("你们引擎做得怎么样")])
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn default_stream_is_one_honest_chunk() {
+        struct Single;
+        impl ModelProvider for Single {
+            fn id(&self) -> &str {
+                "single"
+            }
+            fn complete(&self, _m: &[ChatMessage]) -> Result<String, InferError> {
+                Ok("一句话".into())
+            }
+        }
+        let chunks = Single.complete_stream(&[]).unwrap();
+        assert_eq!(chunks.len(), 1, "default surface must not fake a stream");
+        assert_eq!(chunks[0], "一句话");
     }
 
     #[test]

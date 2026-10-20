@@ -14,10 +14,12 @@
 
 #[cfg(feature = "native-http")]
 pub mod http;
+pub mod jobs;
 pub mod provider;
 
 #[cfg(feature = "native-http")]
 pub use http::HttpProvider;
+pub use jobs::{InferJobs, JobDone};
 pub use oriera_common::TokenUsage;
 pub use provider::{
     ChatMessage, InferError, ModelProvider, ProviderOptions, ProviderPreset, Role, RuleProvider,

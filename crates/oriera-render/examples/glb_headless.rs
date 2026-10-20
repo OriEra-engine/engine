@@ -5,6 +5,8 @@
 //! cargo run -p oriera-render --example glb_headless --features render-wgpu
 //! # 渲染任意 GLB(Tripo/L8 生成物或普通模型):
 //! cargo run -p oriera-render --example glb_headless --features render-wgpu -- model.glb out.bmp
+//! # L8→L4→L5 全链:MockProvider 生成 → validate → L4 命名落地 → 解码 → GPU 出图:
+//! cargo run -p oriera-render --example glb_headless --features render-wgpu -- --from-l8 out.bmp
 //! ```
 //! BMP 为零依赖手写(24bpp bottom-up),任何看图软件可开。
 
@@ -17,6 +19,35 @@ const H: u32 = 600;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (positions, indices, label) = match args.get(1).map(String::as_str) {
+        Some("--from-l8") => {
+            use oriera_genai::GenerationProvider as _;
+            // 生成管线全链:离线 MockProvider 出占位三角(ADR 0003:断电
+            // 也有可见占位),validate 守门后按逻辑名落 L4,再交给解码器。
+            let provider = oriera_genai::MockProvider::new();
+            let req = oriera_genai::GenerationRequest::text_to_3d(
+                "chain_demo_v1",
+                "L8→L4→L5 全链演示:一只占位三角",
+            );
+            let task = provider.request_generation(&req).expect("mock serves 3d");
+            let asset = loop {
+                match provider.poll_task(&task).unwrap() {
+                    oriera_genai::TaskStatus::Succeeded(a) => break a,
+                    _ => {}
+                }
+            };
+            oriera_genai::validate_asset(&asset, &oriera_genai::ValidationLimits::default())
+                .expect("validate gates the landing");
+            let mut store = oriera_asset::AssetStore::new();
+            store.insert_named("chain_demo_v1", asset.payload);
+            let landed: &Vec<u8> = store.get_named("chain_demo_v1").unwrap();
+            let mesh = oriera_asset::glb::decode_glb_mesh(landed).expect("decodes");
+            println!(
+                "L8 生成 → validate → L4 落地 → 解码: {} 顶点 / {} 索引",
+                mesh.positions.len(),
+                mesh.indices.len()
+            );
+            (mesh.positions, mesh.indices, "l8-chain".to_string())
+        }
         Some(path) => {
             let bytes =
                 std::fs::read(path).unwrap_or_else(|e| die(&format!("读 {path} 失败: {e}")));
