@@ -70,12 +70,36 @@ export class MemoryStore {
  * 走 HttpChatProvider；Anthropic 走专用头；rule 为离线后端。
  * ----------------------------------------------------------- */
 export class HttpChatProvider {
-  /** cfg: {kind, key, model, base} —— Key 只存在浏览器 localStorage */
-  constructor(cfg) { this.cfg = cfg; this.stats = { calls: 0, errors: 0 }; }
+  /** cfg: {kind, key, model, base, breakerThreshold?, breakerCooldownMs?}
+   * —— Key 只存在浏览器 localStorage。v0.8（B7）内置熔断器：连续 N 次
+   * 失败开闸快速失败（不碰网络），冷却后半开探测；4xx 配置类错误不
+   * 计入开闸（坏 key 换条线也没用），5xx/429/408/网络类计入——与
+   * Rust health.rs 的 trips_breaker 逐条对镜。 */
+  constructor(cfg) {
+    this.cfg = cfg; this.stats = { calls: 0, errors: 0 };
+    this.breaker = { state: "closed", consecutiveFailures: 0, openUntil: 0, successes: 0, failures: 0 };
+    this.breakerThreshold = cfg.breakerThreshold ?? 3;
+    this.breakerCooldownMs = cfg.breakerCooldownMs ?? 30000;
+  }
+  /** 安全审计对镜：错误归类——能否靠换条线救回来。 */
+  static tripsBreaker(err) {
+    const m = /HTTP (\d+)/.exec(String(err && err.message || err));
+    if (!m) return true;                       // 网络/中断类：换线可能有用
+    const code = Number(m[1]);
+    return code >= 500 || code === 429 || code === 408;
+  }
   get id() { return (this.cfg.kind || "openai-compat") + ":" + (this.cfg.model || "?"); }
   get ready() { return !!this.cfg.key; }
   async complete(messages, opts = {}) {
     if (!this.ready) throw new Error("no key");
+    // B7 熔断器：open 且未过冷却 → 快速失败；过冷却 → 半开放一个探测过。
+    const bk = this.breaker;
+    if (bk.state === "open") {
+      if (Date.now() < bk.openUntil) {
+        throw new Error("breaker open — failing fast (provider cooling down)");
+      }
+      bk.state = "half-open";
+    }
     this.stats.calls++;
     const anthropic = this.cfg.kind === "anthropic";
     const url = ((this.cfg.base || "") + (anthropic ? "/messages" : "/chat/completions"));
@@ -115,9 +139,24 @@ export class HttpChatProvider {
         const rawCached = (u.prompt_cache_hit_tokens ?? (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens)
           ?? u.cache_read_input_tokens ?? 0);
         this.stats.cached = (this.stats.cached || 0) + Math.min(rawCached, u.prompt_tokens ?? u.input_tokens ?? rawCached);
+        // B7：成功闭闸。
+        bk.state = "closed"; bk.consecutiveFailures = 0; bk.openUntil = 0; bk.successes++;
         return anthropic ? data.content[0].text : data.choices[0].message.content;
       } catch (e) {
-        if (attempt) { this.stats.errors++; throw e; }
+        // B7：调用级记账（与 Rust FallbackProvider 对镜——一次 complete
+        // 的内置重试算一次结果，不逐 attempt 计数）。半开探测失败立即重开。
+        if (attempt) {
+          bk.failures++;
+          if (HttpChatProvider.tripsBreaker(e)) {
+            bk.consecutiveFailures++;
+            if (bk.consecutiveFailures >= this.breakerThreshold || bk.state === "half-open") {
+              bk.state = "open";
+              bk.openUntil = Date.now() + this.breakerCooldownMs;
+            }
+          }
+          this.stats.errors++;
+          throw e;
+        }
         await new Promise(z => setTimeout(z, 900));
       }
     }
@@ -156,6 +195,22 @@ export class ZhipuProvider {
 }
 
 /* ---------- L9 · 认知系统（每 interval tick 一位 NPC 说话） ---------- */
+/** B4（与 Rust fit_budget 逐条对镜）：易变 user 消息的确定性裁剪——
+ * 头部必保，最旧对话先删，再删最旧记忆；同输入同裁剪，回放可比。 */
+export const fitBudget = (user, budget) => {
+  const count = lines => lines.reduce((a, l) => a + l.length + 1, 0);
+  if (count(user.split("\n")) <= budget) return user;
+  const lines = user.split("\n");
+  const ms = lines.findIndex(l => l.startsWith("你的相关记忆"));
+  const rs = lines.findIndex(l => l.startsWith("最近对话"));
+  if (ms >= 0 && rs >= 0) {
+    while (count(lines) > budget && rs + 1 < lines.length) lines.splice(rs + 1, 1);
+    while (count(lines) > budget && ms + 1 < lines.length) lines.splice(ms + 1, 1);
+  }
+  let out = lines.join("\n");
+  if (out.length > budget) out = out.slice(0, budget);
+  return out;
+};
 const MOODS = ["happy", "neutral", "sad", "excited", "thoughtful"];
 const ACTIONS = ["idle", "wave", "dance", "sitting", "walk_to_counter", "yes", "thumbs_up"];
 const extractJSON = s => { const m = (s || "").match(/\{[\s\S]*\}/);
@@ -165,13 +220,14 @@ export class CognitionSystem {
   /** v2 可注入：scene 世界前缀（默认隅角咖啡馆保持 v1 兼容）、
    * maxTokens（默认 260=provider 旧默认，线协议不变）、rng（种子化
    * 复现，默认 Math.random）、ruleBank（离线台词库，默认咖啡馆三人）。 */
-  constructor(provider, memory, { interval = 1, scene, maxTokens, rng, ruleBank } = {}) {
+  constructor(provider, memory, { interval = 1, scene, maxTokens, rng, ruleBank, promptBudget } = {}) {
     this.provider = provider; this.memory = memory;
     this.interval = interval; this.cursor = 0;
     this.scene = scene ?? "隅角咖啡馆";
     this.maxTokens = maxTokens ?? 260;
     this.rng = rng ?? Math.random;
     this.ruleBank = ruleBank ?? null;
+    this.promptBudget = promptBudget ?? 2000;
   }
   async tick(world) {
     world.turn++;
@@ -207,13 +263,14 @@ ${mems.length ? mems.map(m => `- (第${m.day}日) ${m.text}`).join("\n") : "-（
 最近对话：
 ${recent.join("\n") || "（对话刚开始）"}
 ${guest ? "（客人刚说完，请回应客人）" : `（请对${partner.name}说下一句话）`}`;
+    const boundedUser = fitBudget(user, this.promptBudget);
 
     let res;
     if (this.provider.ready) {
       try {
         const out = await this.provider.complete([
           { role: "system", content: sys },
-          { role: "user", content: user },
+          { role: "user", content: boundedUser },
         ], { json: true, temp: 0.9, max: this.maxTokens });
         const j = extractJSON(out) || {};
         let say = String(j.say || "……").slice(0, 140);

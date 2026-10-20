@@ -57,6 +57,12 @@ impl From<ReasoningEffort> for RecipeEffort {
     }
 }
 
+/// SSE per-line byte cap (安全审计 P2): one `data:` line beyond this is
+/// a hostile stream, not a model reply.
+const SSE_LINE_CAP: usize = 1024 * 1024;
+/// SSE whole-stream byte cap.
+const SSE_TOTAL_CAP: usize = 16 * 1024 * 1024;
+
 /// B5: cache-hit prompt tokens, three vendor styles — DeepSeek
 /// `prompt_cache_hit_tokens` first (unambiguous), then OpenAI's nested
 /// details, then Anthropic's cache read. `v` is the usage object (or the
@@ -79,7 +85,7 @@ use crate::provider::{
 use deepseek_recipe_core::conversation::ReasoningEffort as RecipeEffort;
 use oriera_common::TokenUsage;
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufReader, Read};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -462,6 +468,40 @@ impl HttpProvider {
     }
 }
 
+/// `BufRead::read_line` without the unbounded-growth footgun: stops at
+/// `cap` bytes and reports an overflow via `Err`. Returns bytes read
+/// (0 = EOF); the bytes land in `out` (without the terminator on
+/// overflow — the caller errors out anyway).
+fn read_line_capped(
+    reader: &mut impl std::io::BufRead,
+    out: &mut Vec<u8>,
+    cap: usize,
+) -> std::io::Result<usize> {
+    let mut read = 0usize;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(read);
+        }
+        let take = available
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(available.len(), |pos| pos + 1);
+        if read + take > cap {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("sse line exceeded {cap} bytes"),
+            ));
+        }
+        out.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        read += take;
+        if take > 0 && *out.last().expect("just extended") == b'\n' {
+            return Ok(read);
+        }
+    }
+}
+
 fn role_str(r: Role) -> &'static str {
     match r {
         Role::System => "system",
@@ -606,6 +646,25 @@ impl ModelProvider for HttpProvider {
     /// Native SSE streaming (RFC-3): one chunk per text delta, in
     /// arrival order; usage is taken from the terminal frames.
     fn complete_stream(&self, messages: &[ChatMessage]) -> Result<Vec<String>, InferError> {
+        self.complete_stream_capped(messages, SSE_LINE_CAP, SSE_TOTAL_CAP)
+    }
+
+    /// Cap-exposing flavor: one SSE `data:` line may never exceed
+    /// `line_cap` bytes and the whole stream `total_cap` bytes (安全审计
+    /// P2 — a hostile endpoint streaming one endless line must not be
+    /// able to balloon the client). Overflow is a `Parse` error: the
+    fn last_usage(&self) -> TokenUsage {
+        self.usage.lock().map(|u| *u).unwrap_or(TokenUsage::ZERO)
+    }
+}
+
+impl HttpProvider {
+    fn complete_stream_capped(
+        &self,
+        messages: &[ChatMessage],
+        line_cap: usize,
+        total_cap: usize,
+    ) -> Result<Vec<String>, InferError> {
         if self.cfg.api_key.trim().is_empty() && !self.is_local_endpoint() {
             return Err(InferError::Provider(
                 "no api key configured — the key only ever enters via the shell (env/UI), never the engine".into(),
@@ -617,14 +676,28 @@ impl ModelProvider for HttpProvider {
         let mut chunks: Vec<String> = Vec::new();
         let mut usage = TokenUsage::ZERO;
         let mut line = String::new();
+        let mut total: usize = 0;
         loop {
             line.clear();
-            let n = reader
-                .read_line(&mut line)
-                .map_err(|e| InferError::Network(self.scrub(e.to_string())))?;
+            let mut chunk = Vec::new();
+            let n = read_line_capped(&mut reader, &mut chunk, line_cap).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::InvalidData {
+                    // 帽溢出 = 端点答了垃圾（Parse），不是没够到对端。
+                    InferError::Parse(e.to_string())
+                } else {
+                    InferError::Network(self.scrub(e.to_string()))
+                }
+            })?;
+            total += n;
+            if total > total_cap {
+                return Err(InferError::Parse(format!(
+                    "stream exceeded {total_cap} bytes total"
+                )));
+            }
             if n == 0 {
                 break; // EOF before [DONE]/message_stop — take what landed
             }
+            line.push_str(&String::from_utf8_lossy(&chunk));
             let trimmed = line.trim_end();
             let Some(payload) = trimmed.strip_prefix("data:") else {
                 continue; // "event:" lines and blank separators carry no data
@@ -703,12 +776,6 @@ impl ModelProvider for HttpProvider {
         Ok(chunks)
     }
 
-    fn last_usage(&self) -> TokenUsage {
-        self.usage.lock().map(|u| *u).unwrap_or(TokenUsage::ZERO)
-    }
-}
-
-impl HttpProvider {
     /// POST with complete()'s minimal retry policy.
     fn post_json(&self, body: &str) -> Result<String, InferError> {
         match self.attempt(body) {
@@ -1842,6 +1909,32 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
                 sent.contains(&format!(r#""reasoning_effort":"{wire}""#)),
                 "{e:?} wire missing: {sent}"
             );
+        }
+    }
+
+    #[test]
+    fn sse_stream_caps_hostile_one_line_payloads() {
+        // 安全审计 P2 的回归钉：一条 2MB 的 data 行必须 Parse 报错，
+        // 而不是把客户端内存灌爆。
+        let huge = format!(
+            "data: {{\"junk\":\"{}\"}}
+
+",
+            "x".repeat(2 * 1024 * 1024)
+        );
+        let mock = Mock::spawn(vec![Step::Reply(200, huge)]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        match p.complete_stream(&[ChatMessage::user("x")]) {
+            Err(InferError::Parse(m)) => assert!(m.contains("exceeded"), "{m}"),
+            other => panic!("expected Parse(capped), got {other:?}"),
         }
     }
 }

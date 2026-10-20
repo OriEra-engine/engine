@@ -4,8 +4,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   MemoryStore, HttpChatProvider, parseIntent, CommandQueue,
-  CognitionSystem, DirectorSystem, PROVIDER_PRESETS, createProvider,
+  CognitionSystem, DirectorSystem, PROVIDER_PRESETS, createProvider, fitBudget,
 } from "./kernel.js";
+
+const fitBudgetJS = fitBudget; // 显式别名：断言里读得出这是对镜腿
 
 /* ---- parseIntent：与 Rust L9 parse 同词汇表（镜像断言） ---- */
 test("parse 镜像：spawn/clear/gravity/teleport/count/speed", () => {
@@ -284,4 +286,56 @@ test("MemoryStore 未来 turn 不再 Infinity 霸榜", () => {
   const hits = m.retrieve("a", "w", "来自未来", 10, 3);
   assert.equal(hits.length, 1); // 分数有界（>0.8 阈值仍可召回）
   assert.ok(Number.isFinite(m.retrieve("a", "w", "来自未来", 10, 3).length));
+});
+
+/* ---- v0.8（B7 熔断器 + B4 预算裁剪） ---- */
+test("熔断器：连续失败开闸快速失败，半开探测成功闭闸（B7）", async () => {
+  let fetches = 0, fail = true;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { fetches++; if (fail) throw new Error("HTTP 503");
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "好了" } }], usage: {} }) }; };
+  try {
+    // 长冷却：开闸后快速失败腿（冷却未过，绝不碰网络）
+    const p = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x", breakerThreshold: 2, breakerCooldownMs: 60000 });
+    await assert.rejects(p.complete([{ role: "user", content: "x" }]));
+    assert.equal(p.breaker.consecutiveFailures, 1);
+    await assert.rejects(p.complete([{ role: "user", content: "x" }]));
+    assert.equal(p.breaker.state, "open");
+    const before = fetches;
+    await assert.rejects(p.complete([{ role: "user", content: "x" }]), /breaker open/);
+    assert.equal(fetches, before, "开闸后快速失败，绝不碰网络");
+    // 零冷却：半开探测成功闭闸腿
+    const q = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x", breakerThreshold: 2, breakerCooldownMs: 0 });
+    await assert.rejects(q.complete([{ role: "user", content: "x" }]));
+    await assert.rejects(q.complete([{ role: "user", content: "x" }]));
+    assert.equal(q.breaker.state, "open");
+    fail = false; // 冷却 0 → 半开探测成功闭闸
+    assert.equal(await q.complete([{ role: "user", content: "x" }]), "好了");
+    assert.equal(q.breaker.state, "closed");
+  } finally { globalThis.fetch = origFetch; }
+});
+
+test("熔断器：4xx 配置类错误不计开闸（与 Rust trips_breaker 对镜）", async () => {
+  let fetches = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { fetches++; return { ok: false, status: 401, json: async () => ({}) }; };
+  try {
+    const p = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x", breakerThreshold: 2 });
+    await assert.rejects(p.complete([{ role: "user", content: "x" }]));
+    await assert.rejects(p.complete([{ role: "user", content: "x" }]));
+    await assert.rejects(p.complete([{ role: "user", content: "x" }]));
+    assert.equal(p.breaker.state, "closed", "坏 key 换线没用，不开闸");
+  } finally { globalThis.fetch = origFetch; }
+});
+
+test("fitBudget：头部必保、最旧对话先删、确定性（B4）", () => {
+  let user = "世界进度：第 1 世界日，拍\n对话对象：「客人」。\n你的相关记忆：\n- 记忆甲\n最近对话：\n";
+  for (let i = 0; i < 20; i++) user += `老周：第${i}句台词内容比较长一些\n`;
+  const out = fitBudgetJS(user, 250);
+  assert.ok(out.length <= 251, "预算守住");
+  assert.ok(out.startsWith("世界进度"), "头部必保");
+  assert.ok(out.includes("第19句"), "最新台词保住");
+  assert.ok(!out.includes("第0句"), "最旧台词先删");
+  assert.equal(out, fitBudgetJS(user, 250), "确定性");
+  assert.equal(fitBudgetJS("世界进度：短\n", 250), "世界进度：短\n", "预算内直通");
 });

@@ -21,6 +21,15 @@ spec:
         handles in replay-identical LCG order; Nudge never coalesces
         (float-sensitive, same rule as Teleport/SetSpeed)
       note: frame-budgeted queue (deferred counter) + token metering
+    - id: oriera.infer.health.v1
+      contract: rust:oriera_infer::{BreakerState,ProviderHealth,FallbackProvider,InferenceLedger,prompt_fingerprint,response_fingerprint}
+      stability: stable
+      note: v0.8 (PLAN-deepseek-upgrade B7/B2) — circuit breaker
+        (threshold 3 / cooldown 30s; 5xx/429/408/Network/Timeout/Parse
+        trip, other 4xx are config errors and do not trip), fallback
+        chain (cloud -> local -> rule, "咖啡馆永不下线"), degradation_note
+        wired; InferenceLedger = bounded per-call fingerprint audit
+        trail (#67 hash family, DeterminismLevel three grades)
     - id: oriera.infer.cache-cost.v1
       contract: rust:oriera_infer::{CostMeter,ModelCaps,ModelPrice,ReasoningEffort,ProviderOptions}
       stability: stable

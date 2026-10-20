@@ -68,6 +68,33 @@ impl TokenUsage {
     }
 }
 
+/// How reproducible one inference channel is (v0.8, PLAN-deepseek-upgrade
+/// B2). The honest answer to "is the AI part of my replay?" — three
+/// graded promises instead of one vague hope. Paired with the L7
+/// inference fingerprints, recorded runs can be audited and
+/// replay-compared after the fact even at `Recorded`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeterminismLevel {
+    /// Same input → byte-identical output, forever (offline rule backend).
+    Strict,
+    /// Provider-side seed pinned: best-effort sameness; vendors may
+    /// still drift batch to batch.
+    Pinned,
+    /// No sameness promise — the call is fingerprinted so replays can
+    /// be compared after the fact.
+    Recorded,
+}
+
+impl DeterminismLevel {
+    pub fn label(self) -> &'static str {
+        match self {
+            DeterminismLevel::Strict => "strict",
+            DeterminismLevel::Pinned => "pinned",
+            DeterminismLevel::Recorded => "recorded",
+        }
+    }
+}
+
 /// One system's compute allocation for a frame (book T3 §3.5, T15).
 ///
 /// The shared vocabulary of the compute-budget pipeline: L2's allocator

@@ -143,6 +143,12 @@ pub struct CognitionSystem<P: ModelProvider> {
     /// v2.1 mirror of kernel-v2 injectables: world prefix in the system
     /// prompt. Default keeps every existing caller byte-compatible.
     pub scene: String,
+    /// B4 (PLAN-deepseek-upgrade): char budget for the assembled USER
+    /// message. Overflow trims deterministically — oldest recent-dialogue
+    /// lines first, then memory lines — so the prompt can never balloon
+    /// with the world's history (stable prefix keeps hitting the cache;
+    /// the volatile tail stays bounded).
+    pub prompt_budget: usize,
     /// Async job pool: when present, provider calls leave the frame
     /// loop entirely (submit on this beat, land the reply on whichever
     /// frame it arrives — RFC 0002 v0.5). Absent = legacy inline call.
@@ -160,6 +166,10 @@ struct PendingSpeech {
     partner: Persona,
     turn: u64,
     day: u32,
+    /// B2: kept so the async road fingerprints exactly what it sent —
+    /// the ledger must not depend on which road served the line.
+    sys: String,
+    user: String,
 }
 
 impl<P: ModelProvider + 'static> CognitionSystem<P> {
@@ -181,6 +191,7 @@ impl<P: ModelProvider> CognitionSystem<P> {
             cursor: 0,
             order: Vec::new(),
             scene: "隅角咖啡馆".to_string(),
+            prompt_budget: 2000,
             jobs: None,
             pending: None,
         }
@@ -236,6 +247,7 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
                     world.resource_or_default::<UsageMeter>().record(done.usage);
                 }
                 let reply = done.result.unwrap_or_else(|_| "……".into());
+                record_fingerprint(world, self.provider.as_ref(), &p.sys, &p.user, &reply);
                 Self::land_reply(
                     world, p.speaker, &p.persona, &p.partner, reply, p.turn, p.day,
                 );
@@ -246,12 +258,10 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
             if let Some((speaker_e, persona, partner, sys, user)) =
                 self.next_speech(world, day, &beat, turn)
             {
-                if let Ok(id) = self
-                    .jobs
-                    .as_mut()
-                    .expect("checked above")
-                    .submit(vec![ChatMessage::system(sys), ChatMessage::user(user)])
-                {
+                if let Ok(id) = self.jobs.as_mut().expect("checked above").submit(vec![
+                    ChatMessage::system(sys.clone()),
+                    ChatMessage::user(user.clone()),
+                ]) {
                     self.pending = Some(PendingSpeech {
                         job: id,
                         speaker: speaker_e,
@@ -259,6 +269,8 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
                         partner,
                         turn,
                         day,
+                        sys,
+                        user,
                     });
                 }
             }
@@ -277,11 +289,44 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
 
         let reply = self
             .provider
-            .complete(&[ChatMessage::system(sys), ChatMessage::user(user)])
+            .complete(&[
+                ChatMessage::system(sys.clone()),
+                ChatMessage::user(user.clone()),
+            ])
             .unwrap_or_else(|_| "……".into());
         meter_usage(world, &*self.provider);
+        record_fingerprint(world, self.provider.as_ref(), &sys, &user, &reply);
         Self::land_reply(world, speaker_e, &persona, &partner, reply, turn, day);
     }
+}
+
+/// B4: trim an assembled user message to `budget` chars, deterministically.
+/// Order of sacrifice: the header (day/beat/partner) always survives;
+/// oldest recent-dialogue lines go first; then memory lines from the
+/// oldest. Same input → same trim, so replays stay comparable.
+fn fit_budget(user: &str, budget: usize) -> String {
+    let count = |lines: &[&str]| lines.iter().map(|l| l.chars().count() + 1).sum::<usize>();
+    if count(&user.lines().collect::<Vec<_>>()) <= budget {
+        return user.to_string();
+    }
+    let mut lines: Vec<&str> = user.lines().collect();
+    // Locate the two sacrificial sections by their markers.
+    let mem_start = lines.iter().position(|l| l.starts_with("你的相关记忆"));
+    let recent_start = lines.iter().position(|l| l.starts_with("最近对话"));
+    if let (Some(ms), Some(rs)) = (mem_start, recent_start) {
+        // Drop oldest dialogue lines first, then oldest memory lines.
+        while count(&lines) > budget && rs + 1 < lines.len() {
+            lines.remove(rs + 1);
+        }
+        while count(&lines) > budget && ms + 1 < lines.len() {
+            lines.remove(ms + 1);
+        }
+    }
+    let mut out = lines.join("\n");
+    if out.chars().count() > budget {
+        out = out.chars().take(budget).collect();
+    }
+    out
 }
 
 impl<P: ModelProvider> CognitionSystem<P> {
@@ -376,6 +421,7 @@ impl<P: ModelProvider> CognitionSystem<P> {
                 recent.join("\n")
             },
         );
+        let user = fit_budget(&user, self.prompt_budget);
         Some((speaker_e, persona, partner, sys, user))
     }
 
@@ -445,6 +491,32 @@ impl<P: ModelProvider> CognitionSystem<P> {
         );
         let _ = action; // L6 animation mapping lands with the 3D runtime
     }
+}
+
+/// B2: fingerprint one inference call into the world's
+/// [`InferenceLedger`](oriera_infer::InferenceLedger) — the model-path
+/// twin of #67's world-state hash. Levels come from the provider itself
+/// (rule = strict, seeded http = pinned, else recorded), so a world can
+/// honestly answer "how replayable was my AI channel".
+fn record_fingerprint<P: ModelProvider + ?Sized>(
+    world: &mut oriera_ecs::World,
+    provider: &P,
+    sys: &str,
+    user: &str,
+    reply: &str,
+) {
+    let prompt = oriera_infer::prompt_fingerprint(
+        provider.id(),
+        None,
+        &[
+            oriera_infer::ChatMessage::system(sys.to_string()),
+            oriera_infer::ChatMessage::user(user.to_string()),
+        ],
+    );
+    let response = oriera_infer::response_fingerprint(reply);
+    world
+        .resource_or_default::<oriera_infer::InferenceLedger>()
+        .record(provider.determinism(), prompt, response, provider.id());
 }
 
 /// Record a provider call's token usage into the world's
@@ -1224,5 +1296,53 @@ mod tests {
         assert_ne!(user1, user2);
         assert!(!sys1.contains("世界日"));
         assert!(user2.contains("第 9 世界日"));
+    }
+
+    // ---- v0.8: B4 prompt budget / B2 inference ledger ----
+
+    #[test]
+    fn fit_budget_trims_oldest_dialogue_first_and_keeps_the_header() {
+        let mut user = String::from("世界进度：第 1 世界日，拍\n对话对象：「客人」（旅者）。\n你的相关记忆：\n- 记忆甲\n- 记忆乙\n最近对话：\n");
+        for i in 0..20 {
+            user.push_str(&format!("老周：第{}句台词内容比较长一些\n", i));
+        }
+        let out = fit_budget(&user, 250);
+        assert!(
+            out.chars().count() <= 250 + 1,
+            "budget respected: {}",
+            out.chars().count()
+        );
+        assert!(out.starts_with("世界进度"), "header always survives");
+        assert!(out.contains("第19句"), "newest dialogue survives");
+        assert!(!out.contains("第0句"), "oldest dialogue goes first");
+        // Deterministic: same input, same trim.
+        assert_eq!(out, fit_budget(&user, 250));
+        // Under budget: byte-identical passthrough.
+        assert_eq!(fit_budget("世界进度：短\n", 400), "世界进度：短\n");
+    }
+
+    #[test]
+    fn cognition_records_fingerprint_ledger_entries() {
+        let mut w = cafe_world();
+        let mut cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 1);
+        cog.run(&ctx(), &mut w);
+        cog.run(&ctx(), &mut w);
+        let ledger = w.resource::<oriera_infer::InferenceLedger>().unwrap();
+        assert_eq!(ledger.entries.len(), 2);
+        // The rule backend is Strict and deterministic: same speaker+
+        // same inputs would replay fingerprint-identical. Here the two
+        // turns differ (round-robin speakers), so the prompts differ.
+        assert_eq!(
+            ledger.entries[0].level,
+            oriera_common::DeterminismLevel::Strict
+        );
+        assert_ne!(ledger.entries[0].prompt, ledger.entries[1].prompt);
+        // Twin replay: a fresh world fed the same ticks matches entrywise.
+        let mut w2 = cafe_world();
+        let mut cog2 = CognitionSystem::new(Arc::new(RuleProvider::new()), 1);
+        cog2.run(&ctx(), &mut w2);
+        cog2.run(&ctx(), &mut w2);
+        let ledger2 = w2.resource::<oriera_infer::InferenceLedger>().unwrap();
+        assert!(ledger.matches(ledger2), "strict twins must match entrywise");
     }
 }

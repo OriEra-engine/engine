@@ -13,6 +13,12 @@ spec:
       contract: rust:oriera_common::TokenUsage
       stability: stable
       note: shared metering vocabulary; L7 reports, L9 accumulates
+    - id: oriera.common.determinism.v1
+      contract: rust:oriera_common::DeterminismLevel
+      stability: stable
+      note: v0.8 replay-promise vocabulary — strict (byte-identical
+        offline) / pinned (provider seed, best-effort) / recorded
+        (fingerprinted for after-the-fact audit)
     - id: oriera.common.grants.v1
       contract: rust:oriera_common::{ComputeGrant,Grants}
       stability: stable
