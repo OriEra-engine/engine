@@ -28,3 +28,4 @@ Thumbs.db
 out/
 build/
 *.log
+.git-msg
