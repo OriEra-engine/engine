@@ -38,10 +38,11 @@ compile_error!(
 
 use crate::provider::{
     ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, ProviderOptions, Role,
+    ToolCall, ToolDef, ToolOutcome,
 };
 use oriera_common::TokenUsage;
 use serde_json::{json, Value};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -141,36 +142,36 @@ impl HttpProvider {
     }
 
     fn build_request(&self, messages: &[ChatMessage]) -> String {
-        match self.dialect {
-            Dialect::OpenAi => {
-                let mut body = json!({
-                    "model": self.cfg.model,
-                    "messages": messages
-                        .iter()
-                        .map(|m| json!({ "role": role_str(m.role), "content": m.content }))
-                        .collect::<Vec<_>>(),
-                    "temperature": 0.85,   // kernel.js parity
-                    "max_tokens": 260,
-                });
-                // v2.1 kernel-v2 parity: construction-time wire options.
-                if let Some(seed) = self.options.seed {
-                    body["seed"] = json!(seed);
-                }
-                if self.options.thinking_disabled {
-                    body["thinking"] = json!({ "type": "disabled" });
-                }
-                if self.options.json_mode {
-                    body["response_format"] = json!({ "type": "json_object" });
-                }
-                body.to_string()
-            }
+        self.build_request_ex(messages, None, false)
+    }
+
+    /// Extended wire builder: optional tool vocabulary + SSE streaming.
+    fn build_request_ex(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<&[crate::provider::ToolDef]>,
+        stream: bool,
+    ) -> String {
+        let mut body: Value = match self.dialect {
+            Dialect::OpenAi => json!({
+                "model": self.cfg.model,
+                "messages": messages
+                    .iter()
+                    .map(|m| json!({ "role": role_str(m.role), "content": m.content }))
+                    .collect::<Vec<_>>(),
+                "temperature": 0.85,
+                "max_tokens": 260,
+            }),
             Dialect::Anthropic => {
                 let system = messages
                     .iter()
                     .filter(|m| m.role == Role::System)
                     .map(|m| m.content.as_str())
                     .collect::<Vec<_>>()
-                    .join("\n");
+                    .join(
+                        "
+",
+                    );
                 json!({
                     "model": self.cfg.model,
                     "system": system,
@@ -181,9 +182,65 @@ impl HttpProvider {
                         .map(|m| json!({ "role": role_str(m.role), "content": m.content }))
                         .collect::<Vec<_>>(),
                 })
-                .to_string()
+            }
+        };
+        match self.dialect {
+            Dialect::OpenAi => {
+                if let Some(seed) = self.options.seed {
+                    body["seed"] = json!(seed);
+                }
+                if self.options.thinking_disabled {
+                    body["thinking"] = json!({ "type": "disabled" });
+                }
+                if self.options.json_mode {
+                    body["response_format"] = json!({ "type": "json_object" });
+                }
+                if let Some(tools) = tools.filter(|t| !t.is_empty()) {
+                    body["tools"] = Value::Array(
+                        tools
+                            .iter()
+                            .map(|t| {
+                                json!({
+                                    "type": "function",
+                                    "function": {
+                                        "name": t.name,
+                                        "description": t.description,
+                                        "parameters": serde_json::from_str::<Value>(&t.parameters_json)
+                                            .unwrap_or_else(|_| json!({ "type": "object" })),
+                                    }
+                                })
+                            })
+                            .collect(),
+                    );
+                    body["tool_choice"] = json!("auto");
+                }
+                if stream {
+                    body["stream"] = json!(true);
+                    body["stream_options"] = json!({ "include_usage": true });
+                }
+            }
+            Dialect::Anthropic => {
+                if let Some(tools) = tools.filter(|t| !t.is_empty()) {
+                    body["tools"] = Value::Array(
+                        tools
+                            .iter()
+                            .map(|t| {
+                                json!({
+                                    "name": t.name,
+                                    "description": t.description,
+                                    "input_schema": serde_json::from_str::<Value>(&t.parameters_json)
+                                        .unwrap_or_else(|_| json!({ "type": "object" })),
+                                })
+                            })
+                            .collect(),
+                    );
+                }
+                if stream {
+                    body["stream"] = json!(true);
+                }
             }
         }
+        body.to_string()
     }
 
     fn apply_headers(&self, req: ureq::Request) -> ureq::Request {
@@ -210,35 +267,36 @@ impl HttpProvider {
         Ok(String::from_utf8_lossy(&buf).into_owned())
     }
 
-    fn attempt(&self, body: &str) -> Result<String, InferError> {
+    /// Send one request; 2xx returns the response (caller owns the
+    /// body reader), non-2xx and transport failures map to InferError.
+    fn send(&self, body: &str) -> Result<ureq::Response, InferError> {
         let req = self.apply_headers(self.agent.post(&self.url));
         match req.send_string(body) {
-            Ok(resp) => self.read_body(resp.into_reader()),
-            Err(ureq::Error::Status(code, resp)) => {
-                // Headers first — into_reader consumes the response.
+            Ok(resp) => Ok(resp),
+            Err(e) => Err(self.map_send_err(e)),
+        }
+    }
+
+    /// ureq error → InferError (shared by body and SSE paths).
+    fn map_send_err(&self, e: ureq::Error) -> InferError {
+        match e {
+            ureq::Error::Status(code, resp) => {
                 let retry_after = resp.header("retry-after").map(str::to_string);
-                let mut detail = self.read_body(resp.into_reader())?;
+                let detail = match self.read_body(resp.into_reader()) {
+                    Ok(d) => d,
+                    Err(e) => return e,
+                };
+                let mut detail = detail;
                 if let Some(ra) = retry_after {
                     detail.push_str(&format!(" [retry-after: {ra}]"));
                 }
-                Err(InferError::Status {
+                InferError::Status {
                     code,
                     detail: self.scrub(detail),
-                })
+                }
             }
-            Err(ureq::Error::Transport(t)) => {
+            ureq::Error::Transport(t) => {
                 let msg = t.to_string();
-                // Two signals, both needed:
-                // - ureq's `kind` separates the connect phase
-                //   (ConnectionFailed/Dns/…) from mid-stream io — the
-                //   design page's line is "connection phase = never
-                //   reached the far side = Network", and ureq even
-                //   words a refused connect as "connection timed out"
-                //   on Windows, so the kind, not the wording, decides;
-                // - for kind Io the deadline shows up in the (possibly
-                //   localized!) message: the word, or the OS code —
-                //   WSAETIMEDOUT (10060) / ETIMEDOUT (110), which are
-                //   locale-independent by construction.
                 let deadline = {
                     let lower = msg.to_lowercase();
                     lower.contains("timed out")
@@ -247,11 +305,18 @@ impl HttpProvider {
                         || msg.contains("(os error 110)")
                 };
                 if t.kind() == ureq::ErrorKind::Io && deadline {
-                    Err(InferError::Timeout)
+                    InferError::Timeout
                 } else {
-                    Err(InferError::Network(self.scrub(msg)))
+                    InferError::Network(self.scrub(msg))
                 }
             }
+        }
+    }
+
+    fn attempt(&self, body: &str) -> Result<String, InferError> {
+        match self.send(body) {
+            Ok(resp) => self.read_body(resp.into_reader()),
+            Err(e) => Err(e),
         }
     }
 
@@ -347,8 +412,206 @@ impl ModelProvider for HttpProvider {
         Ok(text)
     }
 
+    fn supports_tools(&self) -> bool {
+        true
+    }
+
+    /// Tool-enabled completion over the vendor wire (RFC-3): OpenAI
+    /// `tools`/`tool_choice=auto`, Anthropic `tools`/`input_schema`.
+    fn complete_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDef],
+    ) -> Result<ToolOutcome, InferError> {
+        if self.cfg.api_key.trim().is_empty() && !self.is_local_endpoint() {
+            return Err(InferError::Provider(
+                "no api key configured — the key only ever enters via the shell (env/UI), never the engine".into(),
+            ));
+        }
+        let raw = self.post_json(&self.build_request_ex(messages, Some(tools), false))?;
+        self.parse_tool_reply(raw)
+    }
+
+    /// Native SSE streaming (RFC-3): one chunk per text delta, in
+    /// arrival order; usage is taken from the terminal frames.
+    fn complete_stream(&self, messages: &[ChatMessage]) -> Result<Vec<String>, InferError> {
+        if self.cfg.api_key.trim().is_empty() && !self.is_local_endpoint() {
+            return Err(InferError::Provider(
+                "no api key configured — the key only ever enters via the shell (env/UI), never the engine".into(),
+            ));
+        }
+        let body = self.build_request_ex(messages, None, true);
+        let resp = self.send(&body)?;
+        let mut reader = BufReader::new(resp.into_reader());
+        let mut chunks: Vec<String> = Vec::new();
+        let mut usage = TokenUsage::ZERO;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
+                .map_err(|e| InferError::Network(e.to_string()))?;
+            if n == 0 {
+                break; // EOF before [DONE]/message_stop — take what landed
+            }
+            let trimmed = line.trim_end();
+            let Some(payload) = trimmed.strip_prefix("data:") else {
+                continue; // "event:" lines and blank separators carry no data
+            };
+            let payload = payload.trim();
+            if payload == "[DONE]" {
+                break;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(payload) else {
+                continue;
+            };
+            match self.dialect {
+                Dialect::OpenAi => {
+                    if let Some(t) = v
+                        .pointer("/choices/0/delta/content")
+                        .and_then(Value::as_str)
+                    {
+                        if !t.is_empty() {
+                            chunks.push(t.to_string());
+                        }
+                    }
+                    if let Some(u) = v.pointer("/usage").filter(|u| u.is_object()) {
+                        usage = TokenUsage {
+                            prompt: u
+                                .pointer("/prompt_tokens")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                            completion: u
+                                .pointer("/completion_tokens")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                        };
+                    }
+                }
+                Dialect::Anthropic => match v.pointer("/type").and_then(Value::as_str) {
+                    Some("content_block_delta") => {
+                        if let Some(t) = v.pointer("/delta/text").and_then(Value::as_str) {
+                            chunks.push(t.to_string());
+                        }
+                    }
+                    Some("message_start") => {
+                        usage.prompt = v
+                            .pointer("/message/usage/input_tokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0);
+                    }
+                    Some("message_delta") => {
+                        usage.completion = v
+                            .pointer("/usage/output_tokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0);
+                    }
+                    Some("message_stop") => break,
+                    _ => {}
+                },
+            }
+        }
+        if chunks.is_empty() {
+            return Err(InferError::Parse(
+                "stream carried no text deltas (200 but empty SSE body)".into(),
+            ));
+        }
+        if let Ok(mut u) = self.usage.lock() {
+            *u = usage;
+        }
+        Ok(chunks)
+    }
+
     fn last_usage(&self) -> TokenUsage {
         self.usage.lock().map(|u| *u).unwrap_or(TokenUsage::ZERO)
+    }
+}
+
+impl HttpProvider {
+    /// POST with complete()'s minimal retry policy.
+    fn post_json(&self, body: &str) -> Result<String, InferError> {
+        match self.attempt(body) {
+            Ok(raw) => Ok(raw),
+            Err(InferError::Network(msg)) => match self.attempt(body) {
+                Ok(raw) => Ok(raw),
+                Err(InferError::Timeout) => Err(InferError::Timeout),
+                Err(_) => Err(InferError::Network(msg)),
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Split a tool-enabled reply into prose or tool calls, both
+    /// dialects; usage is metered on either road.
+    fn parse_tool_reply(&self, raw: String) -> Result<ToolOutcome, InferError> {
+        let v: Value =
+            serde_json::from_str(&raw).map_err(|e| InferError::Parse(format!("not json: {e}")))?;
+        let usage = TokenUsage {
+            prompt: v
+                .pointer("/usage/prompt_tokens")
+                .or_else(|| v.pointer("/usage/input_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            completion: v
+                .pointer("/usage/completion_tokens")
+                .or_else(|| v.pointer("/usage/output_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        };
+        let calls: Vec<ToolCall> = match self.dialect {
+            Dialect::OpenAi => v
+                .pointer("/choices/0/message/tool_calls")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| {
+                            Some(ToolCall {
+                                id: c.pointer("/id").and_then(Value::as_str)?.to_string(),
+                                name: c
+                                    .pointer("/function/name")
+                                    .and_then(Value::as_str)?
+                                    .to_string(),
+                                arguments_json: c
+                                    .pointer("/function/arguments")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("{}")
+                                    .to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Dialect::Anthropic => v
+                .pointer("/content")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|c| c.pointer("/type").and_then(Value::as_str) == Some("tool_use"))
+                        .filter_map(|c| {
+                            Some(ToolCall {
+                                id: c.pointer("/id").and_then(Value::as_str)?.to_string(),
+                                name: c.pointer("/name").and_then(Value::as_str)?.to_string(),
+                                arguments_json: c
+                                    .pointer("/input")
+                                    .map(|input| input.to_string())
+                                    .unwrap_or_else(|| "{}".into()),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        if let Ok(mut u) = self.usage.lock() {
+            *u = usage;
+        }
+        if calls.is_empty() {
+            let (text, usage) = self.parse_reply(raw)?;
+            if let Ok(mut u) = self.usage.lock() {
+                *u = usage;
+            }
+            return Ok(ToolOutcome::Text(text));
+        }
+        Ok(ToolOutcome::ToolCalls(calls))
     }
 }
 
@@ -822,5 +1085,149 @@ mod tests {
             other => panic!("expected Timeout from the retry, got {other:?}"),
         }
         assert_eq!(mock.requests().len(), 2);
+    }
+
+    // ---- RFC-3 工具调用 + SSE 流式 ----
+
+    fn tool_defs() -> Vec<crate::provider::ToolDef> {
+        vec![crate::provider::ToolDef {
+            name: "spawn".into(),
+            description: "在世界中生成 N 个实体".into(),
+            parameters_json: r#"{"type":"object","properties":{"count":{"type":"integer","minimum":1,"maximum":50}},"required":["count"]}"#.into(),
+        }]
+    }
+
+    #[test]
+    fn openai_tool_calls_round_trip() {
+        let mock = Mock::spawn(vec![Step::Reply(
+            200,
+            r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"spawn","arguments":"{\"count\":3}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":8}}"#.into(),
+        )]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        assert!(p.supports_tools());
+        let out = p
+            .complete_with_tools(&[ChatMessage::user("帮我生成 3 个实体")], &tool_defs())
+            .unwrap();
+        match out {
+            crate::provider::ToolOutcome::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].id, "call_1");
+                assert_eq!(calls[0].name, "spawn");
+                assert!(calls[0].arguments_json.contains("\"count\""));
+            }
+            other => panic!("expected tool calls, got {other:?}"),
+        }
+        assert_eq!(p.last_usage().prompt, 30);
+        // wire 侧:tools 词表 + tool_choice 都上链了
+        let req = &mock.requests()[0];
+        assert!(req.contains("\"tools\""), "tools vocabulary on the wire");
+        assert!(req.contains("\"tool_choice\""));
+        assert!(req.contains("\"spawn\""));
+    }
+
+    #[test]
+    fn anthropic_tool_use_round_trip() {
+        let mock = Mock::spawn(vec![Step::Reply(
+            200,
+            r#"{"content":[{"type":"tool_use","id":"tu_1","name":"spawn","input":{"count":5}}],"usage":{"input_tokens":18,"output_tokens":6}}"#.into(),
+        )]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::Anthropic,
+                model: "claude".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let out = p
+            .complete_with_tools(&[ChatMessage::user("来 5 个")], &tool_defs())
+            .unwrap();
+        match out {
+            crate::provider::ToolOutcome::ToolCalls(calls) => {
+                assert_eq!(calls[0].name, "spawn");
+                assert!(calls[0].arguments_json.contains("5"));
+            }
+            other => panic!("expected tool calls, got {other:?}"),
+        }
+        let req = &mock.requests()[0];
+        assert!(req.contains("\"input_schema\""), "anthropic tool wire");
+    }
+
+    #[test]
+    fn openai_sse_stream_chunks_and_usage() {
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"雨\"}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"停\"}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"了。\"}}]}\n\n\
+data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3}}\n\n\
+data: [DONE]\n\n";
+        let mock = Mock::spawn(vec![Step::Reply(200, sse.into())]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let chunks = p.complete_stream(&[ChatMessage::user("写三个字")]).unwrap();
+        assert_eq!(chunks, vec!["雨", "停", "了。"]);
+        assert_eq!(chunks.concat(), "雨停了。");
+        assert_eq!(p.last_usage().prompt, 9);
+        assert_eq!(p.last_usage().completion, 3);
+        // 流式请求带了 stream 标记与 usage 开关
+        let req = &mock.requests()[0];
+        assert!(req.contains("\"stream\":true"));
+        assert!(req.contains("include_usage"));
+    }
+
+    #[test]
+    fn anthropic_sse_stream_events() {
+        let sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11}}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"灯\"}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"亮着\"}}\n\n\
+event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n\
+event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        let mock = Mock::spawn(vec![Step::Reply(200, sse.into())]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::Anthropic,
+                model: "claude".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let chunks = p.complete_stream(&[ChatMessage::user("两个字")]).unwrap();
+        assert_eq!(chunks, vec!["灯", "亮着"]);
+        assert_eq!(p.last_usage().prompt, 11);
+        assert_eq!(p.last_usage().completion, 4);
+    }
+
+    #[test]
+    fn sse_without_any_text_delta_is_a_parse_error() {
+        let mock = Mock::spawn(vec![Step::Reply(200, "data: [DONE]\n\n".into())]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        match p.complete_stream(&[ChatMessage::user("x")]) {
+            Err(InferError::Parse(msg)) => assert!(msg.contains("no text deltas")),
+            other => panic!("expected Parse error, got {other:?}"),
+        }
     }
 }

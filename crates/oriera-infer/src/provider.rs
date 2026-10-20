@@ -187,6 +187,34 @@ fn detail_says_moderation(detail: &str) -> bool {
         .any(|k| d.contains(k))
 }
 
+/// One capability the engine offers the model (RFC-3 tool calling).
+/// `parameters_json` is a JSON Schema the provider forwards verbatim —
+/// the engine never interprets vendor tool formats itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
+    pub parameters_json: String,
+}
+
+/// A tool invocation the model requested. `id` rounds back to the
+/// vendor as the tool-result message id (multi-turn tool loops).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments_json: String,
+}
+
+/// Result of a tool-enabled completion: prose, or the model asking the
+/// engine to act (then the caller executes, appends a tool result and
+/// may complete again).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolOutcome {
+    Text(String),
+    ToolCalls(Vec<ToolCall>),
+}
+
 /// The model boundary every consumer depends on (L7 contract,
 /// `oriera.infer.provider.v1`).
 pub trait ModelProvider: Send + Sync {
@@ -195,6 +223,25 @@ pub trait ModelProvider: Send + Sync {
 
     /// Produce one assistant completion for the chat so far.
     fn complete(&self, messages: &[ChatMessage]) -> Result<String, InferError>;
+
+    /// Does this backend REALLY honor the tools vocabulary? Default
+    /// false — an honest "no" so callers can surface a degradation
+    /// instead of silently losing agency.
+    fn supports_tools(&self) -> bool {
+        false
+    }
+
+    /// Tool-enabled completion (RFC-3). Default: tools are ignored and
+    /// the call degrades to plain text — callers should check
+    /// [`ModelProvider::supports_tools`] first to make that visible.
+    fn complete_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDef],
+    ) -> Result<ToolOutcome, InferError> {
+        let _ = tools;
+        Ok(ToolOutcome::Text(self.complete(messages)?))
+    }
 
     /// Streaming surface (RFC-3): the reply split into arrival-order
     /// chunks. The default returns the whole reply as ONE chunk — an
@@ -332,6 +379,80 @@ impl ModelProvider for RuleProvider {
             chunks
         })
     }
+
+    /// The rule backend simulates tool calling deterministically: if
+    /// the last message contains `工具名 {json}` (e.g. `spawn {"count":3}`),
+    /// that tool is "requested" with those arguments. Same input →
+    /// same tool calls, so engine-side tool loops stay hermetic offline.
+    fn supports_tools(&self) -> bool {
+        true
+    }
+
+    fn complete_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDef],
+    ) -> Result<ToolOutcome, InferError> {
+        let last = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User || m.role == Role::System)
+            .map(|m| m.content.as_str())
+            .unwrap_or("");
+        for tool in tools {
+            let Some(open) = last.find(&format!("{} {{", tool.name)) else {
+                continue;
+            };
+            // marker = "name {":跳过名字与那个空格,落在 '{' 上
+            let args_start = open + tool.name.len() + 1;
+            let Some(args) = take_json_object(&last[args_start..]) else {
+                continue;
+            };
+            // Meter the simulated round trip, mirroring complete().
+            let prompt_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
+            let completion_chars = tool.name.chars().count() + args.chars().count();
+            if let Ok(mut u) = self.usage.lock() {
+                *u = Self::estimate(prompt_chars, completion_chars);
+            }
+            return Ok(ToolOutcome::ToolCalls(vec![ToolCall {
+                id: format!("call-{}", tool.name),
+                name: tool.name.clone(),
+                arguments_json: args,
+            }]));
+        }
+        Ok(ToolOutcome::Text(self.complete(messages)?))
+    }
+}
+
+/// Extract the first balanced `{...}` JSON object from `s` (starts at
+/// the `{`), tolerating nested braces and escaped quotes.
+fn take_json_object(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut esc = false;
+    for (i, &c) in b.iter().enumerate() {
+        if esc {
+            esc = false;
+            continue;
+        }
+        match c {
+            b'\\' if in_str => esc = true,
+            b'"' => in_str = !in_str,
+            b'{' if !in_str => depth += 1,
+            b'}' if !in_str => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(s[..=i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -372,6 +493,56 @@ mod tests {
             InferError::Provider("cfg".into()).class(),
             ErrorClass::Provider
         );
+    }
+
+    #[test]
+    fn rule_provider_simulates_tool_calls_deterministically() {
+        let spawn = ToolDef {
+            name: "spawn".into(),
+            description: "生成实体".into(),
+            parameters_json: r#"{"type":"object"}"#.into(),
+        };
+        let p = RuleProvider::new();
+        // 消息里带 `工具名 {json}` → 请求该工具
+        let out = p
+            .complete_with_tools(
+                &[ChatMessage::user("导演说:spawn {\"count\":3},再来点气氛")],
+                &[spawn.clone()],
+            )
+            .unwrap();
+        match out {
+            ToolOutcome::ToolCalls(c) => {
+                assert_eq!(c.len(), 1);
+                assert_eq!(c[0].name, "spawn");
+                assert_eq!(c[0].arguments_json, "{\"count\":3}");
+            }
+            other => panic!("expected tool call, got {other:?}"),
+        }
+        // 没有标记 → 纯文本(降级回 complete 的罐头回复)
+        let plain = p
+            .complete_with_tools(&[ChatMessage::user("聊聊咖啡豆")], &[spawn])
+            .unwrap();
+        assert!(matches!(plain, ToolOutcome::Text(_)));
+        assert!(p.supports_tools());
+    }
+
+    #[test]
+    fn default_provider_reports_no_tool_support_honestly() {
+        struct Plain;
+        impl ModelProvider for Plain {
+            fn id(&self) -> &str {
+                "plain"
+            }
+            fn complete(&self, _m: &[ChatMessage]) -> Result<String, InferError> {
+                Ok("文本".into())
+            }
+        }
+        assert!(!Plain.supports_tools());
+        // 默认实现:忽略工具词表,不伪造工具能力
+        let out = Plain
+            .complete_with_tools(&[ChatMessage::user("x")], &[])
+            .unwrap();
+        assert_eq!(out, ToolOutcome::Text("文本".into()));
     }
 
     #[test]

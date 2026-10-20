@@ -121,6 +121,11 @@ v0.3 落地**异步推理作业**（RFC 0002 v0.5 第一步）：`InferJobs` 把
 搬到后台线程（提交即返回、逐帧 try_recv 收割），认知/导演系统 `with_async()`
 切换后帧循环不再等网络——真 LLM 的 1~5 秒延迟从「卡住的帧」变成「晚一拍落地的对话」；
 `complete_stream()` 流式表面（RFC-3）就位，默认单块诚实表示「此后端不支持流式」。
+v0.3 同轮落地**工具调用与真流式**（RFC-3 P0 全清）：`complete_with_tools` +
+`ToolDef/ToolCall/ToolOutcome` 工具词表（HttpProvider 走 OpenAI `tools` /
+Anthropic `input_schema` 双方言 wire；RuleProvider 用 `spawn {"count":N}` 标记
+确定性模拟，离线可测）；HttpProvider `complete_stream` 原生 SSE 增量流
+（逐 delta 分块、终帧计量 usage，双方言事件）。
 **Key 只存在平台壳**（浏览器 localStorage / 环境变量），永不入仓。
 
 ### L8 · oriera-genai — 生成式 AI（表达链路已通，ADR 0003 + RFC 0001）
@@ -149,7 +154,11 @@ fetch Promise settling 取代轮询节拍）+ `ArtDirectorSystem` 美术导演�
   （言灵世界的通道）；
 - **认知系统**：`CognitionSystem` / `DirectorSystem` / `MemoryStore`（检索式长期记忆）
   全部是 `System<World>` 挂 L2 调度器（咖啡馆的形态），headless 验证
-  `cargo run -p oriera-agent --example cafe`。
+  `cargo run -p oriera-agent --example cafe`；
+- **工具桥**（v0.3，feature `json`）：`EngineTools::definitions()` 把引擎命令词表
+  暴露给任意厂商模型，`dispatch` 把模型的工具调用翻译成 `Command` 提交 L7——
+  模型从「会说」到「会做」，坏参数返回自愈说明永不 panic。离线闭环演示：
+  `cargo run -p oriera-agent --example tool_loop --features json`。
 
 v0.2 润滑剂：认知/导演自愈启动（裸世界 boot 是测试契约）+ 否定语义解析
 （「别清空」先于意图判断，不被执行成清空）。

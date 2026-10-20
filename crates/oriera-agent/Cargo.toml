@@ -33,6 +33,11 @@ oriera-render = { path = "../oriera-render" }
 oriera-subsys = { path = "../oriera-subsys" }
 
 [[example]]
+name = "tool_loop"
+path = "examples/tool_loop.rs"
+required-features = ["json"]
+
+[[example]]
 name = "cafe"
 path = "examples/cafe.rs"
 

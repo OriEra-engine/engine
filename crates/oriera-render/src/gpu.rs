@@ -347,12 +347,18 @@ fn normalize_to_clip(positions: &[[f32; 3]]) -> Vec<[f32; 3]> {
         (min[2] + max[2]) * 0.5,
     ];
     let extent = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-    let scale = 1.8
-        / extent
-            .iter()
-            .filter(|e| **e > f32::EPSILON)
-            .fold(f32::INFINITY, |a, e| a.min(*e))
-            .max(1e-6);
+    // 等比缩放取「最大」非零维度映射到 ±0.9(取最小会让最宽轴溢出
+    // 裁剪空间 —— Blobfish 各维近似等长时侥幸不显,扁四边形必炸)。
+    // 全退化(所有点同位)→ scale 0,收缩到中心。
+    let max_extent = extent
+        .iter()
+        .filter(|e| **e > f32::EPSILON)
+        .fold(0.0f32, |a, e| a.max(*e));
+    let scale = if max_extent > 0.0 {
+        1.8 / max_extent
+    } else {
+        0.0
+    };
     positions
         .iter()
         .map(|p| {

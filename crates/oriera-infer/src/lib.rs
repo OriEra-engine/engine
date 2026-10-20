@@ -23,7 +23,7 @@ pub use jobs::{InferJobs, JobDone};
 pub use oriera_common::TokenUsage;
 pub use provider::{
     ChatMessage, InferError, ModelProvider, ProviderOptions, ProviderPreset, Role, RuleProvider,
-    PROVIDER_PRESETS,
+    ToolCall, ToolDef, ToolOutcome, PROVIDER_PRESETS,
 };
 
 use oriera_core::{FrameCtx, System};

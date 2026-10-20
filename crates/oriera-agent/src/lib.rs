@@ -29,6 +29,8 @@ pub mod cognition;
 pub mod embodied;
 pub mod genai;
 pub mod memory;
+#[cfg(feature = "json")]
+pub mod tools;
 
 pub use cognition::{
     CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WakeEvent, WorldStory,

@@ -50,7 +50,9 @@
   但 Pass 图/材质/纹理/相机矩阵尚未落地,且 Rust 引擎与浏览器 demo 之间仍无编译关系;
 - L7 同步 `complete()` 仍是默认路径(离线规则后端零成本);异步作业层 `InferJobs` +
   认知/导演 `with_async()` 已落地(提交-收割,帧不阻塞网络,真 LLM 接入的壳层应启用),
-  但 native-http 的 SSE 真流式尚未实现(`complete_stream` 表面已就位,默认单块=诚实的不支持);
+  工具调用(OpenAI/Anthropic 双方言 wire)与 SSE 真流式已随 native-http 落地
+  (不支持的后端 `supports_tools()=false` 诚实上报、默认降级纯文本);
+  L9 工具桥 EngineTools 需 json feature(浏览器内核在 JS 侧实现同一循环);
 - `platforms/web` 为 9 行壳,无 wasm 产物;
 - GLB 解码只取 POSITION/三角索引(深校验),材质/纹理/蒙皮未解码;
   生成→落地→解码→GPU 出图全链已闭环(示例 `glb_headless --from-l8`,3 项集成测试)。
