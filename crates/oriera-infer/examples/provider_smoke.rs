@@ -120,7 +120,7 @@ fn main() {
     // 5. complete 调用 + usage 计量（v0.4 原生侧由 RuleProvider 承载）
     let t0 = std::time::Instant::now();
     match provider.complete(&[
-        ChatMessage::system(&format!("你是 OriEra 世界引擎的接入自检员。{}
+        ChatMessage::system(format!("你是 OriEra 世界引擎的接入自检员。{}
 （以上为自检清单，与验收无关的固定前缀——足量长度的稳定前缀才能让端点前缀缓存稳定命中。）", "逐项核对版本号、依赖方向、预算表、降级链、台账、熔断状态、缓存命中、成本口径、指标命名、契约版本。".repeat(12))),
         ChatMessage::user("用一句话证明你在线。"),
     ]) {
@@ -147,7 +147,7 @@ fn main() {
             // 是绝对命中数而非相对增量：跨进程预热后第一枪就可能已命中，
             // 增量会恒为 0（真 key 验收实测教训）。
             let _ = provider.complete(&[
-                ChatMessage::system(&format!("你是 OriEra 世界引擎的接入自检员。{}
+                ChatMessage::system(format!("你是 OriEra 世界引擎的接入自检员。{}
 （以上为自检清单，与验收无关的固定前缀——足量长度的稳定前缀才能让端点前缀缓存稳定命中。）", "逐项核对版本号、依赖方向、预算表、降级链、台账、熔断状态、缓存命中、成本口径、指标命名、契约版本。".repeat(12))),
                 ChatMessage::user("用一句话证明你在线。"),
             ]);
