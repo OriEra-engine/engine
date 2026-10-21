@@ -1393,6 +1393,9 @@ mod tests {
                 if landed {
                     break;
                 }
+                // CI 调度慢于微秒级 tick：给后台作业线程让出时间片
+                //（上游 jobs 测试同款 10ms 手法），200 轮 = 2s 封顶。
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
             w.resource::<InferenceLedger>().unwrap().clone()
         };
