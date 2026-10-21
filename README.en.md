@@ -11,6 +11,7 @@
 [![CI](https://github.com/OriEra-engine/engine/actions/workflows/ci.yml/badge.svg)](https://github.com/OriEra-engine/engine/actions/workflows/ci.yml)
 [![Live Demo](https://img.shields.io/badge/demo-live-ff7a3d.svg)](https://oriera-engine.github.io/engine/)
 [![Discussions](https://img.shields.io/badge/discussions-join-5b8def.svg)](https://github.com/OriEra-engine/engine/discussions)
+[![AtomGit](https://img.shields.io/badge/mirror-AtomGit-c32929.svg)](https://atomgit.com/leslie520-bye/engine)
 
 [中文文档](README.md) · English
 
