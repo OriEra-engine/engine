@@ -79,14 +79,17 @@ impl EngineTools {
                 infer.submit(Command::Clear);
                 "已提交:下一帧清空世界".into()
             }
-            "set_gravity" => match require_f64(&args, "value") {
+            "set_gravity" => match require_f64(&args, "value", -1000.0, 1000.0) {
                 Ok(g) => {
                     infer.submit(Command::SetGravity(g as f32));
                     format!("已提交:重力设为 {g}")
                 }
                 Err(why) => reject("set_gravity", why),
             },
-            "teleport" => match (require_f64(&args, "dx"), require_f64(&args, "dy")) {
+            "teleport" => match (
+                require_f64(&args, "dx", -1.0e6, 1.0e6),
+                require_f64(&args, "dy", -1.0e6, 1.0e6),
+            ) {
                 (Ok(dx), Ok(dy)) => {
                     infer.submit(Command::Teleport(dx as f32, dy as f32));
                     format!("已提交:全体平移 ({dx}, {dy})")
@@ -97,7 +100,7 @@ impl EngineTools {
                 infer.submit(Command::Count);
                 "已提交:下一帧统计实体数(读 Stats 资源)".into()
             }
-            "set_speed" => match require_f64(&args, "factor") {
+            "set_speed" => match require_f64(&args, "factor", 0.0, 100.0) {
                 Ok(k) => {
                     infer.submit(Command::SetSpeed(k as f32));
                     format!("已提交:速度系数 {k}")
@@ -132,10 +135,17 @@ fn require_int(args: &serde_json::Value, key: &str, min: i64, max: i64) -> Resul
     Ok(n)
 }
 
-fn require_f64(args: &serde_json::Value, key: &str) -> Result<f64, String> {
-    args.get(key)
+fn require_f64(args: &serde_json::Value, key: &str, min: f64, max: f64) -> Result<f64, String> {
+    let v = args
+        .get(key)
         .and_then(|v| v.as_f64())
-        .ok_or_else(|| format!("缺少或非法的数值参数 {key}"))
+        .ok_or_else(|| format!("缺少或非法的数值参数 {key}"))?;
+    // 安全审计 P2：1e30 级参数经 f32 收敛会变 inf，物理积分直接 NaN 化
+    // 世界——有限性与量程在这里设界（模型动作空间的边界就是安全边界）。
+    if !v.is_finite() || v < min || v > max {
+        return Err(format!("参数 {key}={v} 超出量程 [{min}, {max}]"));
+    }
+    Ok(v)
 }
 
 /// 多轮工具代理循环(RFC-3「AI 自主调控」的运行时形态):

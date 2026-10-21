@@ -172,3 +172,12 @@ PC 壳（`platforms/pc`）是全量接线示范：报告区直接打印 allocati
 单列 `saved_micro`。未登记牌价的行照计量、记 `unpriced_calls`（本地行
 电费口径）；跨币种不求和（`mixed_currency` 拒绝外汇幻觉）。分拨管节流，
 账本管复盘，两本账互不越位。
+
+## v0.8 健康信号（PLAN-deepseek-upgrade B7）
+
+分拨管"该花多少"，账本管"花了多少"，v0.8 的 `health_report()` 管"**现在
+花得动花不动**"：每个 provider 的熔断状态（closed/open/half-open）与连
+败计数由 `FallbackProvider.health_report()` 暴露——信号已备，壳层
+状态灯接线随 B1 落地（与 ARCHITECTURE 口径一致）。失败率进
+`BudgetAllocator` EWMA 的自动联动留作 follow-up（信号已备，接线待
+L2 拨杆评审）。

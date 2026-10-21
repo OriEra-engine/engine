@@ -12,18 +12,21 @@
 //! Natural-language parsing does NOT live here — that is the L9 agent's
 //! job (`oriera-agent`). This layer only executes what it is given.
 
+pub mod health;
 #[cfg(feature = "native-http")]
 pub mod http;
 pub mod jobs;
 pub mod provider;
 
+pub use health::{BreakerState, FallbackProvider, ProviderHealth};
 #[cfg(feature = "native-http")]
 pub use http::HttpProvider;
 pub use jobs::{InferJobs, JobDone};
-pub use oriera_common::TokenUsage;
+pub use oriera_common::{DeterminismLevel, TokenUsage};
 pub use provider::{
-    ChatMessage, InferError, ModelCaps, ModelPrice, ModelProvider, ProviderOptions, ProviderPreset,
-    ReasoningEffort, Role, RuleProvider, ToolCall, ToolDef, ToolOutcome, PROVIDER_PRESETS,
+    prompt_fingerprint, response_fingerprint, ChatMessage, InferError, ModelCaps, ModelPrice,
+    ModelProvider, ProviderOptions, ProviderPreset, ReasoningEffort, Role, RuleProvider, ToolCall,
+    ToolDef, ToolOutcome, PROVIDER_PRESETS,
 };
 
 use oriera_core::{FrameCtx, System};
@@ -179,6 +182,52 @@ impl CostMeter {
             "CNY" => format!("{prefix}¥{amount:.4}"),
             other => format!("{prefix}{other} {amount:.4}"),
         }
+    }
+}
+
+/// One audited inference call (v0.8 B2): the replay promise made, the
+/// prompt/response fingerprint pair (#67's hash family), and which
+/// provider served. Bounded — a world that never trims its audit trail
+/// is a world that stops metering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerEntry {
+    pub level: DeterminismLevel,
+    pub prompt: u64,
+    pub response: u64,
+    pub provider: String,
+}
+
+/// Bounded audit trail of inference fingerprints. L9 systems record one
+/// entry per model call; twins/replays compare ledgers entry by entry —
+/// the "double fingerprint" story from #67: world-state hash for the
+/// semantic path, inference ledger for the model path.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InferenceLedger {
+    pub entries: Vec<LedgerEntry>,
+}
+
+pub const LEDGER_CAP: usize = 256;
+
+impl InferenceLedger {
+    pub fn record(&mut self, level: DeterminismLevel, prompt: u64, response: u64, provider: &str) {
+        if self.entries.len() >= LEDGER_CAP {
+            let drop = self.entries.len() - LEDGER_CAP + 1;
+            self.entries.drain(0..drop);
+        }
+        self.entries.push(LedgerEntry {
+            level,
+            prompt,
+            response,
+            provider: provider.to_string(),
+        });
+    }
+
+    /// True when two ledgers tell the same inference story — same
+    /// lengths, same levels, same fingerprint pairs, same providers.
+    /// `Strict` twins must pass this; `Recorded` twins compare it for
+    /// drift forensics, not equality.
+    pub fn matches(&self, other: &Self) -> bool {
+        self.entries == other.entries
     }
 }
 
@@ -613,6 +662,52 @@ mod tests {
             completion_micro_per_m: 600_000,
             cached_micro_per_m: 3_000,
         }
+    }
+
+    #[test]
+    fn inference_fingerprints_are_stable_and_input_sensitive() {
+        use crate::provider::{prompt_fingerprint, response_fingerprint};
+        let msgs = [ChatMessage::system("系统词"), ChatMessage::user("输入")];
+        let a = prompt_fingerprint("deepseek-chat", Some(7), &msgs);
+        let b = prompt_fingerprint("deepseek-chat", Some(7), &msgs);
+        assert_eq!(a, b, "same input → same fingerprint");
+        assert_ne!(
+            prompt_fingerprint("deepseek-chat", None, &msgs),
+            a,
+            "seed matters"
+        );
+        assert_ne!(
+            prompt_fingerprint("deepseek-chat", Some(7), &[ChatMessage::user("变了")]),
+            a,
+            "content matters"
+        );
+        assert_ne!(
+            response_fingerprint("回复甲"),
+            response_fingerprint("回复乙")
+        );
+        assert_eq!(
+            response_fingerprint("回复甲"),
+            response_fingerprint("回复甲")
+        );
+    }
+
+    #[test]
+    fn inference_ledger_is_bounded_and_matches_entrywise() {
+        let mut ledger = InferenceLedger::default();
+        for i in 0..(LEDGER_CAP + 10) {
+            ledger.record(
+                DeterminismLevel::Strict,
+                i as u64,
+                i as u64 * 2,
+                "rule:rule-v1",
+            );
+        }
+        assert_eq!(ledger.entries.len(), LEDGER_CAP, "bounded, never unbounded");
+        assert_eq!(ledger.entries[0].prompt, 10, "oldest dropped");
+        assert!(ledger.matches(&ledger.clone()));
+        let mut drifted = ledger.clone();
+        drifted.entries[3].response ^= 1;
+        assert!(!ledger.matches(&drifted));
     }
 
     #[test]

@@ -256,6 +256,15 @@ L9 DirectorSystem 调度 NPC 行为 → L6 动作/物理 → L5 画质迟滞调�
 - L9 **稳定前缀惯例**：system 对 NPC 恒定、易变走 user（Rust+JS 双侧，字节稳定是测试契约）+ 注入用例集
 - 完整地图：AI-NATIVE.md v0.7 节 / OPEN-MODEL-MATRIX.md §0.5-0.6
 
+### v0.8 韧性与可复现契约（2026-10-21「永不下线」）
+
+- L0 `DeterminismLevel`：strict / pinned / recorded 三档回放承诺词汇
+- L7 `health.rs`：熔断器（连续 3 败开闸、30s 冷却半开探测；5xx/429/408/Network/Timeout/Parse 计入，4xx 配置错不计）+ `FallbackProvider` 降级链（云端→本地→rule，「咖啡馆永不下线」）+ `degradation_note` 降级可见
+- L7 `InferenceLedger` + `prompt_fingerprint`/`response_fingerprint`：#67 哈希族的「双指纹」审计——世界状态哈希管语义路径，台账管模型路径；`DeterminismLevel` 从 provider 自报
+- L9 `fit_budget`（Rust+JS 对镜）：易变 user 消息字符预算有界化，最旧对话先删、头部必保、同输入同裁剪（B4；#70 JSON 持久化上游已落地）
+- L7 SSE 每行 1MB / 整流 16MB 帽（安全审计 P2 回归钉）；tools 数值参数量程设界（1e30→inf→物理 NaN 的路被堵死）
+- 已知边界：熔断失败率与 L2 `BudgetAllocator` 的 EWMA 联动留作 follow-up（信号已由 `health_report()` 暴露）；完整地图见 AI-NATIVE.md v0.8 节
+
 ## 7. 治理：LayerManifest 与架构门禁（T3 §3.8.3）
 
 每层在 `manifests/` 声明机器可读的清单（L0–L9 共 10 份 YAML，含 L08-genai）：
@@ -283,8 +292,8 @@ assets/          logo、hero GIF 等品牌资产
 
 ## 9. 测试、CI 与性能
 
-- 全仓 **435 个测试**（CI 实测口径：`cargo test --workspace` 217 + genai `providers` 53 + agent `json` 54 + subsys `rigid` 14 + infer `native-http` 77 + kernel node 测试 20，2026-10-21 三角色评审后核对，含 RFC-3 工具调用/流式/异步作业与 v0.7 缓存计量批次；分项含少量 doctest），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
-- 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 至 v0.7.0 共 8 份）。
+- 全仓 **471 个测试**（CI 实测口径：`cargo test --workspace` 231 + genai `providers` 53 + agent `json` 58 + subsys `rigid` 14 + infer `native-http` 90 + kernel node 测试 25，2026-10-21 v0.8 评审修复后核对，含 RFC-3 工具调用/流式/异步作业与 v0.7/v0.8 批次；分项含少量 doctest），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
+- 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 至 v0.8.0 共 9 份）。
 - 基准怎么跑、当前参考数据见 [PERF.md](PERF.md)。
 
 ## 10. 常见问题

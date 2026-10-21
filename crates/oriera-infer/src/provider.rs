@@ -9,7 +9,7 @@
 //! is the deterministic offline backend that keeps tests hermetic and
 //! lets the engine run without a key.
 
-use oriera_common::TokenUsage;
+use oriera_common::{DeterminismLevel, TokenUsage};
 use std::fmt;
 
 /// One turn of a chat-format request.
@@ -304,6 +304,13 @@ pub trait ModelProvider: Send + Sync {
         TokenUsage::ZERO
     }
 
+    /// Which replay promise this backend makes (v0.8 B2,
+    /// PLAN-deepseek-upgrade). Provided as [`DeterminismLevel::Recorded`]
+    /// — the honest default; backends with stronger guarantees override.
+    fn determinism(&self) -> DeterminismLevel {
+        DeterminismLevel::Recorded
+    }
+
     /// Why this provider is a stand-in rather than the configured
     /// backend, if it is one. **Degrade must be visible**: hosts surface
     /// this in status UI and metrics instead of letting a silent
@@ -399,6 +406,10 @@ impl ModelProvider for RuleProvider {
 
     fn last_usage(&self) -> TokenUsage {
         self.usage.lock().map(|u| *u).unwrap_or(TokenUsage::ZERO)
+    }
+
+    fn determinism(&self) -> DeterminismLevel {
+        DeterminismLevel::Strict
     }
 
     /// Simulated stream: the canned reply split at sentence enders, so
@@ -1185,6 +1196,37 @@ pub struct ProviderOptions {
     /// `json_mode` when both are set (json_object ⊆ json_schema).
     /// Invalid JSON fails the call before any network is touched.
     pub response_schema: Option<String>,
+}
+
+/// FNV-1a with an explicit seed — the hash family the world-state
+/// fingerprint (#67) standardized, reused by the inference fingerprints
+/// so a "double-fingerprint" audit reads one family, not two.
+fn fnv1a(seed: u64, bytes: &[u8]) -> u64 {
+    let mut h = seed;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Prompt-side inference fingerprint (v0.8 B2): model + seed + ordered
+/// messages hashed with #67's seed. Two calls with identical prompts and
+/// parameters produce identical fingerprints regardless of provider —
+/// that is what makes `Recorded`-level runs auditable after the fact.
+pub fn prompt_fingerprint(model: &str, seed: Option<u64>, messages: &[ChatMessage]) -> u64 {
+    let mut h = fnv1a(0x0000_6f72_6965_7261, model.as_bytes());
+    h = fnv1a(h, &seed.unwrap_or(0).to_le_bytes());
+    for m in messages {
+        h = fnv1a(h, &[m.role as u8]);
+        h = fnv1a(h, m.content.as_bytes());
+    }
+    h
+}
+
+/// Response-side inference fingerprint (v0.8 B2).
+pub fn response_fingerprint(reply: &str) -> u64 {
+    fnv1a(0x0000_6f72_6965_7261 ^ 0x8bac_a9e9, reply.as_bytes())
 }
 
 pub fn create_provider_with_options(
