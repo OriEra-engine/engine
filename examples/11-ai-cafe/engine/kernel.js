@@ -80,6 +80,7 @@ export class HttpChatProvider {
     this.breaker = { state: "closed", consecutiveFailures: 0, openUntil: 0, successes: 0, failures: 0 };
     this.breakerThreshold = cfg.breakerThreshold ?? 3;
     this.breakerCooldownMs = cfg.breakerCooldownMs ?? 30000;
+    this.retryDelayMs = cfg.retryDelayMs ?? 900;
   }
   /** 安全审计对镜：错误归类——能否靠换条线救回来。 */
   static tripsBreaker(err) {
@@ -157,7 +158,7 @@ export class HttpChatProvider {
           this.stats.errors++;
           throw e;
         }
-        await new Promise(z => setTimeout(z, 900));
+        await new Promise(z => setTimeout(z, this.retryDelayMs));
       }
     }
   }
@@ -198,17 +199,19 @@ export class ZhipuProvider {
 /** B4（与 Rust fit_budget 逐条对镜）：易变 user 消息的确定性裁剪——
  * 头部必保，最旧对话先删，再删最旧记忆；同输入同裁剪，回放可比。 */
 export const fitBudget = (user, budget) => {
-  const count = lines => lines.reduce((a, l) => a + l.length + 1, 0);
+  // 与 Rust chars() 对镜：按 Unicode 码点计/裁（[...l] 展开），emoji
+  // 不再一个算两个，硬裁也不会切碎代理对（评审 P1-2）。
+  const count = lines => lines.reduce((a, l) => a + [...l].length + 1, 0);
   if (count(user.split("\n")) <= budget) return user;
   const lines = user.split("\n");
   const ms = lines.findIndex(l => l.startsWith("你的相关记忆"));
   const rs = lines.findIndex(l => l.startsWith("最近对话"));
   if (ms >= 0 && rs >= 0) {
     while (count(lines) > budget && rs + 1 < lines.length) lines.splice(rs + 1, 1);
-    while (count(lines) > budget && ms + 1 < lines.length) lines.splice(ms + 1, 1);
+    while (count(lines) > budget && ms + 1 < lines.length && ms + 1 !== rs) lines.splice(ms + 1, 1);
   }
   let out = lines.join("\n");
-  if (out.length > budget) out = out.slice(0, budget);
+  if ([...out].length > budget) out = Array.from(out).slice(0, budget).join("");
   return out;
 };
 const MOODS = ["happy", "neutral", "sad", "excited", "thoughtful"];

@@ -177,6 +177,7 @@ PC 壳（`platforms/pc`）是全量接线示范：报告区直接打印 allocati
 
 分拨管"该花多少"，账本管"花了多少"，v0.8 的 `health_report()` 管"**现在
 花得动花不动**"：每个 provider 的熔断状态（closed/open/half-open）与连
-败计数由 `FallbackProvider` 暴露，壳层状态灯直读。失败率进
+败计数由 `FallbackProvider.health_report()` 暴露——信号已备，壳层
+状态灯接线随 B1 落地（与 ARCHITECTURE 口径一致）。失败率进
 `BudgetAllocator` EWMA 的自动联动留作 follow-up（信号已备，接线待
 L2 拨杆评审）。

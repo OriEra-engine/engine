@@ -296,7 +296,7 @@ test("熔断器：连续失败开闸快速失败，半开探测成功闭闸（B7
     return { ok: true, json: async () => ({ choices: [{ message: { content: "好了" } }], usage: {} }) }; };
   try {
     // 长冷却：开闸后快速失败腿（冷却未过，绝不碰网络）
-    const p = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x", breakerThreshold: 2, breakerCooldownMs: 60000 });
+    const p = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x", breakerThreshold: 2, breakerCooldownMs: 60000, retryDelayMs: 0 });
     await assert.rejects(p.complete([{ role: "user", content: "x" }]));
     assert.equal(p.breaker.consecutiveFailures, 1);
     await assert.rejects(p.complete([{ role: "user", content: "x" }]));
@@ -305,7 +305,7 @@ test("熔断器：连续失败开闸快速失败，半开探测成功闭闸（B7
     await assert.rejects(p.complete([{ role: "user", content: "x" }]), /breaker open/);
     assert.equal(fetches, before, "开闸后快速失败，绝不碰网络");
     // 零冷却：半开探测成功闭闸腿
-    const q = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x", breakerThreshold: 2, breakerCooldownMs: 0 });
+    const q = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x", breakerThreshold: 2, breakerCooldownMs: 0, retryDelayMs: 0 });
     await assert.rejects(q.complete([{ role: "user", content: "x" }]));
     await assert.rejects(q.complete([{ role: "user", content: "x" }]));
     assert.equal(q.breaker.state, "open");
@@ -320,7 +320,7 @@ test("熔断器：4xx 配置类错误不计开闸（与 Rust trips_breaker 对�
   const origFetch = globalThis.fetch;
   globalThis.fetch = async () => { fetches++; return { ok: false, status: 401, json: async () => ({}) }; };
   try {
-    const p = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x", breakerThreshold: 2 });
+    const p = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x", breakerThreshold: 2, retryDelayMs: 0 });
     await assert.rejects(p.complete([{ role: "user", content: "x" }]));
     await assert.rejects(p.complete([{ role: "user", content: "x" }]));
     await assert.rejects(p.complete([{ role: "user", content: "x" }]));
@@ -338,4 +338,31 @@ test("fitBudget：头部必保、最旧对话先删、确定性（B4）", () => 
   assert.ok(!out.includes("第0句"), "最旧台词先删");
   assert.equal(out, fitBudgetJS(user, 250), "确定性");
   assert.equal(fitBudgetJS("世界进度：短\n", 250), "世界进度：短\n", "预算内直通");
+});
+
+test("fitBudget：emoji 按码点计（与 Rust chars 对镜，评审 P1-2）", () => {
+  const user = "世界进度：第 1 世界日\n你的相关记忆：\n- 🐱记忆\n最近对话：\n老周：🐱🐱🐱🐱🐱🐱🐱🐱🐱🐱\n老周：普通台词\n";
+  const out = fitBudget(user, 30);
+  assert.ok([...out].length <= 30, "码点预算守住");
+  assert.ok(!/[\uD800-\uDFFF]/.test(out.slice(-2))) ; // 末尾不落孤代理
+  assert.ok(out.includes("世界进度"), "头部必保");
+});
+
+test("熔断器：半开探测失败→重开（与 Rust 对镜腿）", async () => {
+  let calls = 0, mode = "fail";
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls++;
+    if (mode === "fail" || mode === "probe-fail") throw new Error("HTTP 503");
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }], usage: {} }) }; };
+  try {
+    const p = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x", breakerThreshold: 1, breakerCooldownMs: 0, retryDelayMs: 0 });
+    await assert.rejects(p.complete([{ role: "user", content: "x" }])); // trip (threshold 1)
+    assert.equal(p.breaker.state, "open");
+    mode = "probe-fail";
+    await assert.rejects(p.complete([{ role: "user", content: "x" }])); // 半开探测失败
+    assert.equal(p.breaker.state, "open", "探测失败重开");
+    mode = "ok";
+    assert.equal(await p.complete([{ role: "user", content: "x" }]), "ok"); // 再半开→成功闭闸
+    assert.equal(p.breaker.state, "closed");
+  } finally { globalThis.fetch = origFetch; }
 });

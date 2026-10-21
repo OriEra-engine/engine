@@ -305,6 +305,9 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
 /// oldest recent-dialogue lines go first; then memory lines from the
 /// oldest. Same input → same trim, so replays stay comparable.
 fn fit_budget(user: &str, budget: usize) -> String {
+    // 不可信文本清洗：\r 不参与分行/标记匹配（评审 P2——玩家输入的
+    // \r\n 不得扰动节标记定位）。
+    let user = user.replace('\r', "");
     let count = |lines: &[&str]| lines.iter().map(|l| l.chars().count() + 1).sum::<usize>();
     if count(&user.lines().collect::<Vec<_>>()) <= budget {
         return user.to_string();
@@ -318,7 +321,9 @@ fn fit_budget(user: &str, budget: usize) -> String {
         while count(&lines) > budget && rs + 1 < lines.len() {
             lines.remove(rs + 1);
         }
-        while count(&lines) > budget && ms + 1 < lines.len() {
+        // Then drop memory lines (top-ranked first —— retrieve 返回的是
+        // 分数序), never eating the 最近对话 marker itself.
+        while count(&lines) > budget && ms + 1 < lines.len() && ms + 1 != rs {
             lines.remove(ms + 1);
         }
     }
@@ -1344,5 +1349,63 @@ mod tests {
         cog2.run(&ctx(), &mut w2);
         let ledger2 = w2.resource::<oriera_infer::InferenceLedger>().unwrap();
         assert!(ledger.matches(ledger2), "strict twins must match entrywise");
+    }
+
+    #[test]
+    fn fit_budget_counts_emoji_as_single_characters() {
+        // 评审 P1-2 的 astral 对镜腿：emoji 是 1 个字符不是 2 个——
+        // 与 kernel.js 的 [...l].length 同口径，双端预算语义一致。
+        let mut user = "世界进度：第 1 世界日\n你的相关记忆：\n- 🐱记忆\n最近对话：\n".to_string();
+        for _ in 0..10 {
+            user.push_str(
+                "老周：🐱🐱🐱🐱🐱🐱
+",
+            );
+        }
+        let out = fit_budget(&user, 45);
+        assert!(out.chars().count() <= 45 + 1);
+        assert!(
+            out.contains("🐱"),
+            "emoji 行按整行牺牲/保留（45 预算删 9 留 1）"
+        );
+    }
+
+    #[test]
+    fn async_road_ledger_matches_the_sync_road_entrywise() {
+        use oriera_infer::InferenceLedger;
+        // 同一 tick 序列：同步世界 vs 异步作业世界——台账逐条相等
+        //（PendingSpeech 携带 sys/user 就是为了这条不依赖哪条路服务）。
+        let run = |async_mode: bool| {
+            let mut w = cafe_world();
+            let cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 1);
+            let mut cog = if async_mode { cog.with_async() } else { cog };
+            // 异步路后台线程与测试赛跑：多跑轮次直到台账落地（Rule 后端
+            // 作业瞬时完成，几轮即可），上限封顶防挂。
+            for _ in 0..200 {
+                cog.run(&ctx(), &mut w);
+                if !async_mode {
+                    break;
+                }
+                let landed = w
+                    .resource::<InferenceLedger>()
+                    .map(|l| !l.entries.is_empty())
+                    .unwrap_or(false);
+                if landed {
+                    break;
+                }
+            }
+            w.resource::<InferenceLedger>().unwrap().clone()
+        };
+        let sync = run(false);
+        let asc = run(true);
+        assert!(!sync.entries.is_empty());
+        assert!(
+            !asc.entries.is_empty(),
+            "async road must land its ledger too"
+        );
+        assert!(
+            sync.matches(&asc),
+            "sync/async ledgers must match entrywise"
+        );
     }
 }

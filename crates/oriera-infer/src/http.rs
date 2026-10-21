@@ -472,14 +472,30 @@ impl HttpProvider {
 /// `cap` bytes and reports an overflow via `Err`. Returns bytes read
 /// (0 = EOF); the bytes land in `out` (without the terminator on
 /// overflow — the caller errors out anyway).
+/// A line exceeded the cap — a distinct type so the caller ranks it
+/// `Parse` (the endpoint answered garbage) without overloading
+/// `ErrorKind::InvalidData` (which is where real TLS protocol faults
+/// also land; those must keep their one Network retry).
+#[derive(Debug)]
+enum LineCapError {
+    /// Real transport fault (keeps the caller's Network retry).
+    Io(std::io::Error),
+    /// The line blew the cap (ranks Parse: the endpoint answered garbage).
+    Overflow(usize),
+}
+
+/// `BufRead::read_line` without the unbounded-growth footgun: stops at
+/// `cap` bytes (a terminator AT byte `cap` is accepted — closed
+/// interval); overflow returns [`LineCapOverflow`]. Returns bytes read
+/// (0 = EOF).
 fn read_line_capped(
     reader: &mut impl std::io::BufRead,
     out: &mut Vec<u8>,
     cap: usize,
-) -> std::io::Result<usize> {
+) -> Result<usize, LineCapError> {
     let mut read = 0usize;
     loop {
-        let available = reader.fill_buf()?;
+        let available = reader.fill_buf().map_err(LineCapError::Io)?;
         if available.is_empty() {
             return Ok(read);
         }
@@ -488,10 +504,7 @@ fn read_line_capped(
             .position(|b| *b == b'\n')
             .map_or(available.len(), |pos| pos + 1);
         if read + take > cap {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("sse line exceeded {cap} bytes"),
-            ));
+            return Err(LineCapError::Overflow(cap));
         }
         out.extend_from_slice(&available[..take]);
         reader.consume(take);
@@ -649,16 +662,28 @@ impl ModelProvider for HttpProvider {
         self.complete_stream_capped(messages, SSE_LINE_CAP, SSE_TOTAL_CAP)
     }
 
-    /// Cap-exposing flavor: one SSE `data:` line may never exceed
-    /// `line_cap` bytes and the whole stream `total_cap` bytes (安全审计
-    /// P2 — a hostile endpoint streaming one endless line must not be
-    /// able to balloon the client). Overflow is a `Parse` error: the
     fn last_usage(&self) -> TokenUsage {
         self.usage.lock().map(|u| *u).unwrap_or(TokenUsage::ZERO)
+    }
+
+    fn determinism(&self) -> oriera_common::DeterminismLevel {
+        // B2: seed pinned = best-effort replay; unseeded cloud calls are
+        // recorded-only. (架构评审 P1：本 override 曾在批二 splice 中丢失、
+        // Pinned 档一度成死代码——pinned_level_is_self_reported 钉死。)
+        if self.options.seed.is_some() {
+            oriera_common::DeterminismLevel::Pinned
+        } else {
+            oriera_common::DeterminismLevel::Recorded
+        }
     }
 }
 
 impl HttpProvider {
+    /// Cap-exposing flavor: one SSE `data:` line may never exceed
+    /// `line_cap` bytes and the whole stream `total_cap` bytes (安全审计
+    /// P2 — a hostile endpoint streaming one endless line must not be
+    /// able to balloon the client). Overflow is a `Parse` error: the
+    /// provider answered, with garbage.
     fn complete_stream_capped(
         &self,
         messages: &[ChatMessage],
@@ -680,14 +705,17 @@ impl HttpProvider {
         loop {
             line.clear();
             let mut chunk = Vec::new();
-            let n = read_line_capped(&mut reader, &mut chunk, line_cap).map_err(|e| {
-                if e.kind() == std::io::ErrorKind::InvalidData {
-                    // 帽溢出 = 端点答了垃圾（Parse），不是没够到对端。
-                    InferError::Parse(e.to_string())
-                } else {
-                    InferError::Network(self.scrub(e.to_string()))
+            let n = match read_line_capped(&mut reader, &mut chunk, line_cap) {
+                Ok(n) => n,
+                // 帽溢出 = 端点答了垃圾（Parse），不是没够到对端——
+                // 不吃掉 Network 该有的唯一一次重试。
+                Err(LineCapError::Overflow(cap)) => {
+                    return Err(InferError::Parse(format!("sse line exceeded {cap} bytes")))
                 }
-            })?;
+                Err(LineCapError::Io(e)) => {
+                    return Err(InferError::Network(self.scrub(e.to_string())))
+                }
+            };
             total += n;
             if total > total_cap {
                 return Err(InferError::Parse(format!(
@@ -1935,6 +1963,46 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
         match p.complete_stream(&[ChatMessage::user("x")]) {
             Err(InferError::Parse(m)) => assert!(m.contains("exceeded"), "{m}"),
             other => panic!("expected Parse(capped), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_line_capped_boundary_semantics() {
+        use std::io::Cursor;
+        // 恰在 cap 处的 \n：闭区间语义，接受。
+        let mut out = Vec::new();
+        let n = read_line_capped(&mut Cursor::new(b"abcde\nxy"), &mut out, 6).unwrap();
+        assert_eq!(n, 6);
+        assert_eq!(out, b"abcde\n");
+        // cap+1 → Overflow（cap 值上报）。
+        let mut out = Vec::new();
+        match read_line_capped(&mut Cursor::new(b"abcdef\n"), &mut out, 6) {
+            Err(LineCapError::Overflow(cap)) => assert_eq!(cap, 6),
+            other => panic!("expected Overflow, got {other:?}"),
+        }
+        // 无换行的 EOF 尾行（cap 内）当数据行返回。
+        let mut out = Vec::new();
+        let n = read_line_capped(&mut Cursor::new(b"tail"), &mut out, 6).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(out, b"tail");
+    }
+
+    #[test]
+    fn sse_total_cap_is_enforced_too() {
+        let sse = "data: {\"a\":1}\n\n".repeat(10); // 16B 行 × 10 = 160B > 64B total
+        let mock = Mock::spawn(vec![Step::Reply(200, sse)]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        match p.complete_stream_capped(&[ChatMessage::user("x")], 1024, 64) {
+            Err(InferError::Parse(m)) => assert!(m.contains("exceeded 64 bytes"), "{m}"),
+            other => panic!("expected total-cap Parse, got {other:?}"),
         }
     }
 }

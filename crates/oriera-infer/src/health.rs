@@ -57,6 +57,8 @@ pub struct ProviderHealth {
     pub consecutive_failures: u32,
     pub total_failures: u64,
     pub total_successes: u64,
+    /// Consecutive 401/403 count — the credential-anomaly streak.
+    pub config_streak: u32,
     state: BreakerState,
     opened_at: Option<Instant>,
 }
@@ -72,6 +74,7 @@ impl Default for ProviderHealth {
             consecutive_failures: 0,
             total_failures: 0,
             total_successes: 0,
+            config_streak: 0,
             state: BreakerState::Closed,
             opened_at: None,
         }
@@ -124,10 +127,26 @@ impl ProviderHealth {
         }
     }
 
-    /// Record an error that does NOT count toward the breaker (4xx
-    /// config errors): streak survives, caller still sees the error.
+    /// Record an error that does NOT count toward the breaker streak
+    /// (non-credential 4xx config errors): streak survives, caller still
+    /// sees the error.
     pub fn record_ignored(&mut self) {
         self.total_failures += 1;
+        self.config_streak = 0;
+    }
+
+    /// Record a credential-class failure (401/403): streak untouched,
+    /// but a consecutive credential streak at the threshold opens the
+    /// breaker — an anomalous host must not collect our bearer token at
+    /// full rate forever (安全审计 P1).
+    pub fn record_credential_failure(&mut self, threshold: u32) {
+        self.total_failures += 1;
+        self.config_streak += 1;
+        if self.config_streak >= threshold {
+            self.state = BreakerState::Open;
+            self.opened_at = Some(Instant::now());
+            self.config_streak = 0;
+        }
     }
 }
 
@@ -137,10 +156,24 @@ fn trips_breaker(e: &InferError) -> bool {
     match e {
         InferError::Provider(_) | InferError::Network(_) | InferError::Timeout => true,
         InferError::Parse(_) => true,
-        // Busy is backpressure — another entry may be freer.
-        InferError::Busy => true,
+        // Busy 是本地并发帽信号（jobs submit 产生），从不指 provider
+        // 故障——健康对端不得因此开闸（架构评审 P2）。
+        InferError::Busy => false,
         InferError::Status { code, .. } => *code >= 500 || *code == 429 || *code == 408,
     }
+}
+
+/// 凭据类 4xx（401/403）：单次不计入熔断 streak（决策表不变），但
+/// **连续**出现即"换线真能救"的信号（安全审计 P1——多厂商链里对着
+/// 异常主机按全速率无限期重放凭据是信标行为），按同一 threshold 开闸。
+fn is_credential_error(e: &InferError) -> bool {
+    matches!(
+        e,
+        InferError::Status {
+            code: 401 | 403,
+            ..
+        }
+    )
 }
 
 /// One healthy entry of the chain serves the call; failures walk the
@@ -210,7 +243,9 @@ impl FallbackProvider {
         match error {
             None => h.record_success(),
             Some(e) => {
-                if trips_breaker(e) {
+                if is_credential_error(e) {
+                    h.record_credential_failure(self.threshold);
+                } else if trips_breaker(e) {
                     h.record_failure(self.threshold);
                 } else {
                     h.record_ignored();
@@ -251,8 +286,9 @@ impl ModelProvider for FallbackProvider {
             }
         }
         // The chain is exhausted — every entry down or open. Report the
-        // primary's error (or a summary when the primary was skipped as
-        // open) so shells see the true top-of-chain signal.
+        // LAST-TRIED entry's error (the primary's, when it was admitted;
+        // the synthetic summary when every entry was skipped as open).
+        // Test-pinned by exhausted_chain_reports_the_synthetic_error.
         Err(last_err.unwrap_or_else(|| {
             InferError::Provider("fallback chain exhausted: every entry open".into())
         }))
@@ -482,5 +518,52 @@ mod tests {
             vec![Arc::new(RuleProvider::new()), Arc::new(AlwaysDown)];
         let fb = FallbackProvider::new(chain);
         assert_eq!(fb.determinism(), DeterminismLevel::Recorded);
+    }
+
+    #[test]
+    fn exhausted_chain_reports_the_synthetic_error() {
+        // Every entry open (long cooldown, never recovering): the call
+        // must fail with the chain-exhausted synthetic error — never a
+        // fabricated reply (评审 P1：该路径此前零覆盖)。
+        let chain: Vec<Arc<dyn ModelProvider>> = vec![Arc::new(AlwaysDown), Arc::new(AlwaysDown)];
+        let fb = FallbackProvider::with_policy(chain, 1, Duration::from_secs(3600));
+        let _ = fb.complete(&msg()); // both trip (threshold 1)
+        match fb.complete(&msg()) {
+            Err(InferError::Provider(m)) => assert!(m.contains("exhausted"), "{m}"),
+            other => panic!("expected exhausted error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credential_streak_opens_the_breaker_but_a_single_401_does_not() {
+        struct Status401;
+        impl ModelProvider for Status401 {
+            fn id(&self) -> &str {
+                "status-401"
+            }
+            fn complete(&self, _m: &[ChatMessage]) -> Result<String, InferError> {
+                Err(InferError::Status {
+                    code: 401,
+                    detail: "bad key".into(),
+                })
+            }
+            fn determinism(&self) -> DeterminismLevel {
+                DeterminismLevel::Recorded
+            }
+        }
+        let chain: Vec<Arc<dyn ModelProvider>> =
+            vec![Arc::new(Status401), Arc::new(RuleProvider::new())];
+        let fb = FallbackProvider::with_policy(chain, 3, Duration::ZERO);
+        let _ = fb.complete(&msg());
+        let _ = fb.complete(&msg());
+        assert_eq!(
+            fb.health_report()[0].1,
+            BreakerState::Closed,
+            "1-2 次 401 不开闸（决策表不变）"
+        );
+        let _ = fb.complete(&msg()); // 第 3 次 → 凭据连击开闸（换线真能救）
+        assert_eq!(fb.health_report()[0].1, BreakerState::Open);
+        // rule 行照常服务——世界不断线。
+        let _ = fb.complete(&msg()).unwrap();
     }
 }
