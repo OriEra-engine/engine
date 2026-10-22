@@ -502,3 +502,39 @@ export function createProvider(cfg) {
   }
   return new HttpChatProvider(cfg);
 }
+
+/* ---------- L7 · 任务槽位路由（RFC 0002 · v0.9 运行时落地） ----------
+ * 槽位表存 localStorage `oriera.routing.v1`（Studio 模型中心写入）：
+ *   { npc_dialog: { kind, model, key?, base? }, ... }
+ * 解析语义（诚实回退，绝不硬撑）：
+ *   - 槽位缺省/坏数据 → 全局 provider（原行为）
+ *   - key 留空：槽位厂商与全局相同 → 继承全局 Key（XLite 一 Key 多模型的
+ *     主路径）；厂商不同 → 无凭据不硬撑，回退全局 provider
+ *   - kind 非白名单 → 回退全局 provider（与 createProvider 白名单一致）
+ *   - 兼容旧格式 { slot: "kind" }（字符串）→ 按预设默认 model 展开
+ * ------------------------------------------------------------------ */
+export const SLOT_ROUTING_KEY = "oriera.routing.v1";
+export const SLOT_IDS = ["npc_dialog", "director", "codegen", "reviewer"];
+
+export function resolveSlotProvider(slotId, globalCfg) {
+  const fallback = () => createProvider(globalCfg);
+  if (typeof localStorage === "undefined") return fallback(); // 非浏览器环境无槽位表
+  let routing = null;
+  try { routing = JSON.parse(localStorage.getItem(SLOT_ROUTING_KEY) || "null"); } catch { /* 坏数据走全局 */ }
+  const entry = routing && routing[slotId];
+  if (!entry) return fallback();
+  // 旧格式（仅厂商字符串）→ 预设默认模型展开
+  const e = typeof entry === "string" ? { kind: entry } : entry;
+  if (!e || !e.kind || e.kind === "rule") return fallback();
+  const preset = PROVIDER_PRESETS[e.kind];
+  if (!preset) return fallback(); // 非白名单不硬撑
+  const sameVendorAsGlobal = globalCfg && e.kind === globalCfg.kind;
+  const key = (e.key && String(e.key).trim())
+    || (sameVendorAsGlobal ? globalCfg.key : "");
+  if (!key) return fallback(); // 跨厂商且未填 Key → 全局兜底
+  const base = (e.base && String(e.base).trim())
+    || (sameVendorAsGlobal ? globalCfg.base : "")
+    || preset.base
+    || ""; // 同厂商优先继承全局 base（Studio 已本地化为同源代理，预设直连会重新踩 CORS）
+  return createProvider({ kind: e.kind, key, model: e.model || preset.model, base }) || fallback();
+}

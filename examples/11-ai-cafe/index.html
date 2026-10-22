@@ -155,7 +155,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "./vendor/OrbitControls.js";
 import { GLTFLoader } from "./vendor/GLTFLoader.js";
-import { MemoryStore, HttpChatProvider, createProvider, PROVIDER_PRESETS, CognitionSystem, DirectorSystem, Scheduler } from "./engine/kernel.js";
+import { MemoryStore, HttpChatProvider, createProvider, resolveSlotProvider, PROVIDER_PRESETS, CognitionSystem, DirectorSystem, Scheduler } from "./engine/kernel.js";
 import { GenAiSystem, StoryboardArtSystem, AssetStore, SlotBindings, applyPending, imageProviderFromChatConfig } from "../13-genai-gallery/engine/genai.js";
 
 const $ = id => document.getElementById(id);
@@ -382,8 +382,11 @@ const world = {
   turn: worldMeta ? worldMeta.turn : 0,
   onEvent: e => { if (e.type === "l7-error") logLine("sys", `L7 调用失败，本轮降级规则引擎（${e.error}）`); },
 };
-const cognition = new CognitionSystem(provider, memory, { interval: 1 });
-const director = new DirectorSystem(provider, memory, { interval: 8 });
+// v0.9 槽位路由：对话/导演各走各的槽位 provider（oriera.routing.v1，缺省或
+// 无凭据时诚实回退全局）。槽位 provider 在装配时解析——设置面板换 Key 后需
+// 刷新页面生效（全局 provider 的热换协议不覆盖槽位实例）。
+const cognition = new CognitionSystem(resolveSlotProvider("npc_dialog", cfg) || provider, memory, { interval: 1 });
+const director = new DirectorSystem(resolveSlotProvider("director", cfg) || provider, memory, { interval: 8 });
 const scheduler = new Scheduler();
 scheduler.add(cognition);
 scheduler.add(director);

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
   MemoryStore, HttpChatProvider, parseIntent, CommandQueue,
   CognitionSystem, DirectorSystem, PROVIDER_PRESETS, createProvider, fitBudget,
+  resolveSlotProvider, SLOT_ROUTING_KEY,
 } from "./kernel.js";
 
 const fitBudgetJS = fitBudget; // 显式别名：断言里读得出这是对镜腿
@@ -439,4 +440,63 @@ test("熔断器：半开探测失败→重开（与 Rust 对镜腿）", async ()
     assert.equal(await p.complete([{ role: "user", content: "x" }]), "ok"); // 再半开→成功闭闸
     assert.equal(p.breaker.state, "closed");
   } finally { globalThis.fetch = origFetch; }
+});
+
+
+/* ---- v0.9 槽位路由（resolveSlotProvider · Node 里 mock localStorage） ---- */
+function withLocalStorage(routing, fn) {
+  const bak = globalThis.localStorage;
+  const store = { [SLOT_ROUTING_KEY]: JSON.stringify(routing) };
+  globalThis.localStorage = {
+    getItem: k => (k in store ? store[k] : null),
+    setItem: (k, v) => { store[k] = String(v); },
+    removeItem: k => { delete store[k]; },
+  };
+  try { return fn(); } finally { globalThis.localStorage = bak; }
+}
+
+test("槽位路由：同厂商无 Key 继承全局（XLite 一 Key 多模型主路径）", () => {
+  const globalCfg = { kind: "xlite", key: "sk-global", model: "gpt-4o-mini", base: "https://xlite.dezai.com/v1" };
+  const p = withLocalStorage({ npc_dialog: { kind: "xlite", model: "glm-5.3-flash" } }, () =>
+    resolveSlotProvider("npc_dialog", globalCfg));
+  assert.ok(p, "应产出槽位 provider");
+  assert.equal(p.cfg.model, "glm-5.3-flash");
+  assert.equal(p.cfg.key, "sk-global", "同厂商继承全局 Key");
+  assert.equal(p.cfg.kind, "xlite");
+  assert.equal(p.cfg.base, "https://xlite.dezai.com/v1", "同厂商继承全局 base（含已本地化的代理地址）");
+});
+
+test("槽位路由：跨厂商无 Key 诚实回退全局", () => {
+  const globalCfg = { kind: "xlite", key: "sk-global", model: "gpt-4o-mini", base: "https://xlite.dezai.com/v1" };
+  const p = withLocalStorage({ director: { kind: "zhipu", model: "glm-4-flash" } }, () =>
+    resolveSlotProvider("director", globalCfg));
+  assert.ok(p);
+  assert.equal(p.cfg.kind, "xlite", "无凭据不硬撑，回退全局");
+  assert.equal(p.cfg.model, "gpt-4o-mini");
+});
+
+test("槽位路由：跨厂商带独立 Key 生效", () => {
+  const globalCfg = { kind: "xlite", key: "sk-global", model: "gpt-4o-mini", base: "https://xlite.dezai.com/v1" };
+  const p = withLocalStorage({ director: { kind: "zhipu", model: "glm-4-flash", key: "zhipu-key" } }, () =>
+    resolveSlotProvider("director", globalCfg));
+  assert.equal(p.cfg.kind, "zhipu");
+  assert.equal(p.cfg.key, "zhipu-key");
+  assert.equal(p.cfg.base, PROVIDER_PRESETS.zhipu.base, "base 回退预设");
+});
+
+test("槽位路由：旧字符串格式 + 缺省/坏 kind 全部安全回退", () => {
+  const globalCfg = { kind: "xlite", key: "sk-global", model: "gpt-4o-mini", base: "https://xlite.dezai.com/v1" };
+  // 旧格式 { slot: "kind" }：同厂商继承全局 Key，按预设默认 model 展开
+  const p1 = withLocalStorage({ director: "xlite" }, () => resolveSlotProvider("director", globalCfg));
+  assert.equal(p1.cfg.model, "gpt-4o-mini", "旧格式按预设默认模型展开");
+  assert.equal(p1.cfg.key, "sk-global", "同厂商继承全局 Key");
+  // 旧格式跨厂商：无凭据 → 全局兜底（诚实回退）
+  const p1b = withLocalStorage({ director: "deepseek" }, () => resolveSlotProvider("director", globalCfg));
+  assert.equal(p1b.cfg.kind, "xlite", "旧格式跨厂商无 Key 回退全局");
+  // 缺省槽位 → 全局
+  const p2 = withLocalStorage({}, () => resolveSlotProvider("npc_dialog", globalCfg));
+  assert.equal(p2.cfg.kind, "xlite");
+  // 非白名单 kind → 全局（不硬撑）
+  const p3 = withLocalStorage({ npc_dialog: { kind: "deepseak", model: "x" } }, () => resolveSlotProvider("npc_dialog", globalCfg));
+  assert.equal(p3.cfg.kind, "xlite");
 });
