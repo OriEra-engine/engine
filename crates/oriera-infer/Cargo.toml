@@ -28,3 +28,7 @@ deepseek-recipe-core = { workspace = true, optional = true }
 [features]
 default = []
 native-http = ["dep:ureq", "dep:serde_json", "dep:deepseek-recipe-core"]
+
+[dev-dependencies]
+# golden fixture test (#98) reads contracts/golden/presets.json on every test leg
+serde_json = { workspace = true }

@@ -919,6 +919,21 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         price: None,
     },
     // ── cloud vendors (reserved API interfaces; key in the shell) ──
+    // xlite（上游 2f93226 在 kernel 侧先行；此处补齐 Rust 行——presets.json
+    // golden 门禁(#98)在 rebase 时抓到的 15↔14 双端漂移）
+    ProviderPreset {
+        id: "xlite",
+        label: "XLite 潜元网关",
+        kind: ProviderKind::OpenAiCompat,
+        model: "gpt-4o-mini",
+        base_url: "https://xlite.dezai.com/v1",
+        local: false,
+        caps: ModelCaps {
+            tools: true,
+            ..ModelCaps::UNREGISTERED
+        },
+        price: None, // 网关转售口径，牌价随上游，待 B8 核价
+    },
     ProviderPreset {
         id: "zhipu",
         label: "智谱 GLM",
@@ -1371,7 +1386,9 @@ mod preset_tests {
                 "geek row {id} missing"
             );
         }
-        assert_eq!(PROVIDER_PRESETS.len(), 14);
+        // 行数单一来源是 contracts/golden/presets.json（presets_match_golden_fixture
+        // 逐行对照）；这里只防「表与镜像测试失联」的低级回归。
+        assert_eq!(PROVIDER_PRESETS.len(), 15);
     }
 
     #[test]
@@ -1450,5 +1467,138 @@ mod preset_tests {
         for row in PROVIDER_PRESETS.iter().filter(|p| p.local) {
             assert!(row.price.is_none(), "{} local must be unpriced", row.id);
         }
+    }
+
+    /// One golden row, normalized to the `contracts/golden/presets.json`
+    /// shape (camelCase; caps always explicit; price null or four fields).
+    #[cfg(test)]
+    fn preset_json(p: &ProviderPreset) -> serde_json::Value {
+        serde_json::json!({
+            "id": p.id,
+            "label": p.label,
+            "kind": p.kind.id(),
+            "model": p.model,
+            "base": p.base_url,
+            "local": p.local,
+            "caps": {
+                "contextWindow": p.caps.context_window,
+                "structuredOutput": p.caps.structured_output,
+                "tools": p.caps.tools,
+                "imageInput": p.caps.image_input,
+                "promptCache": p.caps.prompt_cache,
+            },
+            "price": p.price.map(|pr| serde_json::json!({
+                "currency": pr.currency,
+                "promptMicroPerM": pr.prompt_micro_per_m,
+                "completionMicroPerM": pr.completion_micro_per_m,
+                "cachedMicroPerM": pr.cached_micro_per_m,
+            })),
+        })
+    }
+
+    /// #98 golden fixture: the preset table has ONE source
+    /// (`contracts/golden/presets.json`), read by this test and by
+    /// `kernel.test.mjs`. Adding/editing a preset row without updating
+    /// the fixture now breaks CI on both ends instead of drifting.
+    #[test]
+    fn presets_match_golden_fixture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../contracts/golden/presets.json"
+        );
+        let fx: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(path).expect("read contracts/golden/presets.json"),
+        )
+        .expect("parse presets.json");
+        let rows = fx["rows"].as_array().expect("rows array");
+        assert_eq!(
+            rows.len(),
+            PROVIDER_PRESETS.len(),
+            "fixture row count out of sync with the Rust table"
+        );
+        for (p, want) in PROVIDER_PRESETS.iter().zip(rows) {
+            assert_eq!(preset_json(p), *want, "preset row mismatch: id={}", p.id);
+        }
+    }
+}
+
+/// ============ B8 model-acceptance gate (issue #99) ============
+///
+/// The promotion gate a backend must clear before it earns a
+/// "recommended" slot: ONE offline smoke entry over the rule backend
+/// (the reference implementation), so the gate has a single name to
+/// point at. The deep per-leg coverage is not duplicated here — it is
+/// named in `docs/STABILITY.md` §B8 (structured-output wire legs,
+/// tool round-trips, cache-dialect parsing, fallback-chain policies).
+/// Registration integrity of preset rows is pinned by
+/// [`presets_match_golden_fixture`] above (#98).
+#[cfg(test)]
+mod b8_gate {
+    use super::*;
+    use crate::health::FallbackProvider;
+    use std::sync::Arc;
+
+    /// A provider that always answers 500 — the failing head of the
+    /// fallback drill.
+    struct AlwaysDown;
+    impl ModelProvider for AlwaysDown {
+        fn id(&self) -> &str {
+            "always-down"
+        }
+        fn complete(&self, _m: &[ChatMessage]) -> Result<String, InferError> {
+            Err(InferError::Status {
+                code: 500,
+                detail: "b8 drill".into(),
+            })
+        }
+    }
+
+    fn msgs() -> Vec<ChatMessage> {
+        vec![ChatMessage::user("介绍你自己")]
+    }
+
+    #[test]
+    fn b8_gate_smoke_reference_backend_clears_all_legs() {
+        let rule = RuleProvider::new();
+
+        // Leg 1 — determinism floor: same input, same output (Recorded
+        // promise is testable offline; a promoted model must not be
+        // worse than the backend it stands in for).
+        let a = rule.complete(&msgs()).expect("leg1 first");
+        let b = rule.complete(&msgs()).expect("leg1 second");
+        assert_eq!(a, b, "rule backend must be deterministic");
+
+        // Leg 2 — honest usage accounting: a promoted backend must be
+        // measurable (CostMeter has nothing to price without this).
+        let u = rule.last_usage();
+        assert!(
+            u.prompt > 0 && u.completion > 0,
+            "usage must be reported after a call: {u:?}"
+        );
+
+        // Leg 3 — streaming honesty: chunks always concatenate to the
+        // complete() reply, even when the backend does not really
+        // stream (len == 1 is the honest no-stream signal).
+        let chunks = rule.complete_stream(&msgs()).expect("leg3");
+        assert_eq!(chunks.concat(), a, "stream must concat to complete");
+
+        // Leg 4 — resilience: a broken head degrades to the rule bank
+        // visibly, and the health report names the culprit.
+        let fb = FallbackProvider::new(vec![
+            Arc::new(AlwaysDown),
+            Arc::new(RuleProvider::degraded("always-down")),
+        ]);
+        let out = fb.complete(&msgs()).expect("leg4 fallback");
+        assert!(!out.is_empty(), "fallback must still answer");
+        let report = fb.health_report();
+        // The report must not merely NAME the culprit — it must have
+        // counted against it (a record()-no-op regression would pass a
+        // name-only check; review P2).
+        assert!(
+            report
+                .iter()
+                .any(|(id, _, fails)| *id == "always-down" && *fails >= 1),
+            "health report must record the failure, not just list the chain"
+        );
     }
 }

@@ -1,6 +1,7 @@
 // kernel v2 测试（node --test 直测浏览器内核；kernel 已对无 localStorage
 // 环境静默降级）。运行：node --test examples/11-ai-cafe/engine/kernel.test.mjs
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import {
   MemoryStore, HttpChatProvider, parseIntent, CommandQueue,
@@ -9,6 +10,61 @@ import {
 } from "./kernel.js";
 
 const fitBudgetJS = fitBudget; // 显式别名：断言里读得出这是对镜腿
+
+/* ---- golden fixture 单一来源（#98）：与 Rust 双端共读 contracts/golden/*.json。
+   改任一侧解析/预设而不更新 fixture，双端 CI 同红——漂移从此有闸门。 ---- */
+const INTENT_FIXTURE = new URL("../../../contracts/golden/intents.json", import.meta.url);
+const PRESET_FIXTURE = new URL("../../../contracts/golden/presets.json", import.meta.url);
+
+test("parse 镜像：golden fixture 共读（intents.json 单一来源）", () => {
+  const { cases } = JSON.parse(readFileSync(INTENT_FIXTURE, "utf8"));
+  assert.ok(cases.length >= 20, "fixture must not be emptied");
+  for (const { input, expect } of cases) {
+    const got = parseIntent(input);
+    assert.equal(got.kind, expect.kind, `input: ${input}`);
+    if (expect.kind === "spawn") assert.equal(got.n, expect.n, `input: ${input}`);
+    if (expect.kind === "gravity") assert.equal(got.g, expect.g, `input: ${input}`);
+    if (expect.kind === "teleport") {
+      assert.equal(got.dx, expect.dx, `input: ${input}`);
+      assert.equal(got.dy, expect.dy, `input: ${input}`);
+    }
+    if (expect.kind === "speed") assert.equal(got.k, expect.k, `input: ${input}`);
+    if (expect.kind === "unknown") assert.equal(got.text, expect.text, `input: ${input}`);
+  }
+});
+
+test("预设表镜像：golden fixture 共读（presets.json 单一来源）", () => {
+  const { rows } = JSON.parse(readFileSync(PRESET_FIXTURE, "utf8"));
+  assert.equal(rows.length, Object.keys(PROVIDER_PRESETS).length, "row count out of sync");
+  /* kind 推导是 JS 运行时事实（HttpChatProvider 仅对 anthropic 分方言，
+     zhipu/rule 语义归位对齐 Rust 词汇表）；这是刻意保留的第二映射点——
+     若 Rust 侧行的 ProviderKind 变更，fixture 更新后这里的 deepEqual 会红，
+     提示同步本表。评审 P2 裁定：不读 fixture kind（那会使对照变成同义反复）。 */
+  const SPECIAL_KINDS = { rule: "rule", zhipu: "zhipu", anthropic: "anthropic" };
+  const norm = (id, r) => ({
+    id,
+    label: r.label,
+    kind: SPECIAL_KINDS[id] ?? "openai-compat",
+    model: r.model,
+    base: r.base,
+    local: !!r.local,
+    caps: {
+      contextWindow: r.caps && r.caps.contextWindow != null ? r.caps.contextWindow : null,
+      structuredOutput: !!(r.caps && r.caps.structuredOutput),
+      tools: !!(r.caps && r.caps.tools),
+      imageInput: !!(r.caps && r.caps.imageInput),
+      promptCache: !!(r.caps && r.caps.promptCache),
+    },
+    price: r.price
+      ? { currency: r.price.currency, promptMicroPerM: r.price.promptMicroPerM,
+          completionMicroPerM: r.price.completionMicroPerM, cachedMicroPerM: r.price.cachedMicroPerM }
+      : null,
+  });
+  for (const want of rows) {
+    assert.ok(PROVIDER_PRESETS[want.id], `kernel missing preset: ${want.id}`);
+    assert.deepEqual(norm(want.id, PROVIDER_PRESETS[want.id]), want, `preset row mismatch: ${want.id}`);
+  }
+});
 
 /* ---- parseIntent：与 Rust L9 parse 同词汇表（镜像断言） ---- */
 test("parse 镜像：spawn/clear/gravity/teleport/count/speed", () => {
@@ -249,10 +305,12 @@ test("导演系统：注入 ruleBeats 生效", async () => {
   assert.equal(beat, "甲事件");
 });
 
-/* ---- 预设表：15 行（rule + xlite 自家网关 + 云端 9 + 本地开源 4） ---- */
-test("预设表 15 行（rule 领头，xlite 第二，云端 9 + 本地开源 4）", () => {
+/* ---- 预设表：行数与 Rust PROVIDER_PRESETS 对齐（行数单一来源=presets.json，
+      评审 P2：硬编码行数会让加行的演进成本多一处） ---- */
+test("预设表行数与构成（rule 领头，xlite 第二，云端 + 本地开源）", () => {
   const ids = Object.keys(PROVIDER_PRESETS);
-  assert.equal(ids.length, 15);
+  const { rows } = JSON.parse(readFileSync(PRESET_FIXTURE, "utf8"));
+  assert.equal(ids.length, rows.length);
   assert.equal(ids[0], "rule");
   assert.equal(ids[1], "xlite");
   for (const id of ["qwen", "stepfun", "ollama", "vllm", "llamacpp", "lmstudio"]) assert.ok(ids.includes(id), id);
