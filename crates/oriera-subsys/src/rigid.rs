@@ -59,6 +59,10 @@ pub struct RigidBodySystem {
     /// Velocity we last wrote back, per entity — the external-write
     /// detector of step 2.
     last_vel: BTreeMap<EntKey, (f32, f32)>,
+    /// Step-4 scratch table, rebuilt each tick into the same allocation
+    /// (`clear()` keeps capacity): `EntKey → (x, y, vx, vy)` clamped
+    /// translation/velocity to flush into the columns in ONE pass.
+    writeback: BTreeMap<EntKey, (f32, f32, f32, f32)>,
     walls: Vec<RigidBodyHandle>,
 }
 
@@ -81,6 +85,7 @@ impl RigidBodySystem {
             soft_bodies: SoftBodySet::new(),
             map: BTreeMap::new(),
             last_vel: BTreeMap::new(),
+            writeback: BTreeMap::new(),
             walls: Vec::new(),
         };
         sys.build_walls();
@@ -210,7 +215,14 @@ impl System<World> for RigidBodySystem {
             &(),
         );
 
-        // 4. Write back.
+        // 4. Write back — one column pass with a key lookup (#100).
+        // The per-entity `for_each2_mut` scan here was O(n²): a full
+        // column walk to find each entity's own row. Build a scratch
+        // table (same allocation every tick), then flush all bodies in
+        // a single pass. Per-entity writes depend only on that entity's
+        // body state, so batching preserves the write order semantics —
+        // and `two_runs_are_bit_identical` pins the bit-level contract.
+        self.writeback.clear();
         for (k, _, _) in &live {
             let Some(&h) = self.map.get(k) else { continue };
             let Some(b) = self.bodies.get(h) else {
@@ -223,16 +235,19 @@ impl System<World> for RigidBodySystem {
             let (bw, bh) = self.bounds;
             let x = t.x.clamp(0.0, bw);
             let y = t.y.clamp(0.0, bh);
-            let key_of = |e: oriera_ecs::Entity| (e.index, e.generation);
+            self.writeback.insert(*k, (x, y, lv.x, lv.y));
+            self.last_vel.insert(*k, (lv.x, lv.y));
+        }
+        if !self.writeback.is_empty() {
+            let wb = &self.writeback;
             world.for_each2_mut::<Position, Velocity>(|e, p, v| {
-                if key_of(e) == *k {
+                if let Some(&(x, y, vx, vy)) = wb.get(&(e.index, e.generation)) {
                     p.x = x;
                     p.y = y;
-                    v.vx = lv.x;
-                    v.vy = lv.y;
+                    v.vx = vx;
+                    v.vy = vy;
                 }
             });
-            self.last_vel.insert(*k, (lv.x, lv.y));
         }
     }
 }
@@ -385,6 +400,36 @@ mod tests {
         let (h2, b2) = run();
         assert_eq!(h1, h2, "state_hash differs across runs");
         assert_eq!(b1, b2, "per-entity bits differ across runs");
+    }
+
+    /// #100 regression: the batched single-pass write-back must reach
+    /// EVERY body. Linear motion, no contacts (spacing > 2·radius), so
+    /// each row must advance exactly `vx·dt` — a missed write leaves
+    /// that body at dx = 0.
+    #[test]
+    fn thousand_bodies_all_receive_their_writeback() {
+        let mut world = World::new();
+        let mut bodies = Vec::new();
+        for i in 0..1000 {
+            let e = world.spawn();
+            let x0 = 5.0 + (i % 25) as f32 * 17.0;
+            let y0 = 5.0 + (i / 25) as f32 * 17.0;
+            world.insert(e, Position { x: x0, y: y0 });
+            world.insert(e, Velocity { vx: 10.0, vy: 0.0 });
+            bodies.push((e, x0));
+        }
+        let mut sys = RigidBodySystem::new(430.0, 700.0);
+        sys.run(&ctx(1.0 / 60.0), &mut world);
+        let dt = 1.0f32 / 60.0;
+        for &(e, x0) in &bodies {
+            let p = world.get::<Position>(e).unwrap();
+            assert!(
+                (p.x - x0 - 10.0 * dt).abs() < 1e-3,
+                "body missed its writeback: expected x≈{}, got {}",
+                x0 + 10.0 * dt,
+                p.x
+            );
+        }
     }
 
     #[test]
