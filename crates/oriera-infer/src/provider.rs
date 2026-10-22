@@ -919,6 +919,21 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         price: None,
     },
     // ── cloud vendors (reserved API interfaces; key in the shell) ──
+    // xlite（上游 2f93226 在 kernel 侧先行；此处补齐 Rust 行——presets.json
+    // golden 门禁(#98)在 rebase 时抓到的 15↔14 双端漂移）
+    ProviderPreset {
+        id: "xlite",
+        label: "XLite 潜元网关",
+        kind: ProviderKind::OpenAiCompat,
+        model: "gpt-4o-mini",
+        base_url: "https://xlite.dezai.com/v1",
+        local: false,
+        caps: ModelCaps {
+            tools: true,
+            ..ModelCaps::UNREGISTERED
+        },
+        price: None, // 网关转售口径，牌价随上游，待 B8 核价
+    },
     ProviderPreset {
         id: "zhipu",
         label: "智谱 GLM",
@@ -1371,7 +1386,9 @@ mod preset_tests {
                 "geek row {id} missing"
             );
         }
-        assert_eq!(PROVIDER_PRESETS.len(), 14);
+        // 行数单一来源是 contracts/golden/presets.json（presets_match_golden_fixture
+        // 逐行对照）；这里只防「表与镜像测试失联」的低级回归。
+        assert_eq!(PROVIDER_PRESETS.len(), 15);
     }
 
     #[test]
@@ -1574,6 +1591,14 @@ mod b8_gate {
         let out = fb.complete(&msgs()).expect("leg4 fallback");
         assert!(!out.is_empty(), "fallback must still answer");
         let report = fb.health_report();
-        assert!(report.iter().any(|(id, _, _)| *id == "always-down"));
+        // The report must not merely NAME the culprit — it must have
+        // counted against it (a record()-no-op regression would pass a
+        // name-only check; review P2).
+        assert!(
+            report
+                .iter()
+                .any(|(id, _, fails)| *id == "always-down" && *fails >= 1),
+            "health report must record the failure, not just list the chain"
+        );
     }
 }

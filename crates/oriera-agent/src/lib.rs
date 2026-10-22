@@ -50,7 +50,19 @@ use oriera_infer::Command;
 /// the intent keyword suppresses execution ("别清空" is not Clear);
 /// a negation after the keyword does not ("清空，但别关灯" still Clear).
 pub fn parse(input: &str) -> Command {
-    let lower = input.to_lowercase();
+    // 全角数字归一（对镜 kernel v2.1：中文输入法「放５个」常见，评审 P1——
+    // 此前只有 JS 归一，全角输入双端分叉且 fixture 无法表达该差异）。
+    let lower: String = input
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if ('\u{ff10}'..='\u{ff19}').contains(&c) {
+                char::from_u32(c as u32 - 0xfee0).unwrap_or(c)
+            } else {
+                c
+            }
+        })
+        .collect();
     if negation_precedes_intent(&lower) {
         return Command::Unknown(input.to_string());
     }

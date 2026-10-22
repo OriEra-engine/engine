@@ -403,17 +403,18 @@ mod tests {
     }
 
     /// #100 regression: the batched single-pass write-back must reach
-    /// EVERY body. Linear motion, no contacts (spacing > 2·radius), so
-    /// each row must advance exactly `vx·dt` — a missed write leaves
-    /// that body at dx = 0.
+    /// EVERY body. Linear motion, no contacts at all (body spacing AND
+    /// wall clearance exceed 2·radius — grid origin 9 keeps the r=8
+    /// balls off the walls), so each row must advance exactly `vx·dt` —
+    /// a missed write leaves that body at dx = 0.
     #[test]
     fn thousand_bodies_all_receive_their_writeback() {
         let mut world = World::new();
         let mut bodies = Vec::new();
         for i in 0..1000 {
             let e = world.spawn();
-            let x0 = 5.0 + (i % 25) as f32 * 17.0;
-            let y0 = 5.0 + (i / 25) as f32 * 17.0;
+            let x0 = 9.0 + (i % 25) as f32 * 17.0;
+            let y0 = 9.0 + (i / 25) as f32 * 17.0;
             world.insert(e, Position { x: x0, y: y0 });
             world.insert(e, Velocity { vx: 10.0, vy: 0.0 });
             bodies.push((e, x0));

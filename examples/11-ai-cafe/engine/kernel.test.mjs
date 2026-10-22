@@ -36,10 +36,15 @@ test("parse 镜像：golden fixture 共读（intents.json 单一来源）", () =
 test("预设表镜像：golden fixture 共读（presets.json 单一来源）", () => {
   const { rows } = JSON.parse(readFileSync(PRESET_FIXTURE, "utf8"));
   assert.equal(rows.length, Object.keys(PROVIDER_PRESETS).length, "row count out of sync");
+  /* kind 推导是 JS 运行时事实（HttpChatProvider 仅对 anthropic 分方言，
+     zhipu/rule 语义归位对齐 Rust 词汇表）；这是刻意保留的第二映射点——
+     若 Rust 侧行的 ProviderKind 变更，fixture 更新后这里的 deepEqual 会红，
+     提示同步本表。评审 P2 裁定：不读 fixture kind（那会使对照变成同义反复）。 */
+  const SPECIAL_KINDS = { rule: "rule", zhipu: "zhipu", anthropic: "anthropic" };
   const norm = (id, r) => ({
     id,
     label: r.label,
-    kind: id === "zhipu" ? "zhipu" : id === "anthropic" ? "anthropic" : id === "rule" ? "rule" : "openai-compat",
+    kind: SPECIAL_KINDS[id] ?? "openai-compat",
     model: r.model,
     base: r.base,
     local: !!r.local,
@@ -300,10 +305,12 @@ test("导演系统：注入 ruleBeats 生效", async () => {
   assert.equal(beat, "甲事件");
 });
 
-/* ---- 预设表：15 行（rule + xlite 自家网关 + 云端 9 + 本地开源 4） ---- */
-test("预设表 15 行（rule 领头，xlite 第二，云端 9 + 本地开源 4）", () => {
+/* ---- 预设表：行数与 Rust PROVIDER_PRESETS 对齐（行数单一来源=presets.json，
+      评审 P2：硬编码行数会让加行的演进成本多一处） ---- */
+test("预设表行数与构成（rule 领头，xlite 第二，云端 + 本地开源）", () => {
   const ids = Object.keys(PROVIDER_PRESETS);
-  assert.equal(ids.length, 15);
+  const { rows } = JSON.parse(readFileSync(PRESET_FIXTURE, "utf8"));
+  assert.equal(ids.length, rows.length);
   assert.equal(ids[0], "rule");
   assert.equal(ids[1], "xlite");
   for (const id of ["qwen", "stepfun", "ollama", "vllm", "llamacpp", "lmstudio"]) assert.ok(ids.includes(id), id);

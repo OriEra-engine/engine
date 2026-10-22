@@ -541,7 +541,10 @@ fn is_length_truncated_empty(raw: &str) -> bool {
     let Ok(v) = serde_json::from_str::<Value>(raw) else {
         return false;
     };
-    if v.pointer("/choices/0/finish_reason").and_then(Value::as_str) != Some("length") {
+    if v.pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+        != Some("length")
+    {
         return false;
     }
     v.pointer("/choices/0/message/content")
@@ -1460,7 +1463,10 @@ mod tests {
         );
         assert_eq!(p.complete(&[ChatMessage::user("hi")]).unwrap(), "好了");
         let reqs = mock.requests();
-        assert!(reqs[0].contains(r#""temperature":0.85"#), "first sends default");
+        assert!(
+            reqs[0].contains(r#""temperature":0.85"#),
+            "first sends default"
+        );
         assert!(
             reqs[1].contains(r#""temperature":1.0"#),
             "heal round sends 1.0: {}",
@@ -1521,7 +1527,11 @@ mod tests {
             Err(InferError::Status { code: 400, .. }) => {}
             other => panic!("expected Status(400), got {other:?}"),
         }
-        assert_eq!(mock.requests().len(), 1, "no heal round, no transport retry");
+        assert_eq!(
+            mock.requests().len(),
+            1,
+            "no heal round, no transport retry"
+        );
     }
 
     // ---- RFC-3 工具调用 + SSE 流式 ----

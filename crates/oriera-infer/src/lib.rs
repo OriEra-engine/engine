@@ -123,10 +123,13 @@ pub struct CostMeter {
 /// offline rule row and unknown labels read unpriced.
 pub fn price_for_label(label: &str) -> Option<&'static ModelPrice> {
     let (kind, model) = label.split_once(':')?;
+    // kind:model 标签可能撞行（xlite 网关转发 openai 同名模型）：首个
+    // *有登记价* 的行胜出——转发网关未登记价时按源厂牌价记账是合理近似；
+    // 全部无价才返回 None（绝不猜价）。
     PROVIDER_PRESETS
         .iter()
-        .find(|p| p.kind.id() == kind && p.model == model)
-        .and_then(|p| p.price.as_ref())
+        .filter(|p| p.kind.id() == kind && p.model == model)
+        .find_map(|p| p.price.as_ref())
 }
 
 impl CostMeter {

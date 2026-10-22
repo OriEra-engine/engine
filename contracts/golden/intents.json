@@ -1,5 +1,5 @@
 {
-  "comment": "parse 意图词汇单一来源（issue #98）。Rust parse()（crates/oriera-agent/src/lib.rs）与浏览器 kernel parseIntent()（examples/11-ai-cafe/engine/kernel.js）双端共读此文件做镜像断言——改任何一侧的解析行为（加意图、改否定语义、改参数提取）必须同步更新此文件，否则双端 CI 同红。expect.kind 词汇：spawn/clear/gravity/teleport/count/speed/unknown。",
+  "comment": "parse 意图词汇单一来源（issue #98；含全角归一/清屏同义词/否定后置不抑制边界）。Rust parse()（crates/oriera-agent/src/lib.rs）与浏览器 kernel parseIntent()（examples/11-ai-cafe/engine/kernel.js）双端共读此文件做镜像断言——改任何一侧的解析行为（加意图、改否定语义、改参数提取）必须同步更新此文件，否则双端 CI 同红。expect.kind 词汇：spawn/clear/gravity/teleport/count/speed/unknown。",
   "cases": [
     { "input": "spawn 40 particles", "expect": { "kind": "spawn", "n": 40 } },
     { "input": "生成 50 个粒子", "expect": { "kind": "spawn", "n": 50 } },
@@ -7,6 +7,10 @@
     { "input": "生成3个", "expect": { "kind": "spawn", "n": 3 } },
     { "input": "clear the world", "expect": { "kind": "clear" } },
     { "input": "清空", "expect": { "kind": "clear" } },
+    { "input": "清屏", "expect": { "kind": "clear" } },
+    { "input": "清空，但别关灯", "expect": { "kind": "clear" } },
+    { "input": "放５个", "expect": { "kind": "spawn", "n": 5 } },
+    { "input": "生成１０个", "expect": { "kind": "spawn", "n": 10 } },
     { "input": "set gravity to 1.6", "expect": { "kind": "gravity", "g": 1.6 } },
     { "input": "set gravity to 10", "expect": { "kind": "gravity", "g": 10 } },
     { "input": "gravity 9.8", "expect": { "kind": "gravity", "g": 9.8 } },
