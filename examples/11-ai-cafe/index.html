@@ -104,7 +104,7 @@
   <button id="guest-send">插话 ⏎</button>
 </div>
 <button class="gear" id="gear" title="设置">⚙</button>
-<div id="llmstats">L7 calls <b id="s-calls">0</b> · errors <b id="s-err">0</b> · tokens <b id="s-tok">0</b> &middot; mem episodes <b id="s-mem">0</b><br/>L8 墙面画廊 <b id="s-art">…</b></div>
+<div id="llmstats">L7 calls <b id="s-calls">0</b><span id="s-slots"></span> · errors <b id="s-err">0</b> · tokens <b id="s-tok">0</b> &middot; mem episodes <b id="s-mem">0</b><br/>L8 墙面画廊 <b id="s-art">…</b></div>
 
 <div class="modal-bg" id="settings-bg"><div class="modal">
   <h3>⚙ L7 推理运行时 · 设置</h3>
@@ -336,9 +336,17 @@ function logLine(cls, text) {
 function renderWorld() {
   $("w-day").textContent = world.story.day; $("w-turn").textContent = world.turn;
   $("w-beat").textContent = world.story.beats.at(-1) || "故事即将开始…";
-  $("s-calls").textContent = provider.stats.calls; $("s-err").textContent = provider.stats.errors;
+  // v0.9 槽位路由后调用分散在全局/对话槽/导演槽三个 provider 实例上——
+  // HUD 汇总三者，另在状态行展示各槽实际模型。
+  const sources = [provider, cognition.provider, director.provider].filter(Boolean);
+  const sum = k => sources.reduce((a, p) => a + ((p.stats && p.stats[k]) || 0), 0);
+  $("s-calls").textContent = sum("calls"); $("s-err").textContent = sum("errors");
   $("s-mem").textContent = memory.lenTotal();
-  $("s-tok").textContent = provider.stats.tokens || 0;
+  $("s-tok").textContent = sum("tokens");
+  const sm = cognition.provider && cognition.provider.cfg ? cognition.provider.cfg.model : "";
+  const dm = director.provider && director.provider.cfg ? director.provider.cfg.model : "";
+  const tag = (sm && sm !== cfg.model ? " 对话:" + sm : "") + (dm && dm !== cfg.model ? " 导演:" + dm : "");
+  const el = $("s-slots"); if (el) el.textContent = tag;
 }
 function renderNPCs() {
   const host = $("npcs"); host.innerHTML = "";

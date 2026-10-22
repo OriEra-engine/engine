@@ -276,10 +276,10 @@ export class CognitionSystem {
     // 前缀缓存每拍命中（DeepSeek 缓存命中约为 miss 的 1/50 价）；世界日、
     // 剧情拍、心情、客人插话、对话对象、记忆、最近对话全部易变内容走
     // user 消息。字节稳定是测试契约（kernel.test.mjs 双拍断言）。
-    const sys = `你是「${speaker.name}」，${speaker.role}，活在 OriEra 世界引擎的${this.scene}里。
+    const sys = `你是「${speaker.name}」，${speaker.role}，OriEra 世界引擎·${this.scene}。
 性格：${speaker.description}
-以 ${speaker.name} 的口吻说 1~3 句口语化的话（可引用记忆细节），严格只输出 JSON：
-{"say":"...","action":"${ACTIONS.join("|")}","mood":"${MOODS.join("|")}","remember":"≤30字本轮要点，没有则空串","to":"对话对象的名字"}`;
+以${speaker.name}口吻说1~3句口语台词（可引用记忆），只输出 JSON：
+{"say":"...","action":"${ACTIONS.join("|")}","mood":"${MOODS.join("|")}","remember":"≤30字要点，无则空串","to":"对象名"}`;
     const user = `世界进度：第 ${world.story.day} 世界日，${beat}
 ${guest ? "刚才一位客人说：" + String(guest).slice(0, 200) + "\n" : ""}当前你的心情：${speaker.mood}
 对话对象：「${partner.name}」（${partner.role}）。
