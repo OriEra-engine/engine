@@ -211,4 +211,65 @@ mod tests {
         assert_eq!(parse("清空，但别关灯"), Command::Clear);
         assert_eq!(parse("spawn 5, never mind the rest"), Command::Spawn(5));
     }
+
+    /// #98 golden fixture: the intent vocabulary has ONE source
+    /// (`contracts/golden/intents.json`), read by this test and by
+    /// `kernel.test.mjs` on the JS side. Changing either parser without
+    /// updating the fixture now breaks CI on both ends instead of
+    /// drifting silently.
+    #[test]
+    fn parse_matches_golden_fixture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../contracts/golden/intents.json"
+        );
+        let fx: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(path).expect("read contracts/golden/intents.json"),
+        )
+        .expect("parse intents.json");
+        let cases = fx["cases"].as_array().expect("cases array");
+        assert!(!cases.is_empty(), "fixture must not be empty");
+        for case in cases {
+            let input = case["input"].as_str().expect("case.input");
+            let want = &case["expect"];
+            let kind = want["kind"].as_str().expect("expect.kind");
+            let got = parse(input);
+            match kind {
+                "spawn" => assert_eq!(
+                    got,
+                    Command::Spawn(want["n"].as_f64().expect("n").round() as usize),
+                    "input: {input}"
+                ),
+                "clear" => assert_eq!(got, Command::Clear, "input: {input}"),
+                "gravity" => assert_eq!(
+                    got,
+                    Command::SetGravity(want["g"].as_f64().expect("g") as f32),
+                    "input: {input}"
+                ),
+                "teleport" => assert_eq!(
+                    got,
+                    Command::Teleport(
+                        want["dx"].as_f64().expect("dx") as f32,
+                        want["dy"].as_f64().expect("dy") as f32
+                    ),
+                    "input: {input}"
+                ),
+                "count" => assert_eq!(got, Command::Count, "input: {input}"),
+                "speed" => assert_eq!(
+                    got,
+                    Command::SetSpeed(want["k"].as_f64().expect("k") as f32),
+                    "input: {input}"
+                ),
+                "unknown" => match got {
+                    Command::Unknown(s) => assert_eq!(
+                        s,
+                        want["text"].as_str().expect("expect.text"),
+                        "input: {input}"
+                    ),
+                    other => panic!("input {input}: expected Unknown, got {other:?}"),
+                },
+                other => panic!("fixture has unknown kind: {other}"),
+            }
+        }
+    }
 }

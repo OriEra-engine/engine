@@ -30,6 +30,8 @@ rigid = ["oriera-subsys/rigid"]
 
 [dev-dependencies]
 oriera-render = { path = "../oriera-render" }
+# golden fixture tests (#98) read contracts/golden/*.json on every test leg
+serde_json = { workspace = true }
 oriera-subsys = { path = "../oriera-subsys" }
 
 [[example]]
