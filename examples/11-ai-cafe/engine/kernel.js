@@ -110,12 +110,21 @@ export class HttpChatProvider {
       headers["anthropic-version"] = "2023-06-01";
       headers["anthropic-dangerous-direct-browser-access"] = "true";
     } else headers["Authorization"] = "Bearer " + this.cfg.key;
-    const body = anthropic
-      ? JSON.stringify({ model: this.cfg.model, max_tokens: opts.max ?? 260,
+    // v3 参数自愈（XLite 接入矩阵实测）：①网关 400 点名 temperature（部分
+    // Claude/Kimi 渠道仅支持默认温度 1）→ 归一为 1 重发；②finish_reason=
+    // length 且内容为空（推理模型思考吃光预算）→ 加倍 max_tokens 重发（上限
+    // 2048）。自愈轮 continue 不消耗传输层重试，不计 breaker 失败（自愈是
+    // 协议适配不是故障）。opts.timeout 可配（默认 20000 不变）。
+    let temp = opts.temp ?? 0.85;
+    let max = opts.max ?? 260;
+    const timeoutMs = opts.timeout ?? 20000;
+    const countRetry = () => { this.stats.retries = (this.stats.retries || 0) + 1; };
+    const buildBody = () => anthropic
+      ? JSON.stringify({ model: this.cfg.model, max_tokens: max,
           system: messages.filter(m => m.role === "system").map(m => m.content).join("\n"),
           messages: messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content })) })
       : JSON.stringify({ model: this.cfg.model, messages,
-          temperature: opts.temp ?? 0.85, max_tokens: opts.max ?? 260,
+          temperature: temp, max_tokens: max,
           // v0.7 (PLAN-deepseek-upgrade B6)：schema 优先于 json（json_object ⊆
           // json_schema），与 Rust ProviderOptions.response_schema 对镜。
           ...(opts.schema ? { response_format: { type: "json_schema", json_schema: { name: "reply", strict: true, schema: opts.schema } } }
@@ -125,11 +134,24 @@ export class HttpChatProvider {
           // 对话显式关）。anthropic 分支不动——其协议无对应参数。
           ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
           ...(opts.thinking ? { thinking: opts.thinking } : {}) });
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let round = 0; round < 4; round++) {
       try {
-        const r = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(20000) });
-        if (!r.ok) throw new Error("HTTP " + r.status);
+        const r = await fetch(url, { method: "POST", headers, body: buildBody(), signal: AbortSignal.timeout(timeoutMs) });
+        if (!r.ok) {
+          let errText = "";
+          try { errText = await r.text(); } catch { /* 错误体不可读就只报状态码 */ }
+          // 参数自愈①：400 点名 temperature → 归一 1 重发（一次）。
+          if (!anthropic && r.status === 400 && temp !== 1 && /temperature/i.test(errText)) {
+            temp = 1; countRetry(); continue;
+          }
+          throw new Error("HTTP " + r.status + (errText ? "： " + errText.slice(0, 120) : ""));
+        }
         const data = await r.json();
+        // 参数自愈②：length 截断且内容空 → 加倍预算重发（一次）。
+        const content = anthropic ? data.content?.[0]?.text : data.choices?.[0]?.message?.content;
+        if (!anthropic && !content && data.choices?.[0]?.finish_reason === "length" && max < 2048) {
+          max = Math.min(max * 2, 2048); countRetry(); continue;
+        }
         // v0.7 (B5)：缓存命中 tokens 单独累计（三种厂商字段风格，与
         // Rust http.rs parse_reply 一一对照），供 UI 显示省钱额。
         const u = data.usage || {};
@@ -142,11 +164,11 @@ export class HttpChatProvider {
         this.stats.cached = (this.stats.cached || 0) + Math.min(rawCached, u.prompt_tokens ?? u.input_tokens ?? rawCached);
         // B7：成功闭闸。
         bk.state = "closed"; bk.consecutiveFailures = 0; bk.openUntil = 0; bk.successes++;
-        return anthropic ? data.content[0].text : data.choices[0].message.content;
+        return content ?? "";
       } catch (e) {
         // B7：调用级记账（与 Rust FallbackProvider 对镜——一次 complete
         // 的内置重试算一次结果，不逐 attempt 计数）。半开探测失败立即重开。
-        if (attempt) {
+        if (round) {
           bk.failures++;
           if (HttpChatProvider.tripsBreaker(e)) {
             bk.consecutiveFailures++;
@@ -445,6 +467,8 @@ export class CommandQueue {
  * /百万 tokens，B5 成本记账）。 */
 export const PROVIDER_PRESETS = {
   rule:        { label: "离线规则引擎",    base: "",                                        model: "rule-v1", local: true },
+  xlite:       { label: "XLite 潜元网关",  base: "https://xlite.dezai.com/v1",             model: "gpt-4o-mini",
+                 caps: { tools: true } },
   zhipu:       { label: "智谱 GLM",       base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash", caps: { tools: true } },
   openai:      { label: "OpenAI",         base: "https://api.openai.com/v1",             model: "gpt-4o-mini",
                  caps: { contextWindow: 128000, structuredOutput: true, tools: true, imageInput: true, promptCache: true },

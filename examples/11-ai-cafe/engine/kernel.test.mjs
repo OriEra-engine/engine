@@ -248,15 +248,17 @@ test("导演系统：注入 ruleBeats 生效", async () => {
   assert.equal(beat, "甲事件");
 });
 
-/* ---- 预设表：14 行与 Rust PROVIDER_PRESETS 对齐 ---- */
-test("预设表 14 行（rule 领头 + 云端 9 + 本地开源 4）", () => {
+/* ---- 预设表：15 行（rule + xlite 自家网关 + 云端 9 + 本地开源 4） ---- */
+test("预设表 15 行（rule 领头，xlite 第二，云端 9 + 本地开源 4）", () => {
   const ids = Object.keys(PROVIDER_PRESETS);
-  assert.equal(ids.length, 14);
+  assert.equal(ids.length, 15);
   assert.equal(ids[0], "rule");
+  assert.equal(ids[1], "xlite");
   for (const id of ["qwen", "stepfun", "ollama", "vllm", "llamacpp", "lmstudio"]) assert.ok(ids.includes(id), id);
   assert.equal(PROVIDER_PRESETS.ollama.base, "http://127.0.0.1:11434/v1");
   assert.equal(PROVIDER_PRESETS.qwen.base, "https://dashscope.aliyuncs.com/compatible-mode/v1");
   assert.equal(PROVIDER_PRESETS.stepfun.base, "https://api.stepfun.com/v1");
+  assert.equal(PROVIDER_PRESETS.xlite.base, "https://xlite.dezai.com/v1");
 });
 
 test("createProvider 兼容：rule/无 key 返回 null 走降级", () => {
@@ -274,10 +276,82 @@ test("parseIntent 全角数字归一（中文输入法）", () => {
 
 test("createProvider 未知 kind 拒绝（不再静默按 openai-compat）", () => {
   assert.equal(createProvider({ kind: "deepseak", key: "k", model: "m", base: "https://x" }), null);
-  for (const kind of ["deepseek", "zhipu", "ollama", "qwen", "openai-compat"]) {
+  for (const kind of ["deepseek", "zhipu", "ollama", "qwen", "openai-compat", "xlite"]) {
     const p = createProvider({ kind, key: "k", model: "m", base: "https://x" });
     assert.ok(p, kind);
   }
+});
+
+/* ---- v3 HttpChatProvider 参数自愈（本地 mock 服务器，node:http） ---- */
+import http from "node:http";
+
+/** 起 n 步 mock：每步 {status, body} 顺序应答，记录收到的请求体；返回 {server, base, reqs} */
+function mockGateway(steps) {
+  const reqs = [];
+  const server = http.createServer((req, res) => {
+    let buf = "";
+    req.on("data", c => buf += c);
+    req.on("end", () => {
+      reqs.push(buf);
+      const step = steps[Math.min(reqs.length - 1, steps.length - 1)];
+      res.writeHead(step.status, { "Content-Type": "application/json" });
+      res.end(step.body);
+    });
+  });
+  return new Promise(resolve => {
+    server.listen(0, "127.0.0.1", () => {
+      resolve({ server, base: "http://127.0.0.1:" + server.address().port, reqs });
+    });
+  });
+}
+
+test("自愈①：400 点名 temperature → 归一为 1 重试成功", async () => {
+  const m = await mockGateway([
+    { status: 400, body: '{"error":{"message":"claude-sonnet-5-5 does not support non-default temperature"}}' },
+    { status: 200, body: '{"choices":[{"message":{"content":"好了"}}],"usage":{"total_tokens":9}}' },
+  ]);
+  const p = createProvider({ kind: "xlite", key: "k", model: "m", base: m.base });
+  const out = await p.complete([{ role: "user", content: "hi" }], { max: 40 });
+  assert.equal(out, "好了");
+  assert.equal(p.stats.retries, 1);
+  assert.match(m.reqs[1], /"temperature":1(\.0)?/); // 第二次请求温度为 1
+  assert.match(m.reqs[0], /"temperature":0\.85/);   // 第一次是默认 0.85
+  m.server.close();
+});
+
+test("自愈②：length 截断空内容 → 加倍 max_tokens 重试成功", async () => {
+  const m = await mockGateway([
+    { status: 200, body: '{"choices":[{"message":{"content":""},"finish_reason":"length"}],"usage":{"total_tokens":50}}' },
+    { status: 200, body: '{"choices":[{"message":{"content":"这次有内容了"}}],"usage":{"total_tokens":120}}' },
+  ]);
+  const p = createProvider({ kind: "openai-compat", key: "k", model: "m", base: m.base });
+  const out = await p.complete([{ role: "user", content: "hi" }], { max: 60 });
+  assert.equal(out, "这次有内容了");
+  assert.equal(p.stats.retries, 1);
+  assert.match(m.reqs[1], /"max_tokens":120/); // 60 → 120
+  m.server.close();
+});
+
+test("自愈不误伤：普通 400 直接抛错（不再重试）", async () => {
+  const m = await mockGateway([
+    { status: 400, body: '{"error":{"message":"insufficient quota"}}' },
+    { status: 400, body: '{"error":{"message":"insufficient quota"}}' },
+  ]);
+  const p = createProvider({ kind: "openai-compat", key: "k", model: "m", base: m.base });
+  await assert.rejects(() => p.complete([{ role: "user", content: "hi" }], { max: 40 }), /HTTP 400/);
+  assert.equal(m.reqs.length, 2); // 初始 + 传输层重试 1 次（900ms 后），无参数自愈轮
+  m.server.close();
+});
+
+test("超时可配：opts.timeout 短预算触发超时错误", async () => {
+  const slow = http.createServer((req, res) => setTimeout(() => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('{"choices":[{"message":{"content":"迟到"}}]}');
+  }, 500));
+  await new Promise(r => slow.listen(0, "127.0.0.1", r));
+  const p = createProvider({ kind: "openai-compat", key: "k", model: "m", base: "http://127.0.0.1:" + slow.address().port });
+  await assert.rejects(() => p.complete([{ role: "user", content: "hi" }], { timeout: 80, max: 40 }));
+  slow.close();
 });
 
 test("MemoryStore 未来 turn 不再 Infinity 霸榜", () => {

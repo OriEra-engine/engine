@@ -20,6 +20,13 @@
 //!   non-timeout transports — a chat completion is semantically
 //!   read-only for the world, the worst case is a double-billed token
 //!   on a rare partial send;
+//! - **parameter healing (v3)** — two protocol adaptations, each at
+//!   most once per call, are NOT transport retries: a 400 whose body
+//!   names `temperature` (gateways exposing Claude/Kimi channels that
+//!   only support the default) is re-sent with temperature 1.0, and a
+//!   200 with `finish_reason=length` and empty content (reasoning
+//!   models spending the whole budget on thinking) is re-sent with a
+//!   doubled `max_tokens` (capped 2048);
 //! - **timeouts** — 20s overall (kernel.js parity), 5s of it budgeted
 //!   for the connect phase;
 //! - **key hygiene** — the key lives in `ProviderConfig` and nowhere
@@ -195,6 +202,19 @@ impl HttpProvider {
         tools: Option<&[crate::provider::ToolDef]>,
         stream: bool,
     ) -> Result<String, InferError> {
+        self.build_request_param(messages, tools, stream, 0.85, 260)
+    }
+
+    /// Parameterized wire builder (v3 参数自愈轮复用)：temperature 与
+    /// max_tokens 由调用方给出，其余与 build_request_ex 完全一致。
+    fn build_request_param(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<&[crate::provider::ToolDef]>,
+        stream: bool,
+        temperature: f32,
+        max_tokens: u32,
+    ) -> Result<String, InferError> {
         let mut body: Value = match self.dialect {
             Dialect::OpenAi => json!({
                 "model": self.cfg.model,
@@ -202,8 +222,8 @@ impl HttpProvider {
                     .iter()
                     .map(message_openai)
                     .collect::<Vec<_>>(),
-                "temperature": 0.85,
-                "max_tokens": 260,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
             }),
             Dialect::Anthropic => {
                 let system = messages
@@ -218,7 +238,7 @@ impl HttpProvider {
                 json!({
                     "model": self.cfg.model,
                     "system": system,
-                    "max_tokens": 260,
+                    "max_tokens": max_tokens,
                     "messages": messages
                         .iter()
                         .filter(|m| m.role != Role::System)
@@ -515,6 +535,19 @@ fn read_line_capped(
     }
 }
 
+/// finish_reason=length 且内容为空/null —— 推理模型把预算全花在思考上的
+/// wire 判据（v3 自愈②）。content 字段缺失也按空处理。
+fn is_length_truncated_empty(raw: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(raw) else {
+        return false;
+    };
+    if v.pointer("/choices/0/finish_reason").and_then(Value::as_str) != Some("length") {
+        return false;
+    }
+    v.pointer("/choices/0/message/content")
+        .is_none_or(|c| c.as_str().is_none_or(str::is_empty))
+}
+
 fn role_str(r: Role) -> &'static str {
     match r {
         Role::System => "system",
@@ -614,19 +647,33 @@ impl ModelProvider for HttpProvider {
             ));
         }
         let body = self.build_request(messages)?;
-        // Zero retries by design; one immediate exception for a
-        // non-timeout transport blip (design §5, widened — see module
-        // docs). Status/Parse/Timeout never retry. If the retry itself
-        // hits the deadline, that is the more severe signal — report
-        // Timeout, not the first attempt's Network.
-        let raw = match self.attempt(&body) {
+        // v3 参数自愈（与 kernel.js 镜像，各至多一轮，非传输重试）：
+        // ①400 点名 temperature → 归一 1.0 重发；②finish_reason=length 且
+        // 内容为空 → max_tokens 加倍重发（上限 2048）。Status/Parse/Timeout
+        // 的既有分类与零重试语义不变（设计 §5）。
+        let mut temperature = 0.85f32;
+        let mut max_tokens = 260u32;
+        let raw = match self.post_json(&body) {
             Ok(raw) => raw,
-            Err(InferError::Network(msg)) => match self.attempt(&body) {
-                Ok(raw) => raw,
-                Err(InferError::Timeout) => return Err(InferError::Timeout),
-                Err(_) => return Err(InferError::Network(msg)),
-            },
+            Err(InferError::Status { code: 400, detail })
+                if self.dialect == Dialect::OpenAi
+                    && temperature != 1.0
+                    && detail.to_lowercase().contains("temperature") =>
+            {
+                temperature = 1.0;
+                let healed =
+                    self.build_request_param(messages, None, false, temperature, max_tokens)?;
+                self.post_json(&healed)?
+            }
             Err(e) => return Err(e),
+        };
+        let raw = if max_tokens < 2048 && is_length_truncated_empty(&raw) {
+            max_tokens = (max_tokens * 2).min(2048);
+            let healed =
+                self.build_request_param(messages, None, false, temperature, max_tokens)?;
+            self.post_json(&healed)?
+        } else {
+            raw
         };
         let (text, usage) = self.parse_reply(raw)?;
         if let Ok(mut u) = self.usage.lock() {
@@ -1384,6 +1431,97 @@ mod tests {
             other => panic!("expected Timeout from the retry, got {other:?}"),
         }
         assert_eq!(mock.requests().len(), 2);
+    }
+
+    // ---- v3 参数自愈 ----
+
+    #[test]
+    fn temperature_400_heals_to_default_one() {
+        // 自愈①：网关 400 点名 temperature（如仅支持默认温度的
+        // Claude/Kimi 渠道）→ 归一 1.0 重发一次。
+        let mock = Mock::spawn(vec![
+            Step::Reply(
+                400,
+                r#"{"error":{"message":"claude-sonnet-5-5 does not support non-default temperature"}}"#.into(),
+            ),
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"content":"好了"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}"#.into(),
+            ),
+        ]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        assert_eq!(p.complete(&[ChatMessage::user("hi")]).unwrap(), "好了");
+        let reqs = mock.requests();
+        assert!(reqs[0].contains(r#""temperature":0.85"#), "first sends default");
+        assert!(
+            reqs[1].contains(r#""temperature":1.0"#),
+            "heal round sends 1.0: {}",
+            reqs[1]
+        );
+    }
+
+    #[test]
+    fn length_truncated_empty_content_doubles_budget_once() {
+        // 自愈②：200 但 finish_reason=length 且内容空（思考吃光预算）
+        // → max_tokens 加倍重发一次（260 → 520）。
+        let mock = Mock::spawn(vec![
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}"#.into(),
+            ),
+            Step::Reply(
+                200,
+                r#"{"choices":[{"message":{"content":"有内容了"}}],"usage":{"prompt_tokens":10,"completion_tokens":30}}"#.into(),
+            ),
+        ]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        assert_eq!(p.complete(&[ChatMessage::user("hi")]).unwrap(), "有内容了");
+        let reqs = mock.requests();
+        assert!(reqs[0].contains(r#""max_tokens":260"#));
+        assert!(
+            reqs[1].contains(r#""max_tokens":520"#),
+            "heal round doubles the budget: {}",
+            reqs[1]
+        );
+    }
+
+    #[test]
+    fn plain_400_still_fails_without_parameter_healing() {
+        // 自愈不误伤：非温度类 400（如额度不足）不触发任何重发。
+        let mock = Mock::spawn(vec![
+            Step::Reply(400, r#"{"error":{"message":"insufficient quota"}}"#.into()),
+            Step::Reply(400, r#"{"error":{"message":"insufficient quota"}}"#.into()),
+        ]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        match p.complete(&[ChatMessage::user("x")]) {
+            Err(InferError::Status { code: 400, .. }) => {}
+            other => panic!("expected Status(400), got {other:?}"),
+        }
+        assert_eq!(mock.requests().len(), 1, "no heal round, no transport retry");
     }
 
     // ---- RFC-3 工具调用 + SSE 流式 ----
