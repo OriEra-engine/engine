@@ -42,6 +42,28 @@
 - 关键决策全部留痕 ADR/RFC,新维护者可从文档重建上下文;
 - BDFL 连续 6 周不可用时,Core Team 按 GOVERNANCE 接管发版(见休眠公告条款)。
 
+### 5. B8 模型验收门禁(issue #99)
+
+模型或预设行升「推荐位」前必须通过的行为套件,入口是**一个**显式命名的测试:
+
+- **门禁入口**:`provider::b8_gate::b8_gate_smoke_reference_backend_clears_all_legs`
+  (crates/oriera-infer/src/provider.rs,离线零网络,进 CI workspace 腿)——
+  确定性底线 / usage 计量底线 / 流式拼接诚实 / 降级链韧性四腿聚合冒烟;
+- **深度覆盖**(不在此重复,由以下常驻测试指认):结构化输出线格式与
+  fail-fast(`invalid_schema_fails_before_any_network_or_key_spend`、
+  `schema_reaches_the_wire_as_json_schema_and_supersedes_json_mode`)、
+  工具往返(`openai_tool_calls_round_trip`、`anthropic_tool_use_round_trip`
+  及多轮线上测试)、缓存方言(`deepseek_style_cache_hits…`、
+  `anthropic_cache_read_parses_and_a_lying_vendor_is_clamped` 等三方言)、
+  降级链政策(`health::tests` 八条,含凭据连击开闸);
+- **预设表登记完整性**:预设单一来源 `contracts/golden/presets.json`(#98),
+  Rust 与浏览器内核逐行对照;新增/改行不更新 fixture 即双端 CI 同红;
+  能力与牌价登记语义由 `caps_and_prices_are_registered_where_claimed` 锁定。
+
+裁定记录(2026-10-22):行为四腿在 #92–#95 已高度覆盖,B8 的实际增量是
+「显式门禁入口 + 登记单一来源」,不再新开 CI 独立腿(native-http 腿已常驻
+全部深度测试),避免 CI 时长膨胀。
+
 ## 三、已知不稳定边界(诚实清单)
 
 以下能力**尚未达到上述承诺**,使用前须知:
