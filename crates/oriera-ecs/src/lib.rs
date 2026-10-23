@@ -39,7 +39,7 @@
 //! ```
 
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 // ---------------------------------------------------------------------------
 // Entity
@@ -311,13 +311,13 @@ impl World {
         let queue = self
             .events
             .entry(TypeId::of::<T>())
-            .or_insert_with(|| Box::new(Vec::<T>::new()) as Box<dyn Any + Send + Sync>);
+            .or_insert_with(|| Box::new(VecDeque::<T>::new()) as Box<dyn Any + Send + Sync>);
         let v = queue
-            .downcast_mut::<Vec<T>>()
+            .downcast_mut::<VecDeque<T>>()
             .expect("event queue keyed by TypeId of T");
-        v.push(event);
+        v.push_back(event);
         if v.len() > Self::MAX_PENDING_EVENTS {
-            v.remove(0);
+            v.pop_front();
             tracing::warn!(
                 ty = std::any::type_name::<T>(),
                 cap = Self::MAX_PENDING_EVENTS,
@@ -331,11 +331,11 @@ impl World {
     /// only what was written after the first drain.
     pub fn take_events<T: Send + Sync + 'static>(&mut self) -> Vec<T> {
         match self.events.get_mut(&TypeId::of::<T>()) {
-            Some(queue) => std::mem::take(
-                queue
-                    .downcast_mut::<Vec<T>>()
-                    .expect("event queue keyed by TypeId of T"),
-            ),
+            Some(queue) => queue
+                .downcast_mut::<VecDeque<T>>()
+                .expect("event queue keyed by TypeId of T")
+                .drain(..)
+                .collect(),
             None => Vec::new(),
         }
     }
@@ -503,26 +503,18 @@ impl World {
         // constant; changing it changes every fingerprint ever taken.
         let mut h: u64 = 0x0000_6f72_6965_7261;
         mix(&mut h, self.live_count as u64);
-        for (ty, bits_of) in [
+        for (ty, fold) in [
             (
                 TypeId::of::<Position>(),
-                (|any: &dyn Any| -> Vec<(usize, u64, u64)> {
-                    column_bits::<Position>(any, |p| (p.x.to_bits() as u64, p.y.to_bits() as u64))
-                }) as fn(&dyn Any) -> Vec<(usize, u64, u64)>,
+                fold_position_column as fn(&dyn Any, &mut u64),
             ),
             (
                 TypeId::of::<Velocity>(),
-                |any: &dyn Any| -> Vec<(usize, u64, u64)> {
-                    column_bits::<Velocity>(any, |v| (v.vx.to_bits() as u64, v.vy.to_bits() as u64))
-                },
+                fold_velocity_column as fn(&dyn Any, &mut u64),
             ),
         ] {
             if let Some(col) = self.columns.get(&ty) {
-                for (idx, a, b) in bits_of(col.as_any()) {
-                    mix(&mut h, idx as u64);
-                    mix(&mut h, a);
-                    mix(&mut h, b);
-                }
+                fold(col.as_any(), &mut h);
             }
         }
         h
@@ -537,18 +529,25 @@ fn mix(h: &mut u64, word: u64) {
 
 /// Read one typed column as (entity index, value-word pairs) in index
 /// order, skipping empty slots. Shared by [`World::state_hash`].
-fn column_bits<T: 'static>(
-    any: &dyn Any,
-    words: impl Fn(&T) -> (u64, u64),
-) -> Vec<(usize, u64, u64)> {
-    match any.downcast_ref::<Vec<Option<T>>>() {
-        Some(col) => col
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, slot)| slot.as_ref().map(|v| (idx, words(v).0, words(v).1)))
-            .collect(),
-        None => Vec::new(),
+fn fold_column<T: 'static>(any: &dyn Any, h: &mut u64, words: impl Fn(&T) -> (u64, u64)) {
+    if let Some(col) = any.downcast_ref::<Vec<Option<T>>>() {
+        for (idx, slot) in col.iter().enumerate() {
+            if let Some(v) = slot {
+                let (a, b) = words(v);
+                mix(h, idx as u64);
+                mix(h, a);
+                mix(h, b);
+            }
+        }
     }
+}
+
+fn fold_position_column(any: &dyn Any, h: &mut u64) {
+    fold_column::<Position>(any, h, |p| (p.x.to_bits() as u64, p.y.to_bits() as u64));
+}
+
+fn fold_velocity_column(any: &dyn Any, h: &mut u64) {
+    fold_column::<Velocity>(any, h, |v| (v.vx.to_bits() as u64, v.vy.to_bits() as u64));
 }
 
 // ---------------------------------------------------------------------------

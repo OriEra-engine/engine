@@ -33,12 +33,16 @@ OriEra Studio（壳，等价 platforms/* 的角色）
  └─ 仪表盘   ← L2/L5/L6/L7 的横切读数
 ```
 
-## 1. 六区总览：界面 → 管线 → 契约
+## 1. 七区总览：界面 → 管线 → 契约
+
+> v0.7.2 起实际为七区：AI 素材中心（生成页/画廊，走 L4 热替换 + L8
+> `GenerationProvider`，与 P1 建游管线交叉）已上线但未列入早期契约——
+> 本表升版补齐，契约测试以本表为准。
 
 | Studio 区 | 界面元素 | 主管线 | 走过的层 | 契约落点 |
 |---|---|---|---|---|
 | 仪表盘 | 四张状态卡 | **P4 观测管线** | L2/L5/L6/L7 → 壳 | `system_timings` `allocator().load` `UsageMeter` `idle_frames` `quality` |
-| Demo 演示厅 | 11 个内置 demo | P4（只读回放） | 全层（examples/* 静态页） | 每个 demo 只动它那一层 |
+| Demo 演示厅 | 内置 demo 全集（随引擎快照，当前 13+） | P4（只读回放） | 全层（examples/* 静态页） | 每个 demo 只动它那一层 |
 | 新建游戏 | 五步向导 | **P1 建游管线** | L9→L7→L6→L3(+L4) | `parse` `Command` `Gravity/TimeScale` `Spawn` `insert_named` |
 | 模型中心 | provider 列表 + key | **P2 模型管线** | 壳→L1 route→L7 | `ProviderConfig` `ModelProvider` `route(caps,hint)` `last_usage` |
 | 我的项目 | 项目卡 + 存档 | P1 的持久化半边 | L3/L4 | generation 句柄稳定（T6）；`insert_named/get_named` |
@@ -139,7 +143,7 @@ key 的旅行路线**只有一条**：浏览器 localStorage / 壳进程环境 �
 | ~~原生 HTTP provider 适配器~~ | 模型中心远程行 | **已落地**（#68 → PR #79，feature `native-http`，四分类错误+脱敏） | 剩余：#64 厂商认领真网验证 |
 | `World::serialize` | 我的项目存档 | 句柄已稳定 | v0.5，L3 manifest 已列 |
 | L9 `Goal` 组件 + 规划器 | 向导②「角色目标」 | `WorldStory.beats` 顶位 | v0.5–v0.6 |
-| Studio 壳本体 | 全部六区 | **已上线** github.com/OriEra-engine/studio（v0.3.0） | 按本文管线契约对齐 + 补契约测试 |
+| Studio 壳本体 | 全部七区 | **已上线** github.com/OriEra-engine/studio（v0.3.0） | 按本文管线契约对齐 + 补契约测试 |
 | wgpu 真窗口 | 仪表盘画面区 | 统计式渲染 | P2 工程计划（growth/PLAN-engineering-nov） |
 
 一句话收束：**界面是层栈的索引——Studio 的每个按钮都能沿管线追到

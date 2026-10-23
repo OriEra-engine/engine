@@ -311,6 +311,16 @@ pub trait ModelProvider: Send + Sync {
         DeterminismLevel::Recorded
     }
 
+    /// The run-level sampling seed this backend honors, if any (#102,
+    /// review E5). Provided as `None` — seedless backends (rule/mock)
+    /// are strictly deterministic and need no seed identity; HTTP
+    /// backends built with `ProviderOptions.seed` expose it so the
+    /// inference ledger can distinguish same-prompt/different-seed
+    /// runs (Pinned 对账语义成立的前提).
+    fn current_seed(&self) -> Option<u64> {
+        None
+    }
+
     /// Why this provider is a stand-in rather than the configured
     /// backend, if it is one. **Degrade must be visible**: hosts surface
     /// this in status UI and metrics instead of letting a silent
@@ -1062,6 +1072,18 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         },
         price: None, // 牌价待登记
     },
+    // doubao（火山方舟，OpenAI 兼容端点；Studio api.ts 先行，此处补齐
+    // 三点对齐——presets 门禁外的第四份拷贝独立演化的活例）
+    ProviderPreset {
+        id: "doubao",
+        label: "豆包 · 火山方舟",
+        kind: ProviderKind::OpenAiCompat,
+        model: "doubao-seed-1.6",
+        base_url: "https://ark.cn-beijing.volces.com/api/v3",
+        local: false,
+        caps: ModelCaps::UNREGISTERED, // 待登记
+        price: None,
+    },
     // ── local open-source serving (no key, no egress) ──
     ProviderPreset {
         id: "ollama",
@@ -1388,7 +1410,7 @@ mod preset_tests {
         }
         // 行数单一来源是 contracts/golden/presets.json（presets_match_golden_fixture
         // 逐行对照）；这里只防「表与镜像测试失联」的低级回归。
-        assert_eq!(PROVIDER_PRESETS.len(), 15);
+        assert_eq!(PROVIDER_PRESETS.len(), 16);
     }
 
     #[test]

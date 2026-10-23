@@ -43,6 +43,8 @@ jobs:
         run: cargo test -p oriera-infer --features native-http
       - name: Test (subsys rigid feature)
         run: cargo test -p oriera-subsys --features rigid
+      - name: Offline acceptance example (studio_e2e — panic is red, #106)
+        run: cargo run -q -p oriera-agent --example studio_e2e
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy (genai providers feature)

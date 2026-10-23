@@ -50,20 +50,6 @@ compile_error!(
      kernel.js HttpChatProvider mirror (examples/11-ai-cafe/engine/kernel.js)"
 );
 
-/// Our dial maps 1:1 onto the recipe's canonical wire enum (A1) — the
-/// copy exists only so the crate stays dependency-free below the
-/// `native-http` feature.
-impl From<ReasoningEffort> for RecipeEffort {
-    fn from(e: ReasoningEffort) -> Self {
-        match e {
-            ReasoningEffort::Low => RecipeEffort::Low,
-            ReasoningEffort::High => RecipeEffort::High,
-            ReasoningEffort::Xhigh => RecipeEffort::Xhigh,
-            ReasoningEffort::Max => RecipeEffort::Max,
-        }
-    }
-}
-
 /// SSE per-line byte cap (安全审计 P2): one `data:` line beyond this is
 /// a hostile stream, not a model reply.
 const SSE_LINE_CAP: usize = 1024 * 1024;
@@ -86,10 +72,9 @@ fn usage_cached(v: &Value, prompt: u64) -> u64 {
 }
 
 use crate::provider::{
-    ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, ProviderOptions,
-    ReasoningEffort, Role, ToolCall, ToolDef, ToolOutcome,
+    ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, ProviderOptions, Role,
+    ToolCall, ToolDef, ToolOutcome,
 };
-use deepseek_recipe_core::conversation::ReasoningEffort as RecipeEffort;
 use oriera_common::TokenUsage;
 use serde_json::{json, Value};
 use std::io::{BufReader, Read};
@@ -272,9 +257,11 @@ impl HttpProvider {
                     // (semantic exclusivity, documented on ProviderOptions).
                     body["thinking"] = json!({ "type": "disabled" });
                 } else if let Some(effort) = self.options.reasoning_effort {
-                    // A1: the recipe's canonical effort dial on the wire.
-                    body["reasoning_effort"] =
-                        serde_json::to_value(RecipeEffort::from(effort)).unwrap_or(Value::Null);
+                    // 去依赖化（#106，评审共识）：wire 值就是 snake_case
+                    // 字符串，本地 as_str 与 recipe-core 序列化逐字节等价
+                    //（every_effort_variant_maps_to_the_recipe_snake_case
+                    // wire 测试钉死），proc-macro 供应链面不再值得。
+                    body["reasoning_effort"] = serde_json::json!(effort.as_str());
                 }
                 // B6: a schema supersedes plain json mode (json_object ⊆
                 // json_schema). Anthropic has no response_format — a
@@ -716,6 +703,12 @@ impl ModelProvider for HttpProvider {
         self.usage.lock().map(|u| *u).unwrap_or(TokenUsage::ZERO)
     }
 
+    fn current_seed(&self) -> Option<u64> {
+        // #102: the ledger needs the run's seed identity to tell
+        // same-prompt/different-seed runs apart (Pinned 对账)。
+        self.options.seed
+    }
+
     fn determinism(&self) -> oriera_common::DeterminismLevel {
         // B2: seed pinned = best-effort replay; unseeded cloud calls are
         // recorded-only. (架构评审 P1：本 override 曾在批二 splice 中丢失、
@@ -969,6 +962,8 @@ impl HttpProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 测试腿独用（lib 侧 wire 赋值只读字段不再需要类型 import）
+    use crate::provider::ReasoningEffort;
     use std::io::Write;
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::sync::Arc;
@@ -1317,6 +1312,28 @@ mod tests {
             Err(InferError::Provider(m)) => assert!(m.contains("no api key")),
             other => panic!("expected Provider(no key), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn current_seed_reports_the_configured_option() {
+        // #102: ledger 对账依赖 seed 身份——HttpProvider 必须如实上报
+        // ProviderOptions.seed（未配置 = None）。
+        let cfg = ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            model: "m".into(),
+            api_key: "k".into(),
+            base_url: Some("https://example.invalid/v1".into()),
+        };
+        let plain = HttpProvider::with_options(cfg.clone(), ProviderOptions::default());
+        assert_eq!(plain.current_seed(), None);
+        let seeded = HttpProvider::with_options(
+            cfg,
+            ProviderOptions {
+                seed: Some(42),
+                ..ProviderOptions::default()
+            },
+        );
+        assert_eq!(seeded.current_seed(), Some(42));
     }
 
     #[test]
