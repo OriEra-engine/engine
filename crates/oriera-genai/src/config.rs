@@ -23,6 +23,13 @@ pub enum ProviderKind {
     /// ByteDance Seedance video models via a Volcano-Ark-compatible
     /// tasks API. Also behind the `providers` feature.
     Seedance,
+    /// Hyper3D Rodin (hyper3d.ai / hyper3d.cn) text→GLB. Wire verified
+    /// against docs.hyper3d.ai (2026-10-23): `POST {base}/rodin`
+    /// (multipart, Bearer) → `{uuid, jobs.subscription_key}`;
+    /// `POST {base}/status` (subscription_key) → Waiting/Generating/
+    /// Done/Failed; `POST {base}/download` (top-level uuid) →
+    /// `list[].url` (.glb, signed and expiring). Behind `providers`.
+    Rodin,
 }
 
 impl ProviderKind {
@@ -32,6 +39,7 @@ impl ProviderKind {
             ProviderKind::Tripo => "tripo",
             ProviderKind::CogView => "cogview",
             ProviderKind::Seedance => "seedance",
+            ProviderKind::Rodin => "rodin",
         }
     }
 
@@ -41,6 +49,7 @@ impl ProviderKind {
             "tripo" | "tripo3d" => Some(ProviderKind::Tripo),
             "cogview" | "image" | "images" => Some(ProviderKind::CogView),
             "seedance" | "ark" | "doubao-seedance" => Some(ProviderKind::Seedance),
+            "rodin" | "hyper3d" => Some(ProviderKind::Rodin),
             _ => None,
         }
     }
@@ -56,6 +65,9 @@ impl ProviderKind {
             ProviderKind::CogView => "https://open.bigmodel.cn/api/paas/v4",
             // Volcano Ark (volcengine); BytePlus variants override the base.
             ProviderKind::Seedance => "https://ark.cn-beijing.volces.com",
+            // Hyper3D Rodin v2; mainland endpoint hyper3d.cn overrides
+            // via base_url (same paths).
+            ProviderKind::Rodin => "https://api.hyper3d.com/api/v2",
         }
     }
 }
@@ -146,12 +158,16 @@ pub fn create_generation_provider_with_transport(
     cfg: &ProviderConfig,
     transport: crate::transport::SharedTransport,
 ) -> Arc<dyn GenerationProvider> {
-    use crate::{cogview::CogViewProvider, seedance::SeedanceProvider, tripo::TripoProvider};
+    use crate::{
+        cogview::CogViewProvider, rodin::RodinProvider, seedance::SeedanceProvider,
+        tripo::TripoProvider,
+    };
     match cfg.kind {
         ProviderKind::Mock => Arc::new(MockProvider::new()),
         ProviderKind::Tripo => Arc::new(TripoProvider::new(cfg.clone(), transport)),
         ProviderKind::CogView => Arc::new(CogViewProvider::new(cfg.clone(), transport)),
         ProviderKind::Seedance => Arc::new(SeedanceProvider::new(cfg.clone(), transport)),
+        ProviderKind::Rodin => Arc::new(RodinProvider::new(cfg.clone(), transport)),
     }
 }
 
