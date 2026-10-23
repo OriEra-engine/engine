@@ -24,13 +24,13 @@ pub mod config;
 pub mod hot_swap;
 pub mod mock;
 #[cfg(feature = "providers")]
-#[cfg(feature = "providers")]
 pub mod rodin;
 #[cfg(feature = "providers")]
 pub mod seedance;
 pub mod system;
 #[cfg(feature = "providers")]
 pub mod transport;
+#[cfg(feature = "providers")]
 pub mod tripo;
 
 #[cfg(feature = "providers")]
