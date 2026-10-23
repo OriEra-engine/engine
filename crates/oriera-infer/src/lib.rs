@@ -295,6 +295,24 @@ impl InferSystem {
         }
     }
 
+    /// Pin the spawn-RNG seed (#102, review E5 / issue #84): two runs
+    /// with the same seed and the same command stream spawn identical
+    /// worlds; different seeds must diverge. Without this the seed was
+    /// a private constant — "reproducible" only by accident of sharing
+    /// one hard-coded value. Also read by hosts to stamp run ledgers.
+    pub fn with_seed(seed: u64) -> Self {
+        Self {
+            seed,
+            ..Self::new()
+        }
+    }
+
+    /// Current RNG state — hosts snapshot it into a run ledger so a
+    /// replay can resume from the exact point the recording stopped.
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
     /// Submit a command for execution on the next frame.
     ///
     /// Coalesces against the queue tail when the merge is *provably*
@@ -692,6 +710,36 @@ mod tests {
             response_fingerprint("回复甲"),
             response_fingerprint("回复甲")
         );
+    }
+
+    #[test]
+    fn with_seed_pins_the_spawn_rng_replay() {
+        // #102 (#84): same seed + same stream → identical spawns;
+        // different seeds must diverge (此前种子是私有常量，复现只是
+        // 碰巧共享同一个硬编码值)。
+        fn run(seed: u64) -> (u64, u64) {
+            let mut sys = InferSystem::with_seed(seed);
+            assert_eq!(sys.seed(), seed, "seed getter reports the pinned seed");
+            let mut world = World::new();
+            let ctx = FrameCtx {
+                frame: oriera_common::FrameIndex(0),
+                dt: 1.0 / 60.0,
+                now: oriera_common::Timestamp(0),
+                grants: oriera_common::Grants::EMPTY,
+            };
+            sys.submit(Command::Spawn(25));
+            sys.submit(Command::Spawn(30));
+            sys.run(&ctx, &mut world);
+            // run 后 seed() 是 LCG 推进后的当前态——同 seed 双跑推进后的
+            // 状态也必须一致（run-ledger 可从该状态恢复续放）。
+            (sys.seed(), world.state_hash())
+        }
+        let (seed_end_a, h_a) = run(0xABCD);
+        let (seed_end_a2, h_a2) = run(0xABCD);
+        let (_, h_b) = run(0xABCD + 1);
+        assert_eq!(seed_end_a, seed_end_a2, "same seed → same RNG end state");
+        assert_eq!(h_a, h_a2, "same seed → identical world state");
+        assert_ne!(h_a, h_b, "different seeds → diverged spawns");
     }
 
     #[test]

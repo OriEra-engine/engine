@@ -311,6 +311,16 @@ pub trait ModelProvider: Send + Sync {
         DeterminismLevel::Recorded
     }
 
+    /// The run-level sampling seed this backend honors, if any (#102,
+    /// review E5). Provided as `None` — seedless backends (rule/mock)
+    /// are strictly deterministic and need no seed identity; HTTP
+    /// backends built with `ProviderOptions.seed` expose it so the
+    /// inference ledger can distinguish same-prompt/different-seed
+    /// runs (Pinned 对账语义成立的前提).
+    fn current_seed(&self) -> Option<u64> {
+        None
+    }
+
     /// Why this provider is a stand-in rather than the configured
     /// backend, if it is one. **Degrade must be visible**: hosts surface
     /// this in status UI and metrics instead of letting a silent

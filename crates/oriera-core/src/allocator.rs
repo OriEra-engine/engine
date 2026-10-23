@@ -171,10 +171,23 @@ impl BudgetAllocator {
     /// registration order; `out` is reused frame to frame so
     /// steady-state ticks allocate nothing.
     pub fn allocate(&mut self, budget_ms: f32, out: &mut Vec<(String, ComputeGrant)>) {
-        out.clear();
+        // Steady-state zero allocation (#103, review E12): keep the
+        // caller's table sized to the registry and refresh numbers in
+        // place -- the per-frame name.clone() in publish is gone.
+        // Growth (and its one clone per row) happens only when a new
+        // system registers.
+        out.truncate(self.names.len());
+        for name in self.names[out.len()..].iter() {
+            out.push((name.clone(), ComputeGrant::default()));
+        }
         if !self.config.enabled || self.states.is_empty() {
+            // The "unmanaged = empty table" contract stays: an off
+            // allocator publishes nothing (AllocatorConfig::off keeps
+            // v0.3 bit-identical passthrough).
+            out.clear();
             return;
         }
+        debug_assert_eq!(out.len(), self.names.len());
         let total: f32 = self.states.iter().map(|s| s.ema_ms.max(0.0)).sum();
         let load = if budget_ms > 0.0 {
             total / budget_ms
@@ -201,12 +214,7 @@ impl BudgetAllocator {
     /// proportional-fairness target `share / cost` (= 1/load for
     /// spenders above their floor). Idempotent — re-deriving the same
     /// target while the condition persists is stable, not compounding.
-    fn over_streak_tick(
-        &mut self,
-        out: &mut Vec<(String, ComputeGrant)>,
-        budget_ms: f32,
-        total: f32,
-    ) {
+    fn over_streak_tick(&mut self, out: &mut [(String, ComputeGrant)], budget_ms: f32, total: f32) {
         let mut over = 0;
         for s in &mut self.states {
             s.over_streak += 1;
@@ -216,12 +224,10 @@ impl BudgetAllocator {
         if over >= self.config.squeeze_after {
             let min_share = self.config.min_share;
             let floor = self.config.floor;
-            let shares: Vec<f32> = self
-                .states
-                .iter()
-                .map(|s| Self::share_of(s.ema_ms, budget_ms, total, min_share))
-                .collect();
-            for (s, share) in self.states.iter_mut().zip(shares) {
+            // Two passes, no intermediate Vec (#103): share_of is pure,
+            // recomputing it beats allocating on the rare squeeze step.
+            for s in &mut self.states {
+                let share = Self::share_of(s.ema_ms, budget_ms, total, min_share);
                 let target = if s.ema_ms > f32::EPSILON {
                     share / s.ema_ms
                 } else {
@@ -237,7 +243,7 @@ impl BudgetAllocator {
     /// Sustained real headroom: everyone recovers one small step.
     fn under_streak_tick(
         &mut self,
-        out: &mut Vec<(String, ComputeGrant)>,
+        out: &mut [(String, ComputeGrant)],
         budget_ms: f32,
         total: f32,
     ) {
@@ -268,15 +274,11 @@ impl BudgetAllocator {
         (budget_ms * weight).max(budget_ms * min_share)
     }
 
-    fn publish(&self, budget_ms: f32, total: f32, out: &mut Vec<(String, ComputeGrant)>) {
-        for (name, state) in self.names.iter().zip(self.states.iter()) {
-            out.push((
-                name.clone(),
-                ComputeGrant {
-                    share_ms: Self::share_of(state.ema_ms, budget_ms, total, self.config.min_share),
-                    throttle: state.throttle.clamp(self.config.floor, 1.0),
-                },
-            ));
+    fn publish(&self, budget_ms: f32, total: f32, out: &mut [(String, ComputeGrant)]) {
+        debug_assert_eq!(out.len(), self.names.len());
+        for (slot, state) in out.iter_mut().zip(self.states.iter()) {
+            slot.1.share_ms = Self::share_of(state.ema_ms, budget_ms, total, self.config.min_share);
+            slot.1.throttle = state.throttle.clamp(self.config.floor, 1.0);
         }
     }
 

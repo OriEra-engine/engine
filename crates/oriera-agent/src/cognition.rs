@@ -512,7 +512,7 @@ fn record_fingerprint<P: ModelProvider + ?Sized>(
 ) {
     let prompt = oriera_infer::prompt_fingerprint(
         provider.id(),
-        None,
+        provider.current_seed(),
         &[
             oriera_infer::ChatMessage::system(sys.to_string()),
             oriera_infer::ChatMessage::user(user.to_string()),
@@ -782,6 +782,52 @@ mod tests {
             }
             self.inner.complete(messages)
         }
+    }
+
+    /// #102: a provider that reports a run-level seed — the ledger must
+    /// carry it into the prompt fingerprint (Pinned 对账的前提：同文案
+    /// 不同 seed 的两次调用在台账里可区分)。
+    struct Seeded {
+        inner: RuleProvider,
+        seed: Option<u64>,
+    }
+    impl ModelProvider for Seeded {
+        fn id(&self) -> &str {
+            "seeded"
+        }
+        fn complete(
+            &self,
+            messages: &[oriera_infer::ChatMessage],
+        ) -> Result<String, oriera_infer::InferError> {
+            self.inner.complete(messages)
+        }
+        fn current_seed(&self) -> Option<u64> {
+            self.seed
+        }
+    }
+
+    fn last_ledger_prompt(seed: Option<u64>) -> u64 {
+        let mut w = cafe_world();
+        let p = std::sync::Arc::new(Seeded {
+            inner: RuleProvider::new(),
+            seed,
+        });
+        CognitionSystem::new(p.clone(), 1).run(&ctx(), &mut w);
+        let ledger = w.resource_or_default::<oriera_infer::InferenceLedger>();
+        ledger
+            .entries
+            .last()
+            .map(|e| e.prompt)
+            .expect("one cognition call must be recorded")
+    }
+
+    #[test]
+    fn ledger_fingerprint_carries_provider_seed() {
+        let none = last_ledger_prompt(None);
+        let s7 = last_ledger_prompt(Some(7));
+        let s9 = last_ledger_prompt(Some(9));
+        assert_ne!(none, s7, "seeded vs seedless must differ");
+        assert_ne!(s7, s9, "different seeds must differ");
     }
 
     fn capture_run(scene: Option<&str>) -> String {

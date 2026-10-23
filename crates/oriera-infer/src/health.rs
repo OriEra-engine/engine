@@ -238,6 +238,21 @@ impl FallbackProvider {
             .collect()
     }
 
+    /// Modelled virtual cost (#103, review E4): shells feed this into
+    /// `Scheduler::observe_extra_cost("infer", ..)` so an open/half-open
+    /// breaker *loses* allocation headroom instead of winning it (the
+    /// breaker is fail-fast — unmodelled, failure would look cheap).
+    /// Cost = base × consecutive failures of the worst non-closed link,
+    /// standing in for the retry + degradation latency the shell would
+    /// really pay. Fully-closed chains report 0.
+    pub fn regulator_hint_ms(&self, base_ms: f32) -> f32 {
+        self.health_report()
+            .iter()
+            .filter(|(_, state, _)| *state != BreakerState::Closed)
+            .map(|(_, _, fails)| base_ms * (*fails as f32).max(1.0))
+            .fold(0.0_f32, f32::max)
+    }
+
     fn record(&self, idx: usize, error: Option<&InferError>) {
         let mut h = self.healths[idx].lock().expect("health mutex");
         match error {
@@ -510,6 +525,12 @@ mod tests {
         let report = fb.health_report();
         assert_eq!(report[0].1, BreakerState::Open);
         assert_eq!(report[1].1, BreakerState::Closed);
+        // #103 E4: open × accumulated failures → modelled virtual cost.
+        let hint = fb.regulator_hint_ms(20.0);
+        assert!(
+            hint >= 40.0,
+            "open breaker must cost at least 2×base: {hint}"
+        );
     }
 
     #[test]

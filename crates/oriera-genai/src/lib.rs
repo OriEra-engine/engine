@@ -248,6 +248,82 @@ pub enum GenAiError {
     Validation(String),
 }
 
+/// Mirrors L7 `oriera_infer::ErrorClass` **semantics** (same stable ids)
+/// without depending on oriera-infer — ADR 0003 keeps generation and
+/// inference decoupled, so the vocabulary is copied, not imported
+/// (#106, review E8: CogView/Tripo/Seedance hit 429/402 too, and slot
+/// degradation needs the same retry/fall-through policy words).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenAiErrorClass {
+    RateLimited,
+    Auth,
+    Quota,
+    Server,
+    Timeout,
+    Provider,
+}
+
+impl GenAiErrorClass {
+    /// Stable id for metrics labels — identical strings to L7's ids so
+    /// a shared dashboard can chart both layers under one axis.
+    pub fn id(self) -> &'static str {
+        match self {
+            GenAiErrorClass::RateLimited => "rate_limited",
+            GenAiErrorClass::Auth => "auth",
+            GenAiErrorClass::Quota => "quota",
+            GenAiErrorClass::Server => "server",
+            GenAiErrorClass::Timeout => "timeout",
+            GenAiErrorClass::Provider => "provider",
+        }
+    }
+
+    /// Same policy as L7: transport-transient classes are worth backing
+    /// off (or falling through the chain); capability/config failures
+    /// are not — retrying cannot change the outcome.
+    pub fn retryable(self) -> bool {
+        matches!(
+            self,
+            GenAiErrorClass::RateLimited | GenAiErrorClass::Server | GenAiErrorClass::Timeout
+        )
+    }
+}
+
+impl GenAiError {
+    /// Fold into the public class vocabulary. `Unsupported` is a
+    /// capability fact (never retryable); `Validation` is a produced-
+    /// asset fact (the request reached and answered — provider bucket);
+    /// `Provider` messages are keyword-sniffed for the transport facts
+    /// adapters embed (429/401/402/5xx/timeout).
+    pub fn class(&self) -> GenAiErrorClass {
+        match self {
+            GenAiError::Unsupported(_) => GenAiErrorClass::Provider,
+            GenAiError::Validation(_) => GenAiErrorClass::Provider,
+            GenAiError::Provider(msg) => {
+                let m = msg.to_ascii_lowercase();
+                if m.contains("429") || m.contains("rate limit") || m.contains("too many requests")
+                {
+                    GenAiErrorClass::RateLimited
+                } else if m.contains("401") || m.contains("403") {
+                    GenAiErrorClass::Auth
+                } else if m.contains("402") {
+                    GenAiErrorClass::Quota
+                } else if m.contains("timeout") || m.contains("timed out") {
+                    GenAiErrorClass::Timeout
+                } else if m.contains("500") || m.contains("502") || m.contains("503") {
+                    GenAiErrorClass::Server
+                } else {
+                    GenAiErrorClass::Provider
+                }
+            }
+        }
+    }
+
+    /// Retry/fall-through policy (delegates to the class).
+    pub fn retryable(&self) -> bool {
+        self.class().retryable()
+    }
+}
+
 impl fmt::Display for GenAiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -489,6 +565,43 @@ pub(crate) fn tiny_png() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn genai_error_classes_mirror_l7_semantics() {
+        use super::*;
+        // 能力缺失：不可重试
+        assert_eq!(
+            GenAiError::Unsupported("no mesh kind".into()).class(),
+            GenAiErrorClass::Provider
+        );
+        assert!(!GenAiError::Unsupported("x".into()).retryable());
+        // 传输事实关键词嗅探
+        assert_eq!(
+            GenAiError::Provider("HTTP 429: slow down".into()).class(),
+            GenAiErrorClass::RateLimited
+        );
+        assert!(GenAiError::Provider("HTTP 429".into()).retryable());
+        assert_eq!(
+            GenAiError::Provider("HTTP 401: bad key".into()).class(),
+            GenAiErrorClass::Auth
+        );
+        assert_eq!(
+            GenAiError::Provider("HTTP 402: out of balance".into()).class(),
+            GenAiErrorClass::Quota
+        );
+        assert_eq!(
+            GenAiError::Provider("request timed out".into()).class(),
+            GenAiErrorClass::Timeout
+        );
+        assert!(GenAiError::Provider("gateway 502".into()).retryable());
+        assert_eq!(
+            GenAiError::Provider("weird garbage".into()).class(),
+            GenAiErrorClass::Provider
+        );
+        // 稳定 id 与 L7 同词表
+        assert_eq!(GenAiErrorClass::RateLimited.id(), "rate_limited");
+        assert_eq!(GenAiErrorClass::Auth.id(), "auth");
+    }
+
     use super::*;
 
     fn asset(format: AssetFormat, payload: Vec<u8>) -> GeneratedAsset {
