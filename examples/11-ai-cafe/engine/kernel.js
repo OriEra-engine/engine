@@ -483,6 +483,7 @@ export const PROVIDER_PRESETS = {
   openrouter:  { label: "OpenRouter",     base: "https://openrouter.ai/api/v1",          model: "openrouter/auto" },
   anthropic:   { label: "Anthropic",      base: "https://api.anthropic.com/v1",          model: "claude-3-5-haiku-latest",
                  caps: { contextWindow: 200000, tools: true, imageInput: true, promptCache: true } },
+  doubao:      { label: "豆包 · 火山方舟", base: "https://ark.cn-beijing.volces.com/api/v3",  model: "doubao-seed-1.6" },
   ollama:      { label: "Ollama 本地",     base: "http://127.0.0.1:11434/v1",             model: "qwen3:8b", local: true,
                  caps: { structuredOutput: true, tools: true } },
   vllm:        { label: "vLLM 本地",       base: "http://127.0.0.1:8000/v1",              model: "Qwen/Qwen3-8B", local: true,
