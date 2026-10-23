@@ -13,7 +13,7 @@
 [![Discussions](https://img.shields.io/badge/discussions-join-5b8def.svg)](https://github.com/OriEra-engine/engine/discussions)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![GitHub Pages](https://img.shields.io/github/deployments/OriEra-engine/engine/github-pages?label=pages)](https://oriera-engine.github.io/engine/)
-[![AtomGit](https://img.shields.io/badge/%E5%9B%BD%E5%86%85%E9%95%9C%E5%83%8F-AtomGit-c32929.svg)](https://atomgit.com/leslie520-bye/engine)
+[![AtomGit](https://atomgit.com/OriEra-engine/engine/star/new_badge.svg)](https://atomgit.com/OriEra-engine/engine)
 
 中文 · [English](README.en.md)
 
@@ -180,6 +180,10 @@ cargo clippy --workspace -- -D warnings
 | 报安全问题 | [SECURITY.md](SECURITY.md)（不要开公开 issue） |
 
 - [贡献指南](CONTRIBUTING.md) · [治理模式](GOVERNANCE.md) · [路线图](ROADMAP.md) · [行为准则](CODE_OF_CONDUCT.md)
+
+### 鸣谢
+
+- [AtomGit](https://atomgit.com/OriEra-engine/engine)：在国内托管 OriEra 世界引擎，帮助中国大陆用户更快访问项目与下载 Release。
 
 ## 协议
 
