@@ -32,10 +32,14 @@ fn main() {
             // 4) download：list[] 里按 .glb 找签名 URL
             HttpResponse::ok(
                 r#"{"list":[{"name":"textures.zip","url":"https://cdn.hyper3d.com/t.zip"},
-                    {"name":"model.glb","url":"https://cdn.hyper3d.com/m.glb"}]}"#.as_bytes().to_vec(),
+                    {"name":"model.glb","url":"https://cdn.hyper3d.com/m.glb"}]}"#
+                    .as_bytes()
+                    .to_vec(),
             ),
             // 3) status：全部 Done
-            HttpResponse::ok(r#"{"jobs":[{"uuid":"j1","status":"Done"},{"uuid":"j2","status":"Done"}]}"#),
+            HttpResponse::ok(
+                r#"{"jobs":[{"uuid":"j1","status":"Done"},{"uuid":"j2","status":"Done"}]}"#,
+            ),
             // 2) status：Generating
             HttpResponse::ok(r#"{"jobs":[{"uuid":"j1","status":"Generating"}]}"#),
             // 1) create：201 顶层 uuid + jobs.subscription_key
@@ -59,13 +63,18 @@ fn main() {
 
     println!("[2] 创建任务（multipart + Bearer）…");
     let task = provider
-        .request_generation(&GenerationRequest::text_to_3d("npc_prop", "一个黄铜咖啡壶，低多边形，手绘贴图风格"))
+        .request_generation(&GenerationRequest::text_to_3d(
+            "npc_prop",
+            "一个黄铜咖啡壶，低多边形，手绘贴图风格",
+        ))
         .expect("create");
     println!("    ✓ 受理：TaskId = {task:?}");
 
     println!("[3] 轮询状态（subscription_key）…");
     match provider.poll_task(&task).expect("poll 1") {
-        TaskStatus::Running => println!("    ✓ Rodin: Generating —— 引擎侧 TaskStatus::Running（世界继续跑，不阻塞）"),
+        TaskStatus::Running => {
+            println!("    ✓ Rodin: Generating —— 引擎侧 TaskStatus::Running（世界继续跑，不阻塞）")
+        }
         _ => panic!("expected running"),
     }
 
