@@ -25,3 +25,7 @@ serde_json = { workspace = true, optional = true }
 [features]
 default = []
 providers = ["dep:serde_json"]
+
+[[example]]
+name = "rodin_demo"
+required-features = ["providers"]

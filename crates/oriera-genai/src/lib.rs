@@ -466,7 +466,10 @@ fn glb_header_is_sane(b: &[u8]) -> bool {
 /// an empty scene). Doubles as the MockProvider fixture and as the
 /// L8→L4→L5 chain proof: `oriera_asset::glb::decode_glb_mesh` parses
 /// it into 3 vertices / 3 indices.
-pub(crate) fn tiny_glb() -> Vec<u8> {
+/// 最小合法 GLB（单三角、合法 JSON chunk + BIN chunk）——测试与演示
+/// 共用的"云端返回"替身；各适配器测试与 rodin_demo 均经
+/// [`crate::validate_asset`] 深校验。
+pub fn tiny_glb() -> Vec<u8> {
     let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[{"mesh":0}]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2,"material":0}]}],"materials":[{"pbrMetallicRoughness":{"baseColorFactor":[0.85,0.16,0.12,1.0]}}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","max":[0.8,0.6,0.0],"min":[-0.8,-0.6,0.0]},{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":2,"componentType":5125,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},{"buffer":0,"byteOffset":72,"byteLength":12}],"buffers":[{"byteLength":84}]}"#;
     let json_len = json.len().div_ceil(4) * 4; // JSON chunk pads with spaces
                                                // BIN: 3 × pos(36B) + 3 × normal(36B,朝镜头) + 3 × u32(12B) = 84B。
