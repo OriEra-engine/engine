@@ -72,8 +72,8 @@ fn usage_cached(v: &Value, prompt: u64) -> u64 {
 }
 
 use crate::provider::{
-    ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, ProviderOptions,
-    ReasoningEffort, Role, ToolCall, ToolDef, ToolOutcome,
+    ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, ProviderOptions, Role,
+    ToolCall, ToolDef, ToolOutcome,
 };
 use oriera_common::TokenUsage;
 use serde_json::{json, Value};
@@ -962,6 +962,8 @@ impl HttpProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 测试腿独用（lib 侧 wire 赋值只读字段不再需要类型 import）
+    use crate::provider::ReasoningEffort;
     use std::io::Write;
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::sync::Arc;
