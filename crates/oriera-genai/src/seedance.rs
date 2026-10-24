@@ -5,10 +5,25 @@
 //! poll `GET {base}/api/v3/contents/generations/tasks/{id}`):
 //!
 //! ```json
-//! {"model":"doubao-seedance-2-0","content":[{"type":"text","text":"..."}]}
+//! {"model":"doubao-seedance-2-0-260128","content":[{"type":"text","text":"..."}],
+//!  "ratio":"16:9","duration":5,"watermark":false}
 //! {"id":"cgt-..."}
-//! {"status":"queued|running|succeeded|failed","content":{"video_url":"https://...mp4"}}
+//! {"status":"queued|running|succeeded|failed|cancelled",
+//!  "content":{"video_url":"https://...mp4"},"usage":{"completion_tokens":108900}}
 //! ```
+//!
+//! Field-tested 2026-10-24 against the live Ark endpoint (R0 calibration
+//! run, interfilm/docs/R0-report.md):
+//! * `watermark` MUST be sent explicitly — the vendor default is `true`.
+//! * A succeeded poll carries `usage.completion_tokens` (~108.9k tokens
+//!   for 5 s @720p on the mini tier, ~130.5k on the 2.5 tier); metering
+//!   hookup is future work (L0 TokenUsage), tolerated by the parser today.
+//! * Image-to-video exists on the wire as extra `content` entries with
+//!   `role` `"reference_image"` (2.x tiers) or `"first_frame"` (mini
+//!   tier); the v0.1 engine `GenerationRequest` has no image field yet,
+//!   so `image_to_video` stays `false` until the contract grows one.
+//! * `generate_audio: true` (2.5 tier) returns an AAC track inside the
+//!   mp4; also out of scope for the v0.1 request surface.
 //!
 //! Positioning (ADR 0003): Seedance is a *video* model. In this layer
 //! it produces `AssetFormat::Video` payloads (cutscenes, B-roll,
@@ -24,8 +39,9 @@ use serde_json::{json, Value};
 
 const ID_PREFIX: &str = "seedance:";
 
-/// Vendor default when `ProviderConfig::model` is empty.
-pub const DEFAULT_MODEL: &str = "doubao-seedance-2-0";
+/// Vendor default when `ProviderConfig::model` is empty — a real,
+/// on-sale model id as listed by `GET /api/v3/models` (2026-10-24).
+pub const DEFAULT_MODEL: &str = "doubao-seedance-2-0-260128";
 
 pub struct SeedanceProvider {
     config: crate::ProviderConfig,
@@ -158,11 +174,17 @@ impl SeedanceProvider {
     }
 }
 
-/// Request body for a text-to-video task.
+/// Request body for a text-to-video task. `watermark` is sent explicitly
+/// because the vendor default stamps one (R0 field test, 2026-10-24);
+/// `ratio`/`duration` pin v0.2 defaults until the request contract grows
+/// per-call knobs.
 pub fn build_create_task_body(model: &str, req: &GenerationRequest) -> String {
     json!({
         "model": model,
-        "content": [ { "type": "text", "text": req.prompt } ]
+        "content": [ { "type": "text", "text": req.prompt } ],
+        "ratio": "16:9",
+        "duration": 5,
+        "watermark": false
     })
     .to_string()
 }
@@ -296,13 +318,43 @@ mod tests {
             "https://ark.example.test/api/v3/contents/generations/tasks"
         );
         let body = String::from_utf8(reqs[0].body.clone().unwrap()).unwrap();
-        assert!(body.contains("\"model\":\"doubao-seedance-2-0\""));
+        assert!(body.contains("\"model\":\"doubao-seedance-2-0-260128\""));
         assert!(body.contains("雨夜咖啡馆"));
+        // R0 field test: watermark must be explicitly off (vendor default is on),
+        // and the v0.2 defaults pin ratio/duration.
+        assert!(body.contains("\"watermark\":false"));
+        assert!(body.contains("\"ratio\":\"16:9\""));
+        assert!(body.contains("\"duration\":5"));
         assert_eq!(
             reqs[1].url,
             "https://ark.example.test/api/v3/contents/generations/tasks/cgt-42"
         );
         assert_eq!(reqs[2].url, "https://v.example/rain.mp4");
+    }
+
+    #[test]
+    fn r0_shaped_succeeded_poll_is_tolerated() {
+        // Real poll body from the 2026-10-24 R0 calibration run: status +
+        // video_url + usage block (metering not wired yet — must not break).
+        let v: Value = serde_json::from_str(
+            r#"{"id":"cgt-20261024121745-4wsgp","status":"succeeded",
+                "content":{"video_url":"https://ark.tos/rain.mp4"},
+                "usage":{"completion_tokens":108900,"total_tokens":108900}}"#,
+        )
+        .unwrap();
+        match parse_status(&v) {
+            Ok(PollOutcome::Done(url)) => assert_eq!(url, "https://ark.tos/rain.mp4"),
+            other => panic!("expected done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cancelled_maps_to_failed() {
+        let v: Value = serde_json::from_str(r#"{"status":"cancelled"}"#).unwrap();
+        match parse_status(&v) {
+            Ok(PollOutcome::Failed(m)) => assert!(m.contains("cancelled")),
+            other => panic!("expected failed, got {other:?}"),
+        }
     }
 
     #[test]
