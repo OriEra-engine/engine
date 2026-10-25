@@ -18,7 +18,8 @@ use crate::{Mood, Persona};
 /// A reusable bundle: cast members and/or prop entities.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PrefabSpec {
-    /// Registry name (`insert_named`-style, for tools and templates).
+    /// 显示名（模板/UI 用）。预留：未来模板注册表的键位；当前不参与
+    /// 去重（同卡司跨实例重名会各自独立——MemoryStore 的使用侧注意）。
     pub name: String,
     /// Entities are created in declaration order — the order IS the
     /// determinism contract (spawn index feeds nothing random; two
@@ -98,21 +99,7 @@ fn persona_of(pf: &PersonaFields) -> Persona {
 /// we fold it best-effort (unknown strings → Neutral — never a panic
 /// from authoring data).
 fn mood_of(pf: &PersonaFields) -> Mood {
-    // Mood 五值枚举的真实词汇表（cognition.rs）的双语折叠：
-    // 未知作者串 → Neutral（绝不 panic 于创作数据）。
-    match pf
-        .mood
-        .as_deref()
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "happy" | "欢快" => Mood::Happy,
-        "sad" | "低落" | "紧张" => Mood::Sad,
-        "excited" | "热烈" => Mood::Excited,
-        "thoughtful" | "沉思" | "警惕" => Mood::Thoughtful,
-        _ => Mood::Neutral,
-    }
+    Mood::from_label(pf.mood.as_deref().unwrap_or(""))
 }
 
 #[cfg(test)]
