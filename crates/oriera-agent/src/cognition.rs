@@ -153,9 +153,13 @@ pub struct CognitionSystem<P: ModelProvider> {
     /// loop entirely (submit on this beat, land the reply on whichever
     /// frame it arrives — RFC 0002 v0.5). Absent = legacy inline call.
     jobs: Option<InferJobs<P>>,
-    /// The one in-flight speech job (cognition keeps at most one: the
-    /// next speaker is not chosen until the current line lands).
-    pending: Option<PendingSpeech>,
+    /// In-flight speech jobs, one slot per speaking NPC (#105, review
+    /// R2 AI-native P1: the single pending slot serialised the whole
+    /// cast behind its slowest line — the world's beat was hostage to
+    /// one vendor round-trip). Bounded by [`Self::max_pending`].
+    pending: Vec<PendingSpeech>,
+    /// Concurrent speech ceiling (default 4, clamped in the builder).
+    max_pending: usize,
 }
 
 /// Everything needed to land a reply once its job completes.
@@ -176,6 +180,14 @@ impl<P: ModelProvider + 'static> CognitionSystem<P> {
     /// Switch to async mode: at most one in-flight call, replies land
     /// one or more frames later. The frame loop never blocks on the
     /// network again (STABILITY P0: 同步阻塞).
+    /// Concurrent speech ceiling (#105): how many NPCs may hold an
+    /// in-flight line at once. Default 4; clamped to ≥1. Only matters
+    /// on the async road.
+    pub fn with_max_pending(mut self, n: usize) -> Self {
+        self.max_pending = n.max(1);
+        self
+    }
+
     pub fn with_async(mut self) -> Self {
         self.jobs = Some(InferJobs::new(Arc::clone(&self.provider), 1));
         self
@@ -193,7 +205,8 @@ impl<P: ModelProvider> CognitionSystem<P> {
             scene: "隅角咖啡馆".to_string(),
             prompt_budget: 2000,
             jobs: None,
-            pending: None,
+            pending: Vec::new(),
+            max_pending: 4,
         }
     }
 
@@ -237,12 +250,15 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
         let due = turn % interval as u64 == 0;
 
         // ---- 异步路径(RFC 0002 v0.5):收割每帧,提交按节拍 ----
+        // #105: 多槽并发——同一拍可为最多 max_pending 个 NPC 各挂一条
+        // 在途台词;收割按 job id 匹配,谁先回谁先落地(世界节拍不再被
+        // 单条最慢的供应商往返拖住)。
         if self.jobs.is_some() {
             for done in self.jobs.as_mut().expect("just checked").poll() {
-                if self.pending.as_ref().map(|p| p.job) != Some(done.id) {
-                    continue;
-                }
-                let p = self.pending.take().expect("id matched");
+                let Some(idx) = self.pending.iter().position(|p| p.job == done.id) else {
+                    continue; // 非本系统的 job(如 director 共享池),跳过
+                };
+                let p = self.pending.swap_remove(idx);
                 if done.usage.total() > 0 {
                     world.resource_or_default::<UsageMeter>().record(done.usage);
                 }
@@ -252,17 +268,25 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
                     world, p.speaker, &p.persona, &p.partner, reply, p.turn, p.day,
                 );
             }
-            if !due || self.pending.is_some() {
-                return; // 网络在路上,帧照常走
+            if !due {
+                return; // 未到节拍,帧照常走
             }
-            if let Some((speaker_e, persona, partner, sys, user)) =
-                self.next_speech(world, day, &beat, turn)
-            {
-                if let Ok(id) = self.jobs.as_mut().expect("checked above").submit(vec![
+            // 并发提交:槽位未满则继续点下一个说话人(cursor 前进天然
+            // 换人);已在途的 NPC 跳过,防止同角色双开口。
+            while self.pending.len() < self.max_pending {
+                let Some((speaker_e, persona, partner, sys, user)) =
+                    self.next_speech(world, day, &beat, turn)
+                else {
+                    break; // roster 耗尽
+                };
+                if self.pending.iter().any(|p| p.speaker == speaker_e) {
+                    continue; // 该 NPC 的上一条台词还在路上——换人
+                }
+                match self.jobs.as_mut().expect("checked above").submit(vec![
                     ChatMessage::system(sys.clone()),
                     ChatMessage::user(user.clone()),
                 ]) {
-                    self.pending = Some(PendingSpeech {
+                    Ok(id) => self.pending.push(PendingSpeech {
                         job: id,
                         speaker: speaker_e,
                         persona,
@@ -271,7 +295,8 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
                         day,
                         sys,
                         user,
-                    });
+                    }),
+                    Err(_) => break, // 池满:本拍到此,余下下拍再点
                 }
             }
             return;
