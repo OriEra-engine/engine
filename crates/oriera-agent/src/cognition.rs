@@ -979,7 +979,11 @@ mod tests {
     fn single_npc_async_does_not_deadlock() {
         let mut w = World::new();
         w.insert_resource(DialogueLog::default());
-        w.insert_resource(WorldStory { day: 1, turn: 0, beats: vec![] });
+        w.insert_resource(WorldStory {
+            day: 1,
+            turn: 0,
+            beats: vec![],
+        });
         w.insert_resource(MemoryStore::new());
         let e = w.spawn();
         w.insert(
