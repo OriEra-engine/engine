@@ -439,7 +439,6 @@ mod tests {
     use crate::seedance::SeedanceProvider;
     use crate::transport::{HttpRequest, HttpResponse, Transport};
     use crate::MockProvider;
-    use crate::ProviderConfig;
 
     use oriera_common::FrameIndex;
     use std::sync::Arc;
@@ -688,15 +687,8 @@ mod tests {
     /// 延迟计入资产时延，绝不计入帧时延。
     #[test]
     fn slow_provider_never_blocks_the_frame() {
-        use crate::transport::{HttpResponse, Transport};
+        use crate::transport::HttpResponse;
 
-        struct SlowTransport;
-        impl Transport for SlowTransport {
-            fn send(&self, _req: &HttpRequest) -> Result<HttpResponse, String> {
-                std::thread::sleep(std::time::Duration::from_millis(400));
-                Ok(HttpResponse::ok(b"mp4-bytes".to_vec()))
-            }
-        }
         let wire = [
             HttpResponse::ok(b"mp4".to_vec()),
             HttpResponse::ok(
