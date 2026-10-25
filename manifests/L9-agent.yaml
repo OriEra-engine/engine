@@ -34,10 +34,11 @@ spec:
       contract: "rust:oriera_agent::prefab::{PrefabSpec,spawn_prefab_at}"
       stability: proto
       note: entity prefabs (F1, PLAN-godot-fusion) — Godot PackedScene
-        translated to ECS: a reusable cast/prop bundle instantiated in
-        deterministic declaration order (same spec twice → bit-identical
-        world via state_hash); Mood folded via Mood::from_label (unknown
-        authoring strings fall back to Neutral, never panic)
+        translated to the ECS world (a reusable cast/prop bundle
+        instantiated in deterministic declaration order; same spec
+        twice gives a bit-identical world via state_hash); Mood folded
+        via Mood::from_label (unknown authoring strings fall back to
+        Neutral, never panic)
     - id: oriera.agent.cadence.v1
       contract: rust:oriera_agent::{WakeEvent,CognitionSystem}
       stability: stable
