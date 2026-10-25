@@ -20,11 +20,12 @@ oriera-ecs.workspace = true
 tracing.workspace = true
 # Protocol adapters only (providers feature): JSON shapes, still no
 # HTTP client — transport stays injected (ADR 0003, wasm budget).
+serde = { workspace = true, optional = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
-providers = ["dep:serde_json"]
+providers = ["dep:serde_json", "dep:serde"]
 
 [[example]]
 name = "rodin_demo"
