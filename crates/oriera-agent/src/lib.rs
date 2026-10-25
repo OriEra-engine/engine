@@ -29,6 +29,7 @@ pub mod cognition;
 pub mod embodied;
 pub mod genai;
 pub mod memory;
+pub mod prefab;
 pub mod story;
 #[cfg(feature = "json")]
 pub mod tools;
@@ -37,6 +38,7 @@ pub use cognition::{
     CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WakeEvent, WorldStory,
 };
 pub use memory::{Episode, MemoryStore};
+pub use prefab::{spawn_prefab, spawn_prefab_at, PrefabEntity, PrefabSpec};
 
 use oriera_infer::Command;
 
