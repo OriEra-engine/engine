@@ -107,9 +107,9 @@ fn mood_of(pf: &PersonaFields) -> Mood {
         .to_ascii_lowercase()
         .as_str()
     {
-        "happy" | "欢快" | "兴奋" => Mood::Happy,
+        "happy" | "欢快" => Mood::Happy,
         "sad" | "低落" | "紧张" => Mood::Sad,
-        "excited" | "兴奋" | "热烈" => Mood::Excited,
+        "excited" | "热烈" => Mood::Excited,
         "thoughtful" | "沉思" | "警惕" => Mood::Thoughtful,
         _ => Mood::Neutral,
     }
