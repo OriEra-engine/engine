@@ -436,9 +436,13 @@ impl System<World> for GenAiSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::seedance::SeedanceProvider;
-    use crate::transport::{HttpRequest, HttpResponse, Transport};
     use crate::MockProvider;
+    // providers 门控的模块（seedance/transport）随其测试腿条件导入——
+    // 默认腿（无 providers）不编译它们（CI 两次抓过同款盲区）。
+    #[cfg(feature = "providers")]
+    use crate::seedance::SeedanceProvider;
+    #[cfg(feature = "providers")]
+    use crate::transport::{HttpRequest, HttpResponse, Transport};
 
     use oriera_common::FrameIndex;
     use std::sync::Arc;
@@ -456,21 +460,6 @@ mod tests {
         }
         std::thread::sleep(std::time::Duration::from_millis(15));
         sys.run(ctx, world);
-    }
-
-    /// 慢速脚本传输：send 睡眠 400ms + 响应按 LIFO 出队（#117 断言用）。
-    struct SlowScripted {
-        responses: std::sync::Mutex<Vec<HttpResponse>>,
-    }
-    impl Transport for SlowScripted {
-        fn send(&self, _req: &HttpRequest) -> Result<HttpResponse, String> {
-            std::thread::sleep(std::time::Duration::from_millis(400));
-            self.responses
-                .lock()
-                .unwrap()
-                .pop()
-                .ok_or_else(|| "no scripted response".to_string())
-        }
     }
 
     fn ctx() -> FrameCtx<'static> {
@@ -686,8 +675,22 @@ mod tests {
     /// 帧 run 本身必须毫秒级返回——传输全部在后台线程，取件/轮询的
     /// 延迟计入资产时延，绝不计入帧时延。
     #[test]
+    #[cfg(feature = "providers")]
     fn slow_provider_never_blocks_the_frame() {
-        use crate::transport::HttpResponse;
+        use crate::transport::{HttpRequest, HttpResponse, Transport};
+        struct SlowScripted {
+            responses: std::sync::Mutex<Vec<HttpResponse>>,
+        }
+        impl Transport for SlowScripted {
+            fn send(&self, _req: &HttpRequest) -> Result<HttpResponse, String> {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                self.responses
+                    .lock()
+                    .unwrap()
+                    .pop()
+                    .ok_or_else(|| "no scripted response".to_string())
+            }
+        }
 
         let wire = [
             HttpResponse::ok(b"mp4".to_vec()),
