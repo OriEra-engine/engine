@@ -77,7 +77,7 @@ impl ProviderKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderConfig {
     pub kind: ProviderKind,
-    /// Vendor model id (e.g. `doubao-seedance-2-0`); empty = vendor default.
+    /// Vendor model id (e.g. Seedance's `DEFAULT_MODEL`); empty = vendor default.
     pub model: String,
     pub api_key: String,
     pub base_url: Option<String>,

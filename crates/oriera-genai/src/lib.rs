@@ -10,7 +10,7 @@
 //!
 //! Generation is **task-shaped**: submit ([`GenerationProvider::request_generation`]),
 //! poll ([`GenerationProvider::poll_task`]), land. Both first-party adapters
-//! (Tripo, Seedance) and any future vendor are asynchronous create-and-poll
+//! (CogView, Tripo, Rodin, Seedance) and any future vendor are asynchronous create-and-poll
 //! services, so the boundary is designed once around that shape.
 //!
 //! "Native, not bolted on" is defined by ADR 0003 and audited by five
@@ -28,6 +28,8 @@ pub mod rodin;
 #[cfg(feature = "providers")]
 pub mod seedance;
 pub mod system;
+#[cfg(all(test, feature = "providers"))]
+pub(crate) mod testing;
 #[cfg(feature = "providers")]
 pub mod transport;
 #[cfg(feature = "providers")]
@@ -253,7 +255,7 @@ pub enum GenAiError {
 /// Mirrors L7 `oriera_infer::ErrorClass` **semantics** (same stable ids)
 /// without depending on oriera-infer — ADR 0003 keeps generation and
 /// inference decoupled, so the vocabulary is copied, not imported
-/// (#106, review E8: CogView/Tripo/Seedance hit 429/402 too, and slot
+/// (#106, review E8: CogView/Tripo/Rodin/Seedance hit 429/402 too, and slot
 /// degradation needs the same retry/fall-through policy words).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GenAiErrorClass {

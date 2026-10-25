@@ -139,7 +139,7 @@ v0.7（DeepSeek 升级第一批）：`TokenUsage.cached` 前缀缓存计量 +
 ### L8 · oriera-genai — 生成式 AI（表达链路已通，ADR 0003 + RFC 0001）
 
 **生成是独立边界，不走 L7 推理**（ADR 0003）：`GenerationProvider` trait + `MockProvider`
-+ `validate_asset` 校验；CogView（文生图，OpenAI images 方言）/ Tripo（文生 3D）/
++ `validate_asset` 校验；CogView（文生图，OpenAI images 方言）/ Tripo（文生 3D）/ Rodin（Hyper3D 文生 3D）
 Seedance（文生视频）协议适配器随 `providers` feature 门控
 （只定义 JSON shape，零 HTTP client——transport 由壳层注入，wasm 体积可控）。
 `text_to_image` 种类是 RFC 0001 的加法式契约扩展——小 3D 游戏的表达主力
@@ -292,7 +292,7 @@ assets/          logo、hero GIF 等品牌资产
 
 ## 9. 测试、CI 与性能
 
-- 全仓 **471 个测试**（CI 实测口径：`cargo test --workspace` 231 + genai `providers` 53 + agent `json` 58 + subsys `rigid` 14 + infer `native-http` 90 + kernel node 测试 25，2026-10-21 v0.8 评审修复后核对，含 RFC-3 工具调用/流式/异步作业与 v0.7/v0.8 批次；分项含少量 doctest），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
+- 全仓测试数以 CI 实测为准（2026-10-25 口径：workspace 238 + genai `providers` 59 + agent `json` 60 + subsys `rigid` 15 + infer `native-http` 97 + kernel node 35，含 v0.8 韧性批次、#98 golden fixture、#109/#110 评审批次与 #111-#114 生成供应商批次；分项含少量 doctest），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
 - 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 至 v0.8.0 共 9 份）。
 - 基准怎么跑、当前参考数据见 [PERF.md](PERF.md)。
 
