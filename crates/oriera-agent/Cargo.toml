@@ -16,6 +16,7 @@ oriera-core.workspace = true
 oriera-ecs.workspace = true
 oriera-genai.workspace = true
 oriera-infer.workspace = true
+serde = { workspace = true, features = ["derive"] }
 # MemoryStore ↔ JSON (feature `json`): the persistence boundary for
 # cross-session companion memory. Optional like genai's `providers`
 # feature — wasm budget stays minimal unless the shell asks for it.

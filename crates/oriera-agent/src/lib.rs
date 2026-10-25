@@ -29,6 +29,7 @@ pub mod cognition;
 pub mod embodied;
 pub mod genai;
 pub mod memory;
+pub mod story;
 #[cfg(feature = "json")]
 pub mod tools;
 
