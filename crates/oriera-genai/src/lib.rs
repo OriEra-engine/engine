@@ -28,7 +28,7 @@ pub mod rodin;
 #[cfg(feature = "providers")]
 pub mod seedance;
 pub mod system;
-#[cfg(test)]
+#[cfg(all(test, feature = "providers"))]
 pub(crate) mod testing;
 #[cfg(feature = "providers")]
 pub mod transport;
