@@ -85,6 +85,7 @@ fn corrupt_payload_never_reaches_l4_named_storage() {
         payload: truncated,
         provider_id: done.provider_id.clone(),
         model: done.model.clone(),
+        usage: None,
     };
     assert!(validate_asset(&bad, &ValidationLimits::default()).is_err());
 }

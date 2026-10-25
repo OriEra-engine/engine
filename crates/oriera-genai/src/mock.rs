@@ -61,12 +61,14 @@ impl MockProvider {
             GenerationKind::TextToVideo | GenerationKind::ImageToVideo => {
                 (AssetFormat::Video, crate::tiny_mp4_stub())
             }
+            GenerationKind::TextToSpeech => (AssetFormat::Audio, crate::tiny_mp3()),
         };
         GeneratedAsset {
             format,
             payload,
             provider_id: "mock-genai-v1".into(),
             model: "mock-stub".into(),
+            usage: None,
         }
     }
 }

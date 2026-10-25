@@ -56,6 +56,7 @@ impl GenerationProvider for TripoProvider {
             text_to_image: false,
             text_to_video: false,
             image_to_video: false,
+            text_to_speech: false,
         }
     }
 
@@ -121,6 +122,7 @@ impl GenerationProvider for TripoProvider {
                     payload: bytes,
                     provider_id: self.id().into(),
                     model: self.config.model.clone(),
+                    usage: None,
                 }))
             }
             PollOutcome::Failed(m) => Ok(TaskStatus::Failed(m)),

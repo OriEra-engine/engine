@@ -32,8 +32,8 @@
 
 use crate::transport::{HttpRequest, SharedTransport};
 use crate::{
-    AssetFormat, GenAiError, GeneratedAsset, GenerationProvider, GenerationRequest,
-    ProviderCapabilities, TaskId, TaskStatus,
+    AssetFormat, GenAiError, GeneratedAsset, GenerationKind, GenerationProvider, GenerationRequest,
+    ImageRole, ProviderCapabilities, QualityTier, TaskId, TaskStatus,
 };
 use serde_json::{json, Value};
 
@@ -64,11 +64,45 @@ impl SeedanceProvider {
         )
     }
 
-    fn model(&self) -> &str {
-        if self.config.model.is_empty() {
-            DEFAULT_MODEL
+    /// Tier-aware model resolution (v0.2): an explicit
+    /// `ProviderConfig::model` always wins; otherwise the quality tier
+    /// maps onto the field-tested Ark ids (R0 2026-10-24).
+    fn model_for(&self, tier: QualityTier) -> &str {
+        if !self.config.model.is_empty() {
+            return &self.config.model;
+        }
+        match tier {
+            QualityTier::Draft => "doubao-seedance-2-0-mini-260615",
+            QualityTier::Hero => "doubao-seedance-2-5-260628",
+            QualityTier::Standard => DEFAULT_MODEL,
+        }
+    }
+
+    fn tier_tag(tier: QualityTier) -> &'static str {
+        match tier {
+            QualityTier::Draft => "draft",
+            QualityTier::Hero => "hero",
+            QualityTier::Standard => "std",
+        }
+    }
+
+    fn tier_from_tag(tag: &str) -> QualityTier {
+        match tag {
+            "draft" => QualityTier::Draft,
+            "hero" => QualityTier::Hero,
+            _ => QualityTier::Standard,
+        }
+    }
+
+    /// Peak-usage price per kilotoken in micro-yuan (field-tested
+    /// 2026-10-24; off-peak bills ~55% of the Hero tier figure).
+    fn price_micros_per_ktoken(model: &str) -> u64 {
+        if model.contains("mini") {
+            23_000 // 0.023 CNY per 1k tokens
+        } else if model.contains("2-5") {
+            77_000 // 0.077 CNY per 1k tokens, peak
         } else {
-            &self.config.model
+            31_000 // 2.0 standard, 0.031
         }
     }
 }
@@ -84,49 +118,53 @@ impl GenerationProvider for SeedanceProvider {
             image_to_3d: false,
             text_to_image: false,
             text_to_video: true,
-            image_to_video: false, // v0.1 request surface has no image field
+            image_to_video: true,
+            text_to_speech: false, // v0.1 request surface has no image field
         }
     }
 
     fn request_generation(&self, req: &GenerationRequest) -> Result<TaskId, GenAiError> {
         if !self.capabilities().supports(req.kind) {
             return Err(GenAiError::Unsupported(format!(
-                "seedance adapter serves text_to_video only (v0.1); {} requested",
+                "seedance adapter serves video kinds only; {} requested",
                 req.kind.id()
             )));
+        }
+        if req.kind == GenerationKind::ImageToVideo && req.image_refs.is_empty() {
+            return Err(GenAiError::Unsupported(
+                "image_to_video needs at least one image_ref".into(),
+            ));
         }
         if self.config.api_key.is_empty() {
             return Err(GenAiError::Provider(
                 "seedance selected without ORIERA_GENAI_API_KEY".into(),
             ));
         }
-        let body = build_create_task_body(self.model(), req);
-        let resp = self
-            .transport
-            .send(&HttpRequest::post_json(
-                self.create_url(),
-                &self.config.api_key,
-                body,
-            ))
-            .map_err(GenAiError::Provider)?;
-        if !resp.is_success() {
-            return Err(GenAiError::Provider(format!(
-                "seedance create returned HTTP {}",
-                resp.status
-            )));
+        let model = self.model_for(req.quality);
+        let tag = Self::tier_tag(req.quality);
+        let body = build_create_task_body(model, req);
+        match self.submit(&body)? {
+            Some(remote) => Ok(TaskId(format!("{ID_PREFIX}{remote}|{tag}"))),
+            // Content-moderation fallback (field-tested interfilm M1):
+            // resubmit text-only; identity then rests on the prompt locks.
+            None => self.degraded_text_only(model, tag, req),
         }
-        let v: Value = serde_json::from_slice(&resp.body)
-            .map_err(|e| GenAiError::Provider(format!("seedance create body: {e}")))?;
-        parse_create(&v).map(|remote| TaskId(format!("{ID_PREFIX}{remote}")))
     }
 
     fn poll_task(&self, task: &TaskId) -> Result<TaskStatus, GenAiError> {
-        let Some(remote) = task.0.strip_prefix(ID_PREFIX) else {
+        let Some(payload) = task.0.strip_prefix(ID_PREFIX) else {
             return Err(GenAiError::Provider(format!(
                 "not a seedance task: {}",
                 task.0
             )));
         };
+        // TaskId carries the tier tag ("cgt-...|draft") so poll bills the
+        // model the request actually targeted; pre-v0.2 ids parse as std.
+        let (remote, tag) = match payload.split_once('|') {
+            Some((r, t)) => (r, t),
+            None => (payload, "std"),
+        };
+        let tier = Self::tier_from_tag(tag);
         let resp = self
             .transport
             .send(&HttpRequest::get(
@@ -143,13 +181,19 @@ impl GenerationProvider for SeedanceProvider {
         let v: Value = serde_json::from_slice(&resp.body)
             .map_err(|e| GenAiError::Provider(format!("seedance poll body: {e}")))?;
         match parse_status(&v)? {
-            PollOutcome::Done(url) => {
+            PollOutcome::Done(url, usage) => {
                 let bytes = self.fetch(&url)?;
+                let model = self.model_for(tier);
+                let usage = usage.map(|mut u| {
+                    u.cost_micros = Some(u.tokens / 1000 * Self::price_micros_per_ktoken(model));
+                    u
+                });
                 Ok(TaskStatus::Succeeded(GeneratedAsset {
                     format: AssetFormat::Video,
                     payload: bytes,
                     provider_id: self.id().into(),
-                    model: self.model().to_string(),
+                    model: model.to_string(),
+                    usage,
                 }))
             }
             PollOutcome::Failed(m) => Ok(TaskStatus::Failed(m)),
@@ -159,6 +203,52 @@ impl GenerationProvider for SeedanceProvider {
 }
 
 impl SeedanceProvider {
+    /// One create attempt. `Ok(None)` = moderation rejection of the input
+    /// image (`InputImageSensitiveContentDetected`, HTTP 400) — the caller
+    /// degrades instead of failing the whole batch.
+    fn submit(&self, body: &str) -> Result<Option<String>, GenAiError> {
+        let resp = self
+            .transport
+            .send(&HttpRequest::post_json(
+                self.create_url(),
+                &self.config.api_key,
+                body.into(),
+            ))
+            .map_err(GenAiError::Provider)?;
+        if !resp.is_success() {
+            let text = String::from_utf8_lossy(&resp.body).to_string();
+            if resp.status == 400 && text.contains("InputImageSensitiveContentDetected") {
+                return Ok(None);
+            }
+            return Err(GenAiError::Provider(format!(
+                "seedance create returned HTTP {}: {}",
+                resp.status,
+                text.chars().take(160).collect::<String>()
+            )));
+        }
+        let v: Value = serde_json::from_slice(&resp.body)
+            .map_err(|e| GenAiError::Provider(format!("seedance create body: {e}")))?;
+        parse_create(&v).map(Some)
+    }
+
+    fn degraded_text_only(
+        &self,
+        model: &str,
+        tag: &str,
+        req: &GenerationRequest,
+    ) -> Result<TaskId, GenAiError> {
+        let mut stripped = req.clone();
+        stripped.kind = GenerationKind::TextToVideo;
+        stripped.image_refs.clear();
+        let body = build_create_task_body(model, &stripped);
+        match self.submit(&body)? {
+            Some(remote) => Ok(TaskId(format!("{ID_PREFIX}{remote}|{tag}"))),
+            None => Err(GenAiError::Provider(
+                "text-only resubmit also tripped moderation (unexpected)".into(),
+            )),
+        }
+    }
+
     fn fetch(&self, url: &str) -> Result<Vec<u8>, GenAiError> {
         // 签名 CDN URL 不带 Authorization（评审 R2 安全 P1+性能 P1 双命中）：
         // 裸 Bearer 打向供应商响应里的任意 host = Key 外送通道，且多数
@@ -183,9 +273,25 @@ impl SeedanceProvider {
 /// `ratio`/`duration` pin v0.2 defaults until the request contract grows
 /// per-call knobs.
 pub fn build_create_task_body(model: &str, req: &GenerationRequest) -> String {
+    let mut content = vec![json!({ "type": "text", "text": req.prompt })];
+    if req.kind == GenerationKind::ImageToVideo {
+        if let Some(img) = req.image_refs.first() {
+            let role = if model.contains("mini") {
+                ImageRole::FirstFrame.ark_role()
+            } else {
+                ImageRole::ReferenceImage.ark_role()
+            };
+            let b64 = crate::base64_encode(&img.data);
+            content.push(json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:image/png;base64,{b64}") },
+                "role": role
+            }));
+        }
+    }
     json!({
         "model": model,
-        "content": [ { "type": "text", "text": req.prompt } ],
+        "content": content,
         "ratio": "16:9",
         "duration": 5,
         "watermark": false
@@ -212,7 +318,7 @@ pub fn parse_create(v: &Value) -> Result<String, GenAiError> {
 #[derive(Debug)]
 pub(crate) enum PollOutcome {
     Pending,
-    Done(String),
+    Done(String, Option<crate::UsageReport>),
     Failed(String),
 }
 
@@ -231,7 +337,14 @@ pub(crate) fn parse_status(v: &Value) -> Result<PollOutcome, GenAiError> {
                 .ok_or_else(|| {
                     GenAiError::Provider("seedance succeeded without video_url".into())
                 })?;
-            Ok(PollOutcome::Done(url.to_string()))
+            let usage = v
+                .pointer("/usage/completion_tokens")
+                .and_then(Value::as_u64)
+                .map(|tokens| crate::UsageReport {
+                    tokens,
+                    cost_micros: None,
+                });
+            Ok(PollOutcome::Done(url.to_string(), usage))
         }
         other => {
             let detail = v
@@ -282,7 +395,7 @@ mod tests {
                 "雨夜咖啡馆的门帘",
             ))
             .unwrap();
-        assert_eq!(id.0, "seedance:cgt-42");
+        assert_eq!(id.0, "seedance:cgt-42|std"); // v0.2: tier rides in the TaskId
 
         match p.poll_task(&id).unwrap() {
             TaskStatus::Succeeded(a) => {
@@ -314,6 +427,100 @@ mod tests {
     }
 
     #[test]
+    fn quality_tier_maps_onto_field_tested_models() {
+        let t = fixture_transport(vec![]);
+        let mut p = provider(t);
+        assert_eq!(
+            p.model_for(QualityTier::Draft),
+            "doubao-seedance-2-0-mini-260615"
+        );
+        assert_eq!(p.model_for(QualityTier::Hero), "doubao-seedance-2-5-260628");
+        assert_eq!(p.model_for(QualityTier::Standard), DEFAULT_MODEL);
+        // explicit config.model always wins
+        p.config.model = "my-finetune".into();
+        assert_eq!(p.model_for(QualityTier::Hero), "my-finetune");
+    }
+
+    #[test]
+    fn i2v_body_carries_first_frame_with_tier_appropriate_role() {
+        // mini tier (draft) → role first_frame; png bytes ride as data URL.
+        let req = GenerationRequest::image_to_video("lin", "她接过伞", crate::tiny_png());
+        let mut r = req.clone();
+        r.quality = QualityTier::Draft;
+        let body = build_create_task_body("doubao-seedance-2-0-mini-260615", &r);
+        assert!(body.contains("\"role\":\"first_frame\""));
+        assert!(body.contains("data:image/png;base64,"));
+        // 2.5 tier (hero) → role reference_image (both field-tested R0).
+        let mut r2 = req;
+        r2.quality = QualityTier::Hero;
+        let body2 = build_create_task_body("doubao-seedance-2-5-260628", &r2);
+        assert!(body2.contains("\"role\":\"reference_image\""));
+    }
+
+    #[test]
+    fn moderation_rejection_degrades_to_text_only() {
+        // Pop order: text-only resubmit OK, moderation 400 for the image attempt.
+        let t = fixture_transport(vec![
+            HttpResponse::ok(r#"{"id":"cgt-deg"}"#),
+            HttpResponse {
+                status: 400,
+                body: br#"{"error":{"code":"InputImageSensitiveContentDetected.PrivacyInformation","message":"may contain real person"}}"#.to_vec(),
+            },
+        ]);
+        let p = provider(t.clone());
+        let id = p
+            .request_generation(&GenerationRequest::image_to_video(
+                "lin",
+                "近景：林晚站在站台上",
+                crate::tiny_png(),
+            ))
+            .unwrap();
+        assert!(id.0.starts_with("seedance:cgt-deg|"));
+        let reqs = t.requests.lock().unwrap();
+        let first = String::from_utf8(reqs[0].body.clone().unwrap()).unwrap();
+        let second = String::from_utf8(reqs[1].body.clone().unwrap()).unwrap();
+        assert!(
+            first.contains("image_url"),
+            "initial i2v attempt carries the image"
+        );
+        assert!(
+            !second.contains("image_url"),
+            "degraded resubmit must drop the image"
+        );
+    }
+
+    #[test]
+    fn usage_tokens_and_cost_ride_the_asset() {
+        // 108900 tokens on the mini tier → 108 * 23000 = 2_484_000 micros (¥2.48).
+        let t = fixture_transport(vec![
+            HttpResponse::ok(crate::tiny_mp4_stub()),
+            HttpResponse::ok(
+                r#"{"id":"cgt-m","status":"succeeded",
+                    "content":{"video_url":"https://v.example/m.mp4"},
+                    "usage":{"completion_tokens":108900}}"#,
+            ),
+            HttpResponse::ok(r#"{"id":"cgt-m"}"#),
+        ]);
+        let p = provider(t);
+        let id = p
+            .request_generation(&{
+                let mut r = GenerationRequest::text_to_video("v", "雨");
+                r.quality = QualityTier::Draft;
+                r
+            })
+            .unwrap();
+        match p.poll_task(&id).unwrap() {
+            TaskStatus::Succeeded(a) => {
+                let u = a.usage.expect("usage present");
+                assert_eq!(u.tokens, 108_900);
+                assert_eq!(u.cost_micros, Some(108 * 23_000));
+                assert!(a.model.contains("mini"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn r0_shaped_succeeded_poll_is_tolerated() {
         // Real poll body from the 2026-10-24 R0 calibration run: status +
         // video_url + usage block (metering not wired yet — must not break).
@@ -324,7 +531,10 @@ mod tests {
         )
         .unwrap();
         match parse_status(&v) {
-            Ok(PollOutcome::Done(url)) => assert_eq!(url, "https://ark.tos/rain.mp4"),
+            Ok(PollOutcome::Done(url, usage)) => {
+                assert_eq!(url, "https://ark.tos/rain.mp4");
+                assert_eq!(usage.map(|u| u.tokens), Some(108_900));
+            }
             other => panic!("expected done, got {other:?}"),
         }
     }
