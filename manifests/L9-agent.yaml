@@ -31,7 +31,7 @@ spec:
         from_json is Result-based and never panics; the 60-per-agent
         sliding window applies to imports as to live writes
     - id: oriera.agent.prefab.v1
-      contract: rust:oriera_agent::prefab::{PrefabSpec,spawn_prefab_at}
+      contract: "rust:oriera_agent::prefab::{PrefabSpec,spawn_prefab_at}"
       stability: proto
       note: entity prefabs (F1, PLAN-godot-fusion) — Godot PackedScene
         translated to ECS: a reusable cast/prop bundle instantiated in
