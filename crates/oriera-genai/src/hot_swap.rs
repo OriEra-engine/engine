@@ -64,6 +64,7 @@ mod tests {
                 payload,
                 provider_id: "test".into(),
                 model: String::new(),
+                usage: None,
             },
             placeholder: false,
         }

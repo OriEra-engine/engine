@@ -210,6 +210,7 @@ fn placeholder_asset(kind: crate::GenerationKind) -> GeneratedAsset {
         AssetFormat::Glb => crate::tiny_glb(),
         AssetFormat::Image => crate::tiny_png(),
         AssetFormat::Video => crate::tiny_mp4_stub(),
+        AssetFormat::Audio => crate::tiny_mp3(),
         AssetFormat::Usdz => Vec::new(), // no USDZ kinds yet; unreachable
     };
     GeneratedAsset {
@@ -217,6 +218,7 @@ fn placeholder_asset(kind: crate::GenerationKind) -> GeneratedAsset {
         payload,
         provider_id: "placeholder".into(),
         model: String::new(),
+        usage: None,
     }
 }
 

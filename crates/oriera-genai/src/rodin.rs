@@ -199,6 +199,7 @@ impl GenerationProvider for RodinProvider {
             text_to_image: false,
             text_to_video: false,
             image_to_video: false,
+            text_to_speech: false,
         }
     }
 
@@ -291,6 +292,7 @@ impl GenerationProvider for RodinProvider {
                     payload: bytes,
                     provider_id: self.id().into(),
                     model: self.config.model.clone(),
+                    usage: None,
                 }))
             }
         }

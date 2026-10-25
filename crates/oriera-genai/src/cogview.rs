@@ -139,6 +139,7 @@ impl CogViewProvider {
             format: AssetFormat::Image,
             payload,
             provider_id: self.id().into(),
+            usage: None,
             model: self.model().to_string(),
         }
     }
@@ -156,6 +157,7 @@ impl GenerationProvider for CogViewProvider {
             text_to_image: true,
             text_to_video: false,
             image_to_video: false,
+            text_to_speech: false,
         }
     }
 
