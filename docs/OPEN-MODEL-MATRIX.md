@@ -66,7 +66,7 @@ groq/openrouter/anthropic）——玩家对话、prompt 与世界状态摘要会
 | 1 游戏 | Qwen3（Apache-2.0，ollama/vLLM 起） | Stanford generative-agents（MIT，NPC 社会模拟） | 智谱 GLM / DeepSeek / Kimi（ProviderKind 已接） |
 | 2 具身 | LeRobot（Apache-2.0，策略训练/评测） | Genesis（Apache-2.0，物理仿真）+ MuJoCo（Apache-2.0） | 端侧 NPU 推理 API（L1 route 预留） |
 | **Rapier** | 刚体物理（引擎内嵌 L6 后端，feature `rigid`） | Apache-2.0 | 已接入：`RigidBodySystem`，纯 Rust 零 C 工具链 |
-| 3 AIGC | TripoSR（MIT，图生 3D） | InstantMesh（Apache-2.0）· TRELLIS（MIT）· Hunyuan3D-2（社区许可） | Tripo / Seedance（L8 适配器已有） |
+| 3 AIGC | TripoSR（MIT，图生 3D） | InstantMesh（Apache-2.0）· TRELLIS（MIT）· Hunyuan3D-2（社区许可） | Tripo / Rodin / Seedance（L8 适配器已有） |
 | 4 孪生 | ROS 2（Apache-2.0，设备桥） | OpenUSD（Apache-2.0，场景描述）· Eclipse Ditto（EPL-2.0，数字孪生服务） | AWS IoT TwinMaker / Azure Digital Twins（L1 net 适配） |
 | 5 教育 | MiniCPM（Apache-2.0，端侧零合规） | Qwen3 本地行 | —（教育版钉死本地，合规即卖点） |
 | 6 陪伴 | Mem0（Apache-2.0，记忆层） | Letta/MemGPT（Apache-2.0）· Zep/Graphiti（Apache-2.0） | 智谱 GLM API（zhipu 行已接） |
@@ -115,7 +115,7 @@ groq/openrouter/anthropic）——玩家对话、prompt 与世界状态摘要会
 - **Hunyuan3D-2**（[Tencent-Hunyuan/Hunyuan3D-2](https://github.com/Tencent-Hunyuan/Hunyuan3D-2)）：
   两段式（裸网格→贴图）质量最强之一；**权重是社区许可非 MIT**，
   商用前自读条款——矩阵里明确标注，这是对贡献者的诚实。
-- **大厂预留**：Tripo / Seedance 的 API 适配器已在 L8 落
+- **大厂预留**：Tripo / Rodin / Seedance 的 API 适配器已在 L8 落
   （feature 门控、零 HTTP、transport 注入）；CogView 已由社区 #57 接入。
 
 ## 4. 数字孪生 — 开源协议栈当输入输出

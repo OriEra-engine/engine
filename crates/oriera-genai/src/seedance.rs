@@ -160,9 +160,13 @@ impl GenerationProvider for SeedanceProvider {
 
 impl SeedanceProvider {
     fn fetch(&self, url: &str) -> Result<Vec<u8>, GenAiError> {
+        // 签名 CDN URL 不带 Authorization（评审 R2 安全 P1+性能 P1 双命中）：
+        // 裸 Bearer 打向供应商响应里的任意 host = Key 外送通道，且多数
+        // 签名 URL 会因多余头直接 400 → 永久轮询。对齐 rodin/cogview 的
+        // get_public 惯例。
         let resp = self
             .transport
-            .send(&HttpRequest::get(url, &self.config.api_key))
+            .send(&HttpRequest::get_public(url))
             .map_err(GenAiError::Provider)?;
         if !resp.is_success() {
             return Err(GenAiError::Provider(format!(
@@ -244,32 +248,9 @@ pub(crate) fn parse_status(v: &Value) -> Result<PollOutcome, GenAiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::{HttpResponse, Transport};
-    use std::sync::{Arc, Mutex};
-
-    /// Scripted transport: pops queued responses per request.
-    struct ScriptedTransport {
-        requests: Mutex<Vec<HttpRequest>>,
-        responses: Mutex<Vec<HttpResponse>>,
-    }
-
-    impl Transport for ScriptedTransport {
-        fn send(&self, req: &HttpRequest) -> Result<HttpResponse, String> {
-            self.requests.lock().unwrap().push(req.clone());
-            self.responses
-                .lock()
-                .unwrap()
-                .pop()
-                .ok_or_else(|| "no scripted response".to_string())
-        }
-    }
-
-    fn fixture_transport(responses: Vec<HttpResponse>) -> Arc<ScriptedTransport> {
-        Arc::new(ScriptedTransport {
-            requests: Mutex::new(Vec::new()),
-            responses: Mutex::new(responses),
-        })
-    }
+    use crate::testing::{fixture_transport, ScriptedTransport};
+    use crate::transport::HttpResponse;
+    use std::sync::Arc;
 
     fn provider(t: Arc<ScriptedTransport>) -> SeedanceProvider {
         SeedanceProvider::new(
@@ -379,6 +360,38 @@ mod tests {
             Ok(PollOutcome::Failed(m)) => assert!(m.contains("content policy")),
             other => panic!("expected failed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn video_download_carries_no_authorization() {
+        // 评审 R2 安全 P1：签名 CDN URL 带裸 Bearer = Key 外送通道（且常
+        // 直接 400 → InFlight 永久轮询）。钉死 Done 分支的取件 GET 为
+        // get_public（零鉴权头），与 rodin/cogview 惯例一致。
+        let t = fixture_transport(vec![
+            HttpResponse::ok(b"fake-mp4".to_vec()),
+            HttpResponse::ok(
+                r#"{"id":"c1","status":"succeeded","content":{"video_url":"https://tos.example/v.mp4"}}"#,
+            ),
+            HttpResponse::ok(r#"{"id":"c1","status":"running"}"#),
+            HttpResponse::ok(r#"{"id":"c1"}"#),
+        ]);
+        let p = provider(t.clone());
+        let id = p
+            .request_generation(&GenerationRequest::text_to_video("v", "雨夜站台"))
+            .unwrap();
+        assert!(matches!(p.poll_task(&id).unwrap(), TaskStatus::Running));
+        match p.poll_task(&id).unwrap() {
+            TaskStatus::Succeeded(a) => assert_eq!(a.format, AssetFormat::Video),
+            other => panic!("expected asset, got {other:?}"),
+        }
+        let reqs = t.requests.lock().unwrap();
+        let last = reqs.last().unwrap();
+        assert_eq!(last.url, "https://tos.example/v.mp4");
+        assert!(
+            last.headers.is_empty(),
+            "CDN GET must carry no Authorization: {:?}",
+            last.headers
+        );
     }
 
     #[test]

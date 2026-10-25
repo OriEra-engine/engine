@@ -203,32 +203,9 @@ pub(crate) fn parse_status(v: &Value) -> Result<PollOutcome, GenAiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::{HttpResponse, Transport};
-    use std::sync::{Arc, Mutex};
-
-    /// Scripted transport: pops queued responses per request.
-    struct ScriptedTransport {
-        requests: Mutex<Vec<HttpRequest>>,
-        responses: Mutex<Vec<HttpResponse>>,
-    }
-
-    impl Transport for ScriptedTransport {
-        fn send(&self, req: &HttpRequest) -> Result<HttpResponse, String> {
-            self.requests.lock().unwrap().push(req.clone());
-            self.responses
-                .lock()
-                .unwrap()
-                .pop()
-                .ok_or_else(|| "no scripted response".to_string())
-        }
-    }
-
-    fn fixture_transport(responses: Vec<HttpResponse>) -> Arc<ScriptedTransport> {
-        Arc::new(ScriptedTransport {
-            requests: Mutex::new(Vec::new()),
-            responses: Mutex::new(responses),
-        })
-    }
+    use crate::testing::{fixture_transport, ScriptedTransport};
+    use crate::transport::HttpResponse;
+    use std::sync::Arc;
 
     fn provider(t: Arc<ScriptedTransport>) -> TripoProvider {
         TripoProvider::new(
