@@ -75,6 +75,13 @@ impl<P: ModelProvider + 'static> InferJobs<P> {
 
     /// Kick off one completion on a background thread. Returns the job
     /// id immediately — never blocks on the network.
+    /// 运行中调整池容（#105a：`with_max_pending` 在 `with_async` 之后
+    /// 调用时同步）。收缩不低于 1；已过 `max_inflight` 的下一次 submit
+    /// 快败（Busy），既有在途不受影响。
+    pub fn set_max_inflight(&mut self, cap: usize) {
+        self.max_inflight = cap.max(1);
+    }
+
     pub fn submit(&mut self, messages: Vec<ChatMessage>) -> Result<u64, InferError> {
         if self.inflight.load(Ordering::Acquire) >= self.max_inflight {
             return Err(InferError::Busy);

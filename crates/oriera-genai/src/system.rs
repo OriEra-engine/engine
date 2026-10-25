@@ -309,7 +309,17 @@ impl System<World> for GenAiSystem {
             match rx.try_recv() {
                 Ok(JobOutcome::Submitted { req, result }) => done_submits.push((req, result)),
                 Ok(_) => unreachable!("submit channel only sends Submitted"),
-                Err(_) => still_submitting.push(rx), // worker still running
+                // Disconnected = worker panic：以孤儿请求记失败走 fail()
+                // 通道——panic 的 job 不许永久占用提交预算（评审 R3 性能 P1）。
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    done_submits.push((
+                        GenerationRequest::text_to_3d("__orphan__", "orphan"),
+                        Err(crate::GenAiError::Provider(
+                            "submit worker died without a result".into(),
+                        )),
+                    ));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => still_submitting.push(rx), // worker still running
             }
         }
         self.submitting = still_submitting;
@@ -392,8 +402,13 @@ impl System<World> for GenAiSystem {
                     }) => {
                         self.in_flight.push(flight);
                     }
-                    Ok(_) => unreachable!("poll channel only sends Polled"),
-                    Err(_) => still_polling.push((t, rx)), // worker still running
+                    // Disconnected = worker panic：按失败落地占位（评审
+                    // R3 性能 P1——panic 的 job 不许永久占用 in-flight）。
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        failed.push((t.clone(), "poll worker died without a result".to_string()));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => still_polling.push((t, rx)), // worker still running
+                    _ => unreachable!("poll channel only sends Polled"),
                 }
             }
             self.polling = still_polling;
