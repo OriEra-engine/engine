@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Demo 14 · 影游内核（L9 story 原语的浏览器镜像）</title>
+<style>
+  body { background: #0a141d; color: #e8eef2; font: 14px/1.8 "Segoe UI", sans-serif;
+    max-width: 780px; margin: 40px auto; padding: 0 20px; }
+  h1 { font-size: 20px; letter-spacing: .2em; }
+  .ok { color: #6fd3a0; } .bad { color: #e5484d; font-weight: bold; }
+  pre { background: #0e1926; padding: 12px; border-radius: 8px; overflow-x: auto; }
+  code { color: #ff9a3c; }
+  .why { color: #93a7b4; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Demo 14 · 影游内核</h1>
+<p><span class="why">oriera-agent/story.rs 的逐句浏览器镜像：同一 schema / 同一结算语义 / 同一 FNV 指纹。
+真视频播放器见 interfilm/（已交付《末班站台》M2.1）；本页是内核契约自检 —— 双击即跑，全绿即 Rust↔JS 未漂移。</span></p>
+<pre id="out">running…</pre>
+<script src="./engine/story.js"></script>
+<script>
+const G = `{"vars":{"affinity_lin":0,"trust":0},"nodes":[
+ {"id":"s001","type":"scene","title":"末班地铁","goto":"c001"},
+ {"id":"c001","type":"choice","title":"站台","options":[
+   {"text":"递伞","set":{"affinity_lin":"+1"},"goto":"s002a"},
+   {"text":"无视","set":{"affinity_lin":"-1"},"goto":"s002b"}]},
+ {"id":"s002a","type":"scene","title":"道谢","goto":"hub"},
+ {"id":"s002b","type":"scene","title":"目光","goto":"hub"},
+ {"id":"hub","type":"hub","routes":[{"when":"affinity_lin >= 1","goto":"e_good"},{"goto":"e_bad"}]},
+ {"id":"e_good","type":"ending","title":"雨夜真相"},
+ {"id":"e_bad","type":"ending","title":"消失的站台"}]}`;
+
+const lines = [];
+let failed = 0;
+const t = (name, cond, note = "") => {
+  lines.push(`${cond ? "✓" : "✗"} ${name}${note ? "  — " + note : ""}`);
+  if (!cond) failed++;
+};
+
+const g = FilmStory.parse(G);
+t("实测图（末班站台缩样）解析 7 节点", g.nodes.length === 7);
+t("校验器零 findings（与 Rust 同结论）", FilmStory.validate(g).length === 0, JSON.stringify(FilmStory.validate(g)));
+
+// 结算：递伞 → 好结局路由
+const warm = new Map(g.vars); FilmStory.applySets(g, warm, g.nodes[1].options[0].set);
+const cold = new Map(g.vars); FilmStory.applySets(g, cold, g.nodes[1].options[1].set);
+const hub = g.nodes.find((n) => n.id === "hub");
+t("递伞 → e_good（first-true 路由）", FilmStory.resolveHub(warm, hub).goto === "e_good");
+t("无视 → e_bad（默认臂）", FilmStory.resolveHub(cold, hub).goto === "e_bad");
+t("set 语义 +1/-1", warm.get("affinity_lin") === 1 && cold.get("affinity_lin") === -1);
+t("受限 when 拒绝注入", FilmStory.evalWhen(warm, "drop table users;") === null);
+
+// 失败模式捕获
+const broken = JSON.parse(G); broken.nodes[0].goto = null;
+broken.nodes[1].options[0].set = { affiniti_lin: "+1" };
+const f = FilmStory.validate(FilmStory.parse(broken));
+t("死路被捕获", f.some((x) => x.kind === "dead_end"));
+t("未声明变量被捕获", f.some((x) => x.kind === "unknown_variable"));
+
+// 跨语言黄金指纹（Rust story::tests::golden_fingerprint_value 同值）
+const fp = FilmStory.saveFingerprint(new Map([["affinity_lin", 1], ["trust", 0]]), "c001");
+t("FNV 指纹 = Rust 黄金值", fp === 14559479683769148579n, String(fp));
+
+// 记忆桥 + 氛围导演
+const mems = FilmStory.choiceMemories(g);
+t("选择→记忆候选 ×2", mems.length === 2 && mems.some((m) => m.option_text === "递伞"));
+t("氛围导演 tension_peak", FilmStory.atmosphere(new Map([["trust", -2], ["affinity_lin", 0]])) === "tension_peak");
+t("氛围导演 calm", FilmStory.atmosphere(new Map(g.vars)) === "calm");
+
+lines.push("");
+lines.push(failed === 0 ? "🟢 内核契约自检全绿 —— Rust↔JS 零漂移" : `🔴 ${failed} 项漂移`);
+document.getElementById("out").textContent = lines.join("\n");
+document.title = failed === 0 ? "Demo 14 · 全绿" : "Demo 14 · 漂移";
+</script>
+</body>
+</html>
