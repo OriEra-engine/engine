@@ -22,6 +22,8 @@
 pub mod cogview;
 pub mod config;
 pub mod hot_swap;
+#[cfg(feature = "providers")]
+pub mod materials;
 pub mod mock;
 #[cfg(feature = "providers")]
 pub mod rodin;
@@ -54,7 +56,9 @@ pub struct TaskId(pub String);
 /// What the creator asked for. Providers declare support via
 /// [`ProviderCapabilities`]; the engine rejects unsupported requests
 /// before any transport work happens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "providers", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "providers", serde(rename_all = "snake_case"))]
 pub enum GenerationKind {
     /// prompt → GLB/USDZ mesh (e.g. Tripo).
     TextTo3d,
@@ -306,6 +310,7 @@ pub struct GeneratedAsset {
 
 /// Metering carried on a succeeded asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "providers", derive(serde::Serialize, serde::Deserialize))]
 pub struct UsageReport {
     pub tokens: u64,
     /// Vendor-agnostic cost in micro-yuan (1e-6 CNY), when priced per
