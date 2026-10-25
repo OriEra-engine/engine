@@ -441,8 +441,8 @@ mod tests {
     // 默认腿（无 providers）不编译它们（CI 两次抓过同款盲区）。
     #[cfg(feature = "providers")]
     use crate::seedance::SeedanceProvider;
-    #[cfg(feature = "providers")]
-    use crate::transport::{HttpRequest, HttpResponse, Transport};
+    // transport 类型仅 slow_provider 测试用（fn 内 use，providers 门控
+    // 由该测试的 cfg 承担）——模块级不再导入，避免两腿矛盾。
 
     use oriera_common::FrameIndex;
     use std::sync::Arc;
