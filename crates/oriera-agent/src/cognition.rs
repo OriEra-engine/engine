@@ -972,6 +972,40 @@ mod tests {
         w
     }
 
+    /// 评审 R3 P0 回归钉：单 NPC 卡司 + max_pending=4——修复前的提交
+    /// 循环在此场景必活锁（cursor 回绕反复点在途者，continue 无进度）。
+    /// 30 tick 内必须完成提交+落地（测试进程超时即红）。
+    #[test]
+    fn single_npc_async_does_not_deadlock() {
+        let mut w = World::new();
+        w.insert_resource(DialogueLog::default());
+        w.insert_resource(WorldStory { day: 1, turn: 0, beats: vec![] });
+        w.insert_resource(MemoryStore::new());
+        let e = w.spawn();
+        w.insert(
+            e,
+            Persona {
+                name: "独角".into(),
+                role: "看守".into(),
+                description: "整座站台只有 TA".into(),
+            },
+        );
+        w.insert(e, Mood::Neutral);
+
+        let mut cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 1)
+            .with_max_pending(4)
+            .with_async();
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            cog.run(&ctx(), &mut w);
+        }
+        let log = w.resource::<DialogueLog>().unwrap();
+        assert!(
+            !log.turns.is_empty(),
+            "single-NPC async must speak, never deadlock"
+        );
+    }
+
     #[test]
     fn cognition_drives_dialogue_on_engine_ticks() {
         let mut w = cafe_world();
@@ -1126,8 +1160,14 @@ mod tests {
         }
 
         let log = w.resource::<DialogueLog>().unwrap();
-        assert_eq!(log.turns.len(), 1);
-        assert_eq!(log.turns[0].text, "好豆子要等。");
+        // #105a 多槽：cafe_world 的 3 个 NPC 在同一拍并发提交——SlowLlm
+        // 等延迟下它们几乎同时落地，turns 数=在线卡司数（1..=3）。
+        assert!(
+            (1..=3).contains(&log.turns.len()),
+            "concurrent landing: turns={}",
+            log.turns.len()
+        );
+        assert!(log.turns.iter().all(|t| t.text == "好豆子要等。"));
         // action|mood|memory 尾巴全部生效。
         let first_speaker = &log.turns[0].speaker;
         let spoke = w
@@ -1211,7 +1251,9 @@ mod tests {
         let asyn = run(true);
         assert!(!sync.is_empty() && !asyn.is_empty());
 
-        // 每个说话者的台词集合逐字一致。
+        // 每个说话者的台词集合：#105a 多槽后异步一拍并发多条，轮转
+        // 加速——严格集合相等不再成立（窗口截断点不同）；不变量改为
+        // 「同步路径说过的每句话，异步路都说过了」（superset）。
         let bag = |rows: &[(String, String)]| {
             let mut m: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
                 Default::default();
@@ -1220,7 +1262,14 @@ mod tests {
             }
             m
         };
-        assert_eq!(bag(&sync), bag(&asyn), "who says what must not change");
+        let sync_bag = bag(&sync);
+        let async_bag = bag(&asyn);
+        for (sp, texts) in &sync_bag {
+            let said = async_bag.get(sp).expect("async must cover every speaker");
+            for t in texts {
+                assert!(said.contains(t), "async missing {sp}'s line: {t}");
+            }
+        }
 
         // 轮转环序一致:async 的 speakers 是 sync 环的循环移位。
         let cyc: Vec<String> = sync.iter().map(|(s, _)| s.clone()).collect();
@@ -1507,9 +1556,21 @@ mod tests {
             !asc.entries.is_empty(),
             "async road must land its ledger too"
         );
-        assert!(
-            sync.matches(&asc),
-            "sync/async ledgers must match entrywise"
+        // #105a 多槽：异步落地序=完成序≠提交序，entrywise 逐条对账
+        // 失效——不变量改为「多重集相等」（排序后逐字段比较）。
+        let sort_key = |l: &InferenceLedger| {
+            let mut v: Vec<(u64, u64, String)> = l
+                .entries
+                .iter()
+                .map(|e| (e.prompt, e.response, e.provider.clone()))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            sort_key(&sync),
+            sort_key(&asc),
+            "sync/async ledgers must match as multisets"
         );
     }
 }
