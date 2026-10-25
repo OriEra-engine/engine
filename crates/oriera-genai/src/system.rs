@@ -115,19 +115,45 @@ pub struct AssetFailed {
     pub degraded: bool,
 }
 
+#[derive(Clone)]
 struct InFlight {
     task: crate::TaskId,
     name: String,
     kind: crate::GenerationKind,
 }
 
+/// One background job's answer, handed back to the frame through a
+/// channel (`std::sync::mpsc` — the worker thread owns the sender).
+enum JobOutcome {
+    Submitted {
+        req: GenerationRequest,
+        result: Result<crate::TaskId, GenAiError>,
+    },
+    Polled {
+        flight: InFlight,
+        result: Result<TaskStatus, GenAiError>,
+    },
+}
+
 /// The L8 system: request queue + bounded task polling + validation +
 /// landing into [`PendingSwaps`]. Register on the L2 scheduler like
 /// any other system.
+///
+/// **#117 (review R2 P0): transport never runs on the frame.** Submit
+/// and poll calls (the latter include the asset download for
+/// done tasks — megabytes for video) are `std::thread::spawn`ed onto
+/// background jobs; the frame only `try_recv`s finished outcomes and
+/// does the world mutations. A slow vendor costs *latency of the
+/// asset*, never *frames of the game*.
 pub struct GenAiSystem {
     provider: Arc<dyn GenerationProvider>,
     queue: Vec<GenerationRequest>,
     in_flight: Vec<InFlight>,
+    /// Background submit jobs whose outcome has not been reaped yet.
+    submitting: Vec<std::sync::mpsc::Receiver<JobOutcome>>,
+    /// Background poll jobs, same deal. The receiver lives beside the
+    /// flight bookkeeping so `poll_interval` still governs cadence.
+    polling: Vec<(InFlight, std::sync::mpsc::Receiver<JobOutcome>)>,
     limits: GenAiLimits,
     tick: u64,
     /// Requests rejected at submit (unsupported/empty name), for
@@ -141,6 +167,8 @@ impl GenAiSystem {
             provider,
             queue: Vec::new(),
             in_flight: Vec::new(),
+            submitting: Vec::new(),
+            polling: Vec::new(),
             limits: GenAiLimits::default(),
             tick: 0,
             rejected: 0,
@@ -161,7 +189,7 @@ impl GenAiSystem {
 
     /// Requests waiting plus tasks in flight.
     pub fn pending(&self) -> usize {
-        self.queue.len() + self.in_flight.len()
+        self.queue.len() + self.in_flight.len() + self.submitting.len() + self.polling.len()
     }
 
     fn fail(
@@ -251,12 +279,34 @@ impl System<World> for GenAiSystem {
                 .min(limits.poll_interval_ticks.saturating_mul(8))
         };
 
-        // 1. Capacity-bounded submission.
-        while self.in_flight.len() < max_in_flight {
+        // 1. Capacity-bounded submission — the HTTP call runs on a
+        //    background thread (#117); the frame only reaps outcomes.
+        while self.in_flight.len() + self.submitting.len() < max_in_flight {
             let Some(req) = self.queue.pop() else {
                 break;
             };
-            match self.provider.request_generation(&req) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let provider = Arc::clone(&self.provider);
+            std::thread::spawn(move || {
+                let result = provider.request_generation(&req);
+                let _ = tx.send(JobOutcome::Submitted { req, result });
+            });
+            self.submitting.push(rx);
+        }
+        // Reap finished submits (two-pass: split first, then handle —
+        // the handlers borrow self/world, the receiver drain needs &mut).
+        let mut still_submitting = Vec::new();
+        let mut done_submits = Vec::new();
+        for rx in self.submitting.drain(..) {
+            match rx.try_recv() {
+                Ok(JobOutcome::Submitted { req, result }) => done_submits.push((req, result)),
+                Ok(_) => unreachable!("submit channel only sends Submitted"),
+                Err(_) => still_submitting.push(rx), // worker still running
+            }
+        }
+        self.submitting = still_submitting;
+        for (req, result) in done_submits {
+            match result {
                 Ok(task) => {
                     world.resource_or_default::<GenAiMeter>().submitted += 1;
                     self.in_flight.push(InFlight {
@@ -287,60 +337,98 @@ impl System<World> for GenAiSystem {
 
         // 2. Interval-bounded polling: a slice of the frame budget, not
         //    a transport storm (stretched under budget pressure above).
+        //    #117: each poll (including the done-task's asset download —
+        //    megabytes for video) runs on a background thread; the frame
+        //    only dispatches due polls and reaps finished ones.
         if self.tick.is_multiple_of(poll_interval as u64) {
-            let mut in_flight = std::mem::take(&mut self.in_flight);
-            in_flight.retain(|t| {
-                match self.provider.poll_task(&t.task) {
-                    Ok(TaskStatus::Succeeded(asset)) => {
-                        match validate_asset(&asset, &validation) {
-                            Ok(()) => {
-                                let meter = world.resource_or_default::<GenAiMeter>();
-                                meter.succeeded += 1;
-                                meter.bytes_in += asset.payload.len() as u64;
-                                world
-                                    .resource_or_default::<PendingSwaps>()
-                                    .queue
-                                    .push(AssetSwap {
-                                        name: t.name.clone(),
-                                        asset,
-                                        placeholder: false,
-                                    });
-                                world.write_event(AssetLanded {
-                                    name: t.name.clone(),
-                                    provider: self.provider.id().to_string(),
-                                    placeholder: false,
-                                });
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    name = %t.name,
-                                    error = %e,
-                                    "L8 generated asset failed validation — degrading"
-                                );
-                                self.fail(world, &t.name, t.kind, e.to_string(), true, &limits);
-                            }
-                        }
-                        false // terminal
+            // Dispatch due polls (still bounded by in-flight capacity).
+            for t in self.in_flight.drain(..) {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let provider = Arc::clone(&self.provider);
+                let task = t.task.clone();
+                let flight = t.clone();
+                std::thread::spawn(move || {
+                    let result = provider.poll_task(&task);
+                    let _ = tx.send(JobOutcome::Polled { flight, result });
+                });
+                self.polling.push((t, rx));
+            }
+            // Reap finished polls (two-pass, same reason as submits);
+            // world mutations stay on the frame. Non-terminal tasks go
+            // back into the queue WITH their channel — the worker sender
+            // is one-shot, but a still-running poll simply hasn't sent
+            // yet, so try_recv will keep returning Empty until it does.
+            let mut still_polling = Vec::new();
+            let mut landed = Vec::new();
+            let mut failed = Vec::new();
+            for (t, rx) in self.polling.drain(..) {
+                match rx.try_recv() {
+                    Ok(JobOutcome::Polled {
+                        flight,
+                        result: Ok(TaskStatus::Succeeded(asset)),
+                    }) => landed.push((flight, asset)),
+                    Ok(JobOutcome::Polled {
+                        flight,
+                        result: Ok(TaskStatus::Failed(m)),
+                    }) => failed.push((flight, m)),
+                    // queued/running 与传输错误：回 in_flight，下个
+                    // interval 重新 dispatch 一个新 poll 线程（worker 的
+                    // one-shot channel 一次性使用后丢弃）。
+                    Ok(JobOutcome::Polled {
+                        flight,
+                        result: Ok(_),
+                    })
+                    | Ok(JobOutcome::Polled {
+                        flight,
+                        result: Err(_),
+                    }) => {
+                        self.in_flight.push(flight);
                     }
-                    Ok(TaskStatus::Failed(m)) => {
-                        self.fail(world, &t.name, t.kind, m, true, &limits);
-                        false
+                    Ok(_) => unreachable!("poll channel only sends Polled"),
+                    Err(_) => still_polling.push((t, rx)), // worker still running
+                }
+            }
+            self.polling = still_polling;
+            for (flight, asset) in landed {
+                match validate_asset(&asset, &validation) {
+                    Ok(()) => {
+                        let meter = world.resource_or_default::<GenAiMeter>();
+                        meter.succeeded += 1;
+                        meter.bytes_in += asset.payload.len() as u64;
+                        world
+                            .resource_or_default::<PendingSwaps>()
+                            .queue
+                            .push(AssetSwap {
+                                name: flight.name.clone(),
+                                asset,
+                                placeholder: false,
+                            });
+                        world.write_event(AssetLanded {
+                            name: flight.name.clone(),
+                            provider: self.provider.id().to_string(),
+                            placeholder: false,
+                        });
                     }
-                    Ok(_) => true, // queued/running: poll again later
                     Err(e) => {
-                        // Transport/poll error: keep the task; the next
-                        // interval retries. Only the task's own terminal
-                        // FAILED state degrades to a placeholder.
                         tracing::warn!(
-                            task = %t.task.0,
+                            name = %flight.name,
                             error = %e,
-                            "L8 poll error — will retry next interval"
+                            "L8 generated asset failed validation — degrading"
                         );
-                        true
+                        self.fail(
+                            world,
+                            &flight.name,
+                            flight.kind,
+                            e.to_string(),
+                            true,
+                            &limits,
+                        );
                     }
                 }
-            });
-            self.in_flight = in_flight;
+            }
+            for (flight, m) in failed {
+                self.fail(world, &flight.name, flight.kind, m, true, &limits);
+            }
         }
     }
 }
@@ -349,8 +437,30 @@ impl System<World> for GenAiSystem {
 mod tests {
     use super::*;
     use crate::MockProvider;
+    // providers 门控的模块（seedance/transport）随其测试腿条件导入——
+    // 默认腿（无 providers）不编译它们（CI 两次抓过同款盲区）。
+    #[cfg(feature = "providers")]
+    use crate::seedance::SeedanceProvider;
+    // transport 类型仅 slow_provider 测试用（fn 内 use，providers 门控
+    // 由该测试的 cfg 承担）——模块级不再导入，避免两腿矛盾。
+
     use oriera_common::FrameIndex;
     use std::sync::Arc;
+
+    /// 测试辅助（#117 后台化后必用）：驱动 tick 循环，每 tick 前微
+    /// sleep 让后台线程送达结果，直到 pending 归零或次数用尽。Mock
+    /// provider 是即时响应，8 次余量远超所需。
+    fn settle(sys: &mut GenAiSystem, ctx: &FrameCtx<'static>, world: &mut World) {
+        for _ in 0..12 {
+            if sys.pending() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            sys.run(ctx, world);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        sys.run(ctx, world);
+    }
 
     fn ctx() -> FrameCtx<'static> {
         FrameCtx {
@@ -400,14 +510,21 @@ mod tests {
         let mut w = world();
         let mut full = queue_four();
         full.run(&ctx(), &mut w);
+        // #117：首轮 dispatch 的 4 个 submit 全部在途（后台线程），帧内
+        // 只见 pending 计数；settle 后全部收割。
+        assert_eq!(full.pending(), 4);
+        settle(&mut full, &ctx(), &mut w);
         let full_meter = *w.resource::<GenAiMeter>().unwrap();
-        assert_eq!(full_meter.submitted, 4); // full ceiling, first tick
+        assert_eq!(full_meter.submitted, 4);
 
         let mut w2 = world();
         let mut squeezed = queue_four();
         squeezed.run(&ctx_throttled(0.5), &mut w2);
+        // 半节流限制的是在途上限（2 dispatched），pending 计总数（含 2 排队）
+        assert_eq!(squeezed.pending(), 4);
+        settle(&mut squeezed, &ctx_throttled(0.5), &mut w2);
         let meter = *w2.resource::<GenAiMeter>().unwrap();
-        assert_eq!(meter.submitted, 2); // half the ceiling
+        assert_eq!(meter.submitted, 4); // eventually all four, throttled
         assert_eq!(meter.failed, 0); // deferred, never failed
     }
 
@@ -416,10 +533,8 @@ mod tests {
         let mut w = world();
         let mut sys = GenAiSystem::new(Arc::new(MockProvider::new()));
         sys.submit(GenerationRequest::text_to_3d("npc_prop", "一把老木吉他"));
-        // Queued → Running → Succeeded: three polling ticks.
-        for _ in 0..3 {
-            sys.run(&ctx(), &mut w);
-        }
+        // Queued → Running → Succeeded: background jobs settle across ticks.
+        settle(&mut sys, &ctx(), &mut w);
         let swaps = &w.resource::<PendingSwaps>().unwrap().queue;
         assert_eq!(swaps.len(), 1);
         assert_eq!(swaps[0].name, "npc_prop");
@@ -457,7 +572,7 @@ mod tests {
         let mut w = world();
         let mut sys = GenAiSystem::new(Arc::new(AlwaysFail));
         sys.submit(GenerationRequest::text_to_3d("bgm_prop", "门帘"));
-        sys.run(&ctx(), &mut w);
+        settle(&mut sys, &ctx(), &mut w);
 
         let swaps = &w.resource::<PendingSwaps>().unwrap().queue;
         assert_eq!(swaps.len(), 1);
@@ -500,7 +615,7 @@ mod tests {
         let mut w = world();
         let mut sys = GenAiSystem::new(Arc::new(FailImages));
         sys.submit(GenerationRequest::text_to_image("sky_dome", "雨夜霓虹"));
-        sys.run(&ctx(), &mut w);
+        settle(&mut sys, &ctx(), &mut w);
 
         let swaps = &w.resource::<PendingSwaps>().unwrap().queue;
         assert_eq!(swaps.len(), 1);
@@ -521,7 +636,7 @@ mod tests {
         };
         let mut sys = GenAiSystem::new(Arc::new(MockProvider::with_capabilities(caps)));
         sys.submit(GenerationRequest::text_to_3d("x", "y"));
-        sys.run(&ctx(), &mut w);
+        settle(&mut sys, &ctx(), &mut w);
 
         assert_eq!(sys.rejected, 1);
         // Nothing landed, so the resource was never even created —
@@ -544,17 +659,89 @@ mod tests {
         });
         sys.submit(GenerationRequest::text_to_3d("a", "1"));
         sys.submit(GenerationRequest::text_to_3d("b", "2"));
-        sys.run(&ctx(), &mut w); // tick 1: one submitted, one queued
+        sys.run(&ctx(), &mut w); // tick 1: one dispatched, one queued
 
-        let meter = *w.resource::<GenAiMeter>().unwrap();
-        assert_eq!(meter.submitted, 1);
-        assert_eq!(sys.pending(), 2); // 1 in flight + 1 queued
+        // #117：首轮 dispatch 的 submit 在后台线程，帧内只见 pending。
+        assert_eq!(sys.pending(), 2); // 1 submitting + 1 queued
 
-        for _ in 0..2 {
-            sys.run(&ctx(), &mut w);
+        settle(&mut sys, &ctx(), &mut w);
+        assert!(
+            !w.resource::<PendingSwaps>().unwrap().queue.is_empty(),
+            "max_in_flight=1 也要最终落地（顺序提交不饿死）"
+        );
+    }
+
+    /// #117 核心断言（评审 R2 性能 P0）：供应商慢（400ms/请求）时，
+    /// 帧 run 本身必须毫秒级返回——传输全部在后台线程，取件/轮询的
+    /// 延迟计入资产时延，绝不计入帧时延。
+    #[test]
+    #[cfg(feature = "providers")]
+    fn slow_provider_never_blocks_the_frame() {
+        use crate::transport::{HttpRequest, HttpResponse, Transport};
+        struct SlowScripted {
+            responses: std::sync::Mutex<Vec<HttpResponse>>,
         }
-        sys.run(&ctx(), &mut w); // first lands, second submits
-        assert!(!w.resource::<PendingSwaps>().unwrap().queue.is_empty());
+        impl Transport for SlowScripted {
+            fn send(&self, _req: &HttpRequest) -> Result<HttpResponse, String> {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                self.responses
+                    .lock()
+                    .unwrap()
+                    .pop()
+                    .ok_or_else(|| "no scripted response".to_string())
+            }
+        }
+
+        let wire = [
+            HttpResponse::ok(b"mp4".to_vec()),
+            HttpResponse::ok(
+                r#"{"id":"s1","status":"succeeded","content":{"video_url":"https://tos.example/v.mp4"}}"#,
+            ),
+            HttpResponse::ok(r#"{"id":"s1"}"#),
+        ];
+        let scripted = Arc::new(SlowScripted {
+            responses: std::sync::Mutex::new(wire.to_vec()),
+        });
+
+        let mut w = world();
+        let mut sys = GenAiSystem::new(Arc::new(SeedanceProvider::new(
+            crate::ProviderConfig {
+                kind: crate::ProviderKind::Seedance,
+                model: String::new(),
+                api_key: "k".into(),
+                base_url: Some("https://ark.example.test".into()),
+            },
+            scripted,
+        )));
+        sys.submit(GenerationRequest::text_to_video("shot1", "雨夜站台"));
+
+        // 首帧：dispatch create（后台 400ms），run 本身必须立即返回。
+        let t0 = std::time::Instant::now();
+        sys.run(&ctx(), &mut w);
+        let first = t0.elapsed();
+        assert!(
+            first < std::time::Duration::from_millis(200),
+            "frame blocked by submit: {first:?}"
+        );
+
+        // 后续帧：收割/dispatch 均不阻塞（慢传输在线程里）。
+        for _ in 0..12 {
+            let t = std::time::Instant::now();
+            sys.run(&ctx(), &mut w);
+            assert!(
+                t.elapsed() < std::time::Duration::from_millis(200),
+                "frame blocked: {:?}",
+                t.elapsed()
+            );
+            if w.resource::<PendingSwaps>().map(|s| !s.queue.is_empty()) == Some(true) {
+                break; // asset landed through the slow pipeline
+            }
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+        assert!(
+            !w.resource::<PendingSwaps>().unwrap().queue.is_empty(),
+            "slow asset must still land (latency, not loss)"
+        );
     }
 
     #[test]
