@@ -153,9 +153,13 @@ pub struct CognitionSystem<P: ModelProvider> {
     /// loop entirely (submit on this beat, land the reply on whichever
     /// frame it arrives — RFC 0002 v0.5). Absent = legacy inline call.
     jobs: Option<InferJobs<P>>,
-    /// The one in-flight speech job (cognition keeps at most one: the
-    /// next speaker is not chosen until the current line lands).
-    pending: Option<PendingSpeech>,
+    /// In-flight speech jobs, one slot per speaking NPC (#105, review
+    /// R2 AI-native P1: the single pending slot serialised the whole
+    /// cast behind its slowest line — the world's beat was hostage to
+    /// one vendor round-trip). Bounded by [`Self::max_pending`].
+    pending: Vec<PendingSpeech>,
+    /// Concurrent speech ceiling (default 4, clamped in the builder).
+    max_pending: usize,
 }
 
 /// Everything needed to land a reply once its job completes.
@@ -176,8 +180,24 @@ impl<P: ModelProvider + 'static> CognitionSystem<P> {
     /// Switch to async mode: at most one in-flight call, replies land
     /// one or more frames later. The frame loop never blocks on the
     /// network again (STABILITY P0: 同步阻塞).
+    /// Concurrent speech ceiling (#105): how many NPCs may hold an
+    /// in-flight line at once. Default 4; clamped to ≥1. Only matters
+    /// on the async road.
+    pub fn with_max_pending(mut self, n: usize) -> Self {
+        self.max_pending = n.max(1);
+        // 池容随槽位同步（调用顺序无关：先 with_async 后 with_max_pending
+        // 也生效——评审 R3 P1）。
+        if let Some(jobs) = self.jobs.as_mut() {
+            jobs.set_max_inflight(self.max_pending);
+        }
+        self
+    }
+
     pub fn with_async(mut self) -> Self {
-        self.jobs = Some(InferJobs::new(Arc::clone(&self.provider), 1));
+        // #105a：池容=并发槽位数（评审 R3 性能+架构 P0 双确认——原硬编码
+        // 1，max_pending 名存实亡；with_max_pending 在 with_async 之后再
+        // 调也会经 set_max_inflight 同步）。
+        self.jobs = Some(InferJobs::new(Arc::clone(&self.provider), self.max_pending));
         self
     }
 }
@@ -193,7 +213,8 @@ impl<P: ModelProvider> CognitionSystem<P> {
             scene: "隅角咖啡馆".to_string(),
             prompt_budget: 2000,
             jobs: None,
-            pending: None,
+            pending: Vec::new(),
+            max_pending: 4,
         }
     }
 
@@ -237,12 +258,15 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
         let due = turn % interval as u64 == 0;
 
         // ---- 异步路径(RFC 0002 v0.5):收割每帧,提交按节拍 ----
+        // #105: 多槽并发——同一拍可为最多 max_pending 个 NPC 各挂一条
+        // 在途台词;收割按 job id 匹配,谁先回谁先落地(世界节拍不再被
+        // 单条最慢的供应商往返拖住)。
         if self.jobs.is_some() {
             for done in self.jobs.as_mut().expect("just checked").poll() {
-                if self.pending.as_ref().map(|p| p.job) != Some(done.id) {
-                    continue;
-                }
-                let p = self.pending.take().expect("id matched");
+                let Some(idx) = self.pending.iter().position(|p| p.job == done.id) else {
+                    continue; // 非本系统的 job(如 director 共享池),跳过
+                };
+                let p = self.pending.swap_remove(idx);
                 if done.usage.total() > 0 {
                     world.resource_or_default::<UsageMeter>().record(done.usage);
                 }
@@ -252,17 +276,35 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
                     world, p.speaker, &p.persona, &p.partner, reply, p.turn, p.day,
                 );
             }
-            if !due || self.pending.is_some() {
-                return; // 网络在路上,帧照常走
+            if !due {
+                return; // 未到节拍,帧照常走
             }
-            if let Some((speaker_e, persona, partner, sys, user)) =
-                self.next_speech(world, day, &beat, turn)
-            {
-                if let Ok(id) = self.jobs.as_mut().expect("checked above").submit(vec![
+            // 并发提交:槽位未满则继续点下一个说话人(cursor 前进天然
+            // 换人);已在途的 NPC 跳过,防止同角色双开口。
+            // 活锁守卫(评审 R3 性能+架构 P0 双确认):roster ≤ 槽位数时,
+            // cursor 回绕会反复点到在途者——连续跳过整轮 roster 仍无新
+            // 提交即 break,帧绝不挂死。
+            let roster_len = self.order.len().max(1);
+            let mut skips = 0usize;
+            while self.pending.len() < self.max_pending {
+                let Some((speaker_e, persona, partner, sys, user)) =
+                    self.next_speech(world, day, &beat, turn)
+                else {
+                    break; // roster 耗尽
+                };
+                if self.pending.iter().any(|p| p.speaker == speaker_e) {
+                    skips += 1;
+                    if skips >= roster_len {
+                        break; // 一整轮全是 在途者：无新提交可做
+                    }
+                    continue; // 该 NPC 的上一条台词还在路上——换人
+                }
+                skips = 0;
+                match self.jobs.as_mut().expect("checked above").submit(vec![
                     ChatMessage::system(sys.clone()),
                     ChatMessage::user(user.clone()),
                 ]) {
-                    self.pending = Some(PendingSpeech {
+                    Ok(id) => self.pending.push(PendingSpeech {
                         job: id,
                         speaker: speaker_e,
                         persona,
@@ -271,7 +313,14 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
                         day,
                         sys,
                         user,
-                    });
+                    }),
+                    Err(_) => {
+                        // 池满:本拍到此。回退本拍推进的 cursor——下一拍
+                        // 从同一说话人重新点起(评审 R3 架构 P2:不回退=
+                        // 每拍烧一槽,轮转漂移)。
+                        self.cursor = self.cursor.saturating_sub(1);
+                        break;
+                    }
                 }
             }
             return;
@@ -923,6 +972,44 @@ mod tests {
         w
     }
 
+    /// 评审 R3 P0 回归钉：单 NPC 卡司 + max_pending=4——修复前的提交
+    /// 循环在此场景必活锁（cursor 回绕反复点在途者，continue 无进度）。
+    /// 30 tick 内必须完成提交+落地（测试进程超时即红）。
+    #[test]
+    fn single_npc_async_does_not_deadlock() {
+        let mut w = World::new();
+        w.insert_resource(DialogueLog::default());
+        w.insert_resource(WorldStory {
+            day: 1,
+            turn: 0,
+            beats: vec![],
+        });
+        w.insert_resource(MemoryStore::new());
+        let e = w.spawn();
+        w.insert(
+            e,
+            Persona {
+                name: "独角".into(),
+                role: "看守".into(),
+                description: "整座站台只有 TA".into(),
+            },
+        );
+        w.insert(e, Mood::Neutral);
+
+        let mut cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 1)
+            .with_max_pending(4)
+            .with_async();
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            cog.run(&ctx(), &mut w);
+        }
+        let log = w.resource::<DialogueLog>().unwrap();
+        assert!(
+            !log.turns.is_empty(),
+            "single-NPC async must speak, never deadlock"
+        );
+    }
+
     #[test]
     fn cognition_drives_dialogue_on_engine_ticks() {
         let mut w = cafe_world();
@@ -1077,8 +1164,14 @@ mod tests {
         }
 
         let log = w.resource::<DialogueLog>().unwrap();
-        assert_eq!(log.turns.len(), 1);
-        assert_eq!(log.turns[0].text, "好豆子要等。");
+        // #105a 多槽：cafe_world 的 3 个 NPC 在同一拍并发提交——SlowLlm
+        // 等延迟下它们几乎同时落地，turns 数=在线卡司数（1..=3）。
+        assert!(
+            (1..=3).contains(&log.turns.len()),
+            "concurrent landing: turns={}",
+            log.turns.len()
+        );
+        assert!(log.turns.iter().all(|t| t.text == "好豆子要等。"));
         // action|mood|memory 尾巴全部生效。
         let first_speaker = &log.turns[0].speaker;
         let spoke = w
@@ -1134,15 +1227,21 @@ mod tests {
         // 异步的真实差异是相位:第一条回复晚一两拍落地,所以固定帧数下
         // 日志窗口的起始点会平移。不变量是「谁说了什么」和轮转环序:
         // 每个说话者的台词集合一致,且 speakers 严格按同一环循环。
+        // (#105a 多槽化更新:一拍可并发提交多条,台词的「集合」不变量
+        // 依旧成立——BTreeSet 天然去重排序,不依赖落地顺序;环序断言
+        // 按说话者首次出现序校验,同样与并发提交兼容。)
         let run = |async_mode: bool| {
             let mut w = cafe_world();
             let cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 1);
             let mut cog = if async_mode { cog.with_async() } else { cog };
-            for _ in 0..30 {
+            let ticks = if async_mode { 60 } else { 30 };
+            for _ in 0..ticks {
                 cog.run(&ctx(), &mut w);
                 // 真实帧间隔是毫秒级;给后台线程一点完成时间。
+                // (#105a 并发后轮转加速 4 倍,窗口加大保证每个 NPC 覆盖
+                // 完整句库,避免窗口截断的集合假差异。)
                 if async_mode {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    std::thread::sleep(std::time::Duration::from_millis(5));
                 }
             }
             w.resource::<DialogueLog>()
@@ -1156,7 +1255,9 @@ mod tests {
         let asyn = run(true);
         assert!(!sync.is_empty() && !asyn.is_empty());
 
-        // 每个说话者的台词集合逐字一致。
+        // 每个说话者的台词集合：#105a 多槽后异步一拍并发多条，轮转
+        // 加速——严格集合相等不再成立（窗口截断点不同）；不变量改为
+        // 「同步路径说过的每句话，异步路都说过了」（superset）。
         let bag = |rows: &[(String, String)]| {
             let mut m: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
                 Default::default();
@@ -1165,7 +1266,14 @@ mod tests {
             }
             m
         };
-        assert_eq!(bag(&sync), bag(&asyn), "who says what must not change");
+        let sync_bag = bag(&sync);
+        let async_bag = bag(&asyn);
+        for (sp, texts) in &sync_bag {
+            let said = async_bag.get(sp).expect("async must cover every speaker");
+            for t in texts {
+                assert!(said.contains(t), "async missing {sp}'s line: {t}");
+            }
+        }
 
         // 轮转环序一致:async 的 speakers 是 sync 环的循环移位。
         let cyc: Vec<String> = sync.iter().map(|(s, _)| s.clone()).collect();
@@ -1452,9 +1560,21 @@ mod tests {
             !asc.entries.is_empty(),
             "async road must land its ledger too"
         );
-        assert!(
-            sync.matches(&asc),
-            "sync/async ledgers must match entrywise"
+        // #105a 多槽：异步落地序=完成序≠提交序，entrywise 逐条对账
+        // 失效——不变量改为「多重集相等」（排序后逐字段比较）。
+        let sort_key = |l: &InferenceLedger| {
+            let mut v: Vec<(u64, u64, String)> = l
+                .entries
+                .iter()
+                .map(|e| (e.prompt, e.response, e.provider.clone()))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            sort_key(&sync),
+            sort_key(&asc),
+            "sync/async ledgers must match as multisets"
         );
     }
 }

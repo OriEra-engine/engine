@@ -33,6 +33,14 @@ pub struct GenAiMeter {
     pub degraded: u64,
     /// Validated bytes that reached [`PendingSwaps`].
     pub bytes_in: u64,
+    /// Vendor-reported generation tokens landed with assets (#122):
+    /// Seedance returns ~108.9k completion tokens per 5s@720p clip —
+    /// the same magnitude as an hour of L7 chat, and invisible until
+    /// this counter exists.
+    pub tokens_in: u64,
+    /// Micro-yuan cost folded from vendor metering (`usage.cost_micros`
+    /// summed; unpriced vendors contribute 0 — never a guess).
+    pub cost_micros_in: u64,
 }
 
 /// Frame-budget guardrails. All clamped through [`GenAiLimits::effective`]
@@ -301,7 +309,17 @@ impl System<World> for GenAiSystem {
             match rx.try_recv() {
                 Ok(JobOutcome::Submitted { req, result }) => done_submits.push((req, result)),
                 Ok(_) => unreachable!("submit channel only sends Submitted"),
-                Err(_) => still_submitting.push(rx), // worker still running
+                // Disconnected = worker panic：以孤儿请求记失败走 fail()
+                // 通道——panic 的 job 不许永久占用提交预算（评审 R3 性能 P1）。
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    done_submits.push((
+                        GenerationRequest::text_to_3d("__orphan__", "orphan"),
+                        Err(crate::GenAiError::Provider(
+                            "submit worker died without a result".into(),
+                        )),
+                    ));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => still_submitting.push(rx), // worker still running
             }
         }
         self.submitting = still_submitting;
@@ -384,8 +402,13 @@ impl System<World> for GenAiSystem {
                     }) => {
                         self.in_flight.push(flight);
                     }
-                    Ok(_) => unreachable!("poll channel only sends Polled"),
-                    Err(_) => still_polling.push((t, rx)), // worker still running
+                    // Disconnected = worker panic：按失败落地占位（评审
+                    // R3 性能 P1——panic 的 job 不许永久占用 in-flight）。
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        failed.push((t.clone(), "poll worker died without a result".to_string()));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => still_polling.push((t, rx)), // worker still running
+                    _ => unreachable!("poll channel only sends Polled"),
                 }
             }
             self.polling = still_polling;
@@ -395,6 +418,12 @@ impl System<World> for GenAiSystem {
                         let meter = world.resource_or_default::<GenAiMeter>();
                         meter.succeeded += 1;
                         meter.bytes_in += asset.payload.len() as u64;
+                        // #122：供应商计量进账本（cost 未登记的厂商计 0，
+                        // 绝不猜价——与预设表 UNREGISTERED 同一立场）。
+                        if let Some(u) = &asset.usage {
+                            meter.tokens_in += u.tokens;
+                            meter.cost_micros_in += u.cost_micros.unwrap_or(0);
+                        }
                         world
                             .resource_or_default::<PendingSwaps>()
                             .queue
@@ -741,6 +770,73 @@ mod tests {
         assert!(
             !w.resource::<PendingSwaps>().unwrap().queue.is_empty(),
             "slow asset must still land (latency, not loss)"
+        );
+    }
+
+    /// #122：供应商 usage 块随资产落地进 GenAiMeter——tokens 与
+    /// micro-yuan 成本可被 UI 直接读数；无 usage 的供应商计 0 不猜价。
+    #[test]
+    #[cfg(feature = "providers")]
+    fn usage_lands_into_the_meter_with_the_asset() {
+        use crate::testing::fixture_transport;
+        use crate::transport::HttpResponse;
+        use crate::{ProviderConfig, ProviderKind};
+        // LIFO：取件 mp4、末次 poll succeeded、首轮 poll running、create
+        let scripted = fixture_transport(vec![
+            HttpResponse::ok(crate::tiny_mp4_stub()),
+            HttpResponse::ok(
+                r#"{"id":"c1","status":"succeeded","content":{"video_url":"https://tos.example/v.mp4"},
+                    "usage":{"completion_tokens":108900}}"#,
+            ),
+            HttpResponse::ok(r#"{"id":"c1","status":"running"}"#),
+            HttpResponse::ok(r#"{"id":"c1"}"#),
+        ]);
+        // SlowScripted 400ms/请求：dispatch 后轮询两次即收割（约 0.8s+）。
+        let mut w = world();
+        let mut sys = GenAiSystem::new(Arc::new(SeedanceProvider::new(
+            ProviderConfig {
+                kind: ProviderKind::Seedance,
+                model: String::new(),
+                api_key: "k".into(),
+                base_url: Some("https://ark.example.test".into()),
+            },
+            scripted,
+        )));
+        sys.submit(GenerationRequest::text_to_video("shot1", "雨夜站台"));
+        for i in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            sys.run(&ctx(), &mut w);
+            eprintln!(
+                "iter{i}: pending={} swaps={:?}",
+                sys.pending(),
+                w.resource::<PendingSwaps>().map(|s| s.queue.len())
+            );
+            if !w
+                .resource::<PendingSwaps>()
+                .map(|s| !s.queue.is_empty())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            break;
+        }
+        let swaps = &w.resource::<PendingSwaps>().unwrap().queue;
+        eprintln!(
+            "swap usage: {:?} meter: {:?}",
+            swaps[0].asset.usage,
+            w.resource::<GenAiMeter>().unwrap()
+        );
+        assert!(
+            swaps[0].asset.usage.is_some(),
+            "seedance asset must carry usage"
+        );
+        let meter = *w.resource::<GenAiMeter>().unwrap();
+        assert_eq!(meter.tokens_in, 108900, "usage tokens must land");
+        // Seedance 牌价已登记（price_micros_per_ktoken 按档位折算）：
+        // 108900 tokens → 108.9 k × 每千 token 价 = 3348000 µ元。
+        assert_eq!(
+            meter.cost_micros_in, 3348000,
+            "cost must be folded from the vendor metering"
         );
     }
 
