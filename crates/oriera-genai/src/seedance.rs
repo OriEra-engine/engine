@@ -185,7 +185,10 @@ impl GenerationProvider for SeedanceProvider {
                 let bytes = self.fetch(&url)?;
                 let model = self.model_for(tier);
                 let usage = usage.map(|mut u| {
-                    u.cost_micros = Some(u.tokens / 1000 * Self::price_micros_per_ktoken(model));
+                    // 先乘后除（评审 R3 QA P2：先除后乘每条截断少记
+                    // ~0.9k tokens 等效成本）
+                    u.cost_micros =
+                        Some(u.tokens * Self::price_micros_per_ktoken(model) / 1000);
                     u
                 });
                 Ok(TaskStatus::Succeeded(GeneratedAsset {
