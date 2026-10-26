@@ -73,7 +73,7 @@ fn usage_cached(v: &Value, prompt: u64) -> u64 {
 
 use crate::provider::{
     ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, ProviderOptions, Role,
-    ToolCall, ToolDef, ToolOutcome,
+    StreamedOutcome, ToolCall, ToolDef, ToolOutcome,
 };
 use oriera_common::TokenUsage;
 use serde_json::{json, Value};
@@ -696,7 +696,30 @@ impl ModelProvider for HttpProvider {
     /// Native SSE streaming (RFC-3): one chunk per text delta, in
     /// arrival order; usage is taken from the terminal frames.
     fn complete_stream(&self, messages: &[ChatMessage]) -> Result<Vec<String>, InferError> {
-        self.complete_stream_capped(messages, SSE_LINE_CAP, SSE_TOTAL_CAP)
+        let (chunks, calls) = self.sse_stream(messages, None, SSE_LINE_CAP, SSE_TOTAL_CAP)?;
+        if !calls.is_empty() {
+            return Err(InferError::Parse(
+                "stream carried tool calls but none were requested".into(),
+            ));
+        }
+        Ok(chunks)
+    }
+
+    /// #105 second half: streaming + tools. Tool requests arrive as
+    /// vendor stream fragments and are aggregated into complete
+    /// [`ToolCall`]s here — the caller sees the same [`ToolCall`] shape
+    /// as the blocking path, so downstream tool loops need no branching.
+    fn complete_stream_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDef],
+    ) -> Result<StreamedOutcome, InferError> {
+        let (chunks, calls) =
+            self.sse_stream(messages, Some(tools), SSE_LINE_CAP, SSE_TOTAL_CAP)?;
+        Ok(StreamedOutcome {
+            chunks,
+            tool_calls: calls,
+        })
     }
 
     fn last_usage(&self) -> TokenUsage {
@@ -721,27 +744,46 @@ impl ModelProvider for HttpProvider {
     }
 }
 
+/// Per-tool-call accumulator for SSE tool aggregation (#105): OpenAI
+/// streams `id`/`name` once then slices `arguments` across frames;
+/// Anthropic names the block up front and slices `partial_json`.
+#[derive(Default)]
+struct StreamToolAcc {
+    id: String,
+    name: String,
+    args: String,
+}
+
 impl HttpProvider {
-    /// Cap-exposing flavor: one SSE `data:` line may never exceed
-    /// `line_cap` bytes and the whole stream `total_cap` bytes (安全审计
-    /// P2 — a hostile endpoint streaming one endless line must not be
-    /// able to balloon the client). Overflow is a `Parse` error: the
-    /// provider answered, with garbage.
-    fn complete_stream_capped(
+    /// One SSE pass: text deltas in arrival order + tool calls
+    /// aggregated from vendor fragments (#105). `tools == None` = plain
+    /// stream (the wire request omits the vocabulary entirely, so a
+    /// tool-call reply there is the endpoint misbehaving and surfaces as
+    /// [`InferError::Parse`]). Cap guard (安全审计 P2): one `data:` line
+    /// may never exceed `line_cap` bytes and the whole stream
+    /// `total_cap` bytes — a hostile endpoint streaming one endless line
+    /// must not be able to balloon the client; overflow is `Parse`.
+    fn sse_stream(
         &self,
         messages: &[ChatMessage],
+        tools: Option<&[ToolDef]>,
         line_cap: usize,
         total_cap: usize,
-    ) -> Result<Vec<String>, InferError> {
+    ) -> Result<(Vec<String>, Vec<ToolCall>), InferError> {
         if self.cfg.api_key.trim().is_empty() && !self.is_local_endpoint() {
             return Err(InferError::Provider(
                 "no api key configured — the key only ever enters via the shell (env/UI), never the engine".into(),
             ));
         }
-        let body = self.build_request_ex(messages, None, true)?;
+        let body = self.build_request_ex(messages, tools, true)?;
         let resp = self.send(&body)?;
         let mut reader = BufReader::new(resp.into_reader());
         let mut chunks: Vec<String> = Vec::new();
+        // OpenAI: `delta.tool_calls[]` slots by `index` (args arrive as
+        // string fragments); Anthropic: content blocks by block `index`
+        // (args arrive as `input_json_delta.partial_json` fragments).
+        // `None` slot = text block (skipped).
+        let mut tool_acc: Vec<Option<StreamToolAcc>> = Vec::new();
         let mut usage = TokenUsage::ZERO;
         let mut line = String::new();
         let mut total: usize = 0;
@@ -790,6 +832,34 @@ impl HttpProvider {
                             chunks.push(t.to_string());
                         }
                     }
+                    if let Some(tcs) = v
+                        .pointer("/choices/0/delta/tool_calls")
+                        .and_then(Value::as_array)
+                    {
+                        for tc in tcs {
+                            let idx = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                            if tool_acc.len() <= idx {
+                                tool_acc.resize_with(idx + 1, || None);
+                            }
+                            let slot = tool_acc[idx].get_or_insert_with(StreamToolAcc::default);
+                            if let Some(id) = tc.get("id").and_then(Value::as_str) {
+                                if slot.id.is_empty() {
+                                    slot.id = id.to_string();
+                                }
+                            }
+                            if let Some(name) = tc.pointer("/function/name").and_then(Value::as_str)
+                            {
+                                if slot.name.is_empty() {
+                                    slot.name = name.to_string();
+                                }
+                            }
+                            if let Some(frag) =
+                                tc.pointer("/function/arguments").and_then(Value::as_str)
+                            {
+                                slot.args.push_str(frag);
+                            }
+                        }
+                    }
                     if let Some(u) = v.pointer("/usage").filter(|u| u.is_object()) {
                         let prompt = u
                             .pointer("/prompt_tokens")
@@ -806,9 +876,44 @@ impl HttpProvider {
                     }
                 }
                 Dialect::Anthropic => match v.pointer("/type").and_then(Value::as_str) {
+                    Some("content_block_start") => {
+                        if v.pointer("/content_block/type").and_then(Value::as_str)
+                            == Some("tool_use")
+                        {
+                            let idx = v.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                            if tool_acc.len() <= idx {
+                                tool_acc.resize_with(idx + 1, || None);
+                            }
+                            tool_acc[idx] = Some(StreamToolAcc {
+                                id: v
+                                    .pointer("/content_block/id")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                name: v
+                                    .pointer("/content_block/name")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                args: String::new(),
+                            });
+                        }
+                    }
                     Some("content_block_delta") => {
                         if let Some(t) = v.pointer("/delta/text").and_then(Value::as_str) {
                             chunks.push(t.to_string());
+                        }
+                        if v.pointer("/delta/type").and_then(Value::as_str)
+                            == Some("input_json_delta")
+                        {
+                            let idx = v.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                            if let Some(frag) =
+                                v.pointer("/delta/partial_json").and_then(Value::as_str)
+                            {
+                                if let Some(slot) = tool_acc.get_mut(idx).and_then(Option::as_mut) {
+                                    slot.args.push_str(frag);
+                                }
+                            }
                         }
                     }
                     Some("message_start") => {
@@ -836,7 +941,17 @@ impl HttpProvider {
                 },
             }
         }
-        if chunks.is_empty() {
+        let tool_calls: Vec<ToolCall> = tool_acc
+            .into_iter()
+            .flatten()
+            .filter(|a| !a.name.is_empty())
+            .map(|a| ToolCall {
+                id: a.id,
+                name: a.name,
+                arguments_json: a.args,
+            })
+            .collect();
+        if chunks.is_empty() && tool_calls.is_empty() {
             return Err(InferError::Parse(
                 "stream carried no text deltas (200 but empty SSE body)".into(),
             ));
@@ -844,7 +959,7 @@ impl HttpProvider {
         if let Ok(mut u) = self.usage.lock() {
             *u = usage;
         }
-        Ok(chunks)
+        Ok((chunks, tool_calls))
     }
 
     /// POST with complete()'s minimal retry policy.
@@ -1683,6 +1798,116 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
         assert_eq!(p.last_usage().completion, 4);
     }
 
+    /// #105 second half: OpenAI streams a tool request as index-sliced
+    /// fragments (`id`/`name` once, `arguments` in pieces) — the caller
+    /// must see ONE complete [`ToolCall`] with concatenated JSON.
+    #[test]
+    fn openai_sse_stream_tool_calls_aggregate() {
+        let sse = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_9\",\"function\":{\"name\":\"set_gravity\",\"arguments\":\"\"}}]}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"g\\\":\"}}]}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"9.8}\"}}]}}]}\n\n\
+data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":5}}\n\n\
+data: [DONE]\n\n";
+        let mock = Mock::spawn(vec![Step::Reply(200, sse.into())]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let tools = vec![crate::provider::ToolDef {
+            name: "set_gravity".into(),
+            description: "set world gravity".into(),
+            parameters_json: "{}".into(),
+        }];
+        let out = p
+            .complete_stream_with_tools(&[ChatMessage::user("重力调大")], &tools)
+            .unwrap();
+        assert!(out.chunks.is_empty(), "tool-only stream has no text");
+        assert_eq!(out.tool_calls.len(), 1);
+        let call = &out.tool_calls[0];
+        assert_eq!(call.id, "call_9");
+        assert_eq!(call.name, "set_gravity");
+        assert_eq!(call.arguments_json, "{\"g\":9.8}");
+        assert_eq!(p.last_usage().completion, 5);
+    }
+
+    /// #105: Anthropic streams tools as `content_block_start`(tool_use)
+    /// + `input_json_delta` partial-JSON fragments + stop.
+    #[test]
+    fn anthropic_sse_stream_tool_use_aggregate() {
+        let sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":8}}}\n\n\
+event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"spawn\"}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"n\\\":\"}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"3}\"}}\n\n\
+event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":7}}\n\n\
+event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        let mock = Mock::spawn(vec![Step::Reply(200, sse.into())]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::Anthropic,
+                model: "claude".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let tools = vec![crate::provider::ToolDef {
+            name: "spawn".into(),
+            description: "spawn entities".into(),
+            parameters_json: "{}".into(),
+        }];
+        let out = p
+            .complete_stream_with_tools(&[ChatMessage::user("刷三个")], &tools)
+            .unwrap();
+        assert!(out.chunks.is_empty());
+        assert_eq!(out.tool_calls.len(), 1);
+        assert_eq!(out.tool_calls[0].id, "toolu_1");
+        assert_eq!(out.tool_calls[0].name, "spawn");
+        assert_eq!(out.tool_calls[0].arguments_json, "{\"n\":3}");
+        assert_eq!(p.last_usage().prompt, 8);
+        assert_eq!(p.last_usage().completion, 7);
+    }
+
+    /// #105: mixed stream — text deltas land in order AND the tool call
+    /// aggregates; multi-call streams keep vendor index order.
+    #[test]
+    fn openai_sse_stream_mixed_text_and_two_tools() {
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"好的，\"}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"安排。\"}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"function\":{\"name\":\"despawn\",\"arguments\":\"{}\"}}]}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"set_gravity\",\"arguments\":\"{\\\"g\\\":1}\"}}]}}]}\n\n\
+data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n\
+data: [DONE]\n\n";
+        let mock = Mock::spawn(vec![Step::Reply(200, sse.into())]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let mk = |name: &str| crate::provider::ToolDef {
+            name: name.into(),
+            description: String::new(),
+            parameters_json: "{}".into(),
+        };
+        let tools = vec![mk("set_gravity"), mk("despawn")];
+        let out = p
+            .complete_stream_with_tools(&[ChatMessage::user("整理世界")], &tools)
+            .unwrap();
+        assert_eq!(out.chunks, vec!["好的，", "安排。"]);
+        assert_eq!(out.tool_calls.len(), 2, "vendor index order kept");
+        assert_eq!(out.tool_calls[0].id, "call_a");
+        assert_eq!(out.tool_calls[1].id, "call_b");
+    }
+
     #[test]
     fn openai_multi_round_tool_history_on_the_wire() {
         // 第二轮请求必须携带:assistant 的 tool_calls 原文 + role:"tool"
@@ -2165,7 +2390,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
             },
             Duration::from_secs(5),
         );
-        match p.complete_stream_capped(&[ChatMessage::user("x")], 1024, 64) {
+        match p.sse_stream(&[ChatMessage::user("x")], None, 1024, 64) {
             Err(InferError::Parse(m)) => assert!(m.contains("exceeded 64 bytes"), "{m}"),
             other => panic!("expected total-cap Parse, got {other:?}"),
         }

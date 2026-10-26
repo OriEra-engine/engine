@@ -184,6 +184,112 @@ export class HttpChatProvider {
       }
     }
   }
+  /** #105：SSE 流式——文本增量按到达序经 opts.onChunk(text) 逐拍回调
+   * （UI 打字机渲染钩子），返回完整增量数组。usage 终帧记账与 complete
+   * 同源（total=in+out；谎报厂商缓存按 prompt 钳制）。流式不做传输层
+   * 自动重试（增量已交付，重放会重复）——失败按 breaker 记账后原样抛。 */
+  async completeStream(messages, opts = {}) {
+    if (!this.ready) throw new Error("no key");
+    const bk = this.breaker;
+    if (bk.state === "open") {
+      if (Date.now() < bk.openUntil) {
+        throw new Error("breaker open — failing fast (provider cooling down)");
+      }
+      bk.state = "half-open";
+    }
+    this.stats.calls++;
+    const anthropic = this.cfg.kind === "anthropic";
+    const url = ((this.cfg.base || "") + (anthropic ? "/messages" : "/chat/completions"));
+    const headers = { "Content-Type": "application/json" };
+    if (anthropic) {
+      headers["x-api-key"] = this.cfg.key;
+      headers["anthropic-version"] = "2023-06-01";
+      headers["anthropic-dangerous-direct-browser-access"] = "true";
+    } else headers["Authorization"] = "Bearer " + this.cfg.key;
+    const body = anthropic
+      ? JSON.stringify({ model: this.cfg.model, max_tokens: opts.max ?? 260, stream: true,
+          system: messages.filter(m => m.role === "system").map(m => m.content).join("\n"),
+          messages: messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content })) })
+      : JSON.stringify({ model: this.cfg.model, messages,
+          temperature: opts.temp ?? 0.85, max_tokens: opts.max ?? 260,
+          stream: true, stream_options: { include_usage: true },
+          ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
+          ...(opts.thinking ? { thinking: opts.thinking } : {}) });
+    let r;
+    try {
+      r = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(opts.timeout ?? 60000) });
+    } catch (e) {
+      this.countStreamFailure_(e); throw e;
+    }
+    if (!r.ok) {
+      let errText = "";
+      try { errText = await r.text(); } catch { /* 错误体不可读就只报状态码 */ }
+      const err = new Error("HTTP " + r.status + (errText ? "： " + errText.slice(0, 120) : ""));
+      this.countStreamFailure_(err); throw err;
+    }
+    const chunks = [];
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", usage = null;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (payload === "[DONE]") continue;
+          let v; try { v = JSON.parse(payload); } catch { continue; }
+          if (anthropic) {
+            if (v.type === "content_block_delta" && v.delta && v.delta.text) {
+              chunks.push(v.delta.text); if (opts.onChunk) opts.onChunk(v.delta.text);
+            } else if (v.type === "message_start") {
+              const u = (v.message && v.message.usage) || {};
+              usage = { in: u.input_tokens ?? 0, out: 0, cached: u.cache_read_input_tokens ?? 0 };
+            } else if (v.type === "message_delta" && v.usage) {
+              usage = { in: (usage && usage.in) || 0, out: v.usage.output_tokens ?? 0, cached: (usage && usage.cached) || 0 };
+            }
+          } else {
+            const t = v.choices && v.choices[0] && v.choices[0].delta && v.choices[0].delta.content;
+            if (t) { chunks.push(t); if (opts.onChunk) opts.onChunk(t); }
+            if (v.usage) {
+              const pin = v.usage.prompt_tokens ?? 0;
+              usage = { in: pin, out: v.usage.completion_tokens ?? 0,
+                cached: Math.min(v.usage.prompt_cache_hit_tokens ?? 0, pin) };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      this.countStreamFailure_(e); throw e;
+    }
+    if (!chunks.length) {
+      const err = new Error("stream carried no text deltas (200 but empty SSE body)");
+      this.countStreamFailure_(err); throw err;
+    }
+    if (usage) {
+      this.stats.tokens = (this.stats.tokens || 0) + ((usage.in + usage.out) || 0);
+      this.stats.cached = (this.stats.cached || 0) + (usage.cached || 0);
+    }
+    bk.state = "closed"; bk.consecutiveFailures = 0; bk.openUntil = 0; bk.successes++;
+    return chunks;
+  }
+  /** B7 对镜：流式失败一次记账（与 complete 的调用级口径一致）。 */
+  countStreamFailure_(err) {
+    this.stats.errors++;
+    const bk = this.breaker;
+    bk.failures++;
+    if (HttpChatProvider.tripsBreaker(err)) {
+      bk.consecutiveFailures++;
+      if (bk.consecutiveFailures >= this.breakerThreshold || bk.state === "half-open") {
+        bk.state = "open";
+        bk.openUntil = Date.now() + this.breakerCooldownMs;
+      }
+    }
+  }
 }
 /** 兼容旧名 */
 export class ZhipuProvider {

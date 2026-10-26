@@ -195,6 +195,66 @@ test("provider 缓存命中 tokens 进 stats.cached（DeepSeek/OpenAI + 谎报�
   } finally { globalThis.fetch = origFetch; }
 });
 
+/* ---- #105：SSE 流式（completeStream：增量回调 + usage 记账 + 流式请求 wire） ---- */
+function sseBody(text) {
+  const enc = new TextEncoder();
+  return { ok: true, body: new ReadableStream({
+    start(c) { c.enqueue(enc.encode(text)); c.close(); },
+  }) };
+}
+test("completeStream：增量按到达序回调，usage 记账与 wire 同 complete 对镜", async () => {
+  const sse = 'data: {"choices":[{"delta":{"content":"雨"}}]}\n\n' +
+    'data: {"choices":[{"delta":{"content":"停了"}}]}\n\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":3,"prompt_cache_hit_tokens":7}}\n\n' +
+    "data: [DONE]\n\n";
+  let captured = null;
+  const seen = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, o) => {
+    captured = JSON.parse(o.body);
+    return sseBody(sse);
+  };
+  try {
+    const p = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x" });
+    const chunks = await p.completeStream([{ role: "user", content: "写三个字" }], {
+      onChunk: t => seen.push(t),
+    });
+    assert.deepEqual(chunks, ["雨", "停了"]);
+    assert.deepEqual(seen, ["雨", "停了"], "onChunk 逐拍同序");
+    assert.equal(captured.stream, true);
+    assert.deepEqual(captured.stream_options, { include_usage: true });
+    assert.equal(p.stats.tokens, 12, "in+out 记账");
+    assert.equal(p.stats.cached, 7);
+    assert.equal(p.stats.errors, 0);
+  } finally { globalThis.fetch = origFetch; }
+});
+test("completeStream：Anthropic 事件流（message_start/delta 记账）", async () => {
+  const sse = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":11,"cache_read_input_tokens":4}}}\n\n' +
+    'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"灯"}}\n\n' +
+    'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"亮着"}}\n\n' +
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}\n\n' +
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => sseBody(sse);
+  try {
+    const p = new HttpChatProvider({ kind: "anthropic", key: "k", model: "claude", base: "https://x" });
+    const chunks = await p.completeStream([{ role: "user", content: "两个字" }]);
+    assert.deepEqual(chunks, ["灯", "亮着"]);
+    assert.equal(p.stats.tokens, 15, "in(11)+out(4)");
+    assert.equal(p.stats.cached, 4);
+  } finally { globalThis.fetch = origFetch; }
+});
+test("completeStream：空流报错且计 breaker 失败（诚实不假流）", async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => sseBody('data: {"choices":[{"delta":{}}]}\n\ndata: [DONE]\n\n');
+  try {
+    const p = new HttpChatProvider({ kind: "deepseek", key: "k", model: "m", base: "https://x" });
+    await assert.rejects(() => p.completeStream([{ role: "user", content: "x" }]), /no text deltas/);
+    assert.equal(p.stats.errors, 1);
+    assert.equal(p.breaker.consecutiveFailures, 1);
+  } finally { globalThis.fetch = origFetch; }
+});
+
 test("Anthropic 方言：cache_read_input_tokens 进 stats.cached", async () => {
   const origFetch = globalThis.fetch;
   globalThis.fetch = async () => ({
