@@ -190,11 +190,6 @@ struct PendingSpeech {
 }
 
 impl<P: ModelProvider + 'static> CognitionSystem<P> {
-    /// 诊断用：当前在途台词槽计数（#105a 活锁排查辅助）。
-    pub fn pending_debug(&self) -> usize {
-        self.pending.len()
-    }
-
     /// Switch to async mode: at most one in-flight call, replies land
     /// one or more frames later. The frame loop never blocks on the
     /// network again (STABILITY P0: 同步阻塞).
@@ -294,10 +289,6 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
                     world, p.speaker, &p.persona, &p.partner, reply, p.turn, p.day,
                 );
             }
-            eprintln!(
-                "[diag] due check: turn={turn} due={due} pending={}",
-                self.pending.len()
-            );
             if !due {
                 return; // 未到节拍,帧照常走
             }
@@ -1025,15 +1016,9 @@ mod tests {
         let mut cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 1)
             .with_max_pending(4)
             .with_async();
-        for i in 0..30 {
-            eprintln!("tick{i}: pre-pending={}", cog.pending_debug());
+        for _ in 0..30 {
             std::thread::sleep(std::time::Duration::from_millis(5));
             cog.run(&ctx(), &mut w);
-            eprintln!(
-                "tick{i}: post pending={} log={}",
-                cog.pending_debug(),
-                w.resource::<DialogueLog>().unwrap().turns.len()
-            );
         }
         let log = w.resource::<DialogueLog>().unwrap();
         assert!(
