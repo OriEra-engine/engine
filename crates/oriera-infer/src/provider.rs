@@ -1580,6 +1580,123 @@ mod preset_tests {
     }
 }
 
+/// ============ L7 embedding boundary (#101 step two) ============
+///
+/// Batch text → fixed-dim vectors, the semantic tier of the two-tier
+/// memory retrieval: the offline bigram keyword tier stays the default
+/// (zero network, deterministic); an [`EmbeddingProvider`] upgrades
+/// scoring to cosine similarity when one is wired in.
+
+pub trait EmbeddingProvider: Send + Sync {
+    /// Stable provider id for metrics (`oriera_embedding_provider{...}`).
+    fn id(&self) -> &str;
+
+    /// One vector per input text, same order — implementations MUST
+    /// keep positional correspondence (HTTP providers reorder by the
+    /// vendor's `index` field, never by arrival).
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, InferError>;
+
+    /// Vector dimensionality (a per-provider contract constant).
+    fn dims(&self) -> usize;
+}
+
+/// Deterministic local embedder — the offline tier made explicit. Hashed
+/// bag of tokens (CJK bigrams + latin words ≥3, lowercased — same token
+/// grammar as the kernel-side bigram retrieval) projected into `dims`
+/// dims by FNV-1a sign hashing, then L2-normalized. Bit-stable across
+/// runs and platforms (integers only until the final divide): Pinned
+/// determinism without a network round-trip. Empty text → zero vector.
+pub struct HashEmbeddingProvider {
+    dims: usize,
+}
+
+impl HashEmbeddingProvider {
+    pub fn new(dims: usize) -> Self {
+        Self { dims: dims.max(1) }
+    }
+
+    /// Tokenizer: CJK runs → overlapping bigrams, latin runs → whole
+    /// words (≥3 chars, lowercased). Mirrors the kernel-side bigram
+    /// grammar so both tiers see the same lexical units.
+    fn tokenize(text: &str) -> Vec<String> {
+        let lower = text.to_lowercase();
+        let mut out = Vec::new();
+        let chars: Vec<char> = lower.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if is_cjk(c) {
+                let start = i;
+                while i < chars.len() && is_cjk(chars[i]) {
+                    i += 1;
+                }
+                for w in start..i.saturating_sub(1) {
+                    out.push(format!("{}{}", chars[w], chars[w + 1]));
+                }
+            } else if c.is_ascii_alphabetic() {
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_alphanumeric() {
+                    i += 1;
+                }
+                let word: String = chars[start..i].iter().collect();
+                if word.chars().count() >= 3 {
+                    out.push(word);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+}
+
+fn is_cjk(c: char) -> bool {
+    ('\u{4e00}'..='\u{9fff}').contains(&c)
+}
+
+/// FNV-1a 32-bit — the engine's hash family of record (same spirit as
+/// the state fingerprint), platform-independent by construction.
+fn fnv1a(bytes: &[u8]) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in bytes {
+        h ^= u32::from(*b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
+}
+
+impl EmbeddingProvider for HashEmbeddingProvider {
+    fn id(&self) -> &str {
+        "hash:local"
+    }
+
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, InferError> {
+        Ok(texts
+            .iter()
+            .map(|text| {
+                let mut v = vec![0.0f32; self.dims];
+                for token in Self::tokenize(text) {
+                    let h = fnv1a(token.as_bytes());
+                    let idx = (h as usize) % self.dims;
+                    let sign = if h & 0x8000_0000 == 0 { 1.0 } else { -1.0 };
+                    v[idx] += sign;
+                }
+                let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > f32::EPSILON {
+                    for x in &mut v {
+                        *x /= norm;
+                    }
+                }
+                v
+            })
+            .collect())
+    }
+
+    fn dims(&self) -> usize {
+        self.dims
+    }
+}
+
 /// ============ B8 model-acceptance gate (issue #99) ============
 ///
 /// The promotion gate a backend must clear before it earns a
@@ -1658,5 +1775,32 @@ mod b8_gate {
                 .any(|(id, _, fails)| *id == "always-down" && *fails >= 1),
             "health report must record the failure, not just list the chain"
         );
+    }
+}
+
+/// #101 step two: the local tier of the embedding seat.
+#[cfg(test)]
+mod embedding_tests {
+    use super::*;
+
+    #[test]
+    fn hash_embedding_is_deterministic_and_normalized() {
+        let e = HashEmbeddingProvider::new(64);
+        let texts = vec![
+            "咖啡凉了再喝".to_string(),
+            "Coffee brewing guide".to_string(),
+            String::new(),
+        ];
+        let v1 = e.embed(&texts).unwrap();
+        let v2 = e.embed(&texts).unwrap();
+        assert_eq!(v1, v2, "bit-stable across runs (Pinned tier)");
+        assert_eq!(v1.len(), 3, "positional correspondence");
+        for v in &v1[..2] {
+            assert_eq!(v.len(), 64);
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            assert!((norm - 1.0).abs() < 1e-4, "L2 normalized, got {norm}");
+        }
+        assert!(v1[2].iter().all(|x| *x == 0.0), "empty text → zero vector");
+        assert_ne!(v1[0], v1[1], "distinct texts → distinct vectors");
     }
 }

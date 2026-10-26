@@ -85,12 +85,50 @@ impl MemoryStore {
             .map(|e| {
                 let text = bigrams(&format!("{}{}", e.text, e.about));
                 let hits = q.iter().filter(|g| text.contains(*g)).count();
-                let recency = 1.0 / (1.0 + (now.saturating_sub(e.turn)) as f32);
-                let about_bonus = if e.about == about { 1.2 } else { 0.0 };
-                (
-                    hits as f32 * 1.6 + e.importance as f32 * 0.45 + recency * 2.0 + about_bonus,
-                    e,
-                )
+                (offline_score(e, hits, now, about), e)
+            })
+            .filter(|(s, _)| *s > 0.8)
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        scored.into_iter().take(k).map(|(_, e)| e.clone()).collect()
+    }
+
+    /// Semantic tier of the two-tier retrieval (#101 step two): the
+    /// same ranking as [`MemoryStore::retrieve`] plus a cosine term
+    /// from `embedder` (one BATCH call for query + episodes — a remote
+    /// embedder costs one wire round-trip, not one per episode). Blend:
+    /// `offline + 2.0 × (cos+1)/2`, same `> 0.8` filter. Embedder
+    /// failure degrades VISIBLY to the offline tier (same contract as
+    /// `retrieve`) — never empty results from a broken seat.
+    pub fn retrieve_embedded(
+        &self,
+        embedder: &dyn oriera_infer::EmbeddingProvider,
+        agent: &str,
+        about: &str,
+        query: &str,
+        now: u64,
+        k: usize,
+    ) -> Vec<Episode> {
+        let Some(v) = self.memories.get(agent) else {
+            return Vec::new();
+        };
+        let mut inputs: Vec<String> = Vec::with_capacity(v.len() + 1);
+        inputs.push(format!("{query}{about}"));
+        inputs.extend(v.iter().map(|e| format!("{}{}", e.text, e.about)));
+        let vecs = match embedder.embed(&inputs) {
+            Ok(vs) if vs.len() == inputs.len() => vs,
+            _ => return self.retrieve(agent, about, query, now, k),
+        };
+        let (q, rows) = vecs.split_first().expect("query vector present");
+        let q_bigrams = bigrams(&format!("{query}{about}"));
+        let mut scored: Vec<(f32, &Episode)> = v
+            .iter()
+            .zip(rows)
+            .map(|(e, emb)| {
+                let text = bigrams(&format!("{}{}", e.text, e.about));
+                let hits = q_bigrams.iter().filter(|g| text.contains(*g)).count();
+                let offline = offline_score(e, hits, now, about);
+                (offline + 2.0 * (cosine(q, emb) + 1.0) / 2.0, e)
             })
             .filter(|(s, _)| *s > 0.8)
             .collect();
@@ -214,6 +252,30 @@ impl MemoryStore {
 /// hits）且把 latin 拆成字符对（整词检索失效）。本函数与 kernel
 /// zhBigrams 逐语义对齐：CJK 连续段成二元组、latin 连续字母 ≥3 成
 /// 整词、全表去重保首现序。
+/// Shared offline ranking term (hits already counted by the caller):
+/// `hits×1.6 + importance×0.45 + recency×2 + about-bonus` — the ONE
+/// formula both retrieval tiers blend around.
+fn offline_score(e: &Episode, hits: usize, now: u64, about: &str) -> f32 {
+    let recency = 1.0 / (1.0 + (now.saturating_sub(e.turn)) as f32);
+    let about_bonus = if e.about == about { 1.2 } else { 0.0 };
+    hits as f32 * 1.6 + e.importance as f32 * 0.45 + recency * 2.0 + about_bonus
+}
+
+/// Cosine similarity; mismatched lengths or zero vectors score 0 (an
+/// empty embed must not fabricate affinity).
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na <= f32::EPSILON || nb <= f32::EPSILON {
+        return 0.0;
+    }
+    dot / (na * nb)
+}
+
 fn bigrams(s: &str) -> Vec<String> {
     let lower = s.to_lowercase();
     let mut out = Vec::new();
@@ -401,5 +463,50 @@ mod tests {
         assert!(restored.retrieve("z", "world", "事件79", 100, 1)[0]
             .text
             .contains("79"));
+    }
+
+    /// #101 step two: the semantic tier ranks the lexically-shared
+    /// episode above a same-importance recency-rival, and is
+    /// bit-stable across repeated calls (hash embedder = Pinned).
+    #[test]
+    fn embedded_retrieval_ranks_semantically_and_stays_deterministic() {
+        let mut m = MemoryStore::new();
+        m.record(
+            "a",
+            ep(1, "world", "咖啡豆是埃塞的果酸重等它凉半分钟再喝", 3),
+        );
+        m.record("a", ep(2, "world", "外面下大雨了记得带伞", 3));
+        let emb = oriera_infer::HashEmbeddingProvider::new(64);
+        let pick = |q: &str| m.retrieve_embedded(&emb, "a", "world", q, 10, 1)[0].text.clone();
+        assert!(pick("埃塞咖啡果酸重").contains("咖啡"), "semantic pick #1");
+        assert!(pick("外面下雨了怎么办").contains("雨"), "semantic pick #2");
+        assert_eq!(
+            m.retrieve_embedded(&emb, "a", "world", "咖啡", 10, 2),
+            m.retrieve_embedded(&emb, "a", "world", "咖啡", 10, 2),
+            "hash embedder = Pinned determinism"
+        );
+    }
+
+    /// #101: a broken embedder degrades VISIBLY to exactly the offline
+    /// tier — never empty results from a broken seat.
+    #[test]
+    fn broken_embedder_degrades_to_offline_tier() {
+        struct Down;
+        impl oriera_infer::EmbeddingProvider for Down {
+            fn id(&self) -> &str {
+                "down"
+            }
+            fn embed(
+                &self,
+                _: &[String],
+            ) -> Result<Vec<Vec<f32>>, oriera_infer::InferError> {
+                Err(oriera_infer::InferError::Provider("down".into()))
+            }
+        }
+        let mut m = MemoryStore::new();
+        m.record("a", ep(1, "w", "咖啡凉了", 3));
+        let offline = m.retrieve("a", "w", "咖啡凉了", 10, 5);
+        let degraded = m.retrieve_embedded(&Down, "a", "w", "咖啡凉了", 10, 5);
+        assert_eq!(offline, degraded);
     }
 }

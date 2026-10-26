@@ -1074,6 +1074,123 @@ impl HttpProvider {
 // Each test scripts the exact bytes the "vendor" answers with.
 // ---------------------------------------------------------------------------
 
+/// OpenAI-compatible embeddings client (#101 step two): POST
+/// `{base}/embeddings` `{"model","input":[…]}` →
+/// `{"data":[{"index","embedding":[f32]}]}`. Zhipu/OpenAiCompat only —
+/// Anthropic has no embeddings endpoint and Rule is offline, so
+/// construction REFUSES them (an honest failure, not a half-working
+/// seat). Vectors are reassembled by the vendor's `index` field, never
+/// by arrival order.
+pub struct HttpEmbeddingProvider {
+    agent: ureq::Agent,
+    cfg: ProviderConfig,
+    url: String,
+    label: String,
+}
+
+impl HttpEmbeddingProvider {
+    /// 20s overall / 5s connect — same defaults as [`HttpProvider::new`].
+    pub fn new(cfg: ProviderConfig) -> Result<Self, InferError> {
+        Self::with_timeouts(cfg, Duration::from_secs(20), Duration::from_secs(5))
+    }
+
+    /// Timeout override for constrained shells and tests.
+    pub fn with_timeouts(
+        cfg: ProviderConfig,
+        overall: Duration,
+        connect: Duration,
+    ) -> Result<Self, InferError> {
+        if Dialect::of(cfg.kind) != Dialect::OpenAi {
+            return Err(InferError::Provider(format!(
+                "embeddings need an OpenAI-compatible endpoint ({:?} has none)",
+                cfg.kind
+            )));
+        }
+        let base = cfg
+            .base_url
+            .clone()
+            .unwrap_or_else(|| cfg.kind.default_base_url().to_string());
+        let base = base.trim_end_matches('/').to_string();
+        let label = format!("{}:{}", cfg.kind.id(), cfg.model);
+        Ok(Self {
+            agent: ureq::AgentBuilder::new()
+                .timeout(overall)
+                .timeout_connect(connect)
+                .build(),
+            url: format!("{base}/embeddings"),
+            cfg,
+            label,
+        })
+    }
+
+    fn is_local(&self) -> bool {
+        self.url.starts_with("http://127.0.0.1") || self.url.starts_with("http://localhost")
+    }
+
+    /// Same scrub discipline as the chat path: the key (and its Bearer
+    /// form) must never survive into an error message.
+    fn scrub(&self, s: &str) -> String {
+        let key = self.cfg.api_key.trim();
+        if key.is_empty() {
+            return s.to_string();
+        }
+        s.replace(key, "***").replace(&format!("Bearer {key}"), "Bearer ***")
+    }
+}
+
+impl EmbeddingProvider for HttpEmbeddingProvider {
+    fn id(&self) -> &str {
+        &self.label
+    }
+
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, InferError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        if self.cfg.api_key.trim().is_empty() && !self.is_local() {
+            return Err(InferError::Provider(
+                "no api key configured — the key only ever enters via the shell (env/UI), never the engine".into(),
+            ));
+        }
+        let body = json!({ "model": self.cfg.model, "input": texts });
+        let resp = self
+            .agent
+            .post(&self.url)
+            .set("Authorization", &format!("Bearer {}", self.cfg.api_key))
+            .send_string(&body.to_string())
+            .map_err(|e| InferError::Network(self.scrub(&e.to_string())))?;
+        let raw = resp
+            .into_string()
+            .map_err(|e| InferError::Network(self.scrub(&e.to_string())))?;
+        let v: Value = serde_json::from_str(&raw)
+            .map_err(|e| InferError::Parse(format!("embeddings body unreadable: {e}")))?;
+        let n = texts.len();
+        let mut out: Vec<Option<Vec<f32>>> = (0..n).map(|_| None).collect();
+        if let Some(rows) = v.get("data").and_then(Value::as_array) {
+            for row in rows {
+                let idx = row.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let emb: Option<Vec<f32>> = row
+                    .get("embedding")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_f64).map(|x| x as f32).collect());
+                if idx < n {
+                    if let Some(emb) = emb {
+                        out[idx] = Some(emb);
+                    }
+                }
+            }
+        }
+        out.into_iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                slot.ok_or_else(|| InferError::Parse(format!("embeddings response missing index {i}")))
+            })
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
