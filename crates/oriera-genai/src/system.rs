@@ -367,10 +367,10 @@ impl System<World> for GenAiSystem {
             // 派一次（视频任务 82~212s，高频窗口覆盖最可能完成区间；
             // 供应商 QPS 压力随任务年龄递减）。
             let backoff_step = 4u32;
-            let drained: Vec<_> = self.in_flight.drain(..).collect();
+            let drained: Vec<_> = std::mem::take(&mut self.in_flight);
             for mut t in drained {
                 t.polls = t.polls.saturating_add(1);
-                let due = t.polls <= 8 || u64::from(self.tick) % u64::from(backoff_step) == 0;
+                let due = t.polls <= 8 || self.tick.is_multiple_of(u64::from(backoff_step));
                 if !due {
                     self.in_flight.push(t);
                     continue;
