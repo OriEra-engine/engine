@@ -493,7 +493,8 @@ mod tests {
 
     #[test]
     fn usage_tokens_and_cost_ride_the_asset() {
-        // 108900 tokens on the mini tier → 108 * 23000 = 2_484_000 micros (¥2.48).
+        // 108900 tokens on the mini tier → 108900 * 23000 / 1000
+        // = 2_504_700 micros (¥2.50, 先乘后除无截断——与 meter 记账同口径).
         let t = fixture_transport(vec![
             HttpResponse::ok(crate::tiny_mp4_stub()),
             HttpResponse::ok(
@@ -515,7 +516,7 @@ mod tests {
             TaskStatus::Succeeded(a) => {
                 let u = a.usage.expect("usage present");
                 assert_eq!(u.tokens, 108_900);
-                assert_eq!(u.cost_micros, Some(108 * 23_000));
+                assert_eq!(u.cost_micros, Some(2_504_700));
                 assert!(a.model.contains("mini"));
             }
             other => panic!("expected success, got {other:?}"),
