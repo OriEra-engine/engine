@@ -20,13 +20,14 @@ pub mod provider;
 
 pub use health::{BreakerState, FallbackProvider, ProviderHealth};
 #[cfg(feature = "native-http")]
-pub use http::HttpProvider;
+pub use http::{HttpEmbeddingProvider, HttpProvider};
 pub use jobs::{InferJobs, JobDone};
 pub use oriera_common::{DeterminismLevel, TokenUsage};
 pub use provider::{
-    prompt_fingerprint, response_fingerprint, ChatMessage, InferError, ModelCaps, ModelPrice,
-    ModelProvider, ProviderOptions, ProviderPreset, ReasoningEffort, Role, RuleProvider, ToolCall,
-    ToolDef, ToolOutcome, PROVIDER_PRESETS,
+    prompt_fingerprint, response_fingerprint, ChatMessage, EmbeddingProvider,
+    HashEmbeddingProvider, InferError, ModelCaps, ModelPrice, ModelProvider, ProviderOptions,
+    ProviderPreset, ReasoningEffort, Role, RuleProvider, ToolCall, ToolDef, ToolOutcome,
+    PROVIDER_PRESETS,
 };
 
 use oriera_core::{FrameCtx, System};
