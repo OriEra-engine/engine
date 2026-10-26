@@ -42,6 +42,19 @@ impl Mood {
             Mood::Thoughtful => "thoughtful",
         }
     }
+
+    /// 从创作数据（模板/预制体）的自由串折叠 Mood——label 的逆映射，
+    /// 双语 + trim，未知串 → Neutral（绝不 panic 于创作数据）。
+    /// 单源裁定（评审 R3 架构 P2）：prefab 等所有折叠点统一走这里。
+    pub fn from_label(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "happy" | "欢快" => Mood::Happy,
+            "sad" | "低落" | "紧张" => Mood::Sad,
+            "excited" | "热烈" => Mood::Excited,
+            "thoughtful" | "沉思" | "警惕" => Mood::Thoughtful,
+            _ => Mood::Neutral,
+        }
+    }
 }
 
 /// One line of café dialogue (resource, L3).

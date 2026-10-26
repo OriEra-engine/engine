@@ -129,6 +129,61 @@ L2 仲裁器按各系统的平滑实测成本切分帧预算（带 5% 保底）�
 | L7 | `InferenceLedger` + 指纹对（#67 哈希族） | 「双指纹」：世界状态哈希管语义路径，台账管模型路径；`Recorded` 世界也有对账凭据 |
 | L0 | `DeterminismLevel` 三档 | 对"AI 在回放里算不算数"给出诚实分级，不许含糊 |
 | L9 | `fit_budget` prompt 预算（Rust+JS 对镜） | 稳定前缀吃缓存，易变尾巴钉预算；最旧对话先牺牲，头部必保 |
+| L7 | 降级不再「假装成功」也不崩——降级也是表达 |
+| L8 | 浏览器内核镜像 `engine/genai.js`：边界词汇（kind/caps/校验/计量/占位）与 Rust 一一对照；fetch Promise settling 取代轮询节拍 | 所有 3D demo 跑的浏览器侧从此有 L8，不再零生成能力 |
+| L8→L9 | `ArtDirectorSystem`：提示词形状是引擎知识，应用只说主题 | prompt 拼装不许漏进应用层（AI 原生纪律） |
+| L4 | `AssetStore.insertNamed` + `applyPending`（JS 镜像）：同名原位换芯 | 再生成不重建实体、不刷新页面 |
+| L5 | `SlotBindings` 槽位绑定：命名资产 → 材质贴图 / GLB 网格 | 生成物有标准落位通道，「渲染很差」从管线层面消失 |
+| L11 | demo 13 生成式画廊：一句话主题装帧世界；「表达对比」开关直接展示纯色→生成的差别 | 病因与解药可视化 |
+| L8→L9→L11 | demo 11 咖啡馆加入同一条生成链：`StoryboardArtSystem` 观察 `world.story.beats`，每两拍为 `wall.art` 槽位装帧「此刻的故事」；同一 Key 经 `imageProviderFromChatConfig` 从 L7 聊天选型映射为 L8 图像端点 | 世界活着=墙面跟着剧情活 |
+
+一句话：**第一批回答"模型多贵"，第二批回答"模型多靠得住"——
+故障有熔断、降级有灯牌、随机有台账、膨胀有预算，四样都不靠祈祷。**
+
+- **确定性边界（#105a 多槽后更新）**：单在飞作业时代，「完成顺序的
+  网络不确定性不影响世界语义」成立；认知系统开多槽并发（max_pending>1）
+  后，DialogueLog 落地序（进 recent-6 prompt）与 MemoryStore 插入序
+  （retrieve 平分 tie-break）进入语义面——复现多槽世界需以
+  `DeterminismLevel::Recorded` 记录实际落地序，或为 NPC 设置串行提交
+  （max_pending=1 回到单槽语义）。
+
+一句话：**世界的外观也是生成系统的输出**——引擎负责让这份输出
+可控（校验）、可负担（计量/降级）、可落位（热替换），创作者只说
+「我要一个什么样的世界」。
+
+## v0.7 缓存·成本·结构化输出（2026-10-21，PLAN-deepseek-upgrade 第一批）
+
+借 DeepSeek 开源双仓库（DeepInfer 借思想 / deepseek-recipe 直接用）的
+第一批落地。生态位声明也在此立字：
+
+> **OriEra 不做推理引擎，做推理引擎的好客户端。** 供给侧（把模型跑快
+> 跑稳）交给 vLLM / DeepInfer / SGLang；OriEra 把模型输出当作世界模拟
+> 的一种**预算内资源**来调度——这回答了「为什么引擎里没有 CUDA kernel」。
+
+| 层 | v0.7 契约 | 意义 |
+|---|---|---|
+| L0 | `TokenUsage.cached`：缓存命中 prompt tokens（⊆ prompt） | 前缀缓存折扣首次成为全链路词汇 |
+| L7 | `CostMeter`：成本账本（µ 货币累积器），`saved_micro` 把缓存省钱显示成钱 | 「缓存命中 ≈ 1/50 价」从营销话术变成仪表盘读数 |
+| L7 | `ProviderOptions.response_schema` → `response_format: json_schema`（非法 schema 零网络 fail-fast） | 模型输出形状的请求权交到引擎手里（per-call 等 B1） |
+| L7 | `ReasoningEffort` 经 deepseek-recipe-core 规范枚举上线 | DeepSeek 官方协议类型层首次进依赖（MIT，仅 native-http，wasm 零增量） |
+| L7 | `PROVIDER_PRESETS.caps/price` 能力与牌价元数据 | 厂商事实从代码注释升格为带日期的登记数据 |
+| L9 | **稳定前缀惯例**：system 消息对 NPC 恒定（人设+格式），世界日/剧情拍/记忆/对话全走 user 消息（Rust+JS 双侧，字节稳定是测试契约） | 咖啡馆的认知调用从「缓存零命中」变「每拍命中」——引擎替模型管住 prefill |
+| L9 | 注入用例集：玩家输入是不可信数据；三道防线 = schema/形状校验（B6）+ L2 预算帽 + 否定语义 | 对抗语料钉进测试，防回归 |
+
+一句话：**AI 的输出是概率性的，但它的账单必须是确定性的**——
+计量的归计量（cached/total），算钱的归算钱（saved/unpriced），
+形状的归形状（schema/校验），谁也不许含糊。
+
+## v0.8 韧性与可复现（2026-10-21，PLAN-deepseek-upgrade 第二批）
+
+第一批让模型的钱看得见，第二批让模型的**故障与随机性**也有处可查：
+
+| 层 | v0.8 契约 | 意义 |
+|---|---|---|
+| L7 | 熔断器（3 败开闸/半开探测/4xx 不计）+ `FallbackProvider` 降级链（云端→本地→rule） | **咖啡馆永不下线**——云端挂了剧情照走，rule 台词 bank 顶上，`degradation_note` 把降级摆在明面 |
+| L7 | `InferenceLedger` + 指纹对（#67 哈希族） | 「双指纹」：世界状态哈希管语义路径，台账管模型路径；`Recorded` 世界也有对账凭据 |
+| L0 | `DeterminismLevel` 三档 | 对"AI 在回放里算不算数"给出诚实分级，不许含糊 |
+| L9 | `fit_budget` prompt 预算（Rust+JS 对镜） | 稳定前缀吃缓存，易变尾巴钉预算；最旧对话先牺牲，头部必保 |
 
 一句话：**第一批回答"模型多贵"，第二批回答"模型多靠得住"——
 故障有熔断、降级有灯牌、随机有台账、膨胀有预算，四样都不靠祈祷。**
