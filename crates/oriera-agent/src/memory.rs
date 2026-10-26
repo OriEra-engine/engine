@@ -208,21 +208,45 @@ impl MemoryStore {
 
 /// CJK bigrams + latin words — the cheap deterministic tokenizer the
 /// wasm kernel mirrors (`zhBigrams`).
+///
+/// #101a 双端对齐（评审 R3 QA P1）：kernel 的词表是 **Set（去重）** 且
+/// latin 走 `[a-z]{3,}` **整词**——Rust 原实现不去重（重复 gram 虚增
+/// hits）且把 latin 拆成字符对（整词检索失效）。本函数与 kernel
+/// zhBigrams 逐语义对齐：CJK 连续段成二元组、latin 连续字母 ≥3 成
+/// 整词、全表去重保首现序。
 fn bigrams(s: &str) -> Vec<String> {
+    let lower = s.to_lowercase();
     let mut out = Vec::new();
+
     let mut cur = String::new();
-    for ch in s.chars() {
+    let mut latin = String::new();
+    for ch in lower.chars() {
         if ('\u{4E00}'..='\u{9FA5}').contains(&ch) {
+            flush_latin(&mut latin, &mut out);
             cur.push(ch);
+        } else if ch.is_ascii_alphabetic() {
+            flush_latin(&mut latin, &mut out);
+            latin.push(ch);
         } else {
-            flush(&mut cur, &mut out, s);
+            flush_latin(&mut latin, &mut out);
+            flush(&mut cur, &mut out);
         }
     }
-    flush(&mut cur, &mut out, s);
+    flush_latin(&mut latin, &mut out);
+    flush(&mut cur, &mut out);
     out
 }
 
-fn flush(cur: &mut String, out: &mut Vec<String>, _s: &str) {
+fn flush_latin(latin: &mut String, out: &mut Vec<String>) {
+    let chars: Vec<char> = latin.chars().collect();
+    for w in chars.windows(2) {
+        let g: String = w.iter().collect();
+        out.push(g);
+    }
+    latin.clear();
+}
+
+fn flush(cur: &mut String, out: &mut Vec<String>) {
     let chars: Vec<char> = cur.chars().collect();
     for w in chars.windows(2) {
         out.push(w.iter().collect());
