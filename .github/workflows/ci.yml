@@ -90,6 +90,8 @@ jobs:
       - run: pip install pyyaml
       - name: LayerManifest gate
         run: python scripts/check_manifests.py
+      - name: Document number guard (W8)
+        run: python scripts/check_numbers.py
 
   bench:
     runs-on: ubuntu-latest
