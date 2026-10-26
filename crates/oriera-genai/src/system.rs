@@ -128,6 +128,8 @@ struct InFlight {
     task: crate::TaskId,
     name: String,
     kind: crate::GenerationKind,
+    /// 已轮询次数（W12 退避：老任务降频，减少供应商 QPS 压力）。
+    polls: u32,
 }
 
 /// One background job's answer, handed back to the frame through a
@@ -331,6 +333,7 @@ impl System<World> for GenAiSystem {
                         task,
                         kind: req.kind,
                         name: req.name,
+                        polls: 0,
                     });
                 }
                 Err(GenAiError::Unsupported(m)) => {
@@ -360,7 +363,18 @@ impl System<World> for GenAiSystem {
         //    only dispatches due polls and reaps finished ones.
         if self.tick.is_multiple_of(poll_interval as u64) {
             // Dispatch due polls (still bounded by in-flight capacity).
-            for t in self.in_flight.drain(..) {
+            // W12 退避：老任务降频——polls<8 每 tick 派发，之后每 4 tick
+            // 派一次（视频任务 82~212s，高频窗口覆盖最可能完成区间；
+            // 供应商 QPS 压力随任务年龄递减）。
+            let backoff_step = 4u32;
+            let drained: Vec<_> = self.in_flight.drain(..).collect();
+            for mut t in drained {
+                t.polls = t.polls.saturating_add(1);
+                let due = t.polls <= 8 || u64::from(self.tick) % u64::from(backoff_step) == 0;
+                if !due {
+                    self.in_flight.push(t);
+                    continue;
+                }
                 let (tx, rx) = std::sync::mpsc::channel();
                 let provider = Arc::clone(&self.provider);
                 let task = t.task.clone();
@@ -393,13 +407,14 @@ impl System<World> for GenAiSystem {
                     // interval 重新 dispatch 一个新 poll 线程（worker 的
                     // one-shot channel 一次性使用后丢弃）。
                     Ok(JobOutcome::Polled {
-                        flight,
+                        mut flight,
                         result: Ok(_),
                     })
                     | Ok(JobOutcome::Polled {
-                        flight,
+                        mut flight,
                         result: Err(_),
                     }) => {
+                        flight.polls = flight.polls.saturating_add(1);
                         self.in_flight.push(flight);
                     }
                     // Disconnected = worker panic：按失败落地占位（评审
