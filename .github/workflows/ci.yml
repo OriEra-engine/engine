@@ -61,7 +61,9 @@ jobs:
       - name: Build
         run: cargo build --workspace
       - name: Test (${{ matrix.leg.name }})
-        run: ${{ matrix.leg.test }}
+        # timeout 快速失败护栏（2026-10-26 SOP：挂死测试 10 分钟内变红，
+        # 不烧满 job 的 60 分钟硬顶——cancelled 语义模糊且拖累整条流水线）
+        run: timeout 600 ${{ matrix.leg.test }}
       - name: Clippy (${{ matrix.leg.name }})
         run: ${{ matrix.leg.clippy }}
 
@@ -77,7 +79,7 @@ jobs:
         with:
           key: studio-e2e
       - name: Offline acceptance example (studio_e2e — panic is red, #106)
-        run: cargo run -q -p oriera-agent --example studio_e2e
+        run: timeout 900 cargo run -q -p oriera-agent --example studio_e2e
 
   manifests:
     runs-on: ubuntu-latest
