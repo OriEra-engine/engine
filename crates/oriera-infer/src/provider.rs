@@ -258,6 +258,18 @@ pub enum ToolOutcome {
     ToolCalls(Vec<ToolCall>),
 }
 
+/// Result of a STREAMING tool-enabled completion (#105 second half):
+/// text deltas in arrival order (render-as-they-land) plus any tool
+/// calls aggregated from vendor stream fragments (OpenAI `delta.
+/// tool_calls[]` index-sliced arguments; Anthropic `input_json_delta`
+/// partial JSON). Vendors stream prose OR tool requests in one reply —
+/// both fields populated at once is legal but rare.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamedOutcome {
+    pub chunks: Vec<String>,
+    pub tool_calls: Vec<ToolCall>,
+}
+
 /// The model boundary every consumer depends on (L7 contract,
 /// `oriera.infer.provider.v1`).
 pub trait ModelProvider: Send + Sync {
@@ -295,6 +307,30 @@ pub trait ModelProvider: Send + Sync {
     /// `complete()` reply.
     fn complete_stream(&self, messages: &[ChatMessage]) -> Result<Vec<String>, InferError> {
         Ok(vec![self.complete(messages)?])
+    }
+
+    /// Streaming + tools (#105): like [`ModelProvider::complete_stream`]
+    /// but the model may also request tool calls, which arrive as
+    /// vendor-specific stream fragments and are aggregated into complete
+    /// [`ToolCall`]s (concatenated `arguments_json`, in vendor index
+    /// order). Default: the whole reply as ONE chunk via the blocking
+    /// tool path — an honest "no real streaming" signal, mirroring
+    /// [`ModelProvider::complete_stream`]'s default.
+    fn complete_stream_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDef],
+    ) -> Result<StreamedOutcome, InferError> {
+        match self.complete_with_tools(messages, tools)? {
+            ToolOutcome::Text(t) => Ok(StreamedOutcome {
+                chunks: vec![t],
+                tool_calls: Vec::new(),
+            }),
+            ToolOutcome::ToolCalls(calls) => Ok(StreamedOutcome {
+                chunks: Vec::new(),
+                tool_calls: calls,
+            }),
+        }
     }
 
     /// Token usage of the most recent [`ModelProvider::complete`] call.
