@@ -276,7 +276,6 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
         let due = turn % interval as u64 == 0;
 
         // ---- 异步路径(RFC 0002 v0.5):收割每帧,提交按节拍 ----
-        eprintln!("[diag] run enter: turn={turn} pending={}", self.pending.len());
         // #105: 多槽并发——同一拍可为最多 max_pending 个 NPC 各挂一条
         // 在途台词;收割按 job id 匹配,谁先回谁先落地(世界节拍不再被
         // 单条最慢的供应商往返拖住)。
@@ -295,7 +294,10 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
                     world, p.speaker, &p.persona, &p.partner, reply, p.turn, p.day,
                 );
             }
-            eprintln!("[diag] due check: turn={turn} due={due} pending={}", self.pending.len());
+            eprintln!(
+                "[diag] due check: turn={turn} due={due} pending={}",
+                self.pending.len()
+            );
             if !due {
                 return; // 未到节拍,帧照常走
             }
@@ -1313,10 +1315,7 @@ mod tests {
                 "async must cover every speaker: missing {sp}"
             );
             for t in texts {
-                assert!(
-                    bank.contains(t.as_str()),
-                    "line not in rule bank: {t}"
-                );
+                assert!(bank.contains(t.as_str()), "line not in rule bank: {t}");
             }
         }
 
@@ -1612,7 +1611,8 @@ mod tests {
         let multiset = |l: &InferenceLedger| {
             let mut m: std::collections::BTreeMap<(u64, u64, String), usize> = Default::default();
             for e in &l.entries {
-                *m.entry((e.prompt, e.response, e.provider.clone())).or_default() += 1;
+                *m.entry((e.prompt, e.response, e.provider.clone()))
+                    .or_default() += 1;
             }
             m
         };
