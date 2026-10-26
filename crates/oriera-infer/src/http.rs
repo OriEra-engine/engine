@@ -72,8 +72,8 @@ fn usage_cached(v: &Value, prompt: u64) -> u64 {
 }
 
 use crate::provider::{
-    ChatMessage, InferError, ModelProvider, ProviderConfig, ProviderKind, ProviderOptions, Role,
-    StreamedOutcome, ToolCall, ToolDef, ToolOutcome,
+    ChatMessage, EmbeddingProvider, InferError, ModelProvider, ProviderConfig, ProviderKind,
+    ProviderOptions, Role, StreamedOutcome, ToolCall, ToolDef, ToolOutcome,
 };
 use oriera_common::TokenUsage;
 use serde_json::{json, Value};
@@ -1134,7 +1134,8 @@ impl HttpEmbeddingProvider {
         if key.is_empty() {
             return s.to_string();
         }
-        s.replace(key, "***").replace(&format!("Bearer {key}"), "Bearer ***")
+        s.replace(key, "***")
+            .replace(&format!("Bearer {key}"), "Bearer ***")
     }
 }
 
@@ -1169,10 +1170,13 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
         if let Some(rows) = v.get("data").and_then(Value::as_array) {
             for row in rows {
                 let idx = row.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                let emb: Option<Vec<f32>> = row
-                    .get("embedding")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_f64).map(|x| x as f32).collect());
+                let emb: Option<Vec<f32>> =
+                    row.get("embedding").and_then(Value::as_array).map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_f64)
+                            .map(|x| x as f32)
+                            .collect()
+                    });
                 if idx < n {
                     if let Some(emb) = emb {
                         out[idx] = Some(emb);
@@ -1183,7 +1187,9 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
         out.into_iter()
             .enumerate()
             .map(|(i, slot)| {
-                slot.ok_or_else(|| InferError::Parse(format!("embeddings response missing index {i}")))
+                slot.ok_or_else(|| {
+                    InferError::Parse(format!("embeddings response missing index {i}"))
+                })
             })
             .collect()
     }

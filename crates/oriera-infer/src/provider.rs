@@ -1586,18 +1586,15 @@ mod preset_tests {
 /// memory retrieval: the offline bigram keyword tier stays the default
 /// (zero network, deterministic); an [`EmbeddingProvider`] upgrades
 /// scoring to cosine similarity when one is wired in.
-
 pub trait EmbeddingProvider: Send + Sync {
     /// Stable provider id for metrics (`oriera_embedding_provider{...}`).
     fn id(&self) -> &str;
 
     /// One vector per input text, same order — implementations MUST
     /// keep positional correspondence (HTTP providers reorder by the
-    /// vendor's `index` field, never by arrival).
+    /// vendor's `index` field, never by arrival). Vectors carry their
+    /// own length; no separate dims declaration (a slot nobody reads).
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, InferError>;
-
-    /// Vector dimensionality (a per-provider contract constant).
-    fn dims(&self) -> usize;
 }
 
 /// Deterministic local embedder — the offline tier made explicit. Hashed
@@ -1654,17 +1651,6 @@ fn is_cjk(c: char) -> bool {
     ('\u{4e00}'..='\u{9fff}').contains(&c)
 }
 
-/// FNV-1a 32-bit — the engine's hash family of record (same spirit as
-/// the state fingerprint), platform-independent by construction.
-fn fnv1a(bytes: &[u8]) -> u32 {
-    let mut h: u32 = 0x811c_9dc5;
-    for b in bytes {
-        h ^= u32::from(*b);
-        h = h.wrapping_mul(0x0100_0193);
-    }
-    h
-}
-
 impl EmbeddingProvider for HashEmbeddingProvider {
     fn id(&self) -> &str {
         "hash:local"
@@ -1676,9 +1662,15 @@ impl EmbeddingProvider for HashEmbeddingProvider {
             .map(|text| {
                 let mut v = vec![0.0f32; self.dims];
                 for token in Self::tokenize(text) {
-                    let h = fnv1a(token.as_bytes());
+                    // Same hash family as the state/inference fingerprints
+                    // (fnv1a, fixed seed) — one family, not two.
+                    let h = fnv1a(0x0000_6f72_6965_7261, token.as_bytes());
                     let idx = (h as usize) % self.dims;
-                    let sign = if h & 0x8000_0000 == 0 { 1.0 } else { -1.0 };
+                    let sign = if h & 0x8000_0000_0000_0000 == 0 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
                     v[idx] += sign;
                 }
                 let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -1690,10 +1682,6 @@ impl EmbeddingProvider for HashEmbeddingProvider {
                 v
             })
             .collect())
-    }
-
-    fn dims(&self) -> usize {
-        self.dims
     }
 }
 

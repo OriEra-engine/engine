@@ -477,7 +477,11 @@ mod tests {
         );
         m.record("a", ep(2, "world", "外面下大雨了记得带伞", 3));
         let emb = oriera_infer::HashEmbeddingProvider::new(64);
-        let pick = |q: &str| m.retrieve_embedded(&emb, "a", "world", q, 10, 1)[0].text.clone();
+        let pick = |q: &str| {
+            m.retrieve_embedded(&emb, "a", "world", q, 10, 1)[0]
+                .text
+                .clone()
+        };
         assert!(pick("埃塞咖啡果酸重").contains("咖啡"), "semantic pick #1");
         assert!(pick("外面下雨了怎么办").contains("雨"), "semantic pick #2");
         assert_eq!(
@@ -496,10 +500,7 @@ mod tests {
             fn id(&self) -> &str {
                 "down"
             }
-            fn embed(
-                &self,
-                _: &[String],
-            ) -> Result<Vec<Vec<f32>>, oriera_infer::InferError> {
+            fn embed(&self, _: &[String]) -> Result<Vec<Vec<f32>>, oriera_infer::InferError> {
                 Err(oriera_infer::InferError::Provider("down".into()))
             }
         }
