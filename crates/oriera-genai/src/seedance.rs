@@ -185,7 +185,9 @@ impl GenerationProvider for SeedanceProvider {
                 let bytes = self.fetch(&url)?;
                 let model = self.model_for(tier);
                 let usage = usage.map(|mut u| {
-                    u.cost_micros = Some(u.tokens / 1000 * Self::price_micros_per_ktoken(model));
+                    // 先乘后除（评审 R3 QA P2：先除后乘每条截断少记
+                    // ~0.9k tokens 等效成本）
+                    u.cost_micros = Some(u.tokens * Self::price_micros_per_ktoken(model) / 1000);
                     u
                 });
                 Ok(TaskStatus::Succeeded(GeneratedAsset {
@@ -491,7 +493,8 @@ mod tests {
 
     #[test]
     fn usage_tokens_and_cost_ride_the_asset() {
-        // 108900 tokens on the mini tier → 108 * 23000 = 2_484_000 micros (¥2.48).
+        // 108900 tokens on the mini tier → 108900 * 23000 / 1000
+        // = 2_504_700 micros (¥2.50, 先乘后除无截断——与 meter 记账同口径).
         let t = fixture_transport(vec![
             HttpResponse::ok(crate::tiny_mp4_stub()),
             HttpResponse::ok(
@@ -513,7 +516,7 @@ mod tests {
             TaskStatus::Succeeded(a) => {
                 let u = a.usage.expect("usage present");
                 assert_eq!(u.tokens, 108_900);
-                assert_eq!(u.cost_micros, Some(108 * 23_000));
+                assert_eq!(u.cost_micros, Some(2_504_700));
                 assert!(a.model.contains("mini"));
             }
             other => panic!("expected success, got {other:?}"),

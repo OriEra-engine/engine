@@ -833,9 +833,9 @@ mod tests {
         let meter = *w.resource::<GenAiMeter>().unwrap();
         assert_eq!(meter.tokens_in, 108900, "usage tokens must land");
         // Seedance 牌价已登记（price_micros_per_ktoken 按档位折算）：
-        // 108900 tokens → 108.9 k × 每千 token 价 = 3348000 µ元。
+        // 108900 tokens × 31000 µ元/k ÷ 1000 = 3375900 µ元（先乘后除）。
         assert_eq!(
-            meter.cost_micros_in, 3348000,
+            meter.cost_micros_in, 3375900,
             "cost must be folded from the vendor metering"
         );
     }
