@@ -13,7 +13,7 @@
 [![Discussions](https://img.shields.io/badge/discussions-join-5b8def.svg)](https://github.com/OriEra-engine/engine/discussions)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![GitHub Pages](https://img.shields.io/github/deployments/OriEra-engine/engine/github-pages?label=pages)](https://oriera-engine.github.io/engine/)
-[![AtomGit](https://atomgit.com/OriEra-engine/engine/star/new_badge.svg)](https://atomgit.com/OriEra-engine/engine)
+[![AtomGit](https://atomgit.com/OriEra-engine/engine/star/badge.svg)](https://atomgit.com/OriEra-engine/engine)
 
 中文 · [English](README.en.md)
 
