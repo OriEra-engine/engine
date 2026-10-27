@@ -28,6 +28,10 @@ pub mod mock;
 #[cfg(feature = "providers")]
 pub mod rodin;
 #[cfg(feature = "providers")]
+pub mod tts;
+#[cfg(feature = "providers")]
+pub use tts::{HttpTtsProvider, TtsProvider};
+#[cfg(feature = "providers")]
 pub mod seedance;
 pub mod system;
 #[cfg(all(test, feature = "providers"))]
