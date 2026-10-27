@@ -293,7 +293,7 @@ assets/          logo、hero GIF 等品牌资产
 ## 9. 测试、CI 与性能
 
 - 全仓测试数以 CI 实测为准（2026-10-25 口径：workspace 238 + genai `providers` 59 + agent `json` 60 + subsys `rigid` 15 + infer `native-http` 97 + kernel node 35，含 v0.8 韧性批次、#98 golden fixture、#109/#110 评审批次与 #111-#114 生成供应商批次；分项含少量 doctest），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
-- 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 至 v0.8.0 共 9 份）。
+- 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 至 v0.8.1 共 10 份）。
 - 基准怎么跑、当前参考数据见 [PERF.md](PERF.md)。
 
 ## 10. 常见问题
