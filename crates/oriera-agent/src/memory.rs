@@ -128,7 +128,10 @@ impl MemoryStore {
                 let text = bigrams(&format!("{}{}", e.text, e.about));
                 let hits = q_bigrams.iter().filter(|g| text.contains(*g)).count();
                 let offline = offline_score(e, hits, now, about);
-                (offline + 2.0 * (cosine(q, emb) + 1.0) / 2.0, e)
+                // 语义项无 +1 基线（AI 原生三轮评审 P1）：曾用 2×(cos+1)/2
+                // 使无关文本也白得 ~1.0 分，0.8 过滤被整体中和、陈旧条目
+                // 全放行——负/零相关不得白得分。
+                (offline + 2.0 * cosine(q, emb).max(0.0), e)
             })
             .filter(|(s, _)| *s > 0.8)
             .collect();
@@ -277,43 +280,42 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 
 fn bigrams(s: &str) -> Vec<String> {
+    // #139 真对齐（架构师三轮评审抓包：此前 commit 声称对齐但实现仍是
+    // 字符对+不去重）。与 kernel.js zhBigrams 逐语义一致：
+    //   CJK 连续段 → 相邻二元组；latin 连续字母 ≥3 → 整词；全小写；
+    //   Set 去重、保首现序。
     let lower = s.to_lowercase();
+    let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-
-    let mut cur = String::new();
-    let mut latin = String::new();
-    for ch in lower.chars() {
-        if ('\u{4E00}'..='\u{9FA5}').contains(&ch) {
-            flush_latin(&mut latin, &mut out);
-            cur.push(ch);
-        } else if ch.is_ascii_alphabetic() {
-            flush_latin(&mut latin, &mut out);
-            latin.push(ch);
+    let push = |g: String, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>| {
+        if seen.insert(g.clone()) {
+            out.push(g);
+        }
+    };
+    let chars: Vec<char> = lower.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if ('\u{4E00}'..='\u{9FA5}').contains(&chars[i]) {
+            let start = i;
+            while i < chars.len() && ('\u{4E00}'..='\u{9FA5}').contains(&chars[i]) {
+                i += 1;
+            }
+            for w in start..i - 1 {
+                push(format!("{}{}", chars[w], chars[w + 1]), &mut seen, &mut out);
+            }
+        } else if chars[i].is_ascii_alphabetic() {
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            if i - start >= 3 {
+                push(chars[start..i].iter().collect(), &mut seen, &mut out);
+            }
         } else {
-            flush_latin(&mut latin, &mut out);
-            flush(&mut cur, &mut out);
+            i += 1;
         }
     }
-    flush_latin(&mut latin, &mut out);
-    flush(&mut cur, &mut out);
     out
-}
-
-fn flush_latin(latin: &mut String, out: &mut Vec<String>) {
-    let chars: Vec<char> = latin.chars().collect();
-    for w in chars.windows(2) {
-        let g: String = w.iter().collect();
-        out.push(g);
-    }
-    latin.clear();
-}
-
-fn flush(cur: &mut String, out: &mut Vec<String>) {
-    let chars: Vec<char> = cur.chars().collect();
-    for w in chars.windows(2) {
-        out.push(w.iter().collect());
-    }
-    cur.clear();
 }
 
 #[cfg(test)]
@@ -509,5 +511,29 @@ mod tests {
         let offline = m.retrieve("a", "w", "咖啡凉了", 10, 5);
         let degraded = m.retrieve_embedded(&Down, "a", "w", "咖啡凉了", 10, 5);
         assert_eq!(offline, degraded);
+    }
+}
+
+/// #139 真对齐回归钉（架构师三轮评审抓包：此前 commit 声称对齐但实现
+/// 仍字符对+不去重）。与 kernel.js zhBigrams 同规格：CJK 相邻二元组、
+/// latin 纯字母 ≥3 整词、全小写、去重保首现序。
+#[cfg(test)]
+mod bigram_grammar_tests {
+    use super::bigrams;
+
+    #[test]
+    fn grammar_matches_kernel_zhbigrams() {
+        // CJK 段成对；latin 整词（非字符对）；短 latin（<3）丢弃
+        assert_eq!(bigrams("咖啡豆"), vec!["咖啡", "啡豆"]);
+        assert_eq!(
+            bigrams("coffee 茶"),
+            vec!["coffee"],
+            "单字 CJK 无相邻对（kernel 同规格）"
+        );
+        assert_eq!(bigrams("ab Coffee"), vec!["coffee"], "小写化+短词丢弃+整词");
+        // 去重保首现序
+        assert_eq!(bigrams("咖啡咖啡"), vec!["咖啡", "啡咖"], "去重+尾字不成对");
+        // 中英混排：CJK 段独立成对、latin 整词独立、互不粘连
+        assert_eq!(bigrams("来杯coffee好喝"), vec!["来杯", "coffee", "好喝"]);
     }
 }

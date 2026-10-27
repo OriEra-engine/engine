@@ -363,14 +363,16 @@ impl System<World> for GenAiSystem {
         //    only dispatches due polls and reaps finished ones.
         if self.tick.is_multiple_of(poll_interval as u64) {
             // Dispatch due polls (still bounded by in-flight capacity).
-            // W12 退避：老任务降频——polls<8 每 tick 派发，之后每 4 tick
-            // 派一次（视频任务 82~212s，高频窗口覆盖最可能完成区间；
-            // 供应商 QPS 压力随任务年龄递减）。
+            // W12 退避：老任务降频——前 8 个轮询机会每机会派发，之后每
+            // 4 个机会派一次（视频任务 82~212s，高频窗口覆盖最可能完成
+            // 区间；供应商 QPS 压力随任务年龄递减）。按任务自身机会计数
+            // 而非全局 tick 取模（架构师三轮评审 P1：poll_interval 为 4
+            // 的倍数或预算拉伸时，派发 tick 恒 %4==0，全局式退避零生效）。
             let backoff_step = 4u32;
             let drained: Vec<_> = std::mem::take(&mut self.in_flight);
             for mut t in drained {
                 t.polls = t.polls.saturating_add(1);
-                let due = t.polls <= 8 || self.tick.is_multiple_of(u64::from(backoff_step));
+                let due = t.polls <= 8 || (t.polls - 8) % backoff_step == 0;
                 if !due {
                     self.in_flight.push(t);
                     continue;
@@ -407,14 +409,16 @@ impl System<World> for GenAiSystem {
                     // interval 重新 dispatch 一个新 poll 线程（worker 的
                     // one-shot channel 一次性使用后丢弃）。
                     Ok(JobOutcome::Polled {
-                        mut flight,
+                        flight,
                         result: Ok(_),
                     })
                     | Ok(JobOutcome::Polled {
-                        mut flight,
+                        flight,
                         result: Err(_),
                     }) => {
-                        flight.polls = flight.polls.saturating_add(1);
+                        // polls 只在派发侧计数（架构师三轮评审 P1：派发
+                        // +1 与收割再 +1 是双重计数，全速率窗口实为 4 次
+                        // 而非注释的 8）——这里只回收排队。
                         self.in_flight.push(flight);
                     }
                     // Disconnected = worker panic：按失败落地占位（评审

@@ -199,7 +199,7 @@ groq/openrouter/anthropic）——玩家对话、prompt 与世界状态摘要会
 |---|---|---|---|---|
 | L10 语音入言（说话即操作） | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | MIT | 本地 server（OpenAI `/v1/audio/transcriptions` 兼容）→ L9 `parse` | 📋 座位已留 |
 | L10 语音出口（NPC 开口） | [rhasspy/piper](https://github.com/rhasspy/piper) | MIT（音色随数据集） | 本地 HTTP → L6 动画/音频位 | 📋 座位已留 |
-| L9 记忆检索升级（bigram→向量） | [BAAI/bge-small-zh-v1.5](https://huggingface.co/BAAI/bge-small-zh-v1.5)（~26MB） | MIT | 本地 embedding 端点；`MemoryStore` 检索器可插拔位 | 📋 座位已留 |
+| L9 记忆检索升级（bigram→向量） | [BAAI/bge-small-zh-v1.5](https://huggingface.co/BAAI/bge-small-zh-v1.5)（~26MB） | MIT | 本地 embedding 端点 → `oriera_infer::EmbeddingProvider`（#141 已就位：本地 Hash 档默认可用 + HttpEmbeddingProvider native-http 门控）+ `MemoryStore::retrieve_embedded` | ✅ 座位已就位 |
 | L9/L11 看世界（视觉反馈） | [vikhyatk/moondream2](https://huggingface.co/vikhyatk/moondream2) / [SmolVLM](https://github.com/huggingface/smollm) | Apache-2.0 | 本地 VLM 端点 → 截图→世界状态注入 | 📋 座位已留 |
 | L8 图像生成本地化 | [ComfyUI](https://github.com/comfyanonymous/ComfyUI) / [FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell) | GPL-3.0 / Apache-2.0（权重） | OpenAI images 方言本地代理 → 现有 `CogViewProvider` 改 `base_url` 即插 | ✅ 通道已通（demo 13/言出法随同路） |
 | L6 刚体物理（学术深度） | [MuJoCo](https://github.com/google-deepmind/mujoco)（[mujoco-rs](https://github.com/davidhozic/mujoco-rs) 绑定活跃） | Apache-2.0 | feature `mujoco` 后端位（接触/肌腱/执行器） | ✅ Rapier 已接线，MuJoCo 为深水后端位 |
