@@ -72,7 +72,7 @@ pub enum StoryValue {
 }
 
 impl StoryValue {
-    fn as_int(&self) -> i64 {
+    pub fn as_int(&self) -> i64 {
         match self {
             StoryValue::Int(i) => *i,
             StoryValue::Bool(b) => *b as i64,
