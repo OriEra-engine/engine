@@ -754,6 +754,10 @@ struct StreamToolAcc {
     args: String,
 }
 
+/// 一次流式回复的并发工具调用上限（安全测评 P0：index 是端点可控数据，
+/// 无上限 resize = 一行小帧触发 ~72GB 分配的远程 OOM 面）。
+const MAX_STREAM_TOOL_CALLS: usize = 64;
+
 impl HttpProvider {
     /// One SSE pass: text deltas in arrival order + tool calls
     /// aggregated from vendor fragments (#105). `tools == None` = plain
@@ -786,10 +790,14 @@ impl HttpProvider {
         let mut tool_acc: Vec<Option<StreamToolAcc>> = Vec::new();
         let mut usage = TokenUsage::ZERO;
         let mut line = String::new();
+        // chunk 缓冲外提复用（性能三轮评审 P2）：读循环每行一次堆分配
+        // 是一条回复数百次 alloc/free 的白耗——read_line_capped 只 extend
+        // 不清空，外提后 clear 即可。
+        let mut chunk = Vec::new();
         let mut total: usize = 0;
         loop {
             line.clear();
-            let mut chunk = Vec::new();
+            chunk.clear();
             let n = match read_line_capped(&mut reader, &mut chunk, line_cap) {
                 Ok(n) => n,
                 // 帽溢出 = 端点答了垃圾（Parse），不是没够到对端——
@@ -838,6 +846,14 @@ impl HttpProvider {
                     {
                         for tc in tcs {
                             let idx = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                            // 2026-10-26 安全测评 P0：index 来自端点可控数据，
+                            // 无上限的 resize=一行小帧要求 ~72GB 分配的远程
+                            // OOM 面。64 个并发工具调用已是合理上限。
+                            if idx >= MAX_STREAM_TOOL_CALLS {
+                                return Err(InferError::Parse(format!(
+                                    "tool_call index {idx} exceeds {MAX_STREAM_TOOL_CALLS}"
+                                )));
+                            }
                             if tool_acc.len() <= idx {
                                 tool_acc.resize_with(idx + 1, || None);
                             }
@@ -881,6 +897,11 @@ impl HttpProvider {
                             == Some("tool_use")
                         {
                             let idx = v.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                            if idx >= MAX_STREAM_TOOL_CALLS {
+                                return Err(InferError::Parse(format!(
+                                    "tool_use block index {idx} exceeds {MAX_STREAM_TOOL_CALLS}"
+                                )));
+                            }
                             if tool_acc.len() <= idx {
                                 tool_acc.resize_with(idx + 1, || None);
                             }
@@ -1153,7 +1174,9 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
                 "no api key configured — the key only ever enters via the shell (env/UI), never the engine".into(),
             ));
         }
-        let body = json!({ "model": self.cfg.model, "input": texts });
+        // 显式 float 编码（AI 原生三轮评审）：部分网关默认返回 base64
+        // 编码向量，解析会静默退化为 missing-index 错。
+        let body = json!({ "model": self.cfg.model, "input": texts, "encoding_format": "float" });
         let resp = self
             .agent
             .post(&self.url)
@@ -2516,6 +2539,81 @@ data: [DONE]\n\n";
         match p.sse_stream(&[ChatMessage::user("x")], None, 1024, 64) {
             Err(InferError::Parse(m)) => assert!(m.contains("exceeded 64 bytes"), "{m}"),
             other => panic!("expected total-cap Parse, got {other:?}"),
+        }
+    }
+
+    /// #101 第二步：embeddings wire——请求形状（含显式 float 编码）与
+    /// index 重装（供应商可乱序应答）。
+    #[test]
+    fn embeddings_wire_request_and_index_reassembly() {
+        let mock = Mock::spawn(vec![Step::Reply(
+            200,
+            r#"{"data":[{"index":1,"embedding":[3.0,4.0]},{"index":0,"embedding":[1.0,0.0]}]}"#
+                .into(),
+        )]);
+        let p = HttpEmbeddingProvider::with_timeouts(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "emb".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(500),
+        )
+        .unwrap();
+        let v = p.embed(&["a".into(), "b".into()]).unwrap();
+        assert_eq!(
+            v,
+            vec![vec![1.0, 0.0], vec![3.0, 4.0]],
+            "reassembled by index, never by arrival"
+        );
+        let req = &mock.requests()[0];
+        assert!(req.contains("/embeddings"));
+        assert!(req.contains("\"input\":[\"a\",\"b\"]"), "batch input array");
+        assert!(
+            req.contains("\"encoding_format\":\"float\""),
+            "AI 原生评审：显式 float"
+        );
+        assert!(req.contains("Bearer test-key"));
+    }
+
+    /// #101：anthropic 无 embeddings 端点——构造期拒绝（诚实失败）。
+    #[test]
+    fn embeddings_reject_anthropic_kind_at_construction() {
+        let cfg = ProviderConfig {
+            kind: ProviderKind::Anthropic,
+            model: "claude".into(),
+            api_key: "k".into(),
+            base_url: None,
+        };
+        assert!(HttpEmbeddingProvider::new(cfg).is_err());
+    }
+
+    /// 安全三轮评审 P0 回归钉：端点可控的 index 无上限曾可触发
+    /// ~72GB 分配的远程 OOM——越界必须 Parse 快速失败。
+    #[test]
+    fn sse_tool_index_overflow_is_parse_not_oom() {
+        let sse = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1000000000,\"function\":{\"name\":\"x\",\"arguments\":\"{}\"}}]}}]}\n\n\
+data: [DONE]\n\n";
+        let mock = Mock::spawn(vec![Step::Reply(200, sse.into())]);
+        let p = provider(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "m".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+        );
+        let tools = vec![crate::provider::ToolDef {
+            name: "x".into(),
+            description: String::new(),
+            parameters_json: "{}".into(),
+        }];
+        match p.complete_stream_with_tools(&[ChatMessage::user("x")], &tools) {
+            Err(InferError::Parse(m)) => assert!(m.contains("exceeds 64"), "{m}"),
+            other => panic!("expected index-cap Parse, got {other:?}"),
         }
     }
 }

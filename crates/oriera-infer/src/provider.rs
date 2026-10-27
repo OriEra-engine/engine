@@ -1632,7 +1632,9 @@ impl HashEmbeddingProvider {
                 }
             } else if c.is_ascii_alphabetic() {
                 let start = i;
-                while i < chars.len() && chars[i].is_ascii_alphanumeric() {
+                // 词法统一（架构师三轮评审）：纯字母 ≥3 整词——与
+                // memory.rs bigrams / kernel.js zhBigrams 同一规格
+                while i < chars.len() && chars[i].is_ascii_alphabetic() {
                     i += 1;
                 }
                 let word: String = chars[start..i].iter().collect();
@@ -1648,7 +1650,7 @@ impl HashEmbeddingProvider {
 }
 
 fn is_cjk(c: char) -> bool {
-    ('\u{4e00}'..='\u{9fff}').contains(&c)
+    ('\u{4e00}'..='\u{9fa5}').contains(&c)
 }
 
 impl EmbeddingProvider for HashEmbeddingProvider {
