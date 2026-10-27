@@ -29,11 +29,16 @@ pub mod cognition;
 pub mod embodied;
 pub mod genai;
 pub mod memory;
+pub mod prefab;
+pub mod story;
+#[cfg(feature = "json")]
+pub mod tools;
 
 pub use cognition::{
     CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WakeEvent, WorldStory,
 };
 pub use memory::{Episode, MemoryStore};
+pub use prefab::{spawn_prefab, spawn_prefab_at, PrefabEntity, PrefabSpec};
 
 use oriera_infer::Command;
 
@@ -48,7 +53,19 @@ use oriera_infer::Command;
 /// the intent keyword suppresses execution ("别清空" is not Clear);
 /// a negation after the keyword does not ("清空，但别关灯" still Clear).
 pub fn parse(input: &str) -> Command {
-    let lower = input.to_lowercase();
+    // 全角数字归一（对镜 kernel v2.1：中文输入法「放５个」常见，评审 P1——
+    // 此前只有 JS 归一，全角输入双端分叉且 fixture 无法表达该差异）。
+    let lower: String = input
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if ('\u{ff10}'..='\u{ff19}').contains(&c) {
+                char::from_u32(c as u32 - 0xfee0).unwrap_or(c)
+            } else {
+                c
+            }
+        })
+        .collect();
     if negation_precedes_intent(&lower) {
         return Command::Unknown(input.to_string());
     }
@@ -208,5 +225,66 @@ mod tests {
     fn negation_after_intent_does_not_suppress() {
         assert_eq!(parse("清空，但别关灯"), Command::Clear);
         assert_eq!(parse("spawn 5, never mind the rest"), Command::Spawn(5));
+    }
+
+    /// #98 golden fixture: the intent vocabulary has ONE source
+    /// (`contracts/golden/intents.json`), read by this test and by
+    /// `kernel.test.mjs` on the JS side. Changing either parser without
+    /// updating the fixture now breaks CI on both ends instead of
+    /// drifting silently.
+    #[test]
+    fn parse_matches_golden_fixture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../contracts/golden/intents.json"
+        );
+        let fx: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(path).expect("read contracts/golden/intents.json"),
+        )
+        .expect("parse intents.json");
+        let cases = fx["cases"].as_array().expect("cases array");
+        assert!(!cases.is_empty(), "fixture must not be empty");
+        for case in cases {
+            let input = case["input"].as_str().expect("case.input");
+            let want = &case["expect"];
+            let kind = want["kind"].as_str().expect("expect.kind");
+            let got = parse(input);
+            match kind {
+                "spawn" => assert_eq!(
+                    got,
+                    Command::Spawn(want["n"].as_f64().expect("n").round() as usize),
+                    "input: {input}"
+                ),
+                "clear" => assert_eq!(got, Command::Clear, "input: {input}"),
+                "gravity" => assert_eq!(
+                    got,
+                    Command::SetGravity(want["g"].as_f64().expect("g") as f32),
+                    "input: {input}"
+                ),
+                "teleport" => assert_eq!(
+                    got,
+                    Command::Teleport(
+                        want["dx"].as_f64().expect("dx") as f32,
+                        want["dy"].as_f64().expect("dy") as f32
+                    ),
+                    "input: {input}"
+                ),
+                "count" => assert_eq!(got, Command::Count, "input: {input}"),
+                "speed" => assert_eq!(
+                    got,
+                    Command::SetSpeed(want["k"].as_f64().expect("k") as f32),
+                    "input: {input}"
+                ),
+                "unknown" => match got {
+                    Command::Unknown(s) => assert_eq!(
+                        s,
+                        want["text"].as_str().expect("expect.text"),
+                        "input: {input}"
+                    ),
+                    other => panic!("input {input}: expected Unknown, got {other:?}"),
+                },
+                other => panic!("fixture has unknown kind: {other}"),
+            }
+        }
     }
 }

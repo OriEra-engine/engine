@@ -22,9 +22,21 @@ pub struct Episode {
 }
 
 /// Per-agent episodic memory with keyword-recency-importance retrieval.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct MemoryStore {
     memories: HashMap<String, Vec<Episode>>,
+    /// Sliding-window cap per agent; `Default` = 60 (the long-standing
+    /// semantic, kept for every existing caller).
+    capacity: usize,
+}
+
+impl Default for MemoryStore {
+    fn default() -> Self {
+        Self {
+            memories: HashMap::new(),
+            capacity: 60,
+        }
+    }
 }
 
 impl MemoryStore {
@@ -32,13 +44,24 @@ impl MemoryStore {
         Self::default()
     }
 
+    /// Per-agent capacity override (#81 kernel-v2 mirror): the browser
+    /// kernel's `new MemoryStore(key, capacity)` needs the same knob
+    /// here — the 60 hardcode was flagged by every vertical demo as the
+    /// first thing an embodied/companion product raises.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            ..Self::default()
+        }
+    }
+
     /// Record an episode for `agent`.
     pub fn record(&mut self, agent: &str, episode: Episode) {
         let v = self.memories.entry(agent.to_string()).or_default();
         v.push(episode);
         let len = v.len();
-        if len > 60 {
-            v.drain(0..len - 60);
+        if len > self.capacity {
+            v.drain(0..len - self.capacity);
         }
     }
 
@@ -62,16 +85,57 @@ impl MemoryStore {
             .map(|e| {
                 let text = bigrams(&format!("{}{}", e.text, e.about));
                 let hits = q.iter().filter(|g| text.contains(*g)).count();
-                let recency = 1.0 / (1.0 + (now.saturating_sub(e.turn)) as f32);
-                let about_bonus = if e.about == about { 1.2 } else { 0.0 };
-                (
-                    hits as f32 * 1.6 + e.importance as f32 * 0.45 + recency * 2.0 + about_bonus,
-                    e,
-                )
+                (offline_score(e, hits, now, about), e)
             })
             .filter(|(s, _)| *s > 0.8)
             .collect();
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        scored.into_iter().take(k).map(|(_, e)| e.clone()).collect()
+    }
+
+    /// Semantic tier of the two-tier retrieval (#101 step two): the
+    /// same ranking as [`MemoryStore::retrieve`] plus a cosine term
+    /// from `embedder` (one BATCH call for query + episodes — a remote
+    /// embedder costs one wire round-trip, not one per episode). Blend:
+    /// `offline + 2.0 × (cos+1)/2`, same `> 0.8` filter. Embedder
+    /// failure degrades VISIBLY to the offline tier (same contract as
+    /// `retrieve`) — never empty results from a broken seat.
+    pub fn retrieve_embedded(
+        &self,
+        embedder: &dyn oriera_infer::EmbeddingProvider,
+        agent: &str,
+        about: &str,
+        query: &str,
+        now: u64,
+        k: usize,
+    ) -> Vec<Episode> {
+        let Some(v) = self.memories.get(agent) else {
+            return Vec::new();
+        };
+        let mut inputs: Vec<String> = Vec::with_capacity(v.len() + 1);
+        inputs.push(format!("{query}{about}"));
+        inputs.extend(v.iter().map(|e| format!("{}{}", e.text, e.about)));
+        let vecs = match embedder.embed(&inputs) {
+            Ok(vs) if vs.len() == inputs.len() => vs,
+            _ => return self.retrieve(agent, about, query, now, k),
+        };
+        let (q, rows) = vecs.split_first().expect("query vector present");
+        let q_bigrams = bigrams(&format!("{query}{about}"));
+        let mut scored: Vec<(f32, &Episode)> = v
+            .iter()
+            .zip(rows)
+            .map(|(e, emb)| {
+                let text = bigrams(&format!("{}{}", e.text, e.about));
+                let hits = q_bigrams.iter().filter(|g| text.contains(*g)).count();
+                let offline = offline_score(e, hits, now, about);
+                // 语义项无 +1 基线（AI 原生三轮评审 P1）：曾用 2×(cos+1)/2
+                // 使无关文本也白得 ~1.0 分，0.8 过滤被整体中和、陈旧条目
+                // 全放行——负/零相关不得白得分。
+                (offline + 2.0 * cosine(q, emb).max(0.0), e)
+            })
+            .filter(|(s, _)| *s > 0.8)
+            .collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
         scored.into_iter().take(k).map(|(_, e)| e.clone()).collect()
     }
 
@@ -185,26 +249,73 @@ impl MemoryStore {
 
 /// CJK bigrams + latin words — the cheap deterministic tokenizer the
 /// wasm kernel mirrors (`zhBigrams`).
-fn bigrams(s: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    for ch in s.chars() {
-        if ('\u{4E00}'..='\u{9FA5}').contains(&ch) {
-            cur.push(ch);
-        } else {
-            flush(&mut cur, &mut out, s);
-        }
-    }
-    flush(&mut cur, &mut out, s);
-    out
+///
+/// #101a 双端对齐（评审 R3 QA P1）：kernel 的词表是 **Set（去重）** 且
+/// latin 走 `[a-z]{3,}` **整词**——Rust 原实现不去重（重复 gram 虚增
+/// hits）且把 latin 拆成字符对（整词检索失效）。本函数与 kernel
+/// zhBigrams 逐语义对齐：CJK 连续段成二元组、latin 连续字母 ≥3 成
+/// 整词、全表去重保首现序。
+/// Shared offline ranking term (hits already counted by the caller):
+/// `hits×1.6 + importance×0.45 + recency×2 + about-bonus` — the ONE
+/// formula both retrieval tiers blend around.
+fn offline_score(e: &Episode, hits: usize, now: u64, about: &str) -> f32 {
+    let recency = 1.0 / (1.0 + (now.saturating_sub(e.turn)) as f32);
+    let about_bonus = if e.about == about { 1.2 } else { 0.0 };
+    hits as f32 * 1.6 + e.importance as f32 * 0.45 + recency * 2.0 + about_bonus
 }
 
-fn flush(cur: &mut String, out: &mut Vec<String>, _s: &str) {
-    let chars: Vec<char> = cur.chars().collect();
-    for w in chars.windows(2) {
-        out.push(w.iter().collect());
+/// Cosine similarity; mismatched lengths or zero vectors score 0 (an
+/// empty embed must not fabricate affinity).
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
     }
-    cur.clear();
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na <= f32::EPSILON || nb <= f32::EPSILON {
+        return 0.0;
+    }
+    dot / (na * nb)
+}
+
+fn bigrams(s: &str) -> Vec<String> {
+    // #139 真对齐（架构师三轮评审抓包：此前 commit 声称对齐但实现仍是
+    // 字符对+不去重）。与 kernel.js zhBigrams 逐语义一致：
+    //   CJK 连续段 → 相邻二元组；latin 连续字母 ≥3 → 整词；全小写；
+    //   Set 去重、保首现序。
+    let lower = s.to_lowercase();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let push = |g: String, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>| {
+        if seen.insert(g.clone()) {
+            out.push(g);
+        }
+    };
+    let chars: Vec<char> = lower.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if ('\u{4E00}'..='\u{9FA5}').contains(&chars[i]) {
+            let start = i;
+            while i < chars.len() && ('\u{4E00}'..='\u{9FA5}').contains(&chars[i]) {
+                i += 1;
+            }
+            for w in start..i - 1 {
+                push(format!("{}{}", chars[w], chars[w + 1]), &mut seen, &mut out);
+            }
+        } else if chars[i].is_ascii_alphabetic() {
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            if i - start >= 3 {
+                push(chars[start..i].iter().collect(), &mut seen, &mut out);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -244,6 +355,31 @@ mod tests {
         assert!(m.retrieve("z", "world", "事件79", 100, 1)[0]
             .text
             .contains("79"));
+    }
+
+    #[test]
+    fn capacity_is_parameterizable_with_sane_default() {
+        // Default stays 60 (every existing caller's semantic).
+        let mut d = MemoryStore::new();
+        for i in 0..70 {
+            d.record("z", ep(i, "world", &format!("e{i}"), 1));
+        }
+        assert_eq!(d.len_total(), 60);
+        // Raised cap honored (kernel-v2 mirror).
+        let mut big = MemoryStore::with_capacity(200);
+        for i in 0..70 {
+            big.record("z", ep(i, "world", &format!("e{i}"), 1));
+        }
+        assert_eq!(big.len_total(), 70);
+        // json round trip: from_json re-records into a DEFAULT-capacity
+        // store, so the #70 sliding window caps the import at 60 — the
+        // documented import semantic (a capacity-carrying import is a
+        // future extension, not an accident).
+        #[cfg(feature = "json")]
+        {
+            let restored = MemoryStore::from_json(&big.to_json()).unwrap();
+            assert_eq!(restored.len_total(), 60);
+        }
     }
 
     #[test]
@@ -329,5 +465,75 @@ mod tests {
         assert!(restored.retrieve("z", "world", "事件79", 100, 1)[0]
             .text
             .contains("79"));
+    }
+
+    /// #101 step two: the semantic tier ranks the lexically-shared
+    /// episode above a same-importance recency-rival, and is
+    /// bit-stable across repeated calls (hash embedder = Pinned).
+    #[test]
+    fn embedded_retrieval_ranks_semantically_and_stays_deterministic() {
+        let mut m = MemoryStore::new();
+        m.record(
+            "a",
+            ep(1, "world", "咖啡豆是埃塞的果酸重等它凉半分钟再喝", 3),
+        );
+        m.record("a", ep(2, "world", "外面下大雨了记得带伞", 3));
+        let emb = oriera_infer::HashEmbeddingProvider::new(64);
+        let pick = |q: &str| {
+            m.retrieve_embedded(&emb, "a", "world", q, 10, 1)[0]
+                .text
+                .clone()
+        };
+        assert!(pick("埃塞咖啡果酸重").contains("咖啡"), "semantic pick #1");
+        assert!(pick("外面下雨了怎么办").contains("雨"), "semantic pick #2");
+        assert_eq!(
+            m.retrieve_embedded(&emb, "a", "world", "咖啡", 10, 2),
+            m.retrieve_embedded(&emb, "a", "world", "咖啡", 10, 2),
+            "hash embedder = Pinned determinism"
+        );
+    }
+
+    /// #101: a broken embedder degrades VISIBLY to exactly the offline
+    /// tier — never empty results from a broken seat.
+    #[test]
+    fn broken_embedder_degrades_to_offline_tier() {
+        struct Down;
+        impl oriera_infer::EmbeddingProvider for Down {
+            fn id(&self) -> &str {
+                "down"
+            }
+            fn embed(&self, _: &[String]) -> Result<Vec<Vec<f32>>, oriera_infer::InferError> {
+                Err(oriera_infer::InferError::Provider("down".into()))
+            }
+        }
+        let mut m = MemoryStore::new();
+        m.record("a", ep(1, "w", "咖啡凉了", 3));
+        let offline = m.retrieve("a", "w", "咖啡凉了", 10, 5);
+        let degraded = m.retrieve_embedded(&Down, "a", "w", "咖啡凉了", 10, 5);
+        assert_eq!(offline, degraded);
+    }
+}
+
+/// #139 真对齐回归钉（架构师三轮评审抓包：此前 commit 声称对齐但实现
+/// 仍字符对+不去重）。与 kernel.js zhBigrams 同规格：CJK 相邻二元组、
+/// latin 纯字母 ≥3 整词、全小写、去重保首现序。
+#[cfg(test)]
+mod bigram_grammar_tests {
+    use super::bigrams;
+
+    #[test]
+    fn grammar_matches_kernel_zhbigrams() {
+        // CJK 段成对；latin 整词（非字符对）；短 latin（<3）丢弃
+        assert_eq!(bigrams("咖啡豆"), vec!["咖啡", "啡豆"]);
+        assert_eq!(
+            bigrams("coffee 茶"),
+            vec!["coffee"],
+            "单字 CJK 无相邻对（kernel 同规格）"
+        );
+        assert_eq!(bigrams("ab Coffee"), vec!["coffee"], "小写化+短词丢弃+整词");
+        // 去重保首现序
+        assert_eq!(bigrams("咖啡咖啡"), vec!["咖啡", "啡咖"], "去重+尾字不成对");
+        // 中英混排：CJK 段独立成对、latin 整词独立、互不粘连
+        assert_eq!(bigrams("来杯coffee好喝"), vec!["来杯", "coffee", "好喝"]);
     }
 }

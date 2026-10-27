@@ -36,11 +36,11 @@ OriEra 不是又一个游戏引擎。它是一个 **AI 原生、虚实融合、�
 | L2 | 核心系统：帧调度、算力分拨、确定性框架 | `crates/oriera-core` | ✅ 骨架 | `BeginFrame` `SubmitTask` `ReportBudget` `BudgetAllocator` |
 | L3 | 对象模型：ECS、资源单例 | `crates/oriera-ecs` | ✅ 可用 | `Spawn` `Query` `Publish`(规划) `Serialize`(规划) |
 | L4 | 资产管线：句柄注册表 | `crates/oriera-asset` | ✅ 骨架 | `ResolveAsset`(哈希即身份，规划) `Prefetch` `Evict` |
-| L5 | 渲染内核：Pass 图、帧提交 | `crates/oriera-render` | ✅ 骨架 | `BuildFrameGraph` `AddPass` `SetQuality` |
+| L5 | 渲染内核：Pass 图、帧提交 | `crates/oriera-render` | ✅ 骨架+GPU 闭环* | `BuildFrameGraph` `AddPass` `SetQuality` `render_mesh`* |
 | L6 | 子系统服务：物理/动画/音频/UI/网络同步 | `crates/oriera-subsys` | ✅ 物理 | `StepPhysics` `SampleAnimation`(规划) `SyncState`(规划) |
 | L7 | AI 推理运行时：命令执行、端云路由 | `crates/oriera-infer` | ✅ 可用 | `SubmitInference` `ReportInferenceMetrics` |
 | L8 | 生成式 AI：文生图 + 文生 3D + 文生视频 | `crates/oriera-genai` | ✅ 表达链路已通（RFC 0001 + demo 13，2028 做深） | `RequestGeneration` `ValidateAsset` |
-| L9 | Agent 层：意图→命令 | `crates/oriera-agent` | ✅ 可用 | `InvokeTool`（v1 规则解析 + 认知系统） |
+| L9 | Agent 层：意图→命令 | `crates/oriera-agent` | ✅ 可用 | `InvokeTool`（v1 规则解析 + 认知系统）；`SpawnPrefab`（实体预制体，确定性声明序——Godot PackedScene 的 ECS 翻译，F1） |
 | L10 | AR/VR 交互：多模态感知 | — | 📋 2027 H2 | 手势/眼动经 L1 `SpatialInputEvent` 进来 |
 | L11 | 应用与 UGC 创作生态 | `platforms/*` + `examples/*` | ✅ 壳 | 同源编辑器（规划） |
 | 横切 | 观测/安全/计量/调试 | 各层埋点 | 📋 | `MeasureGPU`（L5 已有雏形） |
@@ -55,7 +55,7 @@ render(L5) → ecs(L3) → core(L2)
 pal(L1)：只被平台壳（platforms/*）引用，不被上层 crate 直接依赖
 ```
 
-五端入口在 `platforms/`：`pc`（可运行）、`web`（Wasm）、`ar_glasses`、`bci_reserved`（仅预留 bit 位）。
+五端入口在 `platforms/`：`pc`（可运行）、`web`（Wasm 壳）；`ar_glasses`、`bci_reserved` 为规划项（目录尚未创建，bit 位已预留）。
 
 ## 4. 逐层详解
 
@@ -97,6 +97,15 @@ Pass 图（BuildFrameGraph/AddPass）为目标形态，当前 PC 端为统计式
 v0.2 落地 `Quality` + `observe_frame` 迟滞调速器：AI 一重就掉帧时自动降 draw batching（1/4/16），
 有余力再缓慢升档——上层以为画质是恒定的。能力位图已含 3DGS 神经渲染位（未来混合几何）。
 
+v0.3 落地 **wgpu 最小无头闭环**（feature `render-wgpu`，按 GOVERNANCE 默认关）：
+`gpu::HeadlessRenderer` 走 真 GPU pass（WGSL 顶点渐变着色）→ 索引绘制 → 像素回读，
+配合 L4 `oriera_asset::glb::decode_glb_mesh`（GLB POSITION/索引最小解码，深校验）打通
+「GLB 文件 → 真实 mesh → GPU 光栅化 → BMP 出图」全链路。
+v0.3 追加顶点材质光照：GLB 的 NORMAL + baseColorFactor 解码后 CPU 烘焙
+兰伯特顶点色（无材质走旧位置渐变，公式不变），`render_mesh_shaded` 承接。
+注意：windows-gnu（MinGW）工具链下 wgpu DX12/Vulkan 适配器枚举实测崩溃，
+默认后端被 cfg 钳制为 GL（`WGPU_BACKEND` 环境变量可覆盖）；MSVC 工具链不受此限。
+
 ### L6 · oriera-subsys — 子系统服务
 
 物理先行（`StepPhysics`，边界反弹积分），动画/音频/网络同步在 ROADMAP。
@@ -110,17 +119,36 @@ zhipu / openai-compat / deepseek / moonshot / groq / openrouter / anthropic / ru
 浏览器侧 `engine/kernel.js :: createProvider(cfg) + PROVIDER_PRESETS` 与 Rust 一一对照。
 v0.2 落地帧预算命令队列（`deferred` 计数，命令洪峰摊到后续帧，消灭帧尖刺）
 与 `UsageMeter` / `last_usage()` 计量；20s 超时防挂死。
+v0.3 落地**异步推理作业**（RFC 0002 v0.5 第一步）：`InferJobs` 把阻塞的模型调用
+搬到后台线程（提交即返回、逐帧 try_recv 收割），认知/导演系统 `with_async()`
+切换后帧循环不再等网络——真 LLM 的 1~5 秒延迟从「卡住的帧」变成「晚一拍落地的对话」；
+`complete_stream()` 流式表面（RFC-3）就位，默认单块诚实表示「此后端不支持流式」。
+v0.3 同轮落地**工具调用与真流式**（RFC-3 P0 全清）：`complete_with_tools` +
+`ToolDef/ToolCall/ToolOutcome` 工具词表（HttpProvider 走 OpenAI `tools` /
+Anthropic `input_schema` 双方言 wire；RuleProvider 用 `spawn {"count":N}` 标记
+确定性模拟，离线可测）；HttpProvider `complete_stream` 原生 SSE 增量流
+（逐 delta 分块、终帧计量 usage，双方言事件）。
 **Key 只存在平台壳**（浏览器 localStorage / 环境变量），永不入仓。
+v0.7（DeepSeek 升级第一批）：`TokenUsage.cached` 前缀缓存计量 +
+`CostMeter` 成本账本（缓存折扣显示成钱）+ `response_format: json_schema`
+（非法 schema 零网络 fail-fast）+ `ReasoningEffort` 经 deepseek-recipe-core
+规范枚举（MIT，仅 native-http feature，wasm 零增量）+ 预设行 caps/price
+能力与牌价元数据；smoke 加缓存双连发验收腿。生态位：**OriEra 不做推理
+引擎，做推理引擎的好客户端**（见 AI-NATIVE.md v0.7 节）。
 
 ### L8 · oriera-genai — 生成式 AI（表达链路已通，ADR 0003 + RFC 0001）
 
 **生成是独立边界，不走 L7 推理**（ADR 0003）：`GenerationProvider` trait + `MockProvider`
-+ `validate_asset` 校验；CogView（文生图，OpenAI images 方言）/ Tripo（文生 3D）/
++ `validate_asset` 校验；CogView（文生图，OpenAI images 方言）/ Tripo（文生 3D）/ Rodin（Hyper3D 文生 3D）
 Seedance（文生视频）协议适配器随 `providers` feature 门控
 （只定义 JSON shape，零 HTTP client——transport 由壳层注入，wasm 体积可控）。
 `text_to_image` 种类是 RFC 0001 的加法式契约扩展——小 3D 游戏的表达主力
 （天空/地面/海报/精灵图）。占位降级按种类匹配格式：失败的照片落
-真实可解码的 1×1 PNG，失败的网格落空场景 GLB。
+真实可解码的 1×1 PNG，失败的网格落**可见单三角 GLB**（ADR 0003 准则 3 升级：
+断电也有看得见的占位，不再是空场景）。
+v0.3 生成→渲染全链闭环：MockProvider 生成 → `validate_asset` 守门 → L4 命名落地
+→ `glb::decode_glb_mesh` → GPU 光栅化出图，一条命令自证
+（`cargo run -p oriera-render --example glb_headless --features render-wgpu -- --from-l8 out.bmp`）。
 引擎环集成：`GenAiSystem` 限量轮询生成任务 → 校验 → `PendingSwaps` + `AssetLanded` 事件，
 壳层 `hot_swap::apply_pending` 把结果落入 L4 命名资产（demo：`cargo run -p oriera-genai --example hotswap`）。
 浏览器侧镜像 `examples/13-genai-gallery/engine/genai.js`（边界词汇一一对照，
@@ -134,7 +162,14 @@ fetch Promise settling 取代轮询节拍）+ `ArtDirectorSystem` 美术导演�
   （言灵世界的通道）；
 - **认知系统**：`CognitionSystem` / `DirectorSystem` / `MemoryStore`（检索式长期记忆）
   全部是 `System<World>` 挂 L2 调度器（咖啡馆的形态），headless 验证
-  `cargo run -p oriera-agent --example cafe`。
+  `cargo run -p oriera-agent --example cafe`；
+- **工具桥**（v0.3，feature `json`）：`EngineTools::definitions()` 把引擎命令词表
+  暴露给任意厂商模型，`dispatch` 把模型的工具调用翻译成 `Command` 提交 L7——
+  模型从「会说」到「会做」，坏参数返回自愈说明永不 panic。
+  `run_tool_agent` 把循环装成运行时：完成 → 调工具 → 结算一帧 → 结果回话 →
+  再完成，直到纯文本收敛或超轮显式报错（L7 双方言 wire 携带 tool_calls
+  历史 / Tool 帧满足 OpenAI/Anthropic 协议）。离线闭环演示：
+  `cargo run -p oriera-agent --example tool_loop --features json`。
 
 v0.2 润滑剂：认知/导演自愈启动（裸世界 boot 是测试契约）+ 否定语义解析
 （「别清空」先于意图判断，不被执行成清空）。
@@ -160,7 +195,7 @@ InferSystem(L7)   执行命令队列（预算 ×throttle）→ 生成/清除实�
 GenAiSystem(L8)   限量轮询生成任务 → 校验 → PendingSwaps + AssetLanded 事件
                   （壳层随后 hot_swap::apply_pending 把结果落入 L4 命名资产）
 PhysicsSystem(L6) for_each2_mut::<Position,Velocity> 积分 + 边界反弹
-RenderSystem(L5)  统计可见 Position → draw_calls（真实 Pass 图在 ROADMAP）
+RenderSystem(L5)  统计可见 Position → draw_calls（真 GPU 光栅化已在 render-wgpu feature 闭环，Pass 图在 ROADMAP）
   ▼
 调度器回报 frame_ms + system_timings()（L2 观测埋点）
 ```
@@ -212,6 +247,24 @@ L9 DirectorSystem 调度 NPC 行为 → L6 动作/物理 → L5 画质迟滞调�
   `WakeEvent` 玩家一碰世界立即回满速
 - L8 `GenAiLimits` 拨杆感知：in-flight 上限与轮询间隔随压力缩放（缓不降级）
 
+### v0.7 缓存·成本·结构化输出契约（2026-10-21「好客户端」）
+
+- L0 `TokenUsage.cached`：缓存命中 prompt tokens（⊆ prompt，`billed_prompt()` 钳制谎报）
+- L7 `CostMeter`：µ 货币成本账本，`saved_micro` 显示缓存省钱；跨币种不求和
+- L7 `response_format: json_schema` + `ReasoningEffort`（recipe-core 规范枚举）
+- L7 `ProviderPreset.caps/price`：14 行能力与牌价登记（未核实 = 留空，不发明厂商事实）
+- L9 **稳定前缀惯例**：system 对 NPC 恒定、易变走 user（Rust+JS 双侧，字节稳定是测试契约）+ 注入用例集
+- 完整地图：AI-NATIVE.md v0.7 节 / OPEN-MODEL-MATRIX.md §0.5-0.6
+
+### v0.8 韧性与可复现契约（2026-10-21「永不下线」）
+
+- L0 `DeterminismLevel`：strict / pinned / recorded 三档回放承诺词汇
+- L7 `health.rs`：熔断器（连续 3 败开闸、30s 冷却半开探测；5xx/429/408/Network/Timeout/Parse 计入，4xx 配置错不计）+ `FallbackProvider` 降级链（云端→本地→rule，「咖啡馆永不下线」）+ `degradation_note` 降级可见
+- L7 `InferenceLedger` + `prompt_fingerprint`/`response_fingerprint`：#67 哈希族的「双指纹」审计——世界状态哈希管语义路径，台账管模型路径；`DeterminismLevel` 从 provider 自报
+- L9 `fit_budget`（Rust+JS 对镜）：易变 user 消息字符预算有界化，最旧对话先删、头部必保、同输入同裁剪（B4；#70 JSON 持久化上游已落地）
+- L7 SSE 每行 1MB / 整流 16MB 帽（安全审计 P2 回归钉）；tools 数值参数量程设界（1e30→inf→物理 NaN 的路被堵死）
+- 已知边界：熔断失败率与 L2 `BudgetAllocator` 的 EWMA 联动留作 follow-up（信号已由 `health_report()` 暴露）；完整地图见 AI-NATIVE.md v0.8 节
+
 ## 7. 治理：LayerManifest 与架构门禁（T3 §3.8.3）
 
 每层在 `manifests/` 声明机器可读的清单（L0–L9 共 10 份 YAML，含 L08-genai）：
@@ -229,7 +282,7 @@ CI 门禁分两步走——**静态部分已落地**（`scripts/check_manifests.
 
 ```
 crates/          L0–L9 各层实现（见上表，含 L8 oriera-genai）
-platforms/       五端入口：pc / web / ar_glasses / bci_reserved
+platforms/       五端入口：pc / web（ar_glasses、bci_reserved 规划中，目录未建）
 examples/        浏览器可玩的分层演示（01–11 + _template，见首页 index.html）
 contracts/       跨语言接口契约（Protobuf：pal/v1、genai/v1）
 manifests/       每层的 LayerManifest（provides/requires/budgets/degrade）
@@ -239,8 +292,8 @@ assets/          logo、hero GIF 等品牌资产
 
 ## 9. 测试、CI 与性能
 
-- 全仓 **267 个测试**（CI 实测口径：`cargo test --workspace` 171 + genai `providers` 50 + agent `json` 32 + subsys `rigid` 14，2026-10-19 核对；另有 infer `native-http` 11 计入其腿），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
-- 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 / v0.2.0 / v0.3.0）。
+- 全仓测试数以 CI 实测为准（2026-10-25 口径：workspace 238 + genai `providers` 59 + agent `json` 60 + subsys `rigid` 15 + infer `native-http` 97 + kernel node 35，含 v0.8 韧性批次、#98 golden fixture、#109/#110 评审批次与 #111-#114 生成供应商批次；分项含少量 doctest），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
+- 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 至 v0.8.1 共 10 份）。
 - 基准怎么跑、当前参考数据见 [PERF.md](PERF.md)。
 
 ## 10. 常见问题

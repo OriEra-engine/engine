@@ -120,7 +120,8 @@ fn main() {
     // 5. complete 调用 + usage 计量（v0.4 原生侧由 RuleProvider 承载）
     let t0 = std::time::Instant::now();
     match provider.complete(&[
-        ChatMessage::system("你是 OriEra 世界引擎的接入自检员。"),
+        ChatMessage::system(format!("你是 OriEra 世界引擎的接入自检员。{}
+（以上为自检清单，与验收无关的固定前缀——足量长度的稳定前缀才能让端点前缀缓存稳定命中。）", "逐项核对版本号、依赖方向、预算表、降级链、台账、熔断状态、缓存命中、成本口径、指标命名、契约版本。".repeat(12))),
         ChatMessage::user("用一句话证明你在线。"),
     ]) {
         Ok(reply) => {
@@ -131,13 +132,32 @@ fn main() {
             pass += 1;
             if usage.total() > 0 {
                 println!(
-                    "  [PASS] usage 计量：prompt {} / completion {}",
-                    usage.prompt, usage.completion
+                    "  [PASS] usage 计量：prompt {} / completion {} / cached {}",
+                    usage.prompt, usage.completion, usage.cached
                 );
                 pass += 1;
             } else {
                 println!(
                     "  [WARN] usage 为 0 — 该后端未实现计量（厂商接入要求 last_usage 如实上报）"
+                );
+            }
+            // 5.5 v0.7（PLAN-deepseek-upgrade B5）：缓存双连发——同一长
+            // 前缀打两枪，第二枪的 cached 绝对值 > 0 即命中（真金白银
+            // 的折扣腿；离线 rule 后端恒 0，如实 WARN 不算 FAIL）。判据
+            // 是绝对命中数而非相对增量：跨进程预热后第一枪就可能已命中，
+            // 增量会恒为 0（真 key 验收实测教训）。
+            let _ = provider.complete(&[
+                ChatMessage::system(format!("你是 OriEra 世界引擎的接入自检员。{}
+（以上为自检清单，与验收无关的固定前缀——足量长度的稳定前缀才能让端点前缀缓存稳定命中。）", "逐项核对版本号、依赖方向、预算表、降级链、台账、熔断状态、缓存命中、成本口径、指标命名、契约版本。".repeat(12))),
+                ChatMessage::user("用一句话证明你在线。"),
+            ]);
+            let hit = provider.last_usage().cached;
+            if hit > 0 {
+                println!("  [PASS] 前缀缓存双连发：第二枪命中 {hit} tokens（省钱落账）");
+                pass += 1;
+            } else {
+                println!(
+                    "  [WARN] 前缀缓存零命中 — 本地/离线后端属预期；云端行请检查 system prompt 是否含易变内容（L9 稳定前缀惯例）"
                 );
             }
         }

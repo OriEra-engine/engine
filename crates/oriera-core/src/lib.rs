@@ -62,6 +62,10 @@ pub struct Scheduler<W> {
     /// AI-native apps that is usually cognition or inference. Names
     /// are captured once at `add_system`; ticks only rewrite the ms.
     system_ms: Vec<(String, f32)>,
+    /// Externally supplied virtual costs (#103 E4), folded into the
+    /// next tick's allocator observation — tick measures real ms by
+    /// assignment, so extras must merge in after measurement.
+    extra_ms: Vec<(String, f32)>,
     /// Fixed simulation step (issue #66). `Some(dt)` makes every
     /// `FrameCtx::dt` exactly `dt` regardless of wall-clock pacing —
     /// the determinism dial for replay/evaluation workloads. `None`
@@ -94,6 +98,7 @@ impl<W> Scheduler<W> {
             budget_warnings: 0,
             budget_ns: budget_ns.max(1),
             system_ms: Vec::new(),
+            extra_ms: Vec::new(),
             fixed_dt: None,
             allocator: BudgetAllocator::default(),
             grant_table: Vec::new(),
@@ -198,6 +203,15 @@ impl<W> Scheduler<W> {
             timing.1 = t0.elapsed().as_secs_f32() * 1000.0;
         }
 
+        // Merge externally supplied virtual costs (#103 E4) AFTER the
+        // real measurements so they survive to this frame's observation.
+        for (n, e) in &self.extra_ms {
+            if let Some((_, ms)) = self.system_ms.iter_mut().find(|(sn, _)| sn == n) {
+                *ms += e;
+            }
+        }
+        self.extra_ms.clear();
+
         self.allocator.observe(&self.system_ms);
 
         let frame_ms = start.elapsed().as_secs_f32() * 1000.0;
@@ -222,7 +236,7 @@ impl<W> Scheduler<W> {
                 let worst = self
                     .system_ms
                     .iter()
-                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .max_by(|a, b| a.1.total_cmp(&b.1))
                     .map(|(n, _)| n.as_str())
                     .unwrap_or("");
                 tracing::warn!(
@@ -237,6 +251,26 @@ impl<W> Scheduler<W> {
             }
         } else {
             self.consecutive_overruns = 0;
+        }
+    }
+
+    /// Fold an *externally derived* virtual cost into one system's
+    /// observed ms before the next allocator observation (#103, review
+    /// E4: wire the B7 breaker state into the EWMA — a circuit that is
+    /// open is fail-fast, so without compensation a failing AI channel
+    /// would *win* budget, the perverse incentive). The shell computes
+    /// the value, e.g. via
+    /// [`FallbackProvider::regulator_hint_ms`](oriera_infer)'s
+    /// modelled retry/degradation latency. Negative inputs are clamped
+    /// to zero: this API can only *add* pressure, never fake headroom.
+    pub fn observe_extra_cost(&mut self, system_name: &str, extra_ms: f32) {
+        let extra = extra_ms.max(0.0);
+        if extra == 0.0 {
+            return;
+        }
+        match self.extra_ms.iter_mut().find(|(n, _)| n == system_name) {
+            Some((_, v)) => *v += extra,
+            None => self.extra_ms.push((system_name.to_string(), extra)),
         }
     }
 
@@ -297,6 +331,39 @@ mod tests {
         }
         assert_eq!(desktop.budget_warnings, 0);
         assert!((desktop.budget_ms() - 16.6666).abs() < 0.01);
+    }
+
+    #[test]
+    fn extra_cost_pressures_the_ewma_and_never_fakes_headroom() {
+        // #103 E4: a failing (breaker-open) AI channel must LOSE budget
+        // headroom, not win it — negative input is clamped, unknown
+        // system names are a no-op.
+        let mut sched: Scheduler<u32> = Scheduler::with_budget_ns(16_000_000);
+        sched.add_system(Box::new(IncSystem));
+        let mut world = 0u32;
+        sched.tick(&mut world);
+        sched.observe_extra_cost(IncSystem.name(), 100.0);
+        sched.observe_extra_cost(IncSystem.name(), -50.0); // clamped away
+        sched.observe_extra_cost("no-such-system", 99.0); // no-op
+                                                          // The fold lands on the NEXT tick's allocator observation
+                                                          // (real measurements are taken by assignment each tick, extras
+                                                          // merge in after them): +100ms virtual on a 16ms budget must
+                                                          // push the observed load past 1.0 even through EWMA damping.
+        sched.tick(&mut world);
+        let load1 = sched.allocator().load(sched.budget_ms());
+        assert!(load1 > 1.0, "folded cost must register as load: {load1}");
+        // Sustained virtual overload must squeeze the line below full
+        // speed (EWMA converges, then the overrun streak trips it) —
+        // an open breaker LOSES headroom, never wins it.
+        for _ in 0..40 {
+            sched.observe_extra_cost(IncSystem.name(), 100.0);
+            sched.tick(&mut world);
+        }
+        let throttled = sched.allocator().throttle_of(IncSystem.name());
+        assert!(
+            throttled < 1.0,
+            "an over-budget line must be squeezed: throttle={throttled}"
+        );
     }
 
     #[test]

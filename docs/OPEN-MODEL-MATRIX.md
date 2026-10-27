@@ -7,8 +7,9 @@
 
 本文是 [VERTICALS.md](VERTICALS.md) 八赛道的**模型供给侧**：逐赛道给出
 经核实的开源底座（GitHub 仓库、许可证、接入层位）与大厂预留 API。
-接入矩阵的机器可读形态 = L7 `PROVIDER_PRESETS`（13 行，与浏览器
-kernel 一一对照）+ L8 `GenerationProvider` 适配器；冒烟一条命令：
+接入矩阵的机器可读形态 = L7 `PROVIDER_PRESETS`（14 行，与浏览器
+kernel 一一对照，v0.7 起带 caps/price 元数据）+ L8 `GenerationProvider`
+适配器；冒烟一条命令：
 
 ```bash
 cargo run -p oriera-infer --example provider_smoke                        # 离线行
@@ -19,6 +20,43 @@ ORIERA_SMOKE_PROVIDER=ollama cargo run -p oriera-infer --example provider_smoke 
 Community License）= 可用但条款自读；GPL 工具（Blender）= 只做进程级
 适配、不链接代码。
 
+## 0.5 供应商能力与牌价登记（v0.7，PLAN-deepseek-upgrade A1/B5）
+
+L7 `PROVIDER_PRESETS`（14 行，浏览器 kernel 一一对照）自 v0.7 起每行带
+**能力元数据 `caps`**（context_window / structured_output / tools /
+image_input / prompt_cache）与**登记牌价 `price`**（整数 µ 货币单位 /
+百万 tokens）。登记纪律：
+
+- **只登记核实过的事实**：deepseek 行按 2026-10 官方 pricing 页谷时口径
+  登记（V4.1-Flash：miss \$0.15 / hit \$0.003 / out \$0.60 每百万，
+  峰时约 ×2）+ 2026-10-19 `/v1/models` 行情实测（deepseek-chat =
+  V4.1-Flash 别名，1M 上下文、图像输入）；openai 行按 2026-10 检索的
+  gpt-4o-mini 公开一口价登记（无峰谷）。两行均 B8 复核。
+- **未核实 = 留空**：caps 读 `UNREGISTERED`（全保守）、price 读 `None`
+  （成本照计量，记 `unpriced_calls`）——不发明厂商事实。
+- **牌价是带日期的快照**：上游随时调价，B8（模型验收评测套件）落地时
+  逐行复核；缓存命中的折扣由 `CostMeter.saved_micro` 显示成钱。
+- **本地行永不带价**：ollama/vllm/llamacpp/lmstudio 是电费口径，不记账。
+
+### DeepInfer（deepseek-ai/DeepInfer）— 数据中心级远期预留位
+
+DeepSeek 官方开源推理引擎（Apache 2.0，基于 vLLM），服务 DeepSeek-
+V4.1-Flash，**仅支持 NVIDIA SM100 / 昇腾 950** 数据中心卡，当前为
+offline inference 形态（完整生产服务还需外置 KV cache、PD 分离、DP
+负载均衡）。**不进本地 geek rows**（消费级硬件跑不了，诚实）；预留位
+给**科学仿真赛道**（赛道 8）的大规模群体推演自建算力路径——OriEra 与
+它分处生态位两侧：它是供给侧（把模型跑快跑稳），本引擎是消费侧（把
+模型输出当预算内资源调度）——**OriEra 不做推理引擎，做推理引擎的
+好客户端**。
+
+## 0.6 数据边界声明（隐私）
+
+逐预设行一句话：**云端行**（zhipu/openai/qwen/stepfun/deepseek/moonshot/
+groq/openrouter/anthropic）——玩家对话、prompt 与世界状态摘要会出进程
+到对应厂商，key 只存平台壳（浏览器 localStorage / 环境变量）永不入仓；
+**本地行**（ollama/vllm/llamacpp/lmstudio/rule）——**数据不出机，字面
+意义**，教育版（赛道 5）与陪伴赛道的合规卖点据此钉死在工程事实上。
+
 ---
 
 ## 0. 总表：一屏看完
@@ -28,7 +66,7 @@ Community License）= 可用但条款自读；GPL 工具（Blender）= 只做进
 | 1 游戏 | Qwen3（Apache-2.0，ollama/vLLM 起） | Stanford generative-agents（MIT，NPC 社会模拟） | 智谱 GLM / DeepSeek / Kimi（ProviderKind 已接） |
 | 2 具身 | LeRobot（Apache-2.0，策略训练/评测） | Genesis（Apache-2.0，物理仿真）+ MuJoCo（Apache-2.0） | 端侧 NPU 推理 API（L1 route 预留） |
 | **Rapier** | 刚体物理（引擎内嵌 L6 后端，feature `rigid`） | Apache-2.0 | 已接入：`RigidBodySystem`，纯 Rust 零 C 工具链 |
-| 3 AIGC | TripoSR（MIT，图生 3D） | InstantMesh（Apache-2.0）· TRELLIS（MIT）· Hunyuan3D-2（社区许可） | Tripo / Seedance（L8 适配器已有） |
+| 3 AIGC | TripoSR（MIT，图生 3D） | InstantMesh（Apache-2.0）· TRELLIS（MIT）· Hunyuan3D-2（社区许可） | Tripo / Rodin / Seedance（L8 适配器已有） |
 | 4 孪生 | ROS 2（Apache-2.0，设备桥） | OpenUSD（Apache-2.0，场景描述）· Eclipse Ditto（EPL-2.0，数字孪生服务） | AWS IoT TwinMaker / Azure Digital Twins（L1 net 适配） |
 | 5 教育 | MiniCPM（Apache-2.0，端侧零合规） | Qwen3 本地行 | —（教育版钉死本地，合规即卖点） |
 | 6 陪伴 | Mem0（Apache-2.0，记忆层） | Letta/MemGPT（Apache-2.0）· Zep/Graphiti（Apache-2.0） | 智谱 GLM API（zhipu 行已接） |
@@ -77,7 +115,7 @@ Community License）= 可用但条款自读；GPL 工具（Blender）= 只做进
 - **Hunyuan3D-2**（[Tencent-Hunyuan/Hunyuan3D-2](https://github.com/Tencent-Hunyuan/Hunyuan3D-2)）：
   两段式（裸网格→贴图）质量最强之一；**权重是社区许可非 MIT**，
   商用前自读条款——矩阵里明确标注，这是对贡献者的诚实。
-- **大厂预留**：Tripo / Seedance 的 API 适配器已在 L8 落
+- **大厂预留**：Tripo / Rodin / Seedance 的 API 适配器已在 L8 落
   （feature 门控、零 HTTP、transport 注入）；CogView 已由社区 #57 接入。
 
 ## 4. 数字孪生 — 开源协议栈当输入输出
@@ -150,3 +188,21 @@ Community License）= 可用但条款自读；GPL 工具（Blender）= 只做进
 
 > 本文的行目会随生态漂移，维护方式：PR 改 `PROVIDER_PRESETS`
 > （L7）与本文表格，冒烟 harness 自动验证预设行可解析。
+
+
+## 开源模型补给表（v0.6 · GitHub/HF 调研 2026-10-19）
+
+七赛道实战标出的引擎空座位，逐个配 GitHub 上许可证干净的开源模型/引擎。
+**本表是接入地图，不是已接线清单**——接线一项、勾一项。
+
+| 引擎座位 | 开源模型/引擎 | 许可证 | 接入形态 | 状态 |
+|---|---|---|---|---|
+| L10 语音入言（说话即操作） | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | MIT | 本地 server（OpenAI `/v1/audio/transcriptions` 兼容）→ L9 `parse` | 📋 座位已留 |
+| L10 语音出口（NPC 开口） | [rhasspy/piper](https://github.com/rhasspy/piper) | MIT（音色随数据集） | 本地 HTTP → L6 动画/音频位 | 📋 座位已留 |
+| L9 记忆检索升级（bigram→向量） | [BAAI/bge-small-zh-v1.5](https://huggingface.co/BAAI/bge-small-zh-v1.5)（~26MB） | MIT | 本地 embedding 端点 → `oriera_infer::EmbeddingProvider`（#141 已就位：本地 Hash 档默认可用 + HttpEmbeddingProvider native-http 门控）+ `MemoryStore::retrieve_embedded` | ✅ 座位已就位 |
+| L9/L11 看世界（视觉反馈） | [vikhyatk/moondream2](https://huggingface.co/vikhyatk/moondream2) / [SmolVLM](https://github.com/huggingface/smollm) | Apache-2.0 | 本地 VLM 端点 → 截图→世界状态注入 | 📋 座位已留 |
+| L8 图像生成本地化 | [ComfyUI](https://github.com/comfyanonymous/ComfyUI) / [FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell) | GPL-3.0 / Apache-2.0（权重） | OpenAI images 方言本地代理 → 现有 `CogViewProvider` 改 `base_url` 即插 | ✅ 通道已通（demo 13/言出法随同路） |
+| L6 刚体物理（学术深度） | [MuJoCo](https://github.com/google-deepmind/mujoco)（[mujoco-rs](https://github.com/davidhozic/mujoco-rs) 绑定活跃） | Apache-2.0 | feature `mujoco` 后端位（接触/肌腱/执行器） | ✅ Rapier 已接线，MuJoCo 为深水后端位 |
+
+选型铁律不变：**许可证写进表、引擎只认边界 trait、开源进本地行**。
+

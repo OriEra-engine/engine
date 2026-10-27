@@ -5,24 +5,36 @@
  *   CognitionSystem  ↔ crates/oriera-agent/src/cognition.rs (L9)
  *   DirectorSystem   ↔ 同上（AI 导演）
  *   ZhipuProvider    ↔ crates/oriera-infer/src/provider.rs  (L7 ModelProvider)
+ *   parseIntent      ↔ crates/oriera-agent/src/lib.rs::parse (L7 命令通道)
+ *   CommandQueue     ↔ crates/oriera-infer/src/lib.rs::InferSystem (L7 队列)
+ * v2（2026-10-19，八赛道实战反馈）：命令通道 / 认知参数化（场景·台词库·
+ * RNG·max 可注入）/ 记忆容量参数化 / seed·thinking 透传 / 预设表 14 行。
+ * v0.7（2026-10-21，PLAN-deepseek-upgrade 第一批）：opts.schema 透传
+ * （json_schema 优先于 json_object）/ stats.cached 缓存命中计量 / 预设行
+ * caps·price 能力与牌价元数据。全部加法式：不传新参数时行为与 v1 逐位一致。
  * 应用（index.html）只 import 这些服务——应用代码里不允许出现
  * 任何模型调用、Key、prompt 拼装。
  * ============================================================ */
 
 /* ---------- L9 · 长期记忆（与 Rust MemoryStore 同构） ---------- */
 export class MemoryStore {
-  constructor(persistKey = "aicafe.mem.v1") {
+  /** capacity 可注入（v2）：默认 60 保持 v1 语义。Node 测试环境无
+   * localStorage 时静默降级为纯内存（kernel 可被 node --test 直测）。 */
+  constructor(persistKey = "aicafe.mem.v1", capacity = 60) {
     this.persistKey = persistKey;
+    this.capacity = capacity;
     this.mem = {};
     try {
-      const saved = JSON.parse(localStorage.getItem(persistKey) || "null");
-      if (saved) this.mem = saved;
+      if (typeof localStorage !== "undefined") {
+        const saved = JSON.parse(localStorage.getItem(persistKey) || "null");
+        if (saved) this.mem = saved;
+      }
     } catch { /* 损坏的存储当作空白世界 */ }
   }
   record(agent, ep) {
     const v = (this.mem[agent] ||= []);
     v.push(ep);
-    if (v.length > 60) v.splice(0, v.length - 60);
+    if (v.length > this.capacity) v.splice(0, v.length - this.capacity);
     this._save();
   }
   retrieve(agent, about, query, now, k = 4) {
@@ -38,7 +50,7 @@ export class MemoryStore {
       .map(e => {
         const text = bigrams(e.text + e.about);
         let hits = 0; for (const g of q) if (text.has(g)) hits++;
-        const recency = 1 / (1 + (now - e.turn));
+        const recency = 1 / (1 + Math.max(0, now - e.turn)); // v2.1: 未来 turn 钳 0，防 Infinity 恒霸榜
         const aboutBonus = e.about === about ? 1.2 : 0;
         return { e, score: hits * 1.6 + e.imp * 0.45 + recency * 2 + aboutBonus };
       })
@@ -47,9 +59,9 @@ export class MemoryStore {
   }
   agents() { return Object.keys(this.mem); }
   lenTotal() { return Object.values(this.mem).reduce((a, v) => a + v.length, 0); }
-  clear() { this.mem = {}; localStorage.removeItem(this.persistKey); }
+  clear() { this.mem = {}; if (typeof localStorage !== "undefined") localStorage.removeItem(this.persistKey); }
   export() { return JSON.stringify(this.mem, null, 2); }
-  _save() { localStorage.setItem(this.persistKey, JSON.stringify(this.mem)); }
+  _save() { if (typeof localStorage !== "undefined") localStorage.setItem(this.persistKey, JSON.stringify(this.mem)); }
 }
 
 /* ---------- L7 · ModelProvider：创作者自选大模型 ----------
@@ -58,12 +70,133 @@ export class MemoryStore {
  * 走 HttpChatProvider；Anthropic 走专用头；rule 为离线后端。
  * ----------------------------------------------------------- */
 export class HttpChatProvider {
-  /** cfg: {kind, key, model, base} —— Key 只存在浏览器 localStorage */
-  constructor(cfg) { this.cfg = cfg; this.stats = { calls: 0, errors: 0 }; }
+  /** cfg: {kind, key, model, base, breakerThreshold?, breakerCooldownMs?}
+   * —— Key 只存在浏览器 localStorage。v0.8（B7）内置熔断器：连续 N 次
+   * 失败开闸快速失败（不碰网络），冷却后半开探测；4xx 配置类错误不
+   * 计入开闸（坏 key 换条线也没用），5xx/429/408/网络类计入——与
+   * Rust health.rs 的 trips_breaker 逐条对镜。 */
+  constructor(cfg) {
+    this.cfg = cfg; this.stats = { calls: 0, errors: 0 };
+    this.breaker = { state: "closed", consecutiveFailures: 0, openUntil: 0, successes: 0, failures: 0 };
+    this.breakerThreshold = cfg.breakerThreshold ?? 3;
+    this.breakerCooldownMs = cfg.breakerCooldownMs ?? 30000;
+    this.retryDelayMs = cfg.retryDelayMs ?? 900;
+  }
+  /** 安全审计对镜：错误归类——能否靠换条线救回来。 */
+  static tripsBreaker(err) {
+    const m = /HTTP (\d+)/.exec(String(err && err.message || err));
+    if (!m) return true;                       // 网络/中断类：换线可能有用
+    const code = Number(m[1]);
+    return code >= 500 || code === 429 || code === 408;
+  }
   get id() { return (this.cfg.kind || "openai-compat") + ":" + (this.cfg.model || "?"); }
   get ready() { return !!this.cfg.key; }
   async complete(messages, opts = {}) {
     if (!this.ready) throw new Error("no key");
+    // B7 熔断器：open 且未过冷却 → 快速失败；过冷却 → 半开放一个探测过。
+    const bk = this.breaker;
+    if (bk.state === "open") {
+      if (Date.now() < bk.openUntil) {
+        throw new Error("breaker open — failing fast (provider cooling down)");
+      }
+      bk.state = "half-open";
+    }
+    this.stats.calls++;
+    const anthropic = this.cfg.kind === "anthropic";
+    const url = ((this.cfg.base || "") + (anthropic ? "/messages" : "/chat/completions"));
+    const headers = { "Content-Type": "application/json" };
+    if (anthropic) {
+      headers["x-api-key"] = this.cfg.key;
+      headers["anthropic-version"] = "2023-06-01";
+      headers["anthropic-dangerous-direct-browser-access"] = "true";
+    } else headers["Authorization"] = "Bearer " + this.cfg.key;
+    // v3 参数自愈（XLite 接入矩阵实测）：①网关 400 点名 temperature（部分
+    // Claude/Kimi 渠道仅支持默认温度 1）→ 归一为 1 重发；②finish_reason=
+    // length 且内容为空（推理模型思考吃光预算）→ 加倍 max_tokens 重发（上限
+    // 2048）。自愈轮 continue 不消耗传输层重试，不计 breaker 失败（自愈是
+    // 协议适配不是故障）。opts.timeout 可配（默认 20000 不变）。
+    let temp = opts.temp ?? 0.85;
+    let max = opts.max ?? 260;
+    const timeoutMs = opts.timeout ?? 20000;
+    const countRetry = () => { this.stats.retries = (this.stats.retries || 0) + 1; };
+    const buildBody = () => anthropic
+      ? JSON.stringify({ model: this.cfg.model, max_tokens: max,
+          system: messages.filter(m => m.role === "system").map(m => m.content).join("\n"),
+          messages: messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content })) })
+      : JSON.stringify({ model: this.cfg.model, messages,
+          temperature: temp, max_tokens: max,
+          // v0.7 (PLAN-deepseek-upgrade B6)：schema 优先于 json（json_object ⊆
+          // json_schema），与 Rust ProviderOptions.response_schema 对镜。
+          ...(opts.schema ? { response_format: { type: "json_schema", json_schema: { name: "reply", strict: true, schema: opts.schema } } }
+            : opts.json ? { response_format: { type: "json_object" } } : {}),
+          // v2 透传：seed（复现性，OpenAI 兼容方言）与 thinking（推理型
+          // 模型如 DeepSeek-V4 默认 high 档会吃掉 max_tokens 预算，NPC
+          // 对话显式关）。anthropic 分支不动——其协议无对应参数。
+          ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
+          ...(opts.thinking ? { thinking: opts.thinking } : {}) });
+    for (let round = 0; round < 4; round++) {
+      try {
+        const r = await fetch(url, { method: "POST", headers, body: buildBody(), signal: AbortSignal.timeout(timeoutMs) });
+        if (!r.ok) {
+          let errText = "";
+          try { errText = await r.text(); } catch { /* 错误体不可读就只报状态码 */ }
+          // 参数自愈①：400 点名 temperature → 归一 1 重发（一次）。
+          if (!anthropic && r.status === 400 && temp !== 1 && /temperature/i.test(errText)) {
+            temp = 1; countRetry(); continue;
+          }
+          throw new Error("HTTP " + r.status + (errText ? "： " + errText.slice(0, 120) : ""));
+        }
+        const data = await r.json();
+        // 参数自愈②：length 截断且内容空 → 加倍预算重发（一次）。
+        const content = anthropic ? data.content?.[0]?.text : data.choices?.[0]?.message?.content;
+        if (!anthropic && !content && data.choices?.[0]?.finish_reason === "length" && max < 2048) {
+          max = Math.min(max * 2, 2048); countRetry(); continue;
+        }
+        // v0.7 (B5)：缓存命中 tokens 单独累计（三种厂商字段风格，与
+        // Rust http.rs parse_reply 一一对照），供 UI 显示省钱额。
+        const u = data.usage || {};
+        this.stats.tokens = (this.stats.tokens || 0)
+          + ((u.total_tokens ?? u.input_tokens) || 0);
+        // 与 Rust usage_cached 对镜：谎报厂商按 prompt 钳制，省钱额
+        // 永远不可能超过整次调用的满价。
+        const rawCached = (u.prompt_cache_hit_tokens ?? (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens)
+          ?? u.cache_read_input_tokens ?? 0);
+        this.stats.cached = (this.stats.cached || 0) + Math.min(rawCached, u.prompt_tokens ?? u.input_tokens ?? rawCached);
+        // B7：成功闭闸。
+        bk.state = "closed"; bk.consecutiveFailures = 0; bk.openUntil = 0; bk.successes++;
+        return content ?? "";
+      } catch (e) {
+        // B7：调用级记账（与 Rust FallbackProvider 对镜——一次 complete
+        // 的内置重试算一次结果，不逐 attempt 计数）。半开探测失败立即重开。
+        if (round) {
+          bk.failures++;
+          if (HttpChatProvider.tripsBreaker(e)) {
+            bk.consecutiveFailures++;
+            if (bk.consecutiveFailures >= this.breakerThreshold || bk.state === "half-open") {
+              bk.state = "open";
+              bk.openUntil = Date.now() + this.breakerCooldownMs;
+            }
+          }
+          this.stats.errors++;
+          throw e;
+        }
+        await new Promise(z => setTimeout(z, this.retryDelayMs));
+      }
+    }
+  }
+  /** #105：SSE 流式——文本增量按到达序经 opts.onChunk(text) 逐拍回调
+   * （UI 打字机渲染钩子），返回完整增量数组。usage 终帧记账与 complete
+   * 同源（total=in+out；谎报厂商缓存按 prompt 钳制）。流式不做传输层
+   * 自动重试（增量已交付，重放会重复）——失败按 breaker 记账后原样抛。 */
+  async completeStream(messages, opts = {}) {
+    if (!this.ready) throw new Error("no key");
+    const bk = this.breaker;
+    if (bk.state === "open") {
+      if (Date.now() < bk.openUntil) {
+        throw new Error("breaker open — failing fast (provider cooling down)");
+      }
+      bk.state = "half-open";
+    }
     this.stats.calls++;
     const anthropic = this.cfg.kind === "anthropic";
     const url = ((this.cfg.base || "") + (anthropic ? "/messages" : "/chat/completions"));
@@ -74,23 +207,86 @@ export class HttpChatProvider {
       headers["anthropic-dangerous-direct-browser-access"] = "true";
     } else headers["Authorization"] = "Bearer " + this.cfg.key;
     const body = anthropic
-      ? JSON.stringify({ model: this.cfg.model, max_tokens: opts.max ?? 260,
+      ? JSON.stringify({ model: this.cfg.model, max_tokens: opts.max ?? 260, stream: true,
           system: messages.filter(m => m.role === "system").map(m => m.content).join("\n"),
           messages: messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content })) })
       : JSON.stringify({ model: this.cfg.model, messages,
           temperature: opts.temp ?? 0.85, max_tokens: opts.max ?? 260,
-          ...(opts.json ? { response_format: { type: "json_object" } } : {}) });
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const r = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(20000) });
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const data = await r.json();
-        this.stats.tokens = (this.stats.tokens || 0)
-          + ((data.usage && (data.usage.total_tokens ?? data.usage.input_tokens)) || 0);
-        return anthropic ? data.content[0].text : data.choices[0].message.content;
-      } catch (e) {
-        if (attempt) { this.stats.errors++; throw e; }
-        await new Promise(z => setTimeout(z, 900));
+          stream: true, stream_options: { include_usage: true },
+          ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
+          ...(opts.thinking ? { thinking: opts.thinking } : {}) });
+    let r;
+    try {
+      r = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(opts.timeout ?? 60000) });
+    } catch (e) {
+      this.countStreamFailure_(e); throw e;
+    }
+    if (!r.ok) {
+      let errText = "";
+      try { errText = await r.text(); } catch { /* 错误体不可读就只报状态码 */ }
+      const err = new Error("HTTP " + r.status + (errText ? "： " + errText.slice(0, 120) : ""));
+      this.countStreamFailure_(err); throw err;
+    }
+    const chunks = [];
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", usage = null;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (payload === "[DONE]") continue;
+          let v; try { v = JSON.parse(payload); } catch { continue; }
+          if (anthropic) {
+            if (v.type === "content_block_delta" && v.delta && v.delta.text) {
+              chunks.push(v.delta.text); if (opts.onChunk) opts.onChunk(v.delta.text);
+            } else if (v.type === "message_start") {
+              const u = (v.message && v.message.usage) || {};
+              usage = { in: u.input_tokens ?? 0, out: 0, cached: u.cache_read_input_tokens ?? 0 };
+            } else if (v.type === "message_delta" && v.usage) {
+              usage = { in: (usage && usage.in) || 0, out: v.usage.output_tokens ?? 0, cached: (usage && usage.cached) || 0 };
+            }
+          } else {
+            const t = v.choices && v.choices[0] && v.choices[0].delta && v.choices[0].delta.content;
+            if (t) { chunks.push(t); if (opts.onChunk) opts.onChunk(t); }
+            if (v.usage) {
+              const pin = v.usage.prompt_tokens ?? 0;
+              usage = { in: pin, out: v.usage.completion_tokens ?? 0,
+                cached: Math.min(v.usage.prompt_cache_hit_tokens ?? 0, pin) };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      this.countStreamFailure_(e); throw e;
+    }
+    if (!chunks.length) {
+      const err = new Error("stream carried no text deltas (200 but empty SSE body)");
+      this.countStreamFailure_(err); throw err;
+    }
+    if (usage) {
+      this.stats.tokens = (this.stats.tokens || 0) + ((usage.in + usage.out) || 0);
+      this.stats.cached = (this.stats.cached || 0) + (usage.cached || 0);
+    }
+    bk.state = "closed"; bk.consecutiveFailures = 0; bk.openUntil = 0; bk.successes++;
+    return chunks;
+  }
+  /** B7 对镜：流式失败一次记账（与 complete 的调用级口径一致）。 */
+  countStreamFailure_(err) {
+    this.stats.errors++;
+    const bk = this.breaker;
+    bk.failures++;
+    if (HttpChatProvider.tripsBreaker(err)) {
+      bk.consecutiveFailures++;
+      if (bk.consecutiveFailures >= this.breakerThreshold || bk.state === "half-open") {
+        bk.state = "open";
+        bk.openUntil = Date.now() + this.breakerCooldownMs;
       }
     }
   }
@@ -128,15 +324,41 @@ export class ZhipuProvider {
 }
 
 /* ---------- L9 · 认知系统（每 interval tick 一位 NPC 说话） ---------- */
+/** B4（与 Rust fit_budget 逐条对镜）：易变 user 消息的确定性裁剪——
+ * 头部必保，最旧对话先删，再删最旧记忆；同输入同裁剪，回放可比。 */
+export const fitBudget = (user, budget) => {
+  // 与 Rust chars() 对镜：按 Unicode 码点计/裁（[...l] 展开），emoji
+  // 不再一个算两个，硬裁也不会切碎代理对（评审 P1-2）。
+  const count = lines => lines.reduce((a, l) => a + [...l].length + 1, 0);
+  if (count(user.split("\n")) <= budget) return user;
+  const lines = user.split("\n");
+  const ms = lines.findIndex(l => l.startsWith("你的相关记忆"));
+  const rs = lines.findIndex(l => l.startsWith("最近对话"));
+  if (ms >= 0 && rs >= 0) {
+    while (count(lines) > budget && rs + 1 < lines.length) lines.splice(rs + 1, 1);
+    while (count(lines) > budget && ms + 1 < lines.length && ms + 1 !== rs) lines.splice(ms + 1, 1);
+  }
+  let out = lines.join("\n");
+  if ([...out].length > budget) out = Array.from(out).slice(0, budget).join("");
+  return out;
+};
 const MOODS = ["happy", "neutral", "sad", "excited", "thoughtful"];
 const ACTIONS = ["idle", "wave", "dance", "sitting", "walk_to_counter", "yes", "thumbs_up"];
 const extractJSON = s => { const m = (s || "").match(/\{[\s\S]*\}/);
   try { return m ? JSON.parse(m[0]) : null; } catch { return null; } };
 
 export class CognitionSystem {
-  constructor(provider, memory, { interval = 1 } = {}) {
+  /** v2 可注入：scene 世界前缀（默认隅角咖啡馆保持 v1 兼容）、
+   * maxTokens（默认 260=provider 旧默认，线协议不变）、rng（种子化
+   * 复现，默认 Math.random）、ruleBank（离线台词库，默认咖啡馆三人）。 */
+  constructor(provider, memory, { interval = 1, scene, maxTokens, rng, ruleBank, promptBudget } = {}) {
     this.provider = provider; this.memory = memory;
     this.interval = interval; this.cursor = 0;
+    this.scene = scene ?? "隅角咖啡馆";
+    this.maxTokens = maxTokens ?? 260;
+    this.rng = rng ?? Math.random;
+    this.ruleBank = ruleBank ?? null;
+    this.promptBudget = promptBudget ?? 2000;
   }
   async tick(world) {
     world.turn++;
@@ -145,7 +367,7 @@ export class CognitionSystem {
     if (!npcs.length) return null;
     const speaker = npcs[this.cursor % npcs.length];
     const partner = npcs.length > 1
-      ? npcs[(this.cursor + 1 + Math.floor(Math.random() * (npcs.length - 1))) % npcs.length]
+      ? npcs[(this.cursor + 1 + Math.floor(this.rng() * (npcs.length - 1))) % npcs.length]
       : { name: "客人", role: "刚推门的旅行者", description: "" };
     this.cursor++;
     const guest = world.guestQueue.shift() || null;
@@ -155,25 +377,32 @@ export class CognitionSystem {
     const recent = world.dialogue.slice(-6).map(t => `${t.speaker}：${t.text}`);
     const beat = world.story.beats.at(-1) || "平静的日常";
 
-    const sys = `你是「${speaker.name}」，${speaker.role}，活在 OriEra 世界引擎的隅角咖啡馆里。
+    // v0.7 稳定前缀惯例（PLAN-deepseek-upgrade B5，与 Rust cognition.rs
+    // 对镜）：system 消息对该 NPC 恒定——身份、人设、输出格式——让端点
+    // 前缀缓存每拍命中（DeepSeek 缓存命中约为 miss 的 1/50 价）；世界日、
+    // 剧情拍、心情、客人插话、对话对象、记忆、最近对话全部易变内容走
+    // user 消息。字节稳定是测试契约（kernel.test.mjs 双拍断言）。
+    const sys = `你是「${speaker.name}」，${speaker.role}，OriEra 世界引擎·${this.scene}。
 性格：${speaker.description}
-当前心情：${speaker.mood}。世界进度：第 ${world.story.day} 世界日，${beat}
-${guest ? "刚才一位客人说：" + guest + "\n" : ""}
+以${speaker.name}口吻说1~3句口语台词（可引用记忆），只输出 JSON：
+{"say":"...","action":"${ACTIONS.join("|")}","mood":"${MOODS.join("|")}","remember":"≤30字要点，无则空串","to":"对象名"}`;
+    const user = `世界进度：第 ${world.story.day} 世界日，${beat}
+${guest ? "刚才一位客人说：" + String(guest).slice(0, 200) + "\n" : ""}当前你的心情：${speaker.mood}
 对话对象：「${partner.name}」（${partner.role}）。
 你的相关记忆：
 ${mems.length ? mems.map(m => `- (第${m.day}日) ${m.text}`).join("\n") : "-（暂无，可能是第一次聊这个）"}
 最近对话：
 ${recent.join("\n") || "（对话刚开始）"}
-以 ${speaker.name} 的口吻说 1~3 句口语化的话（可引用记忆细节），严格只输出 JSON：
-{"say":"...","action":"${ACTIONS.join("|")}","mood":"${MOODS.join("|")}","remember":"≤30字本轮要点，没有则空串","to":"${partner.name}"}`;
+${guest ? "（客人刚说完，请回应客人）" : `（请对${partner.name}说下一句话）`}`;
+    const boundedUser = fitBudget(user, this.promptBudget);
 
     let res;
     if (this.provider.ready) {
       try {
         const out = await this.provider.complete([
           { role: "system", content: sys },
-          { role: "user", content: guest ? "（客人刚说完，请回应客人）" : `（请对${partner.name}说下一句话）` },
-        ], { json: true, temp: 0.9 });
+          { role: "user", content: boundedUser },
+        ], { json: true, temp: 0.9, max: this.maxTokens });
         const j = extractJSON(out) || {};
         let say = String(j.say || "……").slice(0, 140);
         // 模型常把称呼拼进台词开头，去掉一次重复
@@ -208,7 +437,7 @@ ${recent.join("\n") || "（对话刚开始）"}
   }
   _rule(speaker, partner, world) {
     const beat = world.story.beats.at(-1) || "";
-    const bank = {
+    const bank = this.ruleBank || {
       zhou: [`${partner.name}，还是老样子？这豆子果酸重，等它凉半分钟。`,
              "开店十二年，我记得每个人第一次点的东西。",
              `（看着窗外）${beat ? "这阵子——" + beat.slice(0, 10) + "，唉。" : "这条街变了很多，好在咖啡没变。"}`],
@@ -222,9 +451,9 @@ ${recent.join("\n") || "（对话刚开始）"}
     const lines = bank[speaker.id] || bank.zhou;
     const moods = ["happy", "thoughtful", "excited", "neutral"];
     return {
-      say: lines[Math.floor(Math.random() * lines.length)],
-      action: Math.random() < 0.25 ? "wave" : "idle",
-      mood: moods[Math.floor(Math.random() * moods.length)],
+      say: lines[Math.floor(this.rng() * lines.length)],
+      action: this.rng() < 0.25 ? "wave" : "idle",
+      mood: moods[Math.floor(this.rng() * moods.length)],
       remember: `与${partner.name}聊了${beat ? "关于" + beat.slice(0, 10) : "日常"}`,
       to: partner.name,
     };
@@ -241,8 +470,10 @@ const RULE_BEATS = [
   "咖啡馆一周年展：墙上挂满客人的故事", "新的常客推门进来——故事继续",
 ];
 export class DirectorSystem {
-  constructor(provider, memory, { interval = 8 } = {}) {
+  /** v2：ruleBeats 可注入（默认咖啡馆十二拍，保持 v1 兼容）。 */
+  constructor(provider, memory, { interval = 8, ruleBeats } = {}) {
     this.provider = provider; this.memory = memory; this.interval = interval; this.beatIdx = -1;
+    this.ruleBeats = ruleBeats || RULE_BEATS;
   }
   async tick(world) {
     if (world.turn % this.interval !== 0) return null;
@@ -257,7 +488,7 @@ export class DirectorSystem {
         if (j && j.beat && String(j.beat).length < 60) beat = String(j.beat);
       } catch { /* 降级规则 */ }
     }
-    if (!beat) { this.beatIdx = (this.beatIdx + 1) % RULE_BEATS.length; beat = RULE_BEATS[this.beatIdx]; }
+    if (!beat) { this.beatIdx = (this.beatIdx + 1) % this.ruleBeats.length; beat = this.ruleBeats[this.beatIdx]; }
     world.story.beats.push(beat); if (world.story.beats.length > 30) world.story.beats.shift();
     if (world.turn % (this.interval * 3) === 0) world.story.day++;
     for (const a of this.memory.agents())
@@ -273,18 +504,144 @@ export class Scheduler {
   async tick(world) { for (const s of this.systems) await s.tick(world); }
 }
 
-/* ---------- L7 · 提供商工厂（镜像 Rust create_provider） ---------- */
+/* ---------- L7 · 命令通道（v2 · 镜像 Rust parse + InferSystem） ----------
+ * 八赛道实战（out/verticals 七案）齐声要的缺口：自然语言 → 结构化命令。
+ * parseIntent 只做确定性解析（中英+否定语义，与 Rust L9 parse 同词汇表）；
+ * 执行器由应用注入（浏览器世界形状归应用，引擎管解析与队列纪律：
+ * 帧预算 + 可证安全合并 + 拒绝计数，语义与 Rust InferSystem 一致）。
+ * ------------------------------------------------------------------ */
+const CMD_NEGATIONS = ["不要", "别", "勿", "don't", "dont", "do not", "never"];
+const CMD_INTENTS = ["spawn", "放", "生成", "clear", "清空", "清屏", "gravity", "重力",
+  "teleport", "传送", "how many", "多少", "speed", "速度", "倍速"];
+
+export function parseIntent(input) {
+  // 全角数字归一（v2.1，极客评测 P2：中文输入法「放５个」常见）
+  const lower = String(input).toLowerCase().replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+  const firstNeg = CMD_NEGATIONS.map(n => lower.indexOf(n)).filter(i => i >= 0);
+  const firstKw = CMD_INTENTS.map(k => lower.indexOf(k)).filter(i => i >= 0);
+  if (firstNeg.length && firstKw.length && Math.min(...firstNeg) < Math.min(...firstKw))
+    return { kind: "unknown", text: input };
+  const nums = (lower.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+  if ((lower.includes("spawn") || lower.includes("放") || lower.includes("生成")) && nums.length)
+    return { kind: "spawn", n: Math.max(0, Math.round(nums[0])) };
+  if (lower.includes("clear") || lower.includes("清空") || lower.includes("清屏"))
+    return { kind: "clear" };
+  if ((lower.includes("gravity") || lower.includes("重力")) && nums.length)
+    return { kind: "gravity", g: nums[0] };
+  if ((lower.includes("teleport") || lower.includes("传送")) && nums.length >= 2)
+    return { kind: "teleport", dx: nums[0], dy: nums[1] };
+  if (lower.includes("how many") || lower.includes("多少"))
+    return { kind: "count" };
+  if ((lower.includes("speed") || lower.includes("速度") || lower.includes("倍速")) && nums.length)
+    return { kind: "speed", k: nums[0] };
+  return { kind: "unknown", text: input };
+}
+
+export class CommandQueue {
+  /** executor: (cmd, world) => void，应用注入；预算/合并/计数归引擎。 */
+  constructor(executor, { frameBudget = 32 } = {}) {
+    this.executor = executor; this.frameBudget = frameBudget;
+    this.queue = [];
+    this.processed = 0; this.rejected = 0; this.coalesced = 0;
+  }
+  submit(text) { this.submitIntent(parseIntent(text)); }
+  /** 合并在提交时发生（镜像 Rust InferSystem.submit）：相邻 spawn 求和、
+   * 同型 count 重复合一——都是可证安全的世界等价变换。 */
+  submitIntent(cmd) {
+    const tail = this.queue[this.queue.length - 1];
+    if (tail && cmd.kind === "spawn" && tail.kind === "spawn") { tail.n += cmd.n; this.coalesced++; return; }
+    if (tail && cmd.kind === "count" && tail.kind === "count") { this.coalesced++; return; }
+    this.queue.push(cmd);
+  }
+  get pending() { return this.queue.length; }
+  tick(world) {
+    let budget = this.frameBudget;
+    while (this.queue.length && budget > 0) {
+      const cmd = this.queue.shift();
+      budget--; // unknown 也占预算位（与 Rust 一致：出队即耗预算）
+      if (cmd.kind === "unknown") { this.rejected++; continue; }
+      this.executor(cmd, world);
+      this.processed++;
+    }
+  }
+}
+
+/* ---------- L7 · 提供商工厂（镜像 Rust create_provider） ----------
+ * v0.7：已核实行带 caps（能力元数据，镜像 Rust ModelCaps——结构化输出/
+ * 工具/图像/缓存/上下文窗），未核实行不带（保守缺省，与 Rust
+ * UNREGISTERED 对齐）；deepseek/openai 另带登记牌价 price（µ 货币单位
+ * /百万 tokens，B5 成本记账）。 */
 export const PROVIDER_PRESETS = {
-  zhipu:       { label: "智谱 GLM",       base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash" },
-  openai:      { label: "OpenAI",         base: "https://api.openai.com/v1",             model: "gpt-4o-mini" },
-  deepseek:    { label: "DeepSeek",       base: "https://api.deepseek.com/v1",           model: "deepseek-chat" },
+  rule:        { label: "离线规则引擎",    base: "",                                        model: "rule-v1", local: true },
+  xlite:       { label: "XLite 潜元网关",  base: "https://xlite.dezai.com/v1",             model: "gpt-4o-mini",
+                 caps: { tools: true } },
+  zhipu:       { label: "智谱 GLM",       base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash", caps: { tools: true } },
+  openai:      { label: "OpenAI",         base: "https://api.openai.com/v1",             model: "gpt-4o-mini",
+                 caps: { contextWindow: 128000, structuredOutput: true, tools: true, imageInput: true, promptCache: true },
+                 price: { currency: "USD", promptMicroPerM: 150000, completionMicroPerM: 600000, cachedMicroPerM: 75000 } },
+  qwen:        { label: "Qwen 通义",      base: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
+  stepfun:     { label: "阶跃 Step",      base: "https://api.stepfun.com/v1",            model: "step-3.7-flash" },
+  deepseek:    { label: "DeepSeek",       base: "https://api.deepseek.com/v1",           model: "deepseek-chat",
+                 caps: { contextWindow: 1000000, structuredOutput: true, tools: true, imageInput: true, promptCache: true },
+                 price: { currency: "USD", promptMicroPerM: 150000, completionMicroPerM: 600000, cachedMicroPerM: 3000 } },
   moonshot:    { label: "Moonshot Kimi",  base: "https://api.moonshot.cn/v1",            model: "moonshot-v1-8k" },
   groq:        { label: "Groq",           base: "https://api.groq.com/openai/v1",        model: "llama-3.1-8b-instant" },
   openrouter:  { label: "OpenRouter",     base: "https://openrouter.ai/api/v1",          model: "openrouter/auto" },
-  anthropic:   { label: "Anthropic",      base: "https://api.anthropic.com/v1",          model: "claude-3-5-haiku-latest" },
-  rule:        { label: "离线规则引擎",    base: "",                                        model: "rule-v1" },
+  anthropic:   { label: "Anthropic",      base: "https://api.anthropic.com/v1",          model: "claude-3-5-haiku-latest",
+                 caps: { contextWindow: 200000, tools: true, imageInput: true, promptCache: true } },
+  doubao:      { label: "豆包 · 火山方舟", base: "https://ark.cn-beijing.volces.com/api/v3",  model: "doubao-seed-1.6" },
+  ollama:      { label: "Ollama 本地",     base: "http://127.0.0.1:11434/v1",             model: "qwen3:8b", local: true,
+                 caps: { structuredOutput: true, tools: true } },
+  vllm:        { label: "vLLM 本地",       base: "http://127.0.0.1:8000/v1",              model: "Qwen/Qwen3-8B", local: true,
+                 caps: { structuredOutput: true, tools: true } },
+  llamacpp:    { label: "llama.cpp 本地",  base: "http://127.0.0.1:8080/v1",              model: "glm-4-9b-chat", local: true,
+                 caps: { structuredOutput: true } },
+  lmstudio:    { label: "LM Studio 本地",  base: "http://127.0.0.1:1234/v1",              model: "minicpm-v", local: true,
+                 caps: { structuredOutput: true } },
 };
+const KNOWN_KINDS = new Set([...Object.keys(PROVIDER_PRESETS), "openai-compat"]);
 export function createProvider(cfg) {
   if (!cfg.kind || cfg.kind === "rule" || !cfg.key) return null; // 认知系统自动降级
+  // v2.1 白名单（极客评测 P2）：拼错 kind 不再静默按 openai-compat 发请求
+  if (!KNOWN_KINDS.has(cfg.kind)) {
+    if (typeof console !== "undefined") console.warn("[oriera] unknown provider kind: " + cfg.kind + " — degraded to offline rule engine");
+    return null;
+  }
   return new HttpChatProvider(cfg);
+}
+
+/* ---------- L7 · 任务槽位路由（RFC 0002 · v0.9 运行时落地） ----------
+ * 槽位表存 localStorage `oriera.routing.v1`（Studio 模型中心写入）：
+ *   { npc_dialog: { kind, model, key?, base? }, ... }
+ * 解析语义（诚实回退，绝不硬撑）：
+ *   - 槽位缺省/坏数据 → 全局 provider（原行为）
+ *   - key 留空：槽位厂商与全局相同 → 继承全局 Key（XLite 一 Key 多模型的
+ *     主路径）；厂商不同 → 无凭据不硬撑，回退全局 provider
+ *   - kind 非白名单 → 回退全局 provider（与 createProvider 白名单一致）
+ *   - 兼容旧格式 { slot: "kind" }（字符串）→ 按预设默认 model 展开
+ * ------------------------------------------------------------------ */
+export const SLOT_ROUTING_KEY = "oriera.routing.v1";
+export const SLOT_IDS = ["npc_dialog", "director", "codegen", "reviewer"];
+
+export function resolveSlotProvider(slotId, globalCfg) {
+  const fallback = () => createProvider(globalCfg);
+  if (typeof localStorage === "undefined") return fallback(); // 非浏览器环境无槽位表
+  let routing = null;
+  try { routing = JSON.parse(localStorage.getItem(SLOT_ROUTING_KEY) || "null"); } catch { /* 坏数据走全局 */ }
+  const entry = routing && routing[slotId];
+  if (!entry) return fallback();
+  // 旧格式（仅厂商字符串）→ 预设默认模型展开
+  const e = typeof entry === "string" ? { kind: entry } : entry;
+  if (!e || !e.kind || e.kind === "rule") return fallback();
+  const preset = PROVIDER_PRESETS[e.kind];
+  if (!preset) return fallback(); // 非白名单不硬撑
+  const sameVendorAsGlobal = globalCfg && e.kind === globalCfg.kind;
+  const key = (e.key && String(e.key).trim())
+    || (sameVendorAsGlobal ? globalCfg.key : "");
+  if (!key) return fallback(); // 跨厂商且未填 Key → 全局兜底
+  const base = (e.base && String(e.base).trim())
+    || (sameVendorAsGlobal ? globalCfg.base : "")
+    || preset.base
+    || ""; // 同厂商优先继承全局 base（Studio 已本地化为同源代理，预设直连会重新踩 CORS）
+  return createProvider({ kind: e.kind, key, model: e.model || preset.model, base }) || fallback();
 }

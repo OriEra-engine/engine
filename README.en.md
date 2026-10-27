@@ -11,6 +11,7 @@
 [![CI](https://github.com/OriEra-engine/engine/actions/workflows/ci.yml/badge.svg)](https://github.com/OriEra-engine/engine/actions/workflows/ci.yml)
 [![Live Demo](https://img.shields.io/badge/demo-live-ff7a3d.svg)](https://oriera-engine.github.io/engine/)
 [![Discussions](https://img.shields.io/badge/discussions-join-5b8def.svg)](https://github.com/OriEra-engine/engine/discussions)
+[![AtomGit](https://atomgit.com/OriEra-engine/engine/star/badge.svg)](https://atomgit.com/OriEra-engine/engine)
 
 [中文文档](README.md) · English
 
@@ -70,6 +71,10 @@ cargo run -p oriera-pc
 - 📚 [Book ↔ repo map](docs/BOOK_MAP.md) — the architecture book is our spec
 - 💬 [Discussions](https://github.com/OriEra-engine/engine/discussions) — questions in EN or 中文 both welcome
 - 🗺️ [ROADMAP](ROADMAP.md) — L8/L10/L11 landing schedule
+
+### Acknowledgments
+
+- **[AtomGit](https://atomgit.com/OriEra-engine/engine)**: hosts an in-China mirror of this project, helping mainland China users access the project and download Releases faster.
 
 ## License
 

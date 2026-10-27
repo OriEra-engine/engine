@@ -10,7 +10,7 @@
 //!
 //! Generation is **task-shaped**: submit ([`GenerationProvider::request_generation`]),
 //! poll ([`GenerationProvider::poll_task`]), land. Both first-party adapters
-//! (Tripo, Seedance) and any future vendor are asynchronous create-and-poll
+//! (CogView, Tripo, Rodin, Seedance) and any future vendor are asynchronous create-and-poll
 //! services, so the boundary is designed once around that shape.
 //!
 //! "Native, not bolted on" is defined by ADR 0003 and audited by five
@@ -22,10 +22,16 @@
 pub mod cogview;
 pub mod config;
 pub mod hot_swap;
+#[cfg(feature = "providers")]
+pub mod materials;
 pub mod mock;
+#[cfg(feature = "providers")]
+pub mod rodin;
 #[cfg(feature = "providers")]
 pub mod seedance;
 pub mod system;
+#[cfg(all(test, feature = "providers"))]
+pub(crate) mod testing;
 #[cfg(feature = "providers")]
 pub mod transport;
 #[cfg(feature = "providers")]
@@ -50,7 +56,9 @@ pub struct TaskId(pub String);
 /// What the creator asked for. Providers declare support via
 /// [`ProviderCapabilities`]; the engine rejects unsupported requests
 /// before any transport work happens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "providers", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "providers", serde(rename_all = "snake_case"))]
 pub enum GenerationKind {
     /// prompt → GLB/USDZ mesh (e.g. Tripo).
     TextTo3d,
@@ -65,6 +73,10 @@ pub enum GenerationKind {
     TextToVideo,
     /// first-frame image → video.
     ImageToVideo,
+    /// text (line + voice hint) → speech audio. TTS is the film-game
+    /// voice-over kind; edge-tts stays an application-layer free tier,
+    /// the trait serves vendor TTS endpoints.
+    TextToSpeech,
 }
 
 impl GenerationKind {
@@ -76,6 +88,7 @@ impl GenerationKind {
             GenerationKind::TextToImage => "text_to_image",
             GenerationKind::TextToVideo => "text_to_video",
             GenerationKind::ImageToVideo => "image_to_video",
+            GenerationKind::TextToSpeech => "text_to_speech",
         }
     }
 
@@ -88,6 +101,7 @@ impl GenerationKind {
             GenerationKind::TextTo3d | GenerationKind::ImageTo3d => AssetFormat::Glb,
             GenerationKind::TextToImage => AssetFormat::Image,
             GenerationKind::TextToVideo | GenerationKind::ImageToVideo => AssetFormat::Video,
+            GenerationKind::TextToSpeech => AssetFormat::Audio,
         }
     }
 }
@@ -103,6 +117,8 @@ pub enum AssetFormat {
     Video,
     /// PNG or JPEG still.
     Image,
+    /// MP3 (ID3/MPEG frame) or WAV audio (TTS output).
+    Audio,
 }
 
 impl AssetFormat {
@@ -113,6 +129,7 @@ impl AssetFormat {
             AssetFormat::Usdz => "usdz",
             AssetFormat::Video => "video",
             AssetFormat::Image => "image",
+            AssetFormat::Audio => "audio",
         }
     }
 }
@@ -132,6 +149,58 @@ pub struct GenerationRequest {
     pub max_bytes: u64,
     /// Optional deterministic seed where the provider supports one.
     pub seed: Option<u64>,
+    /// Input images for image-conditioned kinds (i2v / img2img / img2mesh).
+    /// Empty for pure text kinds. Field-tested roles: Seedance mini takes
+    /// `first_frame`, the 2.x tiers take `reference_image` (R0, 2026-10-24).
+    pub image_refs: Vec<ImageRef>,
+    /// Cost/latency tier — the studio exposes this, not raw model ids:
+    /// Draft = cheap iterate tier, Hero = final-quality tier.
+    pub quality: QualityTier,
+    /// TTS voice hint (provider-specific voice name), when the kind is
+    /// [`GenerationKind::TextToSpeech`].
+    pub voice: Option<String>,
+}
+
+/// One input image with its conditioning role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageRef {
+    pub data: Vec<u8>,
+    pub role: ImageRole,
+}
+
+/// How an input image conditions the generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageRole {
+    /// Frame 0 of the output video / the image to be edited.
+    FirstFrame,
+    /// Character/subject reference (identity lock), not necessarily the
+    /// output composition.
+    ReferenceImage,
+    /// Style-only reference.
+    StyleRef,
+}
+
+impl ImageRole {
+    /// Wire name on Volcano-Ark-style content arrays (field-tested).
+    pub fn ark_role(self) -> &'static str {
+        match self {
+            ImageRole::FirstFrame => "first_frame",
+            ImageRole::ReferenceImage | ImageRole::StyleRef => "reference_image",
+        }
+    }
+}
+
+/// Cost/latency tier. Adapters map tiers onto vendor model ids when
+/// `ProviderConfig::model` is empty (Seedance: Draft→mini, Hero→2.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QualityTier {
+    /// Cheap iterate tier (Seedance mini ≈ ¥2.5/5s@720p field-tested).
+    Draft,
+    /// Provider default when the caller expresses no preference.
+    #[default]
+    Standard,
+    /// Final-quality tier (Seedance 2.5 ≈ ¥8.4/5s@720p, off-peak ~55%).
+    Hero,
 }
 
 impl GenerationRequest {
@@ -144,6 +213,9 @@ impl GenerationRequest {
             name: name.into(),
             max_bytes: ValidationLimits::default().max_bytes,
             seed: None,
+            image_refs: Vec::new(),
+            quality: QualityTier::default(),
+            voice: None,
         }
     }
 
@@ -156,6 +228,51 @@ impl GenerationRequest {
             name: name.into(),
             max_bytes: ValidationLimits::default().max_bytes,
             seed: None,
+            image_refs: Vec::new(),
+            quality: QualityTier::default(),
+            voice: None,
+        }
+    }
+
+    /// An image-to-video request conditioned on a first-frame image
+    /// (R0 field-tested pipeline: Seedream first frame → Seedance video).
+    pub fn image_to_video(
+        name: impl Into<String>,
+        prompt: impl Into<String>,
+        first_frame: Vec<u8>,
+    ) -> Self {
+        Self {
+            kind: GenerationKind::ImageToVideo,
+            prompt: prompt.into(),
+            negative_prompt: String::new(),
+            name: name.into(),
+            max_bytes: ValidationLimits::default().max_bytes,
+            seed: None,
+            image_refs: vec![ImageRef {
+                data: first_frame,
+                role: ImageRole::FirstFrame,
+            }],
+            quality: QualityTier::default(),
+            voice: None,
+        }
+    }
+
+    /// A text-to-speech request; `voice` is a provider-specific voice hint.
+    pub fn text_to_speech(
+        name: impl Into<String>,
+        line: impl Into<String>,
+        voice: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: GenerationKind::TextToSpeech,
+            prompt: line.into(),
+            negative_prompt: String::new(),
+            name: name.into(),
+            max_bytes: ValidationLimits::default().max_bytes,
+            seed: None,
+            image_refs: Vec::new(),
+            quality: QualityTier::default(),
+            voice: Some(voice.into()),
         }
     }
 
@@ -168,6 +285,9 @@ impl GenerationRequest {
             name: name.into(),
             max_bytes: ValidationLimits::default().max_bytes,
             seed: None,
+            image_refs: Vec::new(),
+            quality: QualityTier::default(),
+            voice: None,
         }
     }
 }
@@ -183,6 +303,20 @@ pub struct GeneratedAsset {
     pub provider_id: String,
     /// Provider-reported model id, when the vendor exposes one.
     pub model: String,
+    /// Vendor metering when exposed (Seedance returns ~108.9k completion
+    /// tokens per 5s@720p clip) — feeds L0 TokenUsage and cost boards.
+    pub usage: Option<UsageReport>,
+}
+
+/// Metering carried on a succeeded asset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "providers", derive(serde::Serialize, serde::Deserialize))]
+pub struct UsageReport {
+    pub tokens: u64,
+    /// Vendor-agnostic cost in micro-yuan (1e-6 CNY), when priced per
+    /// token/kilobyte; per-piece pricing (images) is folded in by the
+    /// adapter. `None` = unpriced vendor.
+    pub cost_micros: Option<u64>,
 }
 
 /// Task lifecycle as seen through [`GenerationProvider::poll_task`].
@@ -212,6 +346,7 @@ pub struct ProviderCapabilities {
     pub text_to_image: bool,
     pub text_to_video: bool,
     pub image_to_video: bool,
+    pub text_to_speech: bool,
 }
 
 impl ProviderCapabilities {
@@ -222,6 +357,7 @@ impl ProviderCapabilities {
         text_to_image: true,
         text_to_video: true,
         image_to_video: true,
+        text_to_speech: true,
     };
 
     /// Does this provider serve `kind`?
@@ -232,6 +368,7 @@ impl ProviderCapabilities {
             GenerationKind::TextToImage => self.text_to_image,
             GenerationKind::TextToVideo => self.text_to_video,
             GenerationKind::ImageToVideo => self.image_to_video,
+            GenerationKind::TextToSpeech => self.text_to_speech,
         }
     }
 }
@@ -246,6 +383,82 @@ pub enum GenAiError {
     Provider(String),
     /// The produced asset failed [`validate_asset`].
     Validation(String),
+}
+
+/// Mirrors L7 `oriera_infer::ErrorClass` **semantics** (same stable ids)
+/// without depending on oriera-infer — ADR 0003 keeps generation and
+/// inference decoupled, so the vocabulary is copied, not imported
+/// (#106, review E8: CogView/Tripo/Rodin/Seedance hit 429/402 too, and slot
+/// degradation needs the same retry/fall-through policy words).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenAiErrorClass {
+    RateLimited,
+    Auth,
+    Quota,
+    Server,
+    Timeout,
+    Provider,
+}
+
+impl GenAiErrorClass {
+    /// Stable id for metrics labels — identical strings to L7's ids so
+    /// a shared dashboard can chart both layers under one axis.
+    pub fn id(self) -> &'static str {
+        match self {
+            GenAiErrorClass::RateLimited => "rate_limited",
+            GenAiErrorClass::Auth => "auth",
+            GenAiErrorClass::Quota => "quota",
+            GenAiErrorClass::Server => "server",
+            GenAiErrorClass::Timeout => "timeout",
+            GenAiErrorClass::Provider => "provider",
+        }
+    }
+
+    /// Same policy as L7: transport-transient classes are worth backing
+    /// off (or falling through the chain); capability/config failures
+    /// are not — retrying cannot change the outcome.
+    pub fn retryable(self) -> bool {
+        matches!(
+            self,
+            GenAiErrorClass::RateLimited | GenAiErrorClass::Server | GenAiErrorClass::Timeout
+        )
+    }
+}
+
+impl GenAiError {
+    /// Fold into the public class vocabulary. `Unsupported` is a
+    /// capability fact (never retryable); `Validation` is a produced-
+    /// asset fact (the request reached and answered — provider bucket);
+    /// `Provider` messages are keyword-sniffed for the transport facts
+    /// adapters embed (429/401/402/5xx/timeout).
+    pub fn class(&self) -> GenAiErrorClass {
+        match self {
+            GenAiError::Unsupported(_) => GenAiErrorClass::Provider,
+            GenAiError::Validation(_) => GenAiErrorClass::Provider,
+            GenAiError::Provider(msg) => {
+                let m = msg.to_ascii_lowercase();
+                if m.contains("429") || m.contains("rate limit") || m.contains("too many requests")
+                {
+                    GenAiErrorClass::RateLimited
+                } else if m.contains("401") || m.contains("403") {
+                    GenAiErrorClass::Auth
+                } else if m.contains("402") {
+                    GenAiErrorClass::Quota
+                } else if m.contains("timeout") || m.contains("timed out") {
+                    GenAiErrorClass::Timeout
+                } else if m.contains("500") || m.contains("502") || m.contains("503") {
+                    GenAiErrorClass::Server
+                } else {
+                    GenAiErrorClass::Provider
+                }
+            }
+        }
+    }
+
+    /// Retry/fall-through policy (delegates to the class).
+    pub fn retryable(&self) -> bool {
+        self.class().retryable()
+    }
 }
 
 impl fmt::Display for GenAiError {
@@ -343,6 +556,11 @@ pub fn validate_asset(asset: &GeneratedAsset, limits: &ValidationLimits) -> Resu
     let ok = match asset.format {
         AssetFormat::Glb => glb_header_is_sane(bytes),
         AssetFormat::Usdz => bytes.starts_with(b"PK"),
+        AssetFormat::Audio => {
+            bytes.starts_with(b"ID3") // MP3 with tag
+                || (bytes.len() >= 3 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0) // MPEG frame
+                || bytes.starts_with(b"RIFF") // WAV
+        }
         AssetFormat::Video => {
             bytes.len() >= 8
                 && (&bytes[4..8] == b"ftyp"            // MP4
@@ -383,22 +601,44 @@ fn glb_header_is_sane(b: &[u8]) -> bool {
     &b[16..20] == b"JSON" && 20 + chunk_len <= b.len() as u64
 }
 
-/// The smallest fully-valid GLB (one empty scene). Doubles as the
-/// **placeholder mesh** for degrade paths (ADR 0003 criterion 3: an
-/// outage lands a placeholder, never a crash) and as the MockProvider
-/// fixture — one payload, provably parseable, tiny enough to inline.
-pub(crate) fn tiny_glb() -> Vec<u8> {
-    let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[]}]}"#;
-    let padded_len = json.len().div_ceil(4) * 4; // JSON chunk pads with spaces
-    let total = 12 + 8 + padded_len;
+/// The smallest **visible** GLB: one triangle (ADR 0003 criterion 3,
+/// upgraded — an outage lands a placeholder you can actually see, not
+/// an empty scene). Doubles as the MockProvider fixture and as the
+/// L8→L4→L5 chain proof: `oriera_asset::glb::decode_glb_mesh` parses
+/// it into 3 vertices / 3 indices.
+/// 最小合法 GLB（单三角、合法 JSON chunk + BIN chunk）——测试与演示
+/// 共用的"云端返回"替身；各适配器测试与 rodin_demo 均经
+/// [`crate::validate_asset`] 深校验。
+pub fn tiny_glb() -> Vec<u8> {
+    let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[{"mesh":0}]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2,"material":0}]}],"materials":[{"pbrMetallicRoughness":{"baseColorFactor":[0.85,0.16,0.12,1.0]}}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","max":[0.8,0.6,0.0],"min":[-0.8,-0.6,0.0]},{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":2,"componentType":5125,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},{"buffer":0,"byteOffset":72,"byteLength":12}],"buffers":[{"byteLength":84}]}"#;
+    let json_len = json.len().div_ceil(4) * 4; // JSON chunk pads with spaces
+                                               // BIN: 3 × pos(36B) + 3 × normal(36B,朝镜头) + 3 × u32(12B) = 84B。
+    let mut bin = Vec::with_capacity(84);
+    for v in [[0.0f32, -0.6, 0.0], [0.8, 0.6, 0.0], [-0.8, 0.6, 0.0]] {
+        for c in v {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    for _ in 0..3 {
+        for c in [0.0f32, 0.0, 1.0] {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    for i in [0u32, 1, 2] {
+        bin.extend_from_slice(&i.to_le_bytes());
+    }
+    let total = 12 + 8 + json_len + 8 + bin.len();
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(b"glTF");
     out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(&(total as u32).to_le_bytes());
-    out.extend_from_slice(&(padded_len as u32).to_le_bytes());
+    out.extend_from_slice(&(json_len as u32).to_le_bytes());
     out.extend_from_slice(b"JSON");
     out.extend_from_slice(json);
-    out.extend(std::iter::repeat_n(b' ', padded_len - json.len()));
+    out.extend(std::iter::repeat_n(b' ', json_len - json.len()));
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\x00");
+    out.extend_from_slice(&bin);
     out
 }
 
@@ -419,6 +659,45 @@ pub(crate) fn tiny_mp4_stub() -> Vec<u8> {
 /// paths — one payload, provably parseable by any PNG decoder, small
 /// enough to inline. Chunk CRCs are computed at construction, so the
 /// container is self-consistent by construction, not by transcription.
+/// Minimal base64 encoder (standard alphabet, padded) — zero-dependency,
+/// the encode-side twin of cogview's hand-rolled decoder. Wire payloads
+/// stay allocation-light: inputs here are first-frame stills, a few MB.
+pub fn base64_encode(data: &[u8]) -> String {
+    const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(TBL[(n >> 18) as usize & 63] as char);
+        out.push(TBL[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TBL[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TBL[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Minimal structurally-valid MP3: an empty ID3v2 tag (10 bytes).
+/// Passes [`validate_asset`] for [`AssetFormat::Audio`].
+pub fn tiny_mp3() -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(b"ID3");
+    b.extend_from_slice(&[0x03, 0x00, 0x00]); // v2.3, no flags
+    b.extend_from_slice(&[0, 0, 0, 0]); // zero-size tag body
+    b
+}
+
 pub(crate) fn tiny_png() -> Vec<u8> {
     /// Reference CRC-32 (ISO 3309, as PNG requires).
     fn crc32(data: &[u8]) -> u32 {
@@ -470,6 +749,43 @@ pub(crate) fn tiny_png() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn genai_error_classes_mirror_l7_semantics() {
+        use super::*;
+        // 能力缺失：不可重试
+        assert_eq!(
+            GenAiError::Unsupported("no mesh kind".into()).class(),
+            GenAiErrorClass::Provider
+        );
+        assert!(!GenAiError::Unsupported("x".into()).retryable());
+        // 传输事实关键词嗅探
+        assert_eq!(
+            GenAiError::Provider("HTTP 429: slow down".into()).class(),
+            GenAiErrorClass::RateLimited
+        );
+        assert!(GenAiError::Provider("HTTP 429".into()).retryable());
+        assert_eq!(
+            GenAiError::Provider("HTTP 401: bad key".into()).class(),
+            GenAiErrorClass::Auth
+        );
+        assert_eq!(
+            GenAiError::Provider("HTTP 402: out of balance".into()).class(),
+            GenAiErrorClass::Quota
+        );
+        assert_eq!(
+            GenAiError::Provider("request timed out".into()).class(),
+            GenAiErrorClass::Timeout
+        );
+        assert!(GenAiError::Provider("gateway 502".into()).retryable());
+        assert_eq!(
+            GenAiError::Provider("weird garbage".into()).class(),
+            GenAiErrorClass::Provider
+        );
+        // 稳定 id 与 L7 同词表
+        assert_eq!(GenAiErrorClass::RateLimited.id(), "rate_limited");
+        assert_eq!(GenAiErrorClass::Auth.id(), "auth");
+    }
+
     use super::*;
 
     fn asset(format: AssetFormat, payload: Vec<u8>) -> GeneratedAsset {
@@ -478,7 +794,32 @@ mod tests {
             payload,
             provider_id: "test".into(),
             model: String::new(),
+            usage: None,
         }
+    }
+
+    #[test]
+    fn tts_kind_produces_audio_placeholders() {
+        let req = GenerationRequest::text_to_speech("vo", "谢谢。", "zh-female-quiet");
+        assert_eq!(req.kind.id(), "text_to_speech");
+        assert_eq!(req.kind.placeholder_format(), AssetFormat::Audio);
+        let a = GeneratedAsset {
+            format: AssetFormat::Audio,
+            payload: tiny_mp3(),
+            provider_id: "t".into(),
+            model: String::new(),
+            usage: None,
+        };
+        assert!(validate_asset(&a, &Default::default()).is_ok());
+    }
+
+    #[test]
+    fn base64_encode_matches_known_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
     }
 
     #[test]

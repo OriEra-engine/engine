@@ -139,6 +139,7 @@ impl CogViewProvider {
             format: AssetFormat::Image,
             payload,
             provider_id: self.id().into(),
+            usage: None,
             model: self.model().to_string(),
         }
     }
@@ -156,6 +157,7 @@ impl GenerationProvider for CogViewProvider {
             text_to_image: true,
             text_to_video: false,
             image_to_video: false,
+            text_to_speech: false,
         }
     }
 
@@ -344,34 +346,12 @@ pub fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::{HttpResponse, Transport};
-    use std::sync::{Arc, Mutex};
+    use crate::testing::{fixture_transport, ScriptedTransport};
+    use crate::transport::HttpResponse;
+    use std::sync::Arc;
 
     /// Scripted transport: pops queued responses per request (same
     /// pattern as the tripo adapter's tests).
-    struct ScriptedTransport {
-        requests: Mutex<Vec<HttpRequest>>,
-        responses: Mutex<Vec<HttpResponse>>,
-    }
-
-    impl Transport for ScriptedTransport {
-        fn send(&self, req: &HttpRequest) -> Result<HttpResponse, String> {
-            self.requests.lock().unwrap().push(req.clone());
-            self.responses
-                .lock()
-                .unwrap()
-                .pop()
-                .ok_or_else(|| "no scripted response".to_string())
-        }
-    }
-
-    fn fixture_transport(responses: Vec<HttpResponse>) -> Arc<ScriptedTransport> {
-        Arc::new(ScriptedTransport {
-            requests: Mutex::new(Vec::new()),
-            responses: Mutex::new(responses),
-        })
-    }
-
     fn provider(t: Arc<ScriptedTransport>) -> CogViewProvider {
         CogViewProvider::new(
             crate::ProviderConfig {

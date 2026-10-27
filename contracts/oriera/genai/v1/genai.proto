@@ -20,6 +20,7 @@ enum GenerationKind {
   // ground albedo, posters, sprite sheets are all stills.
   // Additive to v1 per RFC 0001 (docs/rfcs/0001-genai-text-to-image.md).
   TEXT_TO_IMAGE = 5;
+  TEXT_TO_SPEECH = 6;
 }
 
 enum AssetFormat {
@@ -74,6 +75,7 @@ message ProviderCapabilities {
   bool image_to_video = 4;
   // Additive to v1 per RFC 0001 — old readers see it as unset (false).
   bool text_to_image = 5;
+  bool text_to_speech = 6;
 }
 
 service GenerativeAssets {

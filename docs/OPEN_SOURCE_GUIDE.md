@@ -10,7 +10,7 @@
 | 入口 | 地址 | 用途 |
 |---|---|---|
 | 代码仓库 | https://github.com/OriEra-engine/engine | star / fork / 提 PR |
-| 在线 Demo | https://oriera-engine.github.io/engine/ | 11 个浏览器可玩 demo，零安装 |
+| 在线 Demo | https://oriera-engine.github.io/engine/ | 浏览器可玩 demo 全集（当前 14 个，随引擎快照增长），零安装 |
 | Discussions | https://github.com/OriEra-engine/engine/discussions | 提问、聊天、开 RFC（中英文都行） |
 | 官方演示视频 | `docs/media/oriera-official-demo.mp4`（仓库内，54s） | 一分钟看懂两个 AI 原生范式 |
 | 架构文档 | [ARCHITECTURE.md](ARCHITECTURE.md) | 十一层架构、依赖规则、一帧数据流 |

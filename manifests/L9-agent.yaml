@@ -30,6 +30,15 @@ spec:
         to_json emits agents sorted so output is stable/diffable;
         from_json is Result-based and never panics; the 60-per-agent
         sliding window applies to imports as to live writes
+    - id: oriera.agent.prefab.v1
+      contract: "rust:oriera_agent::prefab::{PrefabSpec,spawn_prefab_at}"
+      stability: proto
+      note: entity prefabs (F1, PLAN-godot-fusion) — Godot PackedScene
+        translated to the ECS world (a reusable cast/prop bundle
+        instantiated in deterministic declaration order; same spec
+        twice gives a bit-identical world via state_hash); Mood folded
+        via Mood::from_label (unknown authoring strings fall back to
+        Neutral, never panic)
     - id: oriera.agent.cadence.v1
       contract: rust:oriera_agent::{WakeEvent,CognitionSystem}
       stability: stable

@@ -13,6 +13,7 @@
 [![Discussions](https://img.shields.io/badge/discussions-join-5b8def.svg)](https://github.com/OriEra-engine/engine/discussions)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![GitHub Pages](https://img.shields.io/github/deployments/OriEra-engine/engine/github-pages?label=pages)](https://oriera-engine.github.io/engine/)
+[![AtomGit](https://atomgit.com/OriEra-engine/engine/star/badge.svg)](https://atomgit.com/OriEra-engine/engine)
 
 中文 · [English](README.en.md)
 
@@ -38,7 +39,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 
 **🌐 https://oriera-engine.github.io/engine/**
 
-13 个可玩 demo，浏览器直接打开：
+14 个可玩 demo，浏览器直接打开：
 
 | Demo | 展示 | 打开 |
 |---|---|---|
@@ -55,6 +56,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 | 11 Corner Café 隅角咖啡馆 | 3D AI NPC：大模型对话 + 长期记忆 + AI 导演 | [▶](https://oriera-engine.github.io/engine/examples/11-ai-cafe/index.html) |
 | 12 Memory Atlas 记忆星图 | 离线 NPC 记忆写入、检索与时间衰减可视化 | [▶](https://oriera-engine.github.io/engine/examples/12-memory-atlas/index.html) |
 | 13 Generative Gallery 生成式画廊 | 一句话主题 → L8 文生图/文生 3D → L4 热替换装帧小 3D 世界 | [▶](https://oriera-engine.github.io/engine/examples/13-genai-gallery/index.html) |
+| 14 Frame Hunter 帧猎 | 跑酷答题游戏：三车道跑酷 + 谬误之门 + Boss 战，BKT 知识追踪，全离线 2.3MB | [▶](https://oriera-engine.github.io/engine/frame-hunter/index.html) |
 
 ## 架构
 
@@ -178,6 +180,10 @@ cargo clippy --workspace -- -D warnings
 | 报安全问题 | [SECURITY.md](SECURITY.md)（不要开公开 issue） |
 
 - [贡献指南](CONTRIBUTING.md) · [治理模式](GOVERNANCE.md) · [路线图](ROADMAP.md) · [行为准则](CODE_OF_CONDUCT.md)
+
+### 鸣谢
+
+- [AtomGit](https://atomgit.com/OriEra-engine/engine)：在国内托管 OriEra 世界引擎，帮助中国大陆用户更快访问项目与下载 Release。
 
 ## 协议
 

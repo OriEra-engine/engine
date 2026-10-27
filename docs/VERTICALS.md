@@ -89,7 +89,7 @@ OriEra 不只是游戏引擎。世界引擎的本质产品是**一个会演化�
 - **层配置**：L8 主角（ADR 0003 六段式管线 2028 做深）；L4 内容寻址
   去重（同 hash 零成本复用）；L2 分拨让批量任务吃剩余预算；L9/L6/L5
   可全关（纯生产工具形态）。
-- **首版**：`oriera-genai` 骨架已落（MockProvider/Tripo/Seedance 适配器、
+- **首版**：`oriera-genai` 骨架已落（MockProvider/CogView/Tripo/Rodin/Seedance 适配器、
   `hotswap` 示例）；v0.5 接原生 transport 后即出批量 demo。
 - **为什么是 OriEra**：哈希即身份 + 校验入位 + 失败落 placeholder
   （ADR 0003 三准则）让生成结果**可审计**——这是 AIGC 产业交付的痛点。

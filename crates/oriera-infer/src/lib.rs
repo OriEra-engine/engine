@@ -12,15 +12,22 @@
 //! Natural-language parsing does NOT live here — that is the L9 agent's
 //! job (`oriera-agent`). This layer only executes what it is given.
 
+pub mod health;
 #[cfg(feature = "native-http")]
 pub mod http;
+pub mod jobs;
 pub mod provider;
 
+pub use health::{BreakerState, FallbackProvider, ProviderHealth};
 #[cfg(feature = "native-http")]
-pub use http::HttpProvider;
-pub use oriera_common::TokenUsage;
+pub use http::{HttpEmbeddingProvider, HttpProvider};
+pub use jobs::{InferJobs, JobDone};
+pub use oriera_common::{DeterminismLevel, TokenUsage};
 pub use provider::{
-    ChatMessage, InferError, ModelProvider, ProviderPreset, Role, RuleProvider, PROVIDER_PRESETS,
+    prompt_fingerprint, response_fingerprint, ChatMessage, EmbeddingProvider,
+    HashEmbeddingProvider, InferError, ModelCaps, ModelPrice, ModelProvider, ProviderOptions,
+    ProviderPreset, ReasoningEffort, Role, RuleProvider, StreamedOutcome, ToolCall, ToolDef,
+    ToolOutcome, PROVIDER_PRESETS,
 };
 
 use oriera_core::{FrameCtx, System};
@@ -85,6 +92,149 @@ impl UsageMeter {
     }
 }
 
+/// Cumulative money ledger over model calls (v0.7, PLAN-deepseek-upgrade
+/// B5). Pair with [`UsageMeter`]: usage counts tokens, this counts what
+/// they cost — the cache-hit discount ([`TokenUsage::cached`]) shows up
+/// here as `saved_micro`, because a discount nobody can see is a
+/// discount nobody designs for.
+///
+/// Accumulators hold `tokens × µ-price` numerators and divide by 1e6 at
+/// read time, so per-call truncation never eats small worlds' cents.
+/// One [`CostMeter`] speaks one currency: the first priced row wins,
+/// later rows in another currency flip `mixed_currency` and are skipped
+/// (a sum across currencies is a lie; the flag makes the lie visible).
+#[derive(Debug, Clone, Default)]
+pub struct CostMeter {
+    /// Currency of the accumulation ("" until the first priced call).
+    pub currency: &'static str,
+    /// Calls against rows without a registered price — counted, not
+    /// valued (本地行的口径：电费，不记账).
+    pub unpriced_calls: u64,
+    /// A second currency showed up; those calls are excluded from sums.
+    pub mixed_currency: bool,
+    pub calls: u64,
+    spent_num: u128,
+    saved_num: u128,
+}
+
+/// Resolve a provider's `ModelProvider::id()` label (`"kind:model"`,
+/// e.g. `"openai-compat:deepseek-chat"`) back to its preset row's
+/// registered price — the missing join between meters and the price
+/// table. Matches kind id and model against [`PROVIDER_PRESETS`]; the
+/// offline rule row and unknown labels read unpriced.
+pub fn price_for_label(label: &str) -> Option<&'static ModelPrice> {
+    let (kind, model) = label.split_once(':')?;
+    // kind:model 标签可能撞行（xlite 网关转发 openai 同名模型）：首个
+    // *有登记价* 的行胜出——转发网关未登记价时按源厂牌价记账是合理近似；
+    // 全部无价才返回 None（绝不猜价）。
+    PROVIDER_PRESETS
+        .iter()
+        .filter(|p| p.kind.id() == kind && p.model == model)
+        .find_map(|p| p.price.as_ref())
+}
+
+impl CostMeter {
+    /// Record one call's usage at the row's registered price.
+    pub fn record(&mut self, usage: TokenUsage, price: Option<&ModelPrice>) {
+        self.calls += 1;
+        let Some(p) = price else {
+            self.unpriced_calls += 1;
+            return;
+        };
+        if self.currency.is_empty() {
+            self.currency = p.currency;
+        } else if self.currency != p.currency {
+            self.mixed_currency = true;
+            return;
+        }
+        let billed = usage.billed_prompt() as u128;
+        self.spent_num += billed * p.prompt_micro_per_m as u128
+            + usage.completion as u128 * p.completion_micro_per_m as u128;
+        // What the cached slice would have cost at miss price — the
+        // saving the stable-prefix convention earns. The cached count is
+        // re-clamped here (paranoid: the type already clamps at parse
+        // time) so a lying vendor can never price savings above the
+        // whole call's prompt. A row pricing cache ≥ miss simply saves
+        // zero (saturating).
+        let cached = usage.cached.min(usage.prompt) as u128;
+        self.saved_num +=
+            cached * p.prompt_micro_per_m.saturating_sub(p.cached_micro_per_m) as u128;
+    }
+
+    /// Total spend in micro-currency units (1e-6 of `currency`).
+    pub fn total_micro(&self) -> u64 {
+        (self.spent_num / 1_000_000).min(u64::MAX as u128) as u64
+    }
+
+    /// Cache savings in micro-currency units.
+    pub fn saved_micro(&self) -> u64 {
+        (self.saved_num / 1_000_000).min(u64::MAX as u128) as u64
+    }
+
+    /// Shell/UI display: "$0.0750" / "¥1.2300" / "USD 0.0750".
+    /// Mixed-currency ledgers are marked `[mixed] ` — the number only
+    /// covers the first currency's calls, and showing it unmarked would
+    /// silently under-report.
+    pub fn display(&self) -> String {
+        if self.currency.is_empty() {
+            return "—".into();
+        }
+        let amount = self.total_micro() as f64 / 1_000_000.0;
+        let prefix = if self.mixed_currency { "[mixed] " } else { "" };
+        match self.currency {
+            "USD" => format!("{prefix}${amount:.4}"),
+            "CNY" => format!("{prefix}¥{amount:.4}"),
+            other => format!("{prefix}{other} {amount:.4}"),
+        }
+    }
+}
+
+/// One audited inference call (v0.8 B2): the replay promise made, the
+/// prompt/response fingerprint pair (#67's hash family), and which
+/// provider served. Bounded — a world that never trims its audit trail
+/// is a world that stops metering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerEntry {
+    pub level: DeterminismLevel,
+    pub prompt: u64,
+    pub response: u64,
+    pub provider: String,
+}
+
+/// Bounded audit trail of inference fingerprints. L9 systems record one
+/// entry per model call; twins/replays compare ledgers entry by entry —
+/// the "double fingerprint" story from #67: world-state hash for the
+/// semantic path, inference ledger for the model path.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InferenceLedger {
+    pub entries: Vec<LedgerEntry>,
+}
+
+pub const LEDGER_CAP: usize = 256;
+
+impl InferenceLedger {
+    pub fn record(&mut self, level: DeterminismLevel, prompt: u64, response: u64, provider: &str) {
+        if self.entries.len() >= LEDGER_CAP {
+            let drop = self.entries.len() - LEDGER_CAP + 1;
+            self.entries.drain(0..drop);
+        }
+        self.entries.push(LedgerEntry {
+            level,
+            prompt,
+            response,
+            provider: provider.to_string(),
+        });
+    }
+
+    /// True when two ledgers tell the same inference story — same
+    /// lengths, same levels, same fingerprint pairs, same providers.
+    /// `Strict` twins must pass this; `Recorded` twins compare it for
+    /// drift forensics, not equality.
+    pub fn matches(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
 /// How many commands one frame may execute when nothing narrower is
 /// configured. Batches an AI burst across frames instead of letting a
 /// flooded queue blow the frame budget in one tick.
@@ -144,6 +294,24 @@ impl InferSystem {
             frame_budget: n.max(1),
             ..Self::new()
         }
+    }
+
+    /// Pin the spawn-RNG seed (#102, review E5 / issue #84): two runs
+    /// with the same seed and the same command stream spawn identical
+    /// worlds; different seeds must diverge. Without this the seed was
+    /// a private constant — "reproducible" only by accident of sharing
+    /// one hard-coded value. Also read by hosts to stamp run ledgers.
+    pub fn with_seed(seed: u64) -> Self {
+        Self {
+            seed,
+            ..Self::new()
+        }
+    }
+
+    /// Current RNG state — hosts snapshot it into a run ledger so a
+    /// replay can resume from the exact point the recording stopped.
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
     /// Submit a command for execution on the next frame.
@@ -507,6 +675,170 @@ mod tests {
         assert!(meter.total.total() > 0);
     }
 
+    // ---- v0.7 B5: CostMeter (PLAN-deepseek-upgrade) ----
+
+    fn deepseek_price() -> ModelPrice {
+        ModelPrice {
+            currency: "USD",
+            prompt_micro_per_m: 150_000,
+            completion_micro_per_m: 600_000,
+            cached_micro_per_m: 3_000,
+        }
+    }
+
+    #[test]
+    fn inference_fingerprints_are_stable_and_input_sensitive() {
+        use crate::provider::{prompt_fingerprint, response_fingerprint};
+        let msgs = [ChatMessage::system("系统词"), ChatMessage::user("输入")];
+        let a = prompt_fingerprint("deepseek-chat", Some(7), &msgs);
+        let b = prompt_fingerprint("deepseek-chat", Some(7), &msgs);
+        assert_eq!(a, b, "same input → same fingerprint");
+        assert_ne!(
+            prompt_fingerprint("deepseek-chat", None, &msgs),
+            a,
+            "seed matters"
+        );
+        assert_ne!(
+            prompt_fingerprint("deepseek-chat", Some(7), &[ChatMessage::user("变了")]),
+            a,
+            "content matters"
+        );
+        assert_ne!(
+            response_fingerprint("回复甲"),
+            response_fingerprint("回复乙")
+        );
+        assert_eq!(
+            response_fingerprint("回复甲"),
+            response_fingerprint("回复甲")
+        );
+    }
+
+    #[test]
+    fn with_seed_pins_the_spawn_rng_replay() {
+        // #102 (#84): same seed + same stream → identical spawns;
+        // different seeds must diverge (此前种子是私有常量，复现只是
+        // 碰巧共享同一个硬编码值)。
+        fn run(seed: u64) -> (u64, u64) {
+            let mut sys = InferSystem::with_seed(seed);
+            assert_eq!(sys.seed(), seed, "seed getter reports the pinned seed");
+            let mut world = World::new();
+            let ctx = FrameCtx {
+                frame: oriera_common::FrameIndex(0),
+                dt: 1.0 / 60.0,
+                now: oriera_common::Timestamp(0),
+                grants: oriera_common::Grants::EMPTY,
+            };
+            sys.submit(Command::Spawn(25));
+            sys.submit(Command::Spawn(30));
+            sys.run(&ctx, &mut world);
+            // run 后 seed() 是 LCG 推进后的当前态——同 seed 双跑推进后的
+            // 状态也必须一致（run-ledger 可从该状态恢复续放）。
+            (sys.seed(), world.state_hash())
+        }
+        let (seed_end_a, h_a) = run(0xABCD);
+        let (seed_end_a2, h_a2) = run(0xABCD);
+        let (_, h_b) = run(0xABCD + 1);
+        assert_eq!(seed_end_a, seed_end_a2, "same seed → same RNG end state");
+        assert_eq!(h_a, h_a2, "same seed → identical world state");
+        assert_ne!(h_a, h_b, "different seeds → diverged spawns");
+    }
+
+    #[test]
+    fn inference_ledger_is_bounded_and_matches_entrywise() {
+        let mut ledger = InferenceLedger::default();
+        for i in 0..(LEDGER_CAP + 10) {
+            ledger.record(
+                DeterminismLevel::Strict,
+                i as u64,
+                i as u64 * 2,
+                "rule:rule-v1",
+            );
+        }
+        assert_eq!(ledger.entries.len(), LEDGER_CAP, "bounded, never unbounded");
+        assert_eq!(ledger.entries[0].prompt, 10, "oldest dropped");
+        assert!(ledger.matches(&ledger.clone()));
+        let mut drifted = ledger.clone();
+        drifted.entries[3].response ^= 1;
+        assert!(!ledger.matches(&drifted));
+    }
+
+    #[test]
+    fn cost_meter_prices_a_cache_heavy_call_exactly() {
+        let mut m = CostMeter::default();
+        // 1M prompt (90% cached), 100k completion, deepseek dated price.
+        m.record(
+            TokenUsage {
+                prompt: 1_000_000,
+                completion: 100_000,
+                cached: 900_000,
+            },
+            Some(&deepseek_price()),
+        );
+        // miss 100k × $0.15/M + 100k × $0.60/M = $0.015 + $0.06 = $0.075
+        assert_eq!(m.total_micro(), 75_000);
+        assert_eq!(m.display(), "$0.0750");
+        // saved: 900k × ($0.15 − $0.003)/M = $0.1323
+        assert_eq!(m.saved_micro(), 132_300);
+        assert_eq!(m.currency, "USD");
+        assert_eq!(m.unpriced_calls, 0);
+        assert!(!m.mixed_currency);
+    }
+
+    #[test]
+    fn cost_meter_never_truncates_small_calls_prematurely() {
+        let mut m = CostMeter::default();
+        let price = deepseek_price();
+        // Ten tiny calls: 33 billed tokens each. Per-call truncation
+        // would read 10 × 4µ = 40µ; the numerator accumulator keeps the
+        // true 49.5µ → 49µ.
+        for _ in 0..10 {
+            m.record(
+                TokenUsage {
+                    prompt: 33,
+                    completion: 0,
+                    cached: 0,
+                },
+                Some(&price),
+            );
+        }
+        assert_eq!(m.total_micro(), 49);
+    }
+
+    #[test]
+    fn unpriced_and_mixed_currency_are_counted_not_invented() {
+        let mut m = CostMeter::default();
+        m.record(TokenUsage::ZERO, None);
+        assert_eq!(m.unpriced_calls, 1);
+        assert_eq!(m.display(), "—", "nothing valued yet");
+
+        m.record(
+            TokenUsage {
+                prompt: 1_000_000,
+                completion: 0,
+                cached: 0,
+            },
+            Some(&deepseek_price()),
+        );
+        let eur = ModelPrice {
+            currency: "EUR",
+            prompt_micro_per_m: 100_000,
+            completion_micro_per_m: 300_000,
+            cached_micro_per_m: 10_000,
+        };
+        m.record(
+            TokenUsage {
+                prompt: 1_000_000,
+                completion: 0,
+                cached: 0,
+            },
+            Some(&eur),
+        );
+        assert!(m.mixed_currency);
+        // The EUR call is flagged and excluded, not FX-guessed.
+        assert_eq!(m.total_micro(), 150_000);
+        assert_eq!(m.calls, 3);
+    }
+
     #[test]
     fn allocator_throttle_shrinks_the_runtime_budget() {
         let mut world = World::new();
@@ -746,5 +1078,67 @@ mod tests {
         let (h2, s2) = run();
         assert_eq!(h1, h2, "entity sequence replays identically");
         assert_eq!(s1, s2, "final velocities bit-identical");
+    }
+
+    #[test]
+    fn cost_meter_saved_side_never_exceeds_the_whole_call() {
+        let mut m = CostMeter::default();
+        // A lying vendor reports cached=999 against prompt=100: spent
+        // clamps to zero via billed_prompt, and the savings side must
+        // price at most the whole prompt — never 999 tokens worth.
+        m.record(
+            TokenUsage {
+                prompt: 100,
+                completion: 0,
+                cached: 999,
+            },
+            Some(&deepseek_price()),
+        );
+        assert_eq!(m.total_micro(), 0);
+        // 100 cached × ($0.15 − $0.003)/M = $0.0147
+        assert_eq!(m.saved_micro(), 14);
+    }
+
+    #[test]
+    fn price_for_label_joins_meter_labels_back_to_preset_rows() {
+        // HttpProvider::id() is "kind:model" — the resolver is the
+        // bridge from meter labels to registered prices.
+        let ds = price_for_label("openai-compat:deepseek-chat").expect("deepseek priced");
+        assert_eq!(ds.currency, "USD");
+        let oai = price_for_label("openai-compat:gpt-4o-mini").expect("openai priced");
+        assert_eq!(oai.cached_micro_per_m, 75_000);
+        // Unpriced rows and garbage labels read unpriced — never guessed.
+        assert!(price_for_label("zhipu:glm-4-flash").is_none());
+        assert!(price_for_label("openai-compat:rule-v1").is_none());
+        assert!(price_for_label("rule:rule-v1").is_none());
+        assert!(price_for_label("no-colon-here").is_none());
+    }
+
+    #[test]
+    fn display_marks_mixed_currency_ledgers() {
+        let mut m = CostMeter::default();
+        m.record(
+            TokenUsage {
+                prompt: 1_000_000,
+                completion: 0,
+                cached: 0,
+            },
+            Some(&deepseek_price()),
+        );
+        let eur = ModelPrice {
+            currency: "EUR",
+            prompt_micro_per_m: 100_000,
+            completion_micro_per_m: 300_000,
+            cached_micro_per_m: 10_000,
+        };
+        m.record(
+            TokenUsage {
+                prompt: 1_000_000,
+                completion: 0,
+                cached: 0,
+            },
+            Some(&eur),
+        );
+        assert!(m.display().starts_with("[mixed] "), "{}", m.display());
     }
 }

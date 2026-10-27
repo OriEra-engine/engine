@@ -7,9 +7,15 @@
 //! frame degrades to fewer draw calls instead of dropping frames. The
 //! world comes from the L2 scheduler; render depends only on layers
 //! below it (L2 core, L3 object model) — never on L6 subsystems.
+//!
+//! `render-wgpu` feature(默认关)提供第一个真 GPU 闭环:无头渲染管线与
+//! mesh 回读(见 [`gpu`]),与计数占位并存,互不替代。
 
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Position, World};
+
+#[cfg(feature = "render-wgpu")]
+pub mod gpu;
 
 /// Render quality tier. Drives the batching factor applied to visible
 /// geometry — the cheapest dial a frame-graph has.

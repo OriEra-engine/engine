@@ -11,6 +11,7 @@ env:
 jobs:
   agent-physics:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,67 +19,91 @@ jobs:
           node-version: "22"
       - name: Agent physics command regression tests
         run: node --test examples/06-agent-physics/intent.test.mjs
+      - name: Browser kernel v2 tests (node, no browser)
+        run: node --test examples/11-ai-cafe/engine/kernel.test.mjs
 
+  # 单 job 串行全 feature 腿时，一条卡死拖死全部（2026-10-26 实测：
+  # Windows Test 步骤挂 79 分钟被取消）。拆 matrix 并行：各腿独立
+  # runner 互不阻塞，timeout-minutes 硬顶——卡死自动自杀重触发。
   rust:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        leg:
+          - name: core
+            test: cargo test --workspace
+            clippy: cargo clippy --workspace --all-targets -- -D warnings
+          - name: genai-providers
+            test: cargo test -p oriera-genai --features providers
+            clippy: cargo clippy -p oriera-genai --all-targets --features providers -- -D warnings
+          - name: agent-json
+            test: cargo test -p oriera-agent --features json
+            clippy: cargo clippy -p oriera-agent --all-targets --features json -- -D warnings
+          - name: infer-native-http
+            test: cargo test -p oriera-infer --features native-http
+            clippy: cargo clippy -p oriera-infer --all-targets --features native-http -- -D warnings
+          - name: subsys-rigid
+            test: cargo test -p oriera-subsys --features rigid
+            clippy: cargo clippy -p oriera-subsys --all-targets --features rigid -- -D warnings
+    name: rust (${{ matrix.leg.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.leg.name }}
       - name: Format
         run: cargo fmt --all --check
       - name: Build
         run: cargo build --workspace
-      - name: Test
-        run: cargo test --workspace
-      - name: Test (genai providers feature)
-        run: cargo test -p oriera-genai --features providers
-      - name: Test (agent json feature)
-        run: cargo test -p oriera-agent --features json
-      - name: Test (infer native-http feature)
-        run: cargo test -p oriera-infer --features native-http
-      - name: Test (subsys rigid feature)
-        run: cargo test -p oriera-subsys --features rigid
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Clippy (genai providers feature)
-        run: cargo clippy -p oriera-genai --all-targets --features providers -- -D warnings
-      - name: Clippy (agent json feature)
-        run: cargo clippy -p oriera-agent --all-targets --features json -- -D warnings
-      - name: Clippy (infer native-http feature)
-        run: cargo clippy -p oriera-infer --all-targets --features native-http -- -D warnings
-      - name: Clippy (subsys+agent rigid feature)
-        run: cargo clippy -p oriera-subsys --all-targets --features rigid -- -D warnings
-      - name: Clippy (agent rigid example)
-        run: cargo clippy -p oriera-agent --all-targets --features rigid -- -D warnings
+      - name: Test (${{ matrix.leg.name }})
+        # timeout 快速失败护栏（2026-10-26 SOP：挂死测试 10 分钟内变红，
+        # 不烧满 job 的 60 分钟硬顶——cancelled 语义模糊且拖累整条流水线）
+        run: timeout 600 ${{ matrix.leg.test }}
+      - name: Clippy (${{ matrix.leg.name }})
+        run: ${{ matrix.leg.clippy }}
+
+  # studio_e2e（离线验收 example）独占一腿：panic 即红（#106），且
+  # 避免与其他 feature 腿抢同一个 cargo 锁。
+  studio-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: studio-e2e
+      - name: Offline acceptance example (studio_e2e — panic is red, #106)
+        run: timeout 900 cargo run -q -p oriera-agent --example studio_e2e
 
   manifests:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install PyYAML
-        run: python -m pip install pyyaml
+      - run: pip install pyyaml
       - name: LayerManifest gate
         run: python scripts/check_manifests.py
+      - name: Document number guard (W8)
+        run: python scripts/check_numbers.py
 
   bench:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: ECS benchmarks (report-only)
         run: cargo bench -p oriera-ecs
-
   cross-check:
     runs-on: ubuntu-latest
     strategy:

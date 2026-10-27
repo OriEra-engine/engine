@@ -21,7 +21,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.8.1"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["OriEra Contributors"]
@@ -31,17 +31,18 @@ repository = "https://github.com/OriEra-engine/engine"
 # Add entries (glam, tokio, ...) when the layer that needs them lands.
 # Internal layer crates: path for workspace builds, version for `cargo publish`.
 [workspace.dependencies]
-oriera-common = { path = "crates/oriera-common", version = "0.3.0" }
-oriera-pal = { path = "crates/oriera-pal", version = "0.3.0" }
-oriera-core = { path = "crates/oriera-core", version = "0.3.0" }
-oriera-ecs = { path = "crates/oriera-ecs", version = "0.3.0" }
-oriera-asset = { path = "crates/oriera-asset", version = "0.3.0" }
-oriera-render = { path = "crates/oriera-render", version = "0.3.0" }
-oriera-subsys = { path = "crates/oriera-subsys", version = "0.3.0" }
-oriera-infer = { path = "crates/oriera-infer", version = "0.3.0" }
-oriera-genai = { path = "crates/oriera-genai", version = "0.3.0" }
-oriera-agent = { path = "crates/oriera-agent", version = "0.3.0" }
+oriera-common = { path = "crates/oriera-common", version = "0.8.0" }
+oriera-pal = { path = "crates/oriera-pal", version = "0.8.0" }
+oriera-core = { path = "crates/oriera-core", version = "0.8.0" }
+oriera-ecs = { path = "crates/oriera-ecs", version = "0.8.0" }
+oriera-asset = { path = "crates/oriera-asset", version = "0.8.0" }
+oriera-render = { path = "crates/oriera-render", version = "0.8.0" }
+oriera-subsys = { path = "crates/oriera-subsys", version = "0.8.0" }
+oriera-infer = { path = "crates/oriera-infer", version = "0.8.0" }
+oriera-genai = { path = "crates/oriera-genai", version = "0.8.0" }
+oriera-agent = { path = "crates/oriera-agent", version = "0.8.0" }
 bitflags = "2.6"
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -49,6 +50,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # fits System::run's synchronous shape — no async runtime enters L7.
 # rustls via webpki-roots, no native TLS, no compression extras.
 ureq = { version = "2.10", default-features = false, features = ["tls"] }
+# A1 (PLAN-deepseek-upgrade): DeepSeek 官方协议类型层（conversation/
+# ReasoningEffort 等），MIT。只取 core——主 crate 拖 tokenizers/jsonschema
+# deepseek-recipe-core 已移除（#106，2026-10-23 拍板去依赖化）：仅用
+# ReasoningEffort 的 wire 形状，本地 as_str() 等价且 wire 快照测试钉死；
+# reasoning_effort 的线上格式契约 = every_effort_variant_maps_to_the_recipe_snake_case。
 # L6 rigid backend (#80): pure Rust, Apache-2.0, 2026 roadmap targets
 # robotics accuracy. Feature-gated per crate (`rigid`).
 rapier2d = "0.36"

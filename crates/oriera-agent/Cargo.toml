@@ -16,6 +16,7 @@ oriera-core.workspace = true
 oriera-ecs.workspace = true
 oriera-genai.workspace = true
 oriera-infer.workspace = true
+serde = { workspace = true, features = ["derive"] }
 # MemoryStore ↔ JSON (feature `json`): the persistence boundary for
 # cross-session companion memory. Optional like genai's `providers`
 # feature — wasm budget stays minimal unless the shell asks for it.
@@ -30,7 +31,14 @@ rigid = ["oriera-subsys/rigid"]
 
 [dev-dependencies]
 oriera-render = { path = "../oriera-render" }
+# golden fixture tests (#98) read contracts/golden/*.json on every test leg
+serde_json = { workspace = true }
 oriera-subsys = { path = "../oriera-subsys" }
+
+[[example]]
+name = "tool_loop"
+path = "examples/tool_loop.rs"
+required-features = ["json"]
 
 [[example]]
 name = "cafe"
