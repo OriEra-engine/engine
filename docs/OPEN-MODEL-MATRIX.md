@@ -197,7 +197,7 @@ groq/openrouter/anthropic）——玩家对话、prompt 与世界状态摘要会
 
 | 引擎座位 | 开源模型/引擎 | 许可证 | 接入形态 | 状态 |
 |---|---|---|---|---|
-| L10 语音入言（说话即操作） | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | MIT | 本地 server（OpenAI `/v1/audio/transcriptions` 兼容）→ L9 `parse` | 📋 座位已留 |
+| L10 语音入言（说话即操作） | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | MIT | 本地 server（OpenAI `/v1/audio/transcriptions` 兼容）→ `oriera_genai::AsrProvider`（#108 批②已就位：multipart wire + `ProviderKind::Piper` 本地行） | ✅ 座位已就位 |
 | L10 语音出口（NPC 开口） | [rhasspy/piper](https://github.com/rhasspy/piper) | MIT（音色随数据集） | 本地 HTTP → `oriera_genai::TtsProvider`（#108 已就位：OpenAI `/v1/audio/speech` 兼容 wire，`ProviderKind::Piper` 本地行不带价）+ `HttpTtsProvider` providers 门控 | ✅ 座位已就位 |
 | L9 记忆检索升级（bigram→向量） | [BAAI/bge-small-zh-v1.5](https://huggingface.co/BAAI/bge-small-zh-v1.5)（~26MB） | MIT | 本地 embedding 端点 → `oriera_infer::EmbeddingProvider`（#141 已就位：本地 Hash 档默认可用 + HttpEmbeddingProvider native-http 门控）+ `MemoryStore::retrieve_embedded` | ✅ 座位已就位 |
 | L9/L11 看世界（视觉反馈） | [vikhyatk/moondream2](https://huggingface.co/vikhyatk/moondream2) / [SmolVLM](https://github.com/huggingface/smollm) | Apache-2.0 | 本地 VLM 端点 → 截图→世界状态注入 | 📋 座位已留 |
