@@ -287,7 +287,7 @@ fn bigrams(s: &str) -> Vec<String> {
     let lower = s.to_lowercase();
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    let mut push =
+    let push =
         |g: String, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>| {
             if seen.insert(g.clone()) {
                 out.push(g);
