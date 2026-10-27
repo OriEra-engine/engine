@@ -28,6 +28,7 @@
 pub mod cognition;
 pub mod embodied;
 pub mod genai;
+pub mod goal;
 pub mod memory;
 pub mod prefab;
 pub mod story;
