@@ -724,7 +724,7 @@ impl<P: ModelProvider> DirectorSystem<P> {
         let log = world.resource::<DialogueLog>().cloned().unwrap_or_default();
         let sys =
             "你是 OriEra 世界引擎的 AI 导演。根据最近对话推进一个小而具体的世界事件，只输出一句话。";
-        let user = format!(
+        let mut user = format!(
             "当前第 {} 世界日。最近对话：{}",
             day,
             log.recent(6)
@@ -733,6 +733,31 @@ impl<P: ModelProvider> DirectorSystem<P> {
                 .collect::<Vec<_>>()
                 .join(" / ")
         );
+        // #104 批②：目标状态进导演上下文——LLM 导演可以围绕世界目标
+        // 组织事件。无 GoalLog（或无活动目标）时本段缺席，既有调用逐字节
+        // 不变（默认逐位兼容）。
+        if let Some(goals) = world.resource::<crate::goal::GoalLog>() {
+            let done_now: Vec<&str> = goals.completed.iter().map(|(g, _)| g.as_str()).collect();
+            let active: Vec<&crate::goal::Goal> = goals
+                .goals
+                .iter()
+                .filter(|g| !done_now.contains(&g.id.as_str()))
+                .filter(|g| !goals.frustrated.iter().any(|(gid, _)| gid == &g.id))
+                .collect();
+            if !active.is_empty() {
+                user.push_str(
+                    "
+世界目标（进行中）：",
+                );
+                for g in &active {
+                    user.push_str(&format!(
+                        "
+- {}（{}）",
+                        g.description, g.success_when
+                    ));
+                }
+            }
+        }
         (sys.to_string(), user)
     }
 
@@ -992,6 +1017,45 @@ mod tests {
     /// 评审 R3 P0 回归钉：单 NPC 卡司 + max_pending=4——修复前的提交
     /// 循环在此场景必活锁（cursor 回绕反复点在途者，continue 无进度）。
     /// 30 tick 内必须完成提交+落地（测试进程超时即红）。
+    /// #104 批②：目标状态只在 GoalLog 存在且有活动目标时进导演上下文
+    /// ——缺席/全完结时既有调用逐字节不变（默认逐位兼容）。
+    #[test]
+    fn director_prompts_carry_goal_context_only_when_present() {
+        use crate::goal::{Goal, GoalLog, GoalVars};
+        use crate::story::StoryValue;
+        let mut w = World::new();
+        w.insert_resource(DialogueLog::default());
+        let (_, bare) = DirectorSystem::<oriera_infer::RuleProvider>::director_prompts(&w, 1);
+        assert!(!bare.contains("世界目标"), "无 GoalLog 不注入目标段");
+
+        let mut log = GoalLog::default();
+        log.add(Goal {
+            id: "brew".into(),
+            description: "让客人喝到热咖啡".into(),
+            success_when: "cups >= 3".into(),
+            priority: 0,
+            deadline_turn: None,
+        });
+        w.insert_resource(log);
+        w.insert_resource(GoalVars(
+            [("cups".to_string(), StoryValue::Int(1))]
+                .into_iter()
+                .collect(),
+        ));
+        let (_, with_goal) = DirectorSystem::<oriera_infer::RuleProvider>::director_prompts(&w, 1);
+        assert!(with_goal.contains("世界目标（进行中）"));
+        assert!(with_goal.contains("让客人喝到热咖啡"));
+        assert!(with_goal.contains("cups >= 3"));
+
+        // 目标完结后：段整体消失（无活动目标=逐字节回到基线）
+        // 评估需要 cups>=3；直接置满触发完成（先克隆快照消借用交叠）
+        w.resource_mut::<GoalVars>().unwrap().set_int("cups", 3);
+        let vars = w.resource::<GoalVars>().unwrap().0.clone();
+        w.resource_mut::<GoalLog>().unwrap().evaluate(&vars, 9);
+        let (_, after_done) = DirectorSystem::<oriera_infer::RuleProvider>::director_prompts(&w, 1);
+        assert_eq!(after_done, bare, "全完结后逐字节回基线");
+    }
+
     #[test]
     fn single_npc_async_does_not_deadlock() {
         let mut w = World::new();
