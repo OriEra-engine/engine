@@ -12,8 +12,8 @@ pub struct Timestamp(pub u64);
 impl Timestamp {
     pub fn now() -> Self {
         Self(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0),
         )

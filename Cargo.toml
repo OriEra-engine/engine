@@ -13,9 +13,9 @@ members = [
     "crates/oriera-genai",   # L8 (ADR 0003)
     "crates/oriera-agent",   # L9
     "platforms/pc",
+    "platforms/web",
 ]
 exclude = [
-    "platforms/web",
     "platforms/ar_glasses/android_spatial",
     "platforms/bci_reserved",
 ]

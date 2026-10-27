@@ -8,6 +8,7 @@
 
 use oriera_common::{FrameIndex, Grants, Timestamp};
 use std::collections::VecDeque;
+use web_time::Instant;
 
 pub mod allocator;
 
@@ -43,7 +44,7 @@ pub trait System<W> {
 pub struct Scheduler<W> {
     systems: Vec<Box<dyn System<W>>>,
     frame: FrameIndex,
-    last: Timestamp,
+    last: Instant,
     frame_times: VecDeque<f32>,
     /// Frames in a row that exceeded the budget by >20% (reset on any
     /// in-budget frame).
@@ -91,7 +92,7 @@ impl<W> Scheduler<W> {
         Self {
             systems: Vec::new(),
             frame: FrameIndex(0),
-            last: Timestamp::now(),
+            last: Instant::now(),
             frame_times: VecDeque::with_capacity(HISTORY + 1),
             consecutive_overruns: 0,
             budget_warnings: 0,
@@ -178,11 +179,12 @@ impl<W> Scheduler<W> {
     /// fresh per-system timings are folded back into the allocator's
     /// cost model. Regulation leads, observation closes the loop.
     pub fn tick(&mut self, world: &mut W) -> f32 {
-        let start = Timestamp::now();
-        // Semantics vs regulation (issue #66): with a pinned step the
-        // ctx carries exactly that dt; the wall delta is still measured
-        // below for frame accounting and the allocator.
-        let dt = self.fixed_dt.unwrap_or_else(|| start.elapsed(self.last));
+        let start = Instant::now();
+        // Keep the fixed simulation step independent of real elapsed time.
+        // Budget accounting below always uses the monotonic clock.
+        let dt = self
+            .fixed_dt
+            .unwrap_or_else(|| start.duration_since(self.last).as_secs_f32());
         self.last = start;
 
         self.allocator
@@ -191,14 +193,14 @@ impl<W> Scheduler<W> {
         let ctx = FrameCtx {
             frame: self.frame,
             dt,
-            now: start,
+            now: Timestamp::now(),
             grants: Grants::new(&self.grant_table),
         };
 
         for (s, timing) in self.systems.iter_mut().zip(self.system_ms.iter_mut()) {
-            let t0 = Timestamp::now();
+            let t0 = Instant::now();
             s.run(&ctx, world);
-            timing.1 = Timestamp::now().elapsed(t0) * 1000.0;
+            timing.1 = t0.elapsed().as_secs_f32() * 1000.0;
         }
 
         // Merge externally supplied virtual costs (#103 E4) AFTER the
@@ -212,7 +214,7 @@ impl<W> Scheduler<W> {
 
         self.allocator.observe(&self.system_ms);
 
-        let frame_ms = Timestamp::now().elapsed(start) * 1000.0;
+        let frame_ms = start.elapsed().as_secs_f32() * 1000.0;
         self.frame.0 += 1;
         self.frame_times.push_back(frame_ms);
         if self.frame_times.len() > HISTORY {

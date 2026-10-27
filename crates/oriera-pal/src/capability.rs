@@ -54,7 +54,7 @@ bitflags! {
     }
 }
 
-/// Per-platform profile detected at startup.
+/// OS baseline refined by runtime probes at startup.
 #[derive(Debug, Clone)]
 pub struct PlatformProfile {
     pub family: PlatformFamily,
@@ -62,7 +62,7 @@ pub struct PlatformProfile {
     pub caps: Capabilities,
     /// Frame budget in microseconds. AR glasses 90fps = 11111us; desktop 60fps = 16666us.
     pub frame_budget_us: u32,
-    /// VR budget in MB (端侧 8GB budget).
+    /// Application allocation ceiling in MB, not detected physical VRAM.
     pub vram_budget_mb: u32,
 }
 
@@ -76,71 +76,87 @@ pub enum PlatformFamily {
     Unknown,
 }
 
+/// Browser observations supplied by the platform shell. Missing probes
+/// mean unavailable; no GPU, NPU, XR permission or memory size is guessed.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BrowserCapabilities {
+    /// `requestAdapter()` returned an adapter; device creation can still fail.
+    pub webgpu: bool,
+    pub touch: bool,
+    /// A fine pointer was observed (a hint, not proof of a physical keyboard).
+    pub keyboard_mouse: bool,
+    /// Secure-context WebTransport API presence, not endpoint connectivity.
+    pub webtransport: bool,
+}
+
 impl PlatformProfile {
+    /// Native API candidates by OS. Drivers/backends must still initialize
+    /// successfully before use. Hardware tiers require a separate probe.
     pub fn pc(os: &str) -> Self {
+        let graphics = match os {
+            "windows" => Capabilities::GFX_WGPU | Capabilities::GFX_DX12 | Capabilities::GFX_VULKAN,
+            "macos" => Capabilities::GFX_WGPU | Capabilities::GFX_METAL,
+            "linux" => Capabilities::GFX_WGPU | Capabilities::GFX_VULKAN,
+            _ => Capabilities::empty(),
+        };
         Self {
             family: PlatformFamily::Pc,
             os_name: os.to_string(),
-            caps: Capabilities::GFX_WGPU
-                | Capabilities::GFX_VULKAN
-                | Capabilities::GFX_DX12
-                | Capabilities::GFX_METAL
-                | Capabilities::INPUT_KEYBOARD_MOUSE
-                | Capabilities::INPUT_GAMEPAD
-                | Capabilities::NET_QUIC
-                | Capabilities::VRAM_16GB,
+            caps: graphics | Capabilities::INPUT_KEYBOARD_MOUSE,
             frame_budget_us: 16_666,
-            vram_budget_mb: 8192,
+            vram_budget_mb: 1024,
         }
     }
 
     pub fn mobile(os: &str) -> Self {
+        let graphics = match os {
+            "ios" => Capabilities::GFX_WGPU | Capabilities::GFX_METAL,
+            "android" => Capabilities::GFX_WGPU | Capabilities::GFX_VULKAN,
+            _ => Capabilities::empty(),
+        };
         Self {
             family: PlatformFamily::Mobile,
             os_name: os.to_string(),
-            caps: Capabilities::GFX_WGPU
-                | Capabilities::GFX_METAL
-                | Capabilities::GFX_VULKAN
-                | Capabilities::INPUT_TOUCH
-                | Capabilities::INPUT_VOICE_STREAM
-                | Capabilities::NPU_TOPS_48
-                | Capabilities::VRAM_8GB
-                | Capabilities::UNIFIED_MEMORY,
-            frame_budget_us: 16_666,
-            vram_budget_mb: 4096,
+            caps: graphics | Capabilities::INPUT_TOUCH,
+            frame_budget_us: 33_333,
+            vram_budget_mb: 512,
         }
     }
 
+    /// Safe pre-probe browser baseline, including headless/unsupported hosts.
     pub fn web() -> Self {
+        Self::web_with_capabilities(BrowserCapabilities::default())
+    }
+
+    pub fn web_with_capabilities(detected: BrowserCapabilities) -> Self {
+        let mut caps = Capabilities::empty();
+        caps.set(Capabilities::GFX_WEBGPU, detected.webgpu);
+        caps.set(Capabilities::INPUT_TOUCH, detected.touch);
+        caps.set(Capabilities::INPUT_KEYBOARD_MOUSE, detected.keyboard_mouse);
+        caps.set(Capabilities::NET_WEBTRANSPORT, detected.webtransport);
         Self {
             family: PlatformFamily::Web,
             os_name: "browser".into(),
-            caps: Capabilities::GFX_WEBGPU
-                | Capabilities::INPUT_KEYBOARD_MOUSE
-                | Capabilities::INPUT_TOUCH
-                | Capabilities::NET_WEBTRANSPORT,
+            caps,
             frame_budget_us: 16_666,
-            vram_budget_mb: 4096, // Chrome caps WebGPU context ~ half of system VRAM
+            vram_budget_mb: 512,
         }
     }
 
     pub fn ar_glasses(os: &str) -> Self {
+        let graphics = match os {
+            "visionos" => Capabilities::GFX_WGPU | Capabilities::GFX_METAL,
+            "android" => Capabilities::GFX_WGPU | Capabilities::GFX_VULKAN,
+            _ => Capabilities::empty(),
+        };
         Self {
             family: PlatformFamily::ArGlasses,
             os_name: os.to_string(),
-            caps: Capabilities::GFX_WGPU
-                | Capabilities::GFX_WEBGPU
-                | Capabilities::INPUT_HAND_TRACKING
-                | Capabilities::INPUT_EYE_GAZE
-                | Capabilities::INPUT_VOICE_STREAM
-                | Capabilities::INPUT_SPATIAL_ANCHOR
-                | Capabilities::FOVEATED_RENDERING
-                | Capabilities::VIDEO_BACKED_LAYER
-                | Capabilities::NPU_TOPS_48
-                | Capabilities::VRAM_8GB
-                | Capabilities::UNIFIED_MEMORY,
-            frame_budget_us: 11_111, // 90fps
-            vram_budget_mb: 3072,
+            // Tracking/foveation/see-through modes are session capabilities,
+            // not guarantees inferred from the device's operating system.
+            caps: graphics,
+            frame_budget_us: 11_111,
+            vram_budget_mb: 512,
         }
     }
 
@@ -183,6 +199,93 @@ mod tests {
     }
 
     #[test]
+    fn native_backends_follow_os() {
+        for (profile, expected, forbidden) in [
+            (
+                PlatformProfile::pc("windows"),
+                Capabilities::GFX_DX12,
+                Capabilities::GFX_METAL,
+            ),
+            (
+                PlatformProfile::pc("macos"),
+                Capabilities::GFX_METAL,
+                Capabilities::GFX_DX12 | Capabilities::GFX_VULKAN,
+            ),
+            (
+                PlatformProfile::pc("linux"),
+                Capabilities::GFX_VULKAN,
+                Capabilities::GFX_METAL | Capabilities::GFX_DX12,
+            ),
+            (
+                PlatformProfile::mobile("ios"),
+                Capabilities::GFX_METAL,
+                Capabilities::GFX_VULKAN | Capabilities::GFX_DX12,
+            ),
+            (
+                PlatformProfile::mobile("android"),
+                Capabilities::GFX_VULKAN,
+                Capabilities::GFX_METAL | Capabilities::GFX_DX12,
+            ),
+            (
+                PlatformProfile::ar_glasses("visionos"),
+                Capabilities::GFX_METAL,
+                Capabilities::GFX_WEBGPU,
+            ),
+        ] {
+            assert!(profile.caps.contains(expected), "{}", profile.os_name);
+            assert!(!profile.caps.intersects(forbidden), "{}", profile.os_name);
+        }
+    }
+
+    #[test]
+    fn profiles_do_not_invent_hardware_or_permissions() {
+        let unprobed = Capabilities::NPU_TOPS_35
+            | Capabilities::NPU_TOPS_48
+            | Capabilities::NPU_TOPS_160
+            | Capabilities::VRAM_8GB
+            | Capabilities::VRAM_16GB
+            | Capabilities::VRAM_32GB
+            | Capabilities::INPUT_EYE_GAZE
+            | Capabilities::INPUT_HAND_TRACKING
+            | Capabilities::BCI_EEG_LSL
+            | Capabilities::BCI_NON_INVASIVE;
+        for p in [
+            PlatformProfile::pc("macos"),
+            PlatformProfile::mobile("android"),
+            PlatformProfile::web(),
+            PlatformProfile::ar_glasses("visionos"),
+            PlatformProfile::bci_reserved(),
+            PlatformProfile::unknown(),
+        ] {
+            assert!(!p.caps.intersects(unprobed));
+        }
+        // An ordinary phone must not route AI to a fictional 48 TOPS NPU.
+        assert_eq!(
+            crate::route(
+                PlatformProfile::mobile("android").caps,
+                crate::RouteHint {
+                    payload_bytes: 1024,
+                    latency_budget_ms: 500,
+                    privacy: crate::Privacy::Any,
+                }
+            ),
+            crate::ExecutionSite::Cloud
+        );
+    }
+
+    #[test]
+    fn browser_capabilities_only_follow_observations() {
+        assert!(PlatformProfile::web().caps.is_empty());
+        let p = PlatformProfile::web_with_capabilities(BrowserCapabilities {
+            touch: true,
+            webgpu: true,
+            ..Default::default()
+        });
+        assert_eq!(p.caps, Capabilities::INPUT_TOUCH | Capabilities::GFX_WEBGPU);
+        assert_eq!(p.family, PlatformFamily::Web);
+    }
+
+    #[test]
     fn bci_bits_are_zero_in_v1() {
         let bci_bits = Capabilities::BCI_EEG_LSL | Capabilities::BCI_NON_INVASIVE;
 
@@ -205,10 +308,10 @@ mod tests {
     }
 
     #[test]
-    fn mobile_has_npu_and_8gb_vram_capabilities() {
+    fn mobile_does_not_assume_npu_or_8gb_vram() {
         let p = PlatformProfile::mobile("android");
-        assert!(p.caps.contains(Capabilities::NPU_TOPS_48));
-        assert!(p.caps.contains(Capabilities::VRAM_8GB));
+        assert!(!p.caps.contains(Capabilities::NPU_TOPS_48));
+        assert!(!p.caps.contains(Capabilities::VRAM_8GB));
     }
 
     #[test]
@@ -221,8 +324,8 @@ mod tests {
     fn ar_glasses_has_90fps_budget() {
         let p = PlatformProfile::ar_glasses("visionos");
         assert_eq!(p.frame_budget_us, 11_111);
-        assert!(p.caps.contains(Capabilities::FOVEATED_RENDERING));
-        assert!(p.caps.contains(Capabilities::INPUT_EYE_GAZE));
+        assert!(!p.caps.contains(Capabilities::FOVEATED_RENDERING));
+        assert!(!p.caps.contains(Capabilities::INPUT_EYE_GAZE));
     }
 
     #[test]

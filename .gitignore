@@ -31,3 +31,5 @@ build/
 .git-msg
 *.py.bak
 patch*.py
+# Generated wasm-pack packages
+platforms/web/pkg/

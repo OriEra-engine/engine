@@ -58,7 +58,7 @@ git clone https://github.com/OriEra-engine/engine.git
 cd engine
 npx serve .           # open http://localhost:3000 for the web demos
 
-# Rust side (1.80+)
+# Rust side (current stable, matching CI)
 cargo test --workspace
 cargo run -p oriera-pc
 ```
@@ -87,3 +87,5 @@ Apache License 2.0 — patent grant included, cloud-friendly.
   please give this repo a ⭐ Star — it decides how far this open-source path can go.</sub><br/><br/>
   <a href="https://github.com/OriEra-engine/engine/stargazers"><img src="https://img.shields.io/badge/Star%20this%20repo-⭐-ffc861?style=for-the-badge" alt="Star OriEra" /></a>
 </p>
+
+Platform support and validation boundaries: [docs/PLATFORM-SUPPORT.md](docs/PLATFORM-SUPPORT.md).
