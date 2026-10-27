@@ -4,7 +4,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import {
-  MemoryStore, HttpChatProvider, parseIntent, CommandQueue,
+  MemoryStore, HttpChatProvider, parseIntent, CommandQueue, GoalLog,
   CognitionSystem, DirectorSystem, PROVIDER_PRESETS, createProvider, fitBudget,
   resolveSlotProvider, SLOT_ROUTING_KEY,
 } from "./kernel.js";
@@ -120,6 +120,45 @@ test("帧预算：一次 tick 只消化预算条数，不饿死", () => {
   assert.equal(q.pending, 2);
   q.tick({});
   assert.equal(q.pending, 0);
+});
+
+
+/* ---- #104 批③：GoalLog（goal.rs 对镜：完成一次记账/受挫一次+记忆/坏表达式不崩） ---- */
+test("GoalLog：目标完成一次性记账，不写挫折记忆", () => {
+  const mem = new MemoryStore("test.goals1");
+  const g = new GoalLog("test.goals1");
+  g.add({ id: "serve", description: "上咖啡", success_when: "cups >= 3" });
+  g.evaluate({ cups: 1 }, 2, mem);
+  assert.ok(!g.isCompleted("serve"));
+  g.evaluate({ cups: 3 }, 5, mem);
+  assert.ok(g.isCompleted("serve"));
+  assert.equal(g.completed.length, 1);
+  g.evaluate({ cups: 3 }, 6, mem);
+  assert.equal(g.completed.length, 1, "不重复记账");
+  assert.equal(mem.lenTotal(), 0, "完成不写挫折记忆");
+});
+
+test("GoalLog：超时受挫一次性记账并写 world 记忆（可检索）", () => {
+  const mem = new MemoryStore("test.goals2");
+  const g = new GoalLog("test.goals2");
+  g.add({ id: "brew", description: "冲一壶好咖啡", success_when: "beans >= 9", deadline_turn: 3 });
+  g.evaluate({ beans: 1 }, 4, mem);
+  assert.equal(g.frustrated.length, 1);
+  assert.equal(mem.lenTotal(), 1, "挫折写进 world 记忆");
+  const hit = mem.retrieve("world", "world", "目标 受挫", 100, 1);
+  assert.ok(hit.length > 0 && hit[0].text.includes("受挫"));
+  g.evaluate({ beans: 1 }, 5, mem);
+  assert.equal(g.frustrated.length, 1, "不重复记账");
+});
+
+test("GoalLog：坏表达式按未满足不崩，超时照走受挫", () => {
+  const mem = new MemoryStore("test.goals3");
+  const g = new GoalLog("test.goals3");
+  g.add({ id: "broken", description: "坏表达式", success_when: "cups ~~ 三", deadline_turn: 1 });
+  g.evaluate({ cups: 3 }, 2, mem);
+  assert.ok(!g.isCompleted("broken"));
+  assert.equal(g.frustrated.length, 1);
+  assert.equal(mem.lenTotal(), 1);
 });
 
 /* ---- MemoryStore：容量参数化 + 无 localStorage 可用 ---- */

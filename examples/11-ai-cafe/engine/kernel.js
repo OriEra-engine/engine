@@ -64,6 +64,50 @@ export class MemoryStore {
   _save() { if (typeof localStorage !== "undefined") localStorage.setItem(this.persistKey, JSON.stringify(this.mem)); }
 }
 
+/* ---------- L9 · GoalLog：目标追踪（#104 批③，goal.rs 对镜） ----------
+ * success_when 用 story 的 `var op 整数` 语法（>= <= > < == !=）；
+ * 完成/受挫各一次性记账；受挫可选写入 MemoryStore（world 视角
+ * importance 4——NPC 会「记住」世界没做成什么，情绪闭环同 Rust）。
+ * ---------------------------------------------------------------- */
+export class GoalLog {
+  constructor(persistKey = "oriera.goals.v1") {
+    this.goals = []; this.completed = []; this.frustrated = [];
+    this.persistKey = persistKey;
+    try {
+      const saved = JSON.parse(localStorage.getItem(persistKey) || "null");
+      if (saved) { this.goals = saved.goals || []; this.completed = saved.completed || []; this.frustrated = saved.frustrated || []; }
+    } catch { /* 损坏的存档当作空白 */ }
+  }
+  _save() { if (typeof localStorage !== "undefined") localStorage.setItem(this.persistKey, JSON.stringify({ goals: this.goals, completed: this.completed, frustrated: this.frustrated })); }
+  add(goal) { this.goals.push(goal); this._save(); }
+  isCompleted(id) { return this.completed.some(([g]) => g === id); }
+  _eval(vars, expr) {
+    const m = /^\s*([A-Za-z0-9_]+)\s*(>=|<=|>|<|==|!=)\s*(-?\d+)\s*$/.exec(String(expr));
+    if (!m) return false;
+    const a = Number(vars?.[m[1]]);
+    if (Number.isNaN(a)) return false;
+    const b = Number(m[3]);
+    return { ">=": a >= b, "<=": a <= b, ">": a > b, "<": a < b, "==": a === b, "!=": a !== b }[m[2]];
+  }
+  /** 评估所有未完结目标，返回本次新完成的 id 列表。vars 为普通对象
+   *  （数值/可数值化）；mem 传 MemoryStore 时受挫写 world 记忆。 */
+  evaluate(vars, turn, mem) {
+    const newlyDone = [];
+    for (const g of this.goals) {
+      if (this.isCompleted(g.id) || this.frustrated.some(([gid]) => gid === g.id)) continue;
+      if (this._eval(vars, g.success_when)) {
+        this.completed.push([g.id, turn]); newlyDone.push(g.id); this._save();
+        continue;
+      }
+      if (g.deadline_turn != null && turn > g.deadline_turn) {
+        this.frustrated.push([g.id, turn]); this._save();
+        if (mem) mem.record("world", { turn, day: 0, about: "world", text: `目标受挫：${g.description}`, imp: 4 });
+      }
+    }
+    return newlyDone;
+  }
+}
+
 /* ---------- L7 · ModelProvider：创作者自选大模型 ----------
  * 与 Rust oriera-infer::create_provider 工厂一一对应。
  * 任何 OpenAI 兼容端点（智谱/DeepSeek/Moonshot/Groq/OpenRouter/vLLM）
