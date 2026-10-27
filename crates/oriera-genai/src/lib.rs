@@ -19,6 +19,8 @@
 //! in `contracts/oriera/genai/v1`, and the engine core vendors zero SDKs.
 
 #[cfg(feature = "providers")]
+pub mod asr;
+#[cfg(feature = "providers")]
 pub mod cogview;
 pub mod config;
 pub mod hot_swap;
@@ -29,6 +31,8 @@ pub mod mock;
 pub mod rodin;
 #[cfg(feature = "providers")]
 pub mod tts;
+#[cfg(feature = "providers")]
+pub use asr::{AsrProvider, HttpAsrProvider};
 #[cfg(feature = "providers")]
 pub use tts::{HttpTtsProvider, TtsProvider};
 #[cfg(feature = "providers")]
