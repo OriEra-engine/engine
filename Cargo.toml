@@ -23,6 +23,8 @@ exclude = [
 [workspace.package]
 version = "0.9.0"
 edition = "2021"
+# MSRV：整数 is_multiple_of 稳定于 1.87（genai 轮询/记忆分词在用）
+rust-version = "1.87"
 license = "Apache-2.0"
 authors = ["OriEra Contributors"]
 repository = "https://github.com/OriEra-engine/engine"

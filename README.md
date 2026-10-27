@@ -151,6 +151,16 @@ cargo test --workspace         # 跑全部单元测试
 cargo clippy --workspace -- -D warnings
 ```
 
+### 库用户（crates.io 接入，5 分钟）
+
+```bash
+cargo add oriera-agent          # L9 认知：NPC 记忆/对话/导演（自动带入 L1-L8）
+cargo run -p oriera-infer --example provider_smoke   # 验活：13 家供应商预设离线自检
+ORIERA_SMOKE_PROVIDER=zhipu cargo run -p oriera-infer --example provider_smoke  # 真 API 行（免费 glm-4-flash）
+```
+
+最小对话三行：见 [docs/EXAMPLES.md](docs/EXAMPLES.md)「代码片段」节。全部开源底座与许可证对照见 [docs/OPEN-MODEL-MATRIX.md](docs/OPEN-MODEL-MATRIX.md)。
+
 ## 贡献与社区
 
 我们欢迎任何形式的贡献——修 bug、写文档、加 demo、提 RFC。

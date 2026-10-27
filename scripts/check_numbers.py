@@ -58,8 +58,18 @@ def main() -> int:
         ).exists():
             FAIL.append(f"examples/{d} 缺 index.html 与 engine/（非完整 demo 目录）")
 
-    # 4) ARCHITECTURE.md 层数声明：十一层清单行数
+    # 3.5) release-notes 份数 vs ARCHITECTURE 声明（#107 DX 包）
+    notes = sorted((ROOT / "docs" / "release-notes").glob("*.md"))
     arch = (ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    arch_note = re.search(r"release-notes.*?至 v[0-9.]+\S* 共 (\d+) 份", arch)
+    if arch_note:
+        claimed_n = int(arch_note.group(1))
+        if len(notes) != claimed_n:
+            FAIL.append(
+                f"ARCHITECTURE 声明 release-notes 共 {claimed_n} 份，实物 {len(notes)} 份"
+            )
+
+    # 4) ARCHITECTURE.md 层数声明：十一层清单行数
     layer_rows = re.findall(r"^\| L(\d+) \|", arch, re.M)
     n_layers = len(set(layer_rows))
     if n_layers < 11:
