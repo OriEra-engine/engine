@@ -30,6 +30,10 @@ pub enum ProviderKind {
     /// Done/Failed; `POST {base}/download` (top-level uuid) →
     /// `list[].url` (.glb, signed and expiring). Behind `providers`.
     Rodin,
+    /// Piper（或任何 OpenAI `/v1/audio/speech` 兼容本地 TTS server）——
+    /// L10 语音出口的本地行（#108）：默认 base 指向本机 5000 端口
+    /// （piper HTTP server 惯例），不带价（电费口径）。
+    Piper,
 }
 
 impl ProviderKind {
@@ -40,6 +44,7 @@ impl ProviderKind {
             ProviderKind::CogView => "cogview",
             ProviderKind::Seedance => "seedance",
             ProviderKind::Rodin => "rodin",
+            ProviderKind::Piper => "piper",
         }
     }
 
@@ -50,6 +55,7 @@ impl ProviderKind {
             "cogview" | "image" | "images" => Some(ProviderKind::CogView),
             "seedance" | "ark" | "doubao-seedance" => Some(ProviderKind::Seedance),
             "rodin" | "hyper3d" => Some(ProviderKind::Rodin),
+            "piper" | "tts" => Some(ProviderKind::Piper),
             _ => None,
         }
     }
@@ -68,6 +74,8 @@ impl ProviderKind {
             // Hyper3D Rodin v2; mainland endpoint hyper3d.cn overrides
             // via base_url (same paths).
             ProviderKind::Rodin => "https://api.hyper3d.com/api/v2",
+            // piper HTTP server 惯例端口；OpenAI 兼容路径 /v1/audio/speech
+            ProviderKind::Piper => "http://127.0.0.1:5000/v1",
         }
     }
 }
@@ -168,6 +176,9 @@ pub fn create_generation_provider_with_transport(
         ProviderKind::CogView => Arc::new(CogViewProvider::new(cfg.clone(), transport)),
         ProviderKind::Seedance => Arc::new(SeedanceProvider::new(cfg.clone(), transport)),
         ProviderKind::Rodin => Arc::new(RodinProvider::new(cfg.clone(), transport)),
+        // Piper 是 L10 TTS 出口（tts::TtsProvider），不产 L8 资产——
+        // 走生成工厂快速失败（Unsupported），语音请走 tts::HttpTtsProvider。
+        ProviderKind::Piper => Arc::new(crate::MockProvider::new()),
     }
 }
 
