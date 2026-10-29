@@ -23,7 +23,7 @@ const FilmStory = (() => {
           goto: o.goto,
         })),
         routes: (n.routes ?? []).map((r) => ({ when: r.when ?? null, goto: r.goto })),
-        timeout_secs: n.timeout ?? null,
+        timeout_secs: n.timeout_secs ?? null,
       })),
     };
   }
@@ -37,14 +37,17 @@ const FilmStory = (() => {
 
   function applyOne(cur, expr) {
     const e = String(expr).trim();
+    // 与 Rust apply_one 同约:带符号分支必须全串可解析 i64,否则落到
+    // 字符串分支——parseInt 的前缀解析曾让 "2.5"/"+5abc" 两端分叉。
     if (e.startsWith("+") || e.startsWith("-")) {
-      const d = parseInt(e, 10);
-      if (!Number.isNaN(d)) return asInt(cur) + d;
+      const num = e.slice(1).trim();
+      if (/^-?\d+$/.test(num)) {
+        return asInt(cur) + (e[0] === "-" ? -1 : 1) * Number(num);
+      }
     }
     if (e === "true") return true;
     if (e === "false") return false;
-    const n = parseInt(e, 10);
-    return Number.isNaN(n) ? e : n;
+    return /^-?\d+$/.test(e) ? Number(e) : e;
   }
 
   function applySets(graph, vars, sets) {
@@ -69,20 +72,23 @@ const FilmStory = (() => {
     if (!p) return null;
     const [name, op, rhs] = p;
     if (!vars.has(name)) return null;
-    const b = parseInt(rhs, 10);
+    // Rust rhs.parse::<i64>() 严格全串:1.5/2x 一律 None(表达式为假)
+    const b = /^-?\d+$/.test(rhs) ? Number(rhs) : NaN;
     if (Number.isNaN(b)) return null;
     const a = asInt(vars.get(name));
     return { ">=": a >= b, "<=": a <= b, ">": a > b, "<": a < b, "==": a === b, "!=": a !== b }[op];
   }
 
-  // resolve_hub：first-true-else-default（与 Rust/播放器三方同约）
+  // resolve_hub：first-hit-else-default(与 Rust 同约:无 when 路由在其
+  // 位置无条件命中并截住后续;全败落末位路由兜底,从不停滞)。JS 曾跳过
+  // 无 when 路由继续扫——同图两端会走出不同结局(2026-10-29 评审 P1)。
   function resolveHub(vars, node) {
-    let fallback = null;
+    let hit = null, fallback = null;
     for (const r of node.routes) {
       if (!r.when && !fallback) fallback = r;
-      if (r.when && evalWhen(vars, r.when) === true) return r;
+      if ((!r.when || evalWhen(vars, r.when) === true) && !hit) hit = r;
     }
-    return fallback ?? node.routes[node.routes.length - 1] ?? null;
+    return hit ?? fallback ?? node.routes[node.routes.length - 1] ?? null;
   }
 
   // ── 校验器（与 Rust validate 同一发现集） ──

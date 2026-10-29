@@ -46,7 +46,7 @@ const effectiveLimit = n => (!n || n > HARD_MAX_ASSET_BYTES ? 64 * 1024 * 1024 :
 export function validateAsset(asset) {
   const b = asset.payload, max = effectiveLimit(asset.max_bytes);
   if (b.length > max) throw new Error(`${b.length} bytes exceeds the ${max} byte ceiling`);
-  const u32 = i => (b[i] | b[i + 1] << 24 >>> 0 | b[i + 2] << 16 | b[i + 3] << 8) >>> 0; // LE
+  const u32 = i => (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) >>> 0; // LE
   let ok;
   switch (asset.format) {
     case AssetFormat.IMAGE:

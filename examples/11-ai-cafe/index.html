@@ -454,7 +454,8 @@ async function pump() {
     }
     const beat = await director.tick(world);
     if (beat) logLine("dir", `🎭 世界进程推进 → ${beat}`);
-    localStorage.setItem("aicafe.world.v1", JSON.stringify({ turn: world.turn, story: world.story, rel: world.rel }));
+    // 配额满不致命(评审 P2):世界状态持久化失败只丢存档不停泵
+    try { localStorage.setItem("aicafe.world.v1", JSON.stringify({ turn: world.turn, story: world.story, rel: world.rel })); } catch {}
     renderWorld(); renderNPCs();
   } finally { pumping = false; }
   // L8 与世界同泵（不是渲染帧）：生成是世界模拟的一部分——导演拍点
