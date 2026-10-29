@@ -432,6 +432,10 @@ impl World {
     /// Mutable two-component join: call a closure on each entity that has
     /// both A and B. No cloning — the closure gets `&mut` to both columns.
     ///
+    /// Panics when A and B are the same type: taking one column out twice
+    /// would silently iterate nothing, which is a caller bug — fail loudly
+    /// instead (query one component per join, or two single joins).
+    ///
     /// Panic safety: same [`ColumnsGuard`] contract — both columns are
     /// reinserted even if the closure panics.
     pub fn for_each2_mut<A: 'static, B: 'static>(
@@ -440,6 +444,11 @@ impl World {
     ) {
         let ta = TypeId::of::<A>();
         let tb = TypeId::of::<B>();
+        assert_ne!(
+            ta, tb,
+            "for_each2_mut::<T, T> cannot borrow the same column twice; \
+             it would silently iterate nothing",
+        );
         // Take both columns out of the map so both can be borrowed at once.
         let mut guard = ColumnsGuard {
             columns: &mut self.columns,
@@ -790,6 +799,16 @@ mod tests {
         assert_eq!(world.get::<Position>(e1).unwrap().x, 1.0);
         // e2 untouched by the join.
         assert_eq!(world.get::<Position>(e2).unwrap().x, 5.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot borrow the same column twice")]
+    fn for_each2_mut_same_type_fails_loudly() {
+        // 同型 join 曾静默迭代零次(guard.take 二次取列落空)——必须显式报错
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Position { x: 0.0, y: 0.0 });
+        world.for_each2_mut::<Position, Position>(|_e, _a, _b| {});
     }
 
     #[test]

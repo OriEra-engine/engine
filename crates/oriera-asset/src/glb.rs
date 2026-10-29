@@ -49,6 +49,11 @@ pub enum GlbError {
         need: usize,
         have: usize,
     },
+    /// 索引值越过顶点数(坏文件在解码期拒绝,不留给渲染端炸)。
+    IndexOutOfRange {
+        index: u32,
+        vertices: usize,
+    },
 }
 
 impl fmt::Display for GlbError {
@@ -65,6 +70,9 @@ impl fmt::Display for GlbError {
                     f,
                     "accessor {view} needs {need} bytes but buffer view has {have}"
                 )
+            }
+            GlbError::IndexOutOfRange { index, vertices } => {
+                write!(f, "index {index} out of range for {vertices} vertices")
             }
         }
     }
@@ -178,6 +186,13 @@ pub fn decode_glb_mesh(bytes: &[u8]) -> Result<GlbMesh, GlbError> {
         Some(idx) => read_indices(accessors, buffer_views, idx as usize, bin)?,
         None => Vec::new(),
     };
+    // 索引必须落在顶点数内:越界索引不该等渲染端 draw 才炸。
+    if let Some(&bad) = indices.iter().find(|&&i| i as usize >= positions.len()) {
+        return Err(GlbError::IndexOutOfRange {
+            index: bad,
+            vertices: positions.len(),
+        });
+    }
 
     // 包围盒由数据实算;accessor 声明的 min/max 只作旁证,不作事实。
     let mut min = [f32::INFINITY; 3];
@@ -210,6 +225,11 @@ fn locate(
     bin: &[u8],
 ) -> Result<std::ops::Range<usize>, GlbError> {
     let acc = accessors.get(idx).ok_or(GlbError::MissingMesh)?;
+    // accessor 自身的 byteOffset(合法 glTF 特性)会改变读取起点——
+    // 本解码器不支持,必须显式拒绝而不是静默读错字节。
+    if acc.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) != 0 {
+        return Err(GlbError::Unsupported("accessor byteOffset"));
+    }
     let actual = acc
         .get("componentType")
         .and_then(Value::as_u64)
@@ -237,17 +257,27 @@ fn locate(
             ));
         }
     }
-    let offset = view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let view_len = view.get("byteLength").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let need = count * natural;
-    if offset + view_len > bin.len() || need > view_len {
+    // 全部用 checked 算术:这里的数字来自不可信 JSON,溢出/回绕会把
+    // 下面的边界校验整个绕过(release 无 overflow-checks)。
+    let offset = view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0);
+    let view_len = view.get("byteLength").and_then(Value::as_u64).unwrap_or(0);
+    let need = match (count as u64).checked_mul(natural as u64) {
+        Some(n) => n.min(usize::MAX as u64) as usize,
+        None => usize::MAX, // 声明字节总数溢出 = 必然越界,按上界报错
+    };
+    let off_end = offset.checked_add(view_len).ok_or(GlbError::OutOfBounds {
+        view: view_idx,
+        need,
+        have: 0,
+    })?;
+    if off_end > bin.len() as u64 || need as u64 > view_len {
         return Err(GlbError::OutOfBounds {
             view: view_idx,
             need,
-            have: view_len.min(bin.len().saturating_sub(offset)),
+            have: view_len.min(bin.len() as u64).saturating_sub(offset) as usize,
         });
     }
-    Ok(offset..offset + need)
+    Ok(offset as usize..offset as usize + need)
 }
 
 fn read_positions(
@@ -564,5 +594,63 @@ mod tests {
             decode_glb_mesh(&glb),
             Err(GlbError::Unsupported(_))
         ));
+    }
+
+    // ---- 敌意输入:数字全部来自不可信 JSON,溢出/回绕必须显式拒绝 ----
+
+    #[test]
+    fn overflow_count_is_rejected_not_panics() {
+        // count = 2^61,× 12B 溢出 usize —— checked_mul 必须拦下
+        let bin = triangle_bin();
+        let mut doc = triangle_doc(36, 12);
+        doc["accessors"][0]["count"] = serde_json::json!(2_305_843_009_213_693_952u64);
+        let glb = build_glb(&doc, &bin);
+        assert!(matches!(
+            decode_glb_mesh(&glb),
+            Err(GlbError::OutOfBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn wraparound_view_bounds_is_rejected_not_panics() {
+        // byteOffset+byteLength = 2^64,release 回绕为 0 会骗过边界校验
+        let bin = triangle_bin();
+        let mut doc = triangle_doc(36, 12);
+        doc["bufferViews"][0]["byteOffset"] = serde_json::json!(9_223_372_036_854_775_808u64);
+        doc["bufferViews"][0]["byteLength"] = serde_json::json!(9_223_372_036_854_775_808u64);
+        let glb = build_glb(&doc, &bin);
+        assert!(matches!(
+            decode_glb_mesh(&glb),
+            Err(GlbError::OutOfBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn index_out_of_vertex_range_is_rejected() {
+        // 声明 3 顶点,索引却指到 999999 —— 解码期拒绝,不等渲染端炸
+        let mut bin = triangle_bin()[..36].to_vec();
+        bin.extend_from_slice(&999_999u32.to_le_bytes());
+        bin.extend_from_slice(&1u32.to_le_bytes());
+        bin.extend_from_slice(&2u32.to_le_bytes());
+        let glb = build_glb(&triangle_doc(36, 12), &bin);
+        match decode_glb_mesh(&glb) {
+            Err(GlbError::IndexOutOfRange { index, vertices }) => {
+                assert_eq!(index, 999_999);
+                assert_eq!(vertices, 3);
+            }
+            other => panic!("expected IndexOutOfRange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accessor_byte_offset_is_rejected() {
+        // 合法但本解码器不支持的 accessor byteOffset:显式拒绝而非静默读错字节
+        let mut doc = triangle_doc(36, 12);
+        doc["accessors"][0]["byteOffset"] = serde_json::json!(12);
+        let glb = build_glb(&doc, &triangle_bin());
+        match decode_glb_mesh(&glb) {
+            Err(GlbError::Unsupported(what)) => assert_eq!(what, "accessor byteOffset"),
+            other => panic!("expected Unsupported(accessor byteOffset), got {other:?}"),
+        }
     }
 }
