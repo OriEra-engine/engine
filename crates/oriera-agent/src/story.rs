@@ -550,6 +550,19 @@ mod tests {
     }
 
     #[test]
+    fn golden_fingerprint_value() {
+        // 跨语言黄金契约钉子:demo 14 story.js 的 saveFingerprint(BigInt
+        // 模拟 u64)对同一输入逐位复现本值——2026-10-29 维护评审 node 实测。
+        // 该值落在 2^63~2^64 之间,double 取整会偏 +861,JS 侧用 BigInt 是
+        // 承重墙而非装饰;任何一端改动算法此处先红。
+        let mut vars = BTreeMap::new();
+        vars.insert("affinity_lin".to_string(), StoryValue::Int(1));
+        vars.insert("trust".to_string(), StoryValue::Int(0));
+        let f = save_fingerprint(&vars, "c001");
+        assert_eq!(f, 14_559_479_683_769_148_579);
+    }
+
+    #[test]
     fn when_expressions_stay_restricted() {
         let mut v = BTreeMap::new();
         v.insert("trust".to_string(), StoryValue::Int(3));
