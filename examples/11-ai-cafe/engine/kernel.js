@@ -61,7 +61,13 @@ export class MemoryStore {
   lenTotal() { return Object.values(this.mem).reduce((a, v) => a + v.length, 0); }
   clear() { this.mem = {}; if (typeof localStorage !== "undefined") localStorage.removeItem(this.persistKey); }
   export() { return JSON.stringify(this.mem, null, 2); }
-  _save() { if (typeof localStorage !== "undefined") localStorage.setItem(this.persistKey, JSON.stringify(this.mem)); }
+  _save() {
+    if (typeof localStorage === "undefined") return;
+    // 配额溢出(QuotaExceededError)曾把异常一路抛穿 setInterval 泵,
+    // 整个咖啡馆停摆——持久化失败只降级,内存态照常运转(评审 P2)。
+    try { localStorage.setItem(this.persistKey, JSON.stringify(this.mem)); }
+    catch { /* 配额满:丢持久化不致命 */ }
+  }
 }
 
 /* ---------- L9 · GoalLog：目标追踪（#104 批③，goal.rs 对镜） ----------
@@ -371,6 +377,9 @@ export class ZhipuProvider {
 /** B4（与 Rust fit_budget 逐条对镜）：易变 user 消息的确定性裁剪——
  * 头部必保，最旧对话先删，再删最旧记忆；同输入同裁剪，回放可比。 */
 export const fitBudget = (user, budget) => {
+  // Rust 侧剥除同款:粘贴的 \r\n 会留下 \r,破坏两端
+  // 字节稳定的缓存前缀契约(评审 P3)。
+  user = String(user).replace(/\r/g, "");
   // 与 Rust chars() 对镜：按 Unicode 码点计/裁（[...l] 展开），emoji
   // 不再一个算两个，硬裁也不会切碎代理对（评审 P1-2）。
   const count = lines => lines.reduce((a, l) => a + [...l].length + 1, 0);
@@ -450,7 +459,10 @@ ${guest ? "（客人刚说完，请回应客人）" : `（请对${partner.name}�
         const j = extractJSON(out) || {};
         let say = String(j.say || "……").slice(0, 140);
         // 模型常把称呼拼进台词开头，去掉一次重复
-        say = say.replace(new RegExp("^" + (j.to || partner.name) + "[，,、:\s]*"), "");
+        // 模型可控文本先进元字符转义——曾让含 (/[ 等字符的称呼直接
+        // SyntaxError,已付费的成功回复被整个丢弃退回规则库(评审 P2)
+        const toName = String(j.to || partner.name).replace(/[\.*+?^${}()|[\\]]/g, "\\$&");
+        say = say.replace(new RegExp("^" + toName + "[，,、:\s]*"), "");
         res = {
           say,
           action: ACTIONS.includes(j.action) ? j.action : "idle",
@@ -595,6 +607,7 @@ export class CommandQueue {
     const tail = this.queue[this.queue.length - 1];
     if (tail && cmd.kind === "spawn" && tail.kind === "spawn") { tail.n += cmd.n; this.coalesced++; return; }
     if (tail && cmd.kind === "count" && tail.kind === "count") { this.coalesced++; return; }
+    if (tail && cmd.kind === "gravity" && tail.kind === "gravity") { tail.g = cmd.g; this.coalesced++; return; }
     this.queue.push(cmd);
   }
   get pending() { return this.queue.length; }

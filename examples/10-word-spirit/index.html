@@ -228,8 +228,18 @@ function extractNumbers(s) {           // 对照 extract_numbers：含前导负�
   if (buf) { const n = parseFloat(buf); if (!isNaN(n)) out.push(n); }
   return out;
 }
+const NEGATIONS = ["不要", "别", "勿", "don't", "dont", "do not", "never"];
+const INTENT_WORDS = ["spawn", "放", "生成", "clear", "清空", "清屏", "gravity", "重力",
+  "teleport", "传送", "how many", "多少", "speed", "速度", "倍速"];
 function parse(input) {                // 对照 oriera_agent::parse
-  const s = input.toLowerCase();
+  // 全角数字归一 + 否决前置(与 kernel.js parseIntent / Rust parse 同词汇表;
+  // 曾缺:「别清空」照样清屏、「放５个」识别不出——评审 P3)
+  const s = String(input).toLowerCase()
+    .replace(/[\uFF10-\uFF19]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+  const negs = NEGATIONS.map(n => s.indexOf(n)).filter(i => i >= 0);
+  const kws = INTENT_WORDS.map(k => s.indexOf(k)).filter(i => i >= 0);
+  if (negs.length && kws.length && Math.min(...negs) < Math.min(...kws))
+    return { t: "Unknown", raw: input };
   if (s.includes("spawn") || s.includes("放") || s.includes("生成")) {
     const n = extractNumbers(s)[0];
     if (n !== undefined) return { t: "Spawn", n: Math.round(n) };

@@ -657,3 +657,21 @@ test("槽位路由：旧字符串格式 + 缺省/坏 kind 全部安全回退", (
   const p3 = withLocalStorage({ npc_dialog: { kind: "deepseak", model: "x" } }, () => resolveSlotProvider("npc_dialog", globalCfg));
   assert.equal(p3.cfg.kind, "xlite");
 });
+
+/* ---- 2026-10-29 维护评审回归 ---- */
+test("队列:相邻 gravity 替换合并(镜像 Rust SetGravity+SetGravity)", () => {
+  const seen = [];
+  const q = new CommandQueue((cmd) => seen.push(cmd), { frameBudget: 8 });
+  q.submit("gravity 2.0");
+  q.submit("重力 9.8");   // 与上一条替换合并 -> 9.8
+  assert.equal(q.coalesced, 1, "曾漏掉 gravity 合并,多占一格预算");
+  q.tick({});
+  assert.equal(q.processed, 1, "曾 processed=2");
+  assert.deepEqual(seen, [{ kind: "gravity", g: 9.8 }]);
+});
+
+test("fitBudget:剥除 \r(两端字节稳定契约)", () => {
+  const out = fitBudgetJS("你好\r\n世界\r", 500);
+  assert.ok(!out.includes("\r"), "曾残留 \r");
+  assert.ok(out.includes("世界"));
+});
