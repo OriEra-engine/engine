@@ -133,9 +133,12 @@ impl GenerationProvider for TripoProvider {
 
 impl TripoProvider {
     fn fetch(&self, url: &str) -> Result<Vec<u8>, GenAiError> {
+        // 资产取件走 get_public:厂商返回的签名 CDN 链接带裸 Bearer =
+        // Key 外送通道,且常直接 400 → InFlight 永久轮询(与
+        // seedance/rodin/cogview 同一条评审铁律)。
         let resp = self
             .transport
-            .send(&HttpRequest::get(url, &self.config.api_key))
+            .send(&HttpRequest::get_public(url))
             .map_err(GenAiError::Provider)?;
         if !resp.is_success() {
             return Err(GenAiError::Provider(format!(
@@ -263,6 +266,12 @@ mod tests {
             "https://api.example.test/v2/openapi/task/t_001"
         );
         assert_eq!(reqs[2].url, "https://cdn.example/guitar.glb");
+        // 签名 CDN 链接不带任何鉴权头(评审铁律,与 seedance 钉子同款)
+        assert!(
+            reqs[2].headers.is_empty(),
+            "asset download must not leak Authorization to vendor CDN: {:?}",
+            reqs[2].headers
+        );
     }
 
     #[test]
