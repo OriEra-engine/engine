@@ -213,10 +213,10 @@ impl GenAiSystem {
     ) {
         let meter = world.resource_or_default::<GenAiMeter>();
         meter.failed += 1;
-        if degraded {
-            meter.degraded += 1;
-        }
+        // degraded 的口径 =「失败且真的落地了占位」(字段文档如此)——
+        // placeholder_on_failure 关闭时什么都不落,就不该计数。
         if degraded && limits.placeholder_on_failure {
+            meter.degraded += 1;
             world
                 .resource_or_default::<PendingSwaps>()
                 .queue
@@ -291,7 +291,10 @@ impl System<World> for GenAiSystem {
 
         // 1. Capacity-bounded submission — the HTTP call runs on a
         //    background thread (#117); the frame only reaps outcomes.
-        while self.in_flight.len() + self.submitting.len() < max_in_flight {
+        //    polling 也要计入上限:任务派发轮询后从 in_flight 挪到
+        //    polling,只数前者的话 gate 在每个轮询窗口都看到假空位,
+        //    稳态并发可达 2× max_in_flight(2026-10-29 评审 P2)。
+        while self.in_flight.len() + self.submitting.len() + self.polling.len() < max_in_flight {
             let Some(req) = self.queue.pop() else {
                 break;
             };
@@ -307,6 +310,7 @@ impl System<World> for GenAiSystem {
         // the handlers borrow self/world, the receiver drain needs &mut).
         let mut still_submitting = Vec::new();
         let mut done_submits = Vec::new();
+        let mut orphan_errors = Vec::new();
         for rx in self.submitting.drain(..) {
             match rx.try_recv() {
                 Ok(JobOutcome::Submitted { req, result }) => done_submits.push((req, result)),
@@ -314,12 +318,7 @@ impl System<World> for GenAiSystem {
                 // Disconnected = worker panic：以孤儿请求记失败走 fail()
                 // 通道——panic 的 job 不许永久占用提交预算（评审 R3 性能 P1）。
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    done_submits.push((
-                        GenerationRequest::text_to_3d("__orphan__", "orphan"),
-                        Err(crate::GenAiError::Provider(
-                            "submit worker died without a result".into(),
-                        )),
-                    ));
+                    orphan_errors.push("submit worker died without a result".to_string());
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => still_submitting.push(rx), // worker still running
             }
@@ -354,6 +353,20 @@ impl System<World> for GenAiSystem {
                     self.fail(world, &req.name, req.kind, e.to_string(), true, &limits);
                 }
             }
+        }
+        // 孤儿提交(worker panic)没有真实请求名:只计失败并广播
+        // AssetFailed,不落地占位、不发 AssetLanded——没有任何人请求过
+        // "__orphan__",往 PendingSwaps 塞一套假资产是给世界递垃圾
+        // (2026-10-29 评审 P3;轮询侧死亡路径本就用真实任务名)。
+        for err in orphan_errors {
+            self.fail(
+                world,
+                "__orphan__",
+                crate::GenerationKind::TextTo3d,
+                err,
+                false,
+                &limits,
+            );
         }
 
         // 2. Interval-bounded polling: a slice of the frame budget, not
@@ -405,21 +418,36 @@ impl System<World> for GenAiSystem {
                         flight,
                         result: Ok(TaskStatus::Failed(m)),
                     }) => failed.push((flight, m)),
-                    // queued/running 与传输错误：回 in_flight，下个
-                    // interval 重新 dispatch 一个新 poll 线程（worker 的
-                    // one-shot channel 一次性使用后丢弃）。
+                    // queued/running：回 in_flight，下个 interval 重新
+                    // dispatch 一个新 poll 线程（worker 的 one-shot
+                    // channel 一次性使用后丢弃）。
                     Ok(JobOutcome::Polled {
                         flight,
                         result: Ok(_),
-                    })
-                    | Ok(JobOutcome::Polled {
-                        flight,
-                        result: Err(_),
                     }) => {
                         // polls 只在派发侧计数（架构师三轮评审 P1：派发
                         // +1 与收割再 +1 是双重计数，全速率窗口实为 4 次
                         // 而非注释的 8）——这里只回收排队。
                         self.in_flight.push(flight);
+                    }
+                    // 可重试传输错误(429/5xx/timeout):与 queued/running
+                    // 同路,回队等下轮。
+                    Ok(JobOutcome::Polled {
+                        flight,
+                        result: Err(e),
+                    }) if e.class().retryable() => {
+                        self.in_flight.push(flight);
+                    }
+                    // 不可重试(404 任务被删/401 key 吊销/402 配额):终局。
+                    // 曾无条件回队——槽位被死任务永久占用,轮询无限烧
+                    // 供应商 QPS,max_in_flight 卡死后队列全面饿死
+                    // (2026-10-29 评审 P2;retryable() 分类本为此而建,
+                    // 之前从未被轮询路径问询)。
+                    Ok(JobOutcome::Polled {
+                        flight,
+                        result: Err(e),
+                    }) => {
+                        failed.push((flight, e.to_string()));
                     }
                     // Disconnected = worker panic：按失败落地占位（评审
                     // R3 性能 P1——panic 的 job 不许永久占用 in-flight）。
@@ -485,6 +513,9 @@ impl System<World> for GenAiSystem {
 mod tests {
     use super::*;
     use crate::MockProvider;
+    // 评审回归测试的自建 provider 需要 crate 根的类型(super::* 不转发
+    // system.rs 顶部的 use 导入)。
+    use crate::{AssetFailed, AssetLanded, GenAiError, GenerationRequest, TaskId, TaskStatus};
     // providers 门控的模块（seedance/transport）随其测试腿条件导入——
     // 默认腿（无 providers）不编译它们（CI 两次抓过同款盲区）。
     #[cfg(feature = "providers")]
@@ -574,6 +605,170 @@ mod tests {
         let meter = *w2.resource::<GenAiMeter>().unwrap();
         assert_eq!(meter.submitted, 4); // eventually all four, throttled
         assert_eq!(meter.failed, 0); // deferred, never failed
+    }
+
+    // ---- 2026-10-29 维护评审回归 ----
+
+    /// 轮询永远不完成、且响应慢到能跨帧占用 polling 槽的 provider。
+    struct SlowPoll;
+    impl crate::GenerationProvider for SlowPoll {
+        fn id(&self) -> &str {
+            "slow-poll"
+        }
+        fn capabilities(&self) -> crate::ProviderCapabilities {
+            crate::ProviderCapabilities::ALL
+        }
+        fn request_generation(&self, _req: &GenerationRequest) -> Result<TaskId, GenAiError> {
+            Ok(TaskId("slow-1".into()))
+        }
+        fn poll_task(&self, _task: &TaskId) -> Result<TaskStatus, GenAiError> {
+            // 睡过下一帧的 gate,让 polling 槽位真实可见
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            Ok(TaskStatus::Running)
+        }
+    }
+
+    #[test]
+    fn polling_tasks_count_against_in_flight_cap() {
+        // 评审 P2:gate 只数 in_flight+submitting 时,任务一进 polling
+        // 就腾出假空位,稳态并发冲到 2× max_in_flight。
+        let mut sys = GenAiSystem::new(Arc::new(SlowPoll)).with_limits(GenAiLimits {
+            max_in_flight: 1,
+            ..GenAiLimits::default()
+        });
+        sys.submit(GenerationRequest::text_to_3d("a", "甲"));
+        sys.submit(GenerationRequest::text_to_3d("b", "乙"));
+        let mut w = world();
+        let pause = std::time::Duration::from_millis(20);
+        // tick1:提交 a(收割进 in_flight);tick2:a 派发轮询——worker 睡
+        // 150ms,跨帧占住 polling;tick3:gate 此刻必须看到 polling=1 而
+        // 非假空位(旧代码在这里把 b 也提交出去)。
+        sys.run(&ctx(), &mut w);
+        std::thread::sleep(pause);
+        sys.run(&ctx(), &mut w);
+        std::thread::sleep(pause);
+        sys.run(&ctx(), &mut w);
+        let meter = *w.resource::<GenAiMeter>().unwrap();
+        assert_eq!(meter.submitted, 1, "polling task must hold the cap");
+    }
+
+    /// 轮询返回不可重试错误(任务已删)的 provider。
+    struct DeletedTask;
+    impl crate::GenerationProvider for DeletedTask {
+        fn id(&self) -> &str {
+            "deleted-task"
+        }
+        fn capabilities(&self) -> crate::ProviderCapabilities {
+            crate::ProviderCapabilities::ALL
+        }
+        fn request_generation(&self, _req: &GenerationRequest) -> Result<TaskId, GenAiError> {
+            Ok(TaskId("gone".into()))
+        }
+        fn poll_task(&self, _task: &TaskId) -> Result<TaskStatus, GenAiError> {
+            Err(GenAiError::Provider(
+                "tripo poll returned HTTP 404: task deleted".into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn non_retryable_poll_error_terminates_and_unblocks_queue() {
+        // 评审 P2:不可重试轮询错误曾无条件回队——槽位永久占用,队列
+        // 饿死。现在按 retryable() 分类终局。
+        let mut sys = GenAiSystem::new(Arc::new(DeletedTask)).with_limits(GenAiLimits {
+            max_in_flight: 1,
+            ..GenAiLimits::default()
+        });
+        sys.submit(GenerationRequest::text_to_3d("dead", "旧任务"));
+        sys.submit(GenerationRequest::text_to_3d("next", "新任务"));
+        let mut w = world();
+        settle(&mut sys, &ctx(), &mut w);
+        let meter = *w.resource::<GenAiMeter>().unwrap();
+        // 两个任务都不可恢复地死(404):各自终局失败——关键在「死任务
+        // 让出槽位」:旧代码下 dead 卡死 in_flight,next 永远提交不出去
+        // (submitted 停在 1、pending 停在 1)。
+        assert_eq!(meter.failed, 2, "each dead task fails terminally");
+        assert_eq!(
+            meter.submitted, 2,
+            "queue must drain after terminal failure"
+        );
+        assert_eq!(sys.pending(), 0, "nothing stuck forever");
+    }
+
+    /// 提交即 panic 的 provider(模拟 worker 死亡)。
+    struct PanicSubmit;
+    impl crate::GenerationProvider for PanicSubmit {
+        fn id(&self) -> &str {
+            "panic-submit"
+        }
+        fn capabilities(&self) -> crate::ProviderCapabilities {
+            crate::ProviderCapabilities::ALL
+        }
+        fn request_generation(&self, _req: &GenerationRequest) -> Result<TaskId, GenAiError> {
+            panic!("worker exploded");
+        }
+        fn poll_task(&self, _task: &TaskId) -> Result<TaskStatus, GenAiError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn orphan_submit_death_lands_nothing() {
+        // 评审 P3:孤儿提交曾以 "__orphan__" 名落地占位资产并发
+        // AssetLanded——没人请求过它,这是给世界递垃圾。现在只计失败。
+        let mut sys = GenAiSystem::new(Arc::new(PanicSubmit));
+        sys.submit(GenerationRequest::text_to_3d("never-landed", "甲"));
+        let mut w = world();
+        settle(&mut sys, &ctx(), &mut w);
+        let meter = *w.resource::<GenAiMeter>().unwrap();
+        assert_eq!(meter.failed, 1);
+        assert_eq!(meter.degraded, 0);
+        if let Some(swaps) = w.resource::<PendingSwaps>() {
+            assert!(swaps.queue.is_empty(), "orphan must not land a placeholder");
+        }
+        assert!(w.take_events::<AssetLanded>().is_empty());
+        assert_eq!(w.take_events::<AssetFailed>().len(), 1);
+    }
+
+    /// 提交即 500 的 provider(degraded 占位路径)。
+    struct ServerError;
+    impl crate::GenerationProvider for ServerError {
+        fn id(&self) -> &str {
+            "server-error"
+        }
+        fn capabilities(&self) -> crate::ProviderCapabilities {
+            crate::ProviderCapabilities::ALL
+        }
+        fn request_generation(&self, _req: &GenerationRequest) -> Result<TaskId, GenAiError> {
+            Err(GenAiError::Provider(
+                "tripo create returned HTTP 500".into(),
+            ))
+        }
+        fn poll_task(&self, _task: &TaskId) -> Result<TaskStatus, GenAiError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn degraded_counter_means_actually_landed() {
+        // 评审 P3:meter.degraded 的文档口径是「失败且落地了占位」——
+        // placeholder_on_failure 关闭时什么都不落,就不得计数。
+        let mk = |placeholder: bool| {
+            let mut sys = GenAiSystem::new(Arc::new(ServerError)).with_limits(GenAiLimits {
+                placeholder_on_failure: placeholder,
+                ..GenAiLimits::default()
+            });
+            sys.submit(GenerationRequest::text_to_3d("prop", "甲"));
+            let mut w = world();
+            settle(&mut sys, &ctx(), &mut w);
+            *w.resource::<GenAiMeter>().unwrap()
+        };
+        let off = mk(false);
+        assert_eq!(off.failed, 1);
+        assert_eq!(off.degraded, 0, "nothing landed → not degraded");
+        let on = mk(true);
+        assert_eq!(on.failed, 1);
+        assert_eq!(on.degraded, 1, "placeholder landed → degraded");
     }
 
     #[test]
