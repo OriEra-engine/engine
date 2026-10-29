@@ -99,10 +99,26 @@ impl<P: ModelProvider + 'static> InferJobs<P> {
         let tx = self.tx.clone();
         let inflight = Arc::clone(&self.inflight);
         std::thread::spawn(move || {
-            let result = provider.complete(&messages);
-            // Meter whatever the backend measured, success or failure —
-            // usage is per-call state, safe to read immediately after.
-            let usage = provider.last_usage();
+            // provider.complete panic 不许永久占槽(L8 GenAiSystem 同款
+            // 铁律:panic 的 job 不许永久占用提交预算)——接住并合成一条
+            // Err 结果,poll 侧正常计数、槽位照常归还。曾无守卫:panic 后
+            // inflight 永不递减、tx 不落,累计 max_inflight 次后所有
+            // submit 永远 Busy,剧组从此失声。
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let result = provider.complete(&messages);
+                // Meter whatever the backend measured, success or failure —
+                // usage is per-call state, safe to read immediately after.
+                (result, provider.last_usage())
+            }));
+            let (result, usage) = match outcome {
+                Ok(pair) => pair,
+                Err(_) => (
+                    Err(InferError::Provider(
+                        "provider worker panicked; job failed safely".into(),
+                    )),
+                    TokenUsage::ZERO,
+                ),
+            };
             let _ = tx.send(JobDone { id, result, usage });
             inflight.fetch_sub(1, Ordering::Release);
         });
@@ -204,6 +220,40 @@ mod tests {
         assert_eq!(jobs.completed, 1);
         assert_eq!(jobs.failed, 0);
         assert_eq!(jobs.inflight(), 0);
+    }
+
+    #[test]
+    fn panicking_provider_releases_slot_and_reports() {
+        // 评审 P3:worker panic 曾无守卫——inflight 永不归还、结果永不落,
+        // 累计爆槽后所有 submit 永远 Busy,剧组从此失声。现在合成 Err
+        // 结果正常入队、槽位照常释放。
+        struct PanicProvider;
+        impl ModelProvider for PanicProvider {
+            fn id(&self) -> &str {
+                "panic-test"
+            }
+            fn complete(&self, _messages: &[ChatMessage]) -> Result<String, InferError> {
+                panic!("backend exploded mid-call");
+            }
+        }
+        let mut jobs = InferJobs::new(Arc::new(PanicProvider), 1);
+        let id = jobs.submit(vec![ChatMessage::user("你好")]).unwrap();
+        let mut done = Vec::new();
+        for _ in 0..50 {
+            done = jobs.poll();
+            if !done.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(done.len(), 1, "synthetic JobDone must arrive");
+        assert_eq!(done[0].id, id);
+        assert!(done[0].result.is_err(), "panic must surface as Err");
+        assert_eq!(jobs.inflight(), 0, "slot must be released");
+        assert!(
+            jobs.submit(vec![ChatMessage::user("再试")]).is_ok(),
+            "released slot must accept new work"
+        );
     }
 
     #[test]
