@@ -60,6 +60,10 @@ ureq = { version = "2.10", default-features = false, features = ["tls"] }
 # L6 rigid backend (#80): pure Rust, Apache-2.0, 2026 roadmap targets
 # robotics accuracy. Feature-gated per crate (`rigid`).
 rapier2d = "0.36"
+# L6 rigid3d backend (PLAN-embodied-sim): same family as rapier2d —
+# multibody revolute chains for articulated arms, wasm32 first-class,
+# same-build deterministic. Same rules: no C toolchain, optional dep.
+rapier3d = "0.36"
 criterion = "0.5"
 
 [profile.release]

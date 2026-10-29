@@ -27,8 +27,12 @@
 
 pub mod cognition;
 pub mod embodied;
+#[cfg(feature = "rigid3d")]
+pub mod embodied_env;
 pub mod genai;
 pub mod goal;
+#[cfg(feature = "rigid3d")]
+pub mod lerobot;
 pub mod memory;
 pub mod prefab;
 pub mod story;
