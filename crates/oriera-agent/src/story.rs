@@ -267,7 +267,7 @@ impl StoryGraph {
                     severity: Severity::Warning,
                     node: n.id.clone(),
                     kind: FindingType::HubWithoutDefault,
-                    detail: "hub without a default arm stalls when all whens fail".into(),
+                    detail: "hub 全部路由带 when:全败时按约定落到末位路由兜底(运行时不停滞),请确认末位即默认结局".into(),
                 });
             }
             // goto targets + variables

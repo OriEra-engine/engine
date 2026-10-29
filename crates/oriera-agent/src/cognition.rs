@@ -614,6 +614,11 @@ pub struct DirectorSystem<P: ModelProvider> {
     jobs: Option<InferJobs<P>>,
     /// The one in-flight beat job.
     pending: Option<PendingBeat>,
+    /// Director 自持的节奏计数器(每 run +1):due 门与日推进都以它为准。
+    /// WorldStory.turn 的唯一写者是 CognitionSystem——此前两个系统各写
+    /// 一次,回合数每帧 +2、偶数 interval 的剧组按奇偶分裂永久哑火
+    /// (2026-10-29 维护评审实证;kernel.js 镜像里 director 本就只读)。
+    turn: u64,
 }
 
 /// In-flight director job bookkeeping: which world turn/day the beat
@@ -634,6 +639,7 @@ impl<P: ModelProvider> DirectorSystem<P> {
             rule_beats: DEFAULT_BEATS.iter().map(|s| s.to_string()).collect(),
             jobs: None,
             pending: None,
+            turn: 0,
         }
     }
 
@@ -662,11 +668,12 @@ impl<P: ModelProvider + 'static> System<World> for DirectorSystem<P> {
     fn run(&mut self, ctx: &FrameCtx, world: &mut World) {
         let (turn, day) = {
             let s = world.resource_or_default::<WorldStory>();
-            s.turn += 1;
             (s.turn, s.day)
         };
+        // 世界时间戳只读;节奏走 director 自持计数(见 struct 文档)。
+        self.turn += 1;
         let interval = stretched_interval_u64(self.interval, self.max_stretch, self.name(), ctx);
-        let due = turn % interval == 0;
+        let due = self.turn.is_multiple_of(interval);
 
         // ---- 异步路径:收割每帧,提交按节拍 ----
         if self.jobs.is_some() {
@@ -782,7 +789,9 @@ impl<P: ModelProvider> DirectorSystem<P> {
         if story.beats.len() > 30 {
             story.beats.drain(0..story.beats.len() - 30);
         }
-        if turn.is_multiple_of(self.interval * 3) {
+        // 日推进跟导演自己的节拍(每 3 拍一天),不押在共享 turn 上——
+        // 单机模式(无 cognition)下共享 turn 不动,日子也得走。
+        if self.turn.is_multiple_of(self.interval * 3) {
             story.day += 1;
         }
         let mem = world.resource_or_default::<MemoryStore>();
@@ -976,10 +985,8 @@ mod tests {
         let mut d = DirectorSystem::new(Arc::new(DownProvider), 8)
             .with_rule_beats(vec!["甲事件".into(), "乙事件".into()]);
         {
-            // director increments turn then gates on turn % interval —
-            // seed 7 so the run lands on 8.
-            let story = w.resource_mut::<WorldStory>().unwrap();
-            story.turn = 7;
+            // due 门走 director 自持节奏计数——seed 7,首次 run 落在 8。
+            d.turn = 7;
         }
         d.run(&ctx(), &mut w);
         let story = w.resource::<WorldStory>().unwrap();
@@ -1186,6 +1193,26 @@ mod tests {
         };
         assert_eq!(run(&ctx()), 10);
         assert_eq!(run(&ctx_throttled("l9-director", 0.5)), 5);
+    }
+
+    #[test]
+    fn world_turn_has_exactly_one_writer_per_frame() {
+        // 评审回归:CognitionSystem 与 DirectorSystem 曾各写一次
+        // WorldStory.turn——回合数每帧 +2,偶数 interval 的剧组因只见到
+        // 奇数回合而永久哑火,导演按 2× 超速放拍。现在 turn 唯一写者是
+        // cognition,导演节奏自持(与 kernel.js 镜像同约)。
+        let mut w = cafe_world();
+        let mut cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 2); // 偶数 interval
+        let mut dir = DirectorSystem::new(Arc::new(RuleProvider::new()), 10);
+        for _ in 0..10 {
+            cog.run(&ctx(), &mut w);
+            dir.run(&ctx(), &mut w);
+        }
+        let s = w.resource::<WorldStory>().unwrap();
+        assert_eq!(s.turn, 10); // 曾为 20(每帧 +2)
+        assert_eq!(s.beats.len(), 1); // 导演 10 tick 一拍(曾 2× 超速)
+                                      // 偶数 interval 的剧组照常开口(曾静默零句)
+        assert!(!w.resource::<DialogueLog>().unwrap().turns.is_empty());
     }
 
     // ---- 异步路径(RFC 0002 v0.5):帧不阻塞,回复晚落 ----

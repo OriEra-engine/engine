@@ -80,7 +80,13 @@ fn extract_name(input: &str) -> Option<String> {
         .iter()
         .filter_map(|m| lower.find(m).map(|i| (i, m.len())))
         .min()?;
-    let rest = &input[(idx + marker_len).min(input.len())..];
+    // to_lowercase 可能改变字节长度(如 'İ' 2B→3B),lower 的偏移未必是
+    // input 的字符边界——不齐就退回确定性兜底名,绝不在帧内 panic。
+    let start = (idx + marker_len).min(input.len());
+    if !input.is_char_boundary(start) {
+        return None;
+    }
+    let rest = &input[start..];
     let name: String = rest
         .trim_start()
         .chars()
@@ -136,6 +142,14 @@ mod tests {
     fn negation_before_intent_suppresses_generation() {
         assert!(parse_generation("别生成模型").is_none());
         assert!(parse_generation("don't make a video").is_none());
+    }
+
+    #[test]
+    fn extract_name_survives_lowercase_byte_growth() {
+        // 评审回归:'İ'(U+0130,2B)to_lowercase 后变 3B,lower 的标记偏移
+        // 会落到 input 的字符边界之内——曾直接切片 panic,现在退回兜底名。
+        let r = parse_generation("İ生成一个叫门帘的模型").unwrap();
+        assert!(r.name.starts_with("gen_"));
     }
 
     #[test]
