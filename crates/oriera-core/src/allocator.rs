@@ -90,6 +90,17 @@ impl AllocatorConfig {
     }
 }
 
+/// Sanitize a [0, 1] fraction from public config: non-finite or out-of-range
+/// values fall back to the default instead of panicking `clamp` later
+/// (or poisoning published grants with NaN).
+fn sane_unit(v: f32, fallback: f32) -> f32 {
+    if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        fallback
+    }
+}
+
 /// Per-system regulation state. Owned by the allocator, never published.
 #[derive(Debug, Clone, Copy)]
 struct SysState {
@@ -126,8 +137,24 @@ pub struct BudgetAllocator {
 
 impl BudgetAllocator {
     pub fn new(config: AllocatorConfig) -> Self {
+        // 配置消毒:字段是公共的,可能被喂垃圾——floor > 1.0 会让
+        // clamp(min, max) panic,非有限 ema_alpha 会把 NaN 一路写进
+        // 发布的 grant。与"喂垃圾也不产生负数"的 crate 承诺同款防线。
+        let sane = AllocatorConfig {
+            min_share: sane_unit(config.min_share, 0.05),
+            ema_alpha: sane_unit(config.ema_alpha, 0.2),
+            over_tolerance: if config.over_tolerance.is_finite() && config.over_tolerance >= 0.0 {
+                config.over_tolerance
+            } else {
+                0.02
+            },
+            relax_headroom: sane_unit(config.relax_headroom, 0.6),
+            relax_step: sane_unit(config.relax_step, 0.05),
+            floor: sane_unit(config.floor, 0.1),
+            ..config
+        };
         Self {
-            config,
+            config: sane,
             names: Vec::new(),
             states: Vec::new(),
         }
@@ -363,6 +390,30 @@ mod tests {
         a.allocate(16.7, &mut out);
         assert!(out.is_empty()); // every system reads full throttle
         assert_eq!(a.throttle_of("infer"), 1.0);
+    }
+
+    #[test]
+    fn garbage_config_is_sanitized_not_panics() {
+        // floor > 1.0 曾令 clamp(min, max) panic;NaN ema_alpha 曾把 NaN
+        // 写进 share_ms —— new() 必须消毒,保证发布值全部有限。
+        let config = AllocatorConfig {
+            floor: 1.5,
+            min_share: f32::NAN,
+            ema_alpha: f32::NAN,
+            relax_step: -1.0,
+            relax_headroom: f32::INFINITY,
+            ..AllocatorConfig::default()
+        };
+        let mut a = BudgetAllocator::new(config);
+        a.register("infer");
+        a.observe(&timings(&[("infer", 5.0)]));
+        let mut out = Vec::new();
+        a.allocate(16.7, &mut out);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].1.share_ms.is_finite());
+        assert!(out[0].1.throttle.is_finite());
+        assert!((0.0..=1.0).contains(&a.throttle_of("infer")));
+        assert!((0.0..=1.0).contains(&a.config().floor));
     }
 
     #[test]
