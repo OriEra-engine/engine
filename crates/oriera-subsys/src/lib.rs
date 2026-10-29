@@ -14,9 +14,12 @@ pub use rigid::RigidBodySystem;
 pub mod rigid3d;
 #[cfg(feature = "rigid3d")]
 pub use rigid3d::{
-    sim_fingerprint, ArmDescription, JointTargets, JointTelemetry, MultibodySystem, Pose3, Scene3D,
-    SimObject, GRASP_RADIUS, JOINT_NAMES, PROP_HALF,
+    sim_fingerprint, ArmDescription, JointTargets, JointTelemetry, MultibodySystem, Pose3,
+    PropPhys, Scene3D, SimObject, GRASP_RADIUS, JOINT_NAMES, PROP_HALF,
 };
+
+#[cfg(feature = "cam")]
+pub mod camera;
 
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Position, Velocity, World};

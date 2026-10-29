@@ -64,6 +64,10 @@ rapier2d = "0.36"
 # multibody revolute chains for articulated arms, wasm32 first-class,
 # same-build deterministic. Same rules: no C toolchain, optional dep.
 rapier3d = "0.36"
+# L6 embodied camera (feature `cam`, PLAN-embodied-sim P0): pure-Rust PNG
+# encoder for the deterministic top-down RGB camera track. Tiny dep tree,
+# Apache-2.0/MIT, feature-gated — default builds stay dependency-free.
+png = "0.17"
 criterion = "0.5"
 
 [profile.release]

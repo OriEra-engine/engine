@@ -37,6 +37,8 @@ json = ["dep:serde_json"]
 rigid = ["oriera-subsys/rigid"]
 # 3D articulated backend + the embodied environment/exporter modules.
 rigid3d = ["oriera-subsys/rigid3d"]
+# Top-down camera track through the env (PNG frames).
+cam = ["oriera-subsys/cam"]
 
 [dev-dependencies]
 oriera-render = { path = "../oriera-render" }

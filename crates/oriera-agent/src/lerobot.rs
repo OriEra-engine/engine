@@ -24,16 +24,30 @@ use std::path::Path;
 
 /// One recorded step: the observation *before* the action, and the
 /// action taken. Scalars (timestamp/frame indices) are derived.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     pub state: Vec<f32>,
     pub action: Vec<f32>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Episode {
     pub task_index: u32,
     pub rows: Vec<Row>,
+    /// Top-down camera PNG frames of this episode (feature `cam`),
+    /// captured at the camera cadence by the env.
+    pub frames: Vec<Vec<u8>>,
+}
+
+/// Camera track declaration (feature `cam`): one fixed top-down view.
+#[derive(Debug, Clone)]
+pub struct CameraTrack {
+    /// LeRobot feature key suffix: `observation.images.<name>`.
+    pub name: String,
+    pub w: u32,
+    pub h: u32,
+    /// Frame rate of the track (Hz) — half the control rate by default.
+    pub fps: f32,
 }
 
 /// A dataset under construction. Features: `observation.state`
@@ -48,6 +62,8 @@ pub struct LeRobotV21 {
     pub tasks: Vec<String>,
     pub episodes: Vec<Episode>,
     current: Option<Episode>,
+    /// Camera track (feature `cam`); None ⇒ state-only dataset.
+    pub camera: Option<CameraTrack>,
     /// Global row counter (`index` column).
     next_index: u64,
 }
@@ -67,8 +83,24 @@ impl LeRobotV21 {
             tasks: Vec::new(),
             episodes: Vec::new(),
             current: None,
+            camera: None,
             next_index: 0,
         }
+    }
+
+    /// Attach a camera track to the dataset (must be set before the
+    /// first `start_episode`).
+    pub fn set_camera(&mut self, track: CameraTrack) {
+        self.camera = Some(track);
+    }
+
+    /// Record one camera frame (PNG bytes) for the open episode.
+    pub fn push_frame(&mut self, png: Vec<u8>) {
+        let ep = self
+            .current
+            .as_mut()
+            .expect("push_frame before start_episode");
+        ep.frames.push(png);
     }
 
     /// Start an episode; repeated task strings deduplicate into
@@ -84,6 +116,7 @@ impl LeRobotV21 {
         self.current = Some(Episode {
             task_index,
             rows: Vec::new(),
+            frames: Vec::new(),
         });
     }
 
@@ -132,11 +165,28 @@ impl LeRobotV21 {
         let action_shape = self.action_names.len().to_string();
         let obs_names = json_string_array(&self.obs_names);
         let action_names = json_string_array(&self.action_names);
+        // Camera feature (feature `cam`): a v2.1 video entry whose
+        // frames the converter assembles into mp4.
+        let cam_feat = self
+            .camera
+            .as_ref()
+            .map(|c| {
+                format!(
+                    ",\"observation.images.{name}\":{{\"dtype\":\"video\",\"shape\":[{h},{w},3],\"names\":null,\"info\":{{\"video.fps\":{fps},\"video.codec\":\"libx264\",\"video.pix_fmt\":\"yuv420p\",\"has_audio\":false}}}}",
+                    name = c.name,
+                    h = c.h,
+                    w = c.w,
+                    fps = c.fps
+                )
+            })
+            .unwrap_or_default();
+        let total_videos = self.camera.as_ref().map_or(0, |_| self.episodes.len());
+        let total_videos = total_videos.to_string();
         format!(
             concat!(
                 "{{\"codebase_version\":\"v2.1\",\"robot_type\":\"{robot}\",",
                 "\"total_episodes\":{eps},\"total_frames\":{frames},",
-                "\"total_tasks\":{tasks},\"total_videos\":0,\"total_chunks\":1,",
+                "\"total_tasks\":{tasks},\"total_videos\":{videos},\"total_chunks\":1,",
                 "\"chunks_size\":1000,\"fps\":{fps},\"splits\":{{\"train\":\"0:{eps}\"}},",
                 "\"data_path\":\"data/chunk-{{episode_chunk:03d}}/episode_{{episode_index:06d}}.parquet\",",
                 "\"video_path\":\"videos/chunk-{{episode_chunk:03d}}/{{video_key}}/episode_{{episode_index:06d}}.mp4\",",
@@ -148,17 +198,20 @@ impl LeRobotV21 {
                 "\"episode_index\":{{\"dtype\":\"int64\",\"shape\":[1],\"names\":null}},",
                 "\"index\":{{\"dtype\":\"int64\",\"shape\":[1],\"names\":null}},",
                 "\"task_index\":{{\"dtype\":\"int64\",\"shape\":[1],\"names\":null}}",
+                "{cam_feat}",
                 "}}}}\n"
         ),
             robot = self.robot_type,
             eps = n_eps,
             frames = self.total_frames(),
             tasks = self.tasks.len(),
+            videos = total_videos,
             fps = self.fps,
             sd = state_shape,
             ad = action_shape,
             on = obs_names,
             an = action_names,
+            cam_feat = cam_feat,
         )
     }
 
@@ -224,6 +277,24 @@ impl LeRobotV21 {
                 global += 1;
             }
         }
+        // Camera track: PNG frame dirs — the converter assembles mp4
+        // (v2.1 video features live outside the parquet tables).
+        if let Some(cam) = &self.camera {
+            for (i, ep) in self.episodes.iter().enumerate() {
+                if ep.frames.is_empty() {
+                    continue;
+                }
+                let dir = root.join(format!(
+                    "videos/chunk-000/observation.images.{}/episode_{i:06}",
+                    cam.name
+                ));
+                std::fs::create_dir_all(&dir)?;
+                for (k, png) in ep.frames.iter().enumerate() {
+                    std::fs::write(dir.join(format!("frame_{k:06}.png")), png)?;
+                }
+            }
+        }
+        self.write_modality(root)?;
         Ok(self.episodes.len() as u32)
     }
 
@@ -254,6 +325,40 @@ impl LeRobotV21 {
             successes,
             hashes.join(",")
         )
+    }
+
+    /// `meta/modality.json` — the GR00T N1 "LeRobot v2 flavor"
+    /// dimension slicing: which state/action dims belong to which
+    /// semantic group. The OriEra arm layout is fixed (see
+    /// `OBS_NAMES`/`ACTION_NAMES`); other layouts fall back to one
+    /// honest full-range group.
+    pub fn write_modality(&self, root: &Path) -> std::io::Result<()> {
+        let meta = root.join("meta");
+        std::fs::create_dir_all(&meta)?;
+        let (obs_n, act_n) = (self.obs_names.len(), self.action_names.len());
+        let body = if obs_n == 21 && act_n == 5 {
+            concat!(
+                "{\"state\":{",
+                "\"arm\":{\"start\":0,\"end\":4},",
+                "\"arm_vel\":{\"start\":4,\"end\":8},",
+                "\"gripper\":{\"start\":8,\"end\":9},",
+                "\"ee_pose\":{\"start\":9,\"end\":12},",
+                "\"object_rel\":{\"start\":12,\"end\":15},",
+                "\"goal_rel\":{\"start\":15,\"end\":18},",
+                "\"flags\":{\"start\":18,\"end\":21}},",
+                "\"action\":{",
+                "\"arm\":{\"start\":0,\"end\":4},",
+                "\"gripper\":{\"start\":4,\"end\":5}}}",
+                "
+"
+            )
+            .to_string()
+        } else {
+            format!(
+                "{{\"state\":{{\"full\":{{\"start\":0,\"end\":{obs_n}}}}},\"action\":{{\"full\":{{\"start\":0,\"end\":{act_n}}}}}}}\n"
+            )
+        };
+        std::fs::write(meta.join("modality.json"), body)
     }
 
     /// Dataset card — what this is and the exact training recipe.

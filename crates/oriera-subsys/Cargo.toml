@@ -24,8 +24,11 @@ rapier2d = { workspace = true, optional = true }
 # zero C toolchain, wasm32 first-class. Optional: default builds stay
 # dependency-free.
 rapier3d = { workspace = true, optional = true }
+# Top-down RGB camera track (PNG frames) for the embodied bench.
+png = { workspace = true, optional = true }
 
 [features]
 default = []
 rigid = ["dep:rapier2d"]
 rigid3d = ["dep:rapier3d"]
+cam = ["dep:png"]

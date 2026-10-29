@@ -16,6 +16,7 @@ Requires: python -m pip install pyarrow
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -32,10 +33,15 @@ def convert(root: Path) -> None:
     if not eps:
         sys.exit(f"no JSONL episodes under {root / 'data' / 'chunk-000'}")
 
+    video_feats = {k: v for k, v in features.items() if v.get("dtype") == "video"}
+    table_feats = {k: v for k, v in features.items() if k not in video_feats}
+
     for src in eps:
         rows = [json.loads(line) for line in src.read_text(encoding="utf-8").splitlines() if line.strip()]
         columns = {}
-        for key, feat in features.items():
+        # v2.1: video features live OUTSIDE the parquet tables (mp4 files
+        # aligned by frame_index) — only table features become columns.
+        for key, feat in table_feats.items():
             dtype = DTYPES[feat["dtype"]]
             shape = feat.get("shape", [1])
             if len(shape) > 1:  # vector feature → fixed-size list
@@ -50,7 +56,27 @@ def convert(root: Path) -> None:
         src.unlink()
         print(f"  {src.name} → {dst.name}  ({table.num_rows} rows)")
 
-    print(f"done: {len(eps)} episode(s) under {root}")
+    # Camera tracks: assemble frame_*.png dirs into mp4 (LeRobot v2.1
+    # video layout), or keep the PNG dirs when imageio is unavailable.
+    mp4_made = 0
+    try:
+        import imageio.v2 as iio  # noqa: SLF001 — optional extra
+
+        for cam_dir in sorted((root / "videos" / "chunk-000").glob("observation.images.*")):
+            for ep_dir in sorted(cam_dir.glob("episode_*")):
+                frames = sorted(ep_dir.glob("frame_*.png"))
+                if not frames:
+                    continue
+                mp4 = ep_dir.parent / f"{ep_dir.name}.mp4"
+                with iio.get_writer(mp4, fps=30, codec="libx264", pixelformat="yuv420p", macro_block_size=1) as w:
+                    for f in frames:
+                        w.append_data(iio.imread(f))
+                shutil.rmtree(ep_dir)
+                mp4_made += 1
+    except ImportError:
+        print("  提示：pip install imageio[ffmpeg] 后重跑可将 PNG 帧组装为 mp4")
+
+    print(f"done: {len(eps)} episode(s) under {root}" + (f"，{mp4_made} 段相机视频" if mp4_made else ""))
 
 
 if __name__ == "__main__":

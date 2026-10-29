@@ -102,6 +102,26 @@ pub struct JointTelemetry {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SimObject;
 
+/// Optional per-prop physics override (domain randomization knob):
+/// without it a prop spawns with the defaults (density 400, friction
+/// 0.8). Insert together with `Pose3` + `SimObject`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PropPhys {
+    /// Collider density, kg/m³ (the 5 cm cube's mass follows).
+    pub density: f32,
+    /// Contact friction coefficient.
+    pub friction: f32,
+}
+
+impl Default for PropPhys {
+    fn default() -> Self {
+        Self {
+            density: 400.0,
+            friction: 0.8,
+        }
+    }
+}
+
 /// The driven joint names, in `JointTargets`/`JointTelemetry` order.
 /// Index 4 (`wrist_roll`) is telemetry-only in M0 — see module docs.
 pub const JOINT_NAMES: [&str; 5] = ["base_yaw", "shoulder", "elbow", "wrist_pitch", "wrist_roll"];
@@ -551,6 +571,28 @@ impl MultibodySystem {
         self.holding
     }
 
+    /// World points of the actuated chain: `[shoulder, elbow, wrist,
+    /// tip]` — the skeleton the top-down camera draws. Body origins
+    /// sit exactly on their joint anchors by construction, so plain
+    /// translations are the joint positions.
+    pub fn chain_points(&self) -> Vec<[f32; 3]> {
+        let origin = |h: RigidBodyHandle| -> [f32; 3] {
+            self.bodies
+                .get(h)
+                .map(|b| {
+                    let t = b.translation();
+                    [t.x, t.y, t.z]
+                })
+                .unwrap_or([0.0; 3])
+        };
+        vec![
+            origin(self.chain[1]), // shoulder (link1 origin)
+            origin(self.chain[2]), // elbow (link2 origin)
+            origin(self.chain[3]), // wrist (wrist origin)
+            self.last_ee.0,        // tip
+        ]
+    }
+
     fn run_grasp(&mut self, gripper: f32) {
         let closed = gripper > 0.5;
         match (closed, self.holding) {
@@ -645,8 +687,14 @@ impl System<World> for MultibodySystem {
                 self.holding = None;
             }
         }
+        // Optional per-prop physics overrides (domain randomization).
+        let phys: BTreeMap<EntKey, PropPhys> = world
+            .query::<PropPhys>()
+            .map(|(e, pp)| (key(e), *pp))
+            .collect();
         for (k, p) in &live {
             if !self.map.contains_key(k) {
+                let pp = phys.get(k).copied().unwrap_or_default();
                 let b = RigidBodyBuilder::dynamic()
                     .linear_damping(0.1)
                     .angular_damping(0.1)
@@ -654,8 +702,8 @@ impl System<World> for MultibodySystem {
                     .build();
                 let h = self.bodies.insert(b);
                 let c = ColliderBuilder::cuboid(PROP_HALF, PROP_HALF, PROP_HALF)
-                    .density(400.0)
-                    .friction(0.8)
+                    .density(pp.density)
+                    .friction(pp.friction)
                     .collision_groups(world_groups())
                     .build();
                 self.colliders.insert_with_parent(c, h, &mut self.bodies);
