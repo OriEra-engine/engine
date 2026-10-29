@@ -1177,12 +1177,43 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
         // 显式 float 编码（AI 原生三轮评审）：部分网关默认返回 base64
         // 编码向量，解析会静默退化为 missing-index 错。
         let body = json!({ "model": self.cfg.model, "input": texts, "encoding_format": "float" });
+        // #68 分类口径与 chat 路径同款:供应商答了话 = Status(可判定,
+        // 带 body 细节 + retry-after);只有真没到达才是 Network/Timeout。
+        // 曾把 4xx/5xx 全糊成 Network——驱动重试链空转、熔断误跳、
+        // oriera_infer_error{class=} 指标失真(2026-10-29 评审 P3)。
         let resp = self
             .agent
             .post(&self.url)
             .set("Authorization", &format!("Bearer {}", self.cfg.api_key))
             .send_string(&body.to_string())
-            .map_err(|e| InferError::Network(self.scrub(&e.to_string())))?;
+            .map_err(|e| match e {
+                ureq::Error::Status(code, resp) => {
+                    let retry_after = resp.header("retry-after").map(str::to_string);
+                    let mut detail = resp.into_string().unwrap_or_default();
+                    if let Some(ra) = retry_after {
+                        detail.push_str(&format!(" [retry-after: {ra}]"));
+                    }
+                    InferError::Status {
+                        code,
+                        detail: self.scrub(&detail),
+                    }
+                }
+                ureq::Error::Transport(t) => {
+                    let msg = t.to_string();
+                    let deadline = {
+                        let lower = msg.to_lowercase();
+                        lower.contains("timed out")
+                            || lower.contains("timeout")
+                            || msg.contains("(os error 10060)")
+                            || msg.contains("(os error 110)")
+                    };
+                    if t.kind() == ureq::ErrorKind::Io && deadline {
+                        InferError::Timeout
+                    } else {
+                        InferError::Network(self.scrub(&msg))
+                    }
+                }
+            })?;
         let raw = resp
             .into_string()
             .map_err(|e| InferError::Network(self.scrub(&e.to_string())))?;
@@ -2539,6 +2570,38 @@ data: [DONE]\n\n";
         match p.sse_stream(&[ChatMessage::user("x")], None, 1024, 64) {
             Err(InferError::Parse(m)) => assert!(m.contains("exceeded 64 bytes"), "{m}"),
             other => panic!("expected total-cap Parse, got {other:?}"),
+        }
+    }
+
+    /// 评审 P3:embed 4xx/5xx 曾全糊成 Network——401 必须 = Status(可判定)。
+    #[test]
+    fn embeddings_status_errors_classify_not_network() {
+        // 评审 P3:embed 曾把 4xx/5xx 全糊成 Network——驱动重试链空转、
+        // 熔断误跳、class 指标失真。#68 分类口径下 401 = Status(可判定)。
+        let mock = Mock::spawn(vec![Step::Reply(
+            401,
+            r#"{"error":{"message":"invalid api key"}}"#.into(),
+        )]);
+        let p = HttpEmbeddingProvider::with_timeouts(
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                model: "emb".into(),
+                api_key: "test-key".into(),
+                base_url: Some(mock.base_url()),
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(500),
+        )
+        .unwrap();
+        match p.embed(&["a".into()]) {
+            Err(InferError::Status { code, detail }) => {
+                assert_eq!(code, 401);
+                assert!(
+                    detail.contains("invalid api key"),
+                    "body detail rides along: {detail}"
+                );
+            }
+            other => panic!("expected Status(401), got {other:?}"),
         }
     }
 
