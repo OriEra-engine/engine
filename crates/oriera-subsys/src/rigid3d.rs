@@ -161,7 +161,7 @@ impl Default for ArmDescription {
             limits: [
                 (-std::f32::consts::PI, std::f32::consts::PI),
                 (-0.35, 1.45),
-                (-2.10, 0.35),
+                (-2.50, 0.35),
                 (-2.00, 2.00),
             ],
             // ForceBased motor gains (N·m/rad, N·m·s/rad): the joint

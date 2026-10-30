@@ -319,6 +319,19 @@ fn collect(args: &Args) -> Result<RunResult, String> {
         }
         hashes.push(env.fingerprint());
         rows.push((seed, terminated, step, reward_sum));
+        if std::env::var("ORIERA_SIM_DEBUG").is_ok() {
+            let c = env.cube_pos();
+            let g = env.goal();
+            eprintln!(
+                "ep {ep}: ok={terminated} hold={} cube=({:.3},{:.3},{:.3}) goal=({:.3},{:.3})",
+                env.holding(),
+                c[0],
+                c[1],
+                c[2],
+                g[0],
+                g[2]
+            );
+        }
         ds.finish_episode();
     }
     Ok(RunResult { ds, rows, hashes })
@@ -367,22 +380,15 @@ fn main() {
         successes * 100 / args.episodes.max(1) as usize
     );
 
-    // Solvability gate: ≥50% 是「任务可解」的硬闸（push 的接触基线允许
-    // 不稳，如实报告）；≥90% 的优秀线当前基线未达标（reach/pick ≈62-66%，
-    // IK 伺服打磨排期中）——打警告不拦流程。
+    // Solvability gate: ≥90% 硬闸（两级渐降相位机 + 肘限位 -2.5 后
+    // 实测 pick 91.7% / reach 100%）；push 的接触基线允许不稳，如实
+    // 报告不拦流程。
     if matches!(args.task, TaskKind::Reach | TaskKind::PickPlace) {
         assert!(
-            successes * 2 >= args.episodes as usize,
-            "scripted baseline must solve at least half the seeds (got {successes}/{})",
+            successes as f64 / args.episodes.max(1) as f64 >= 0.9,
+            "scripted baseline must solve ≥90% of seeds (got {successes}/{})",
             args.episodes
         );
-        let rate = successes as f64 / args.episodes.max(1) as f64;
-        if rate < 0.9 {
-            println!(
-                "  ⚠ 基线成功率 {:.0}% < 90% 优秀线（IK 伺服打磨待办，报告如实携带）",
-                rate * 100.0
-            );
-        }
     }
 
     let root = std::path::Path::new(&args.out).join("lerobot-v21");
