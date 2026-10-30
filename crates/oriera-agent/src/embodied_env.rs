@@ -340,39 +340,22 @@ impl EmbodiedEnv for TableTopEnv {
         // the wrist aimed straight down) — goals outside it are not
         // just hard, they are unreachable, and the task must stay
         // solvable for every seed.
-        let (obj, goal) = match self.task {
-            TaskKind::Reach => (
-                [
-                    self.rng.next_f32(0.14, 0.22),
-                    0.55,
-                    self.rng.next_f32(-0.10, 0.10),
-                ],
-                [0.0; 3], // unused: the goal IS the cube (obs goal_rel mirrors obj_rel)
-            ),
-            TaskKind::PickPlace => (
-                [
-                    self.rng.next_f32(0.14, 0.22),
-                    0.55,
-                    self.rng.next_f32(-0.10, 0.10),
-                ],
-                [
-                    self.rng.next_f32(0.24, 0.31),
-                    0.5,
-                    self.rng.next_f32(-0.08, 0.08),
-                ],
-            ),
-            TaskKind::Push => (
-                [
-                    self.rng.next_f32(0.14, 0.20),
-                    0.55,
-                    self.rng.next_f32(-0.07, 0.07),
-                ],
-                [
-                    self.rng.next_f32(0.24, 0.31),
-                    0.5,
-                    self.rng.next_f32(-0.08, 0.08),
-                ],
-            ),
+        let obj = [self.rng.next_f32(0.14, 0.22), 0.55, self.rng.next_f32(-0.10, 0.10)];
+        let goal = match self.task {
+            // Reach: the goal IS the cube — `goal_rel` stays a real
+            // channel (a zeroed goal used to leak −ee noise into obs,
+            // caught in the ten-role review).
+            TaskKind::Reach => obj,
+            TaskKind::PickPlace => [
+                self.rng.next_f32(0.24, 0.31),
+                0.5,
+                self.rng.next_f32(-0.08, 0.08),
+            ],
+            TaskKind::Push => [
+                self.rng.next_f32(0.24, 0.31),
+                0.5,
+                self.rng.next_f32(-0.08, 0.08),
+            ],
         };
         // Reset-mode physics randomization (IsaacLab EventTerm): cube
         // density/friction jitter — the two knobs sim2real reviewers
