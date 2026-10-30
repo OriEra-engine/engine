@@ -17,7 +17,7 @@
 //! tradition): cube placement, goal placement, cube density and
 //! friction — every episode's draw is recorded in the randomization
 //! receipt. **Top-down camera** (feature `cam`): a deterministic
-//! overhead RGB track at half the control rate, the modality
+//! overhead RGB track at the control rate, the modality
 //! vision-based IL policies actually consume.
 //!
 //! The env type is [`TableTopEnv`]; `PickPlace3D` is kept as a
@@ -28,8 +28,8 @@ use self::embodied_env_defaults::*;
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Entity, World};
 use oriera_subsys::{
-    sim_fingerprint, ArmDescription, Gravity, JointTargets, JointTelemetry, MultibodySystem, Pose3,
-    PropPhys, Scene3D, SimObject, TimeScale,
+    sim_fingerprint, ArmDescription, Gravity, JointTargets, JointTelemetry, MultibodySystem,
+    PhysicsParams, Pose3, PropPhys, Scene3D, SimObject, TimeScale,
 };
 
 #[cfg(feature = "cam")]
@@ -159,6 +159,14 @@ pub struct TableTopEnv {
     /// jitter in addition to placement draws). Recorded in the
     /// randomization receipt either way.
     pub randomize: bool,
+    /// Arm-side DR half-ranges (reset draws): motor gain ±, link mass
+    /// ±. 0.0 disables that axis (defaults keep the M0 behaviour).
+    pub kp_jitter: f32,
+    pub mass_jitter: f32,
+    /// Additive observation noise (isaac `enable_corruption`); 0.0 off.
+    pub obs_noise: f32,
+    /// Solver knobs handed to L6 (part of the fingerprint).
+    pub physics: PhysicsParams,
     /// Where the cube must end up (task goal), world frame.
     pub goal: [f32; 3],
     world: World,
@@ -170,6 +178,9 @@ pub struct TableTopEnv {
     was_holding: bool,
     tick: u64,
     rand_note: String,
+    /// The (possibly randomized) description this episode runs with —
+    /// nominal `desc` is never mutated.
+    desc_working: ArmDescription,
     /// Top-down camera (feature `cam`): Some ⇒ frames captured at half
     /// the control rate (30 Hz under the 60 Hz loop).
     #[cfg(feature = "cam")]
@@ -220,6 +231,10 @@ impl TableTopEnv {
             dt,
             max_steps,
             randomize: true,
+            kp_jitter: 0.0,
+            mass_jitter: 0.0,
+            obs_noise: 0.0,
+            physics: PhysicsParams::default(),
             goal: [0.0; 3],
             world: World::new(),
             sys: MultibodySystem::new(ArmDescription::default(), Scene3D::default()),
@@ -236,6 +251,7 @@ impl TableTopEnv {
             was_holding: false,
             tick: 0,
             rand_note: String::new(),
+            desc_working: ArmDescription::default(),
             #[cfg(feature = "cam")]
             cam: None,
             frames: Vec::new(),
@@ -258,7 +274,7 @@ impl TableTopEnv {
         &self.rand_note
     }
 
-    fn observe(&self) -> Vec<f32> {
+    fn observe(&mut self) -> Vec<f32> {
         let tel = self
             .world
             .get::<JointTelemetry>(self.arm)
@@ -289,6 +305,14 @@ impl TableTopEnv {
         obs.push(tel.holding as i32 as f32);
         obs.push(obj.pos[1]);
         obs.push(dist);
+        // Observation corruption (IsaacLab `enable_corruption`): uniform
+        // additive noise on the float channels, drawn from the episode
+        // rng — same seed ⇒ same noise sequence. Flags stay clean.
+        if self.obs_noise > 0.0 {
+            for v in obs.iter_mut().take(20) {
+                *v += self.rng.next_f32(-self.obs_noise, self.obs_noise);
+            }
+        }
         obs
     }
 
@@ -340,7 +364,11 @@ impl EmbodiedEnv for TableTopEnv {
         // the wrist aimed straight down) — goals outside it are not
         // just hard, they are unreachable, and the task must stay
         // solvable for every seed.
-        let obj = [self.rng.next_f32(0.14, 0.22), 0.55, self.rng.next_f32(-0.10, 0.10)];
+        let obj = [
+            self.rng.next_f32(0.14, 0.22),
+            0.55,
+            self.rng.next_f32(-0.10, 0.10),
+        ];
         let goal = match self.task {
             // Reach: the goal IS the cube — `goal_rel` stays a real
             // channel (a zeroed goal used to leak −ee noise into obs,
@@ -365,8 +393,25 @@ impl EmbodiedEnv for TableTopEnv {
         } else {
             (400.0, 0.8)
         };
+        // Arm-side DR: motor gains ±kp_jitter, link mass ±mass_jitter
+        // (IsaacLab EventTerm spirit — the policy must not overfit the
+        // nominal servo tuning). Draws recorded in the receipt.
+        let mut desc = self.desc.clone();
+        let mut dr_note = String::new();
+        if self.randomize && self.kp_jitter > 0.0 {
+            let g = 1.0 - self.kp_jitter + 2.0 * self.kp_jitter * self.rng.next_f32(0.0, 1.0);
+            desc.kp *= g;
+            desc.kd *= g;
+            dr_note.push_str(&format!(" gain_x{g:.3}"));
+        }
+        if self.randomize && self.mass_jitter > 0.0 {
+            let g = 1.0 - self.mass_jitter + 2.0 * self.mass_jitter * self.rng.next_f32(0.0, 1.0);
+            desc.mass_scale *= g;
+            dr_note.push_str(&format!(" mass_x{g:.3}"));
+        }
+        self.desc_working = desc;
         self.rand_note = format!(
-            "cube_density={density:.0}kg/m3 cube_friction={friction:.2} {}",
+            "cube_density={density:.0}kg/m3 cube_friction={friction:.2}{dr_note} {}",
             if self.randomize {
                 "profile=default"
             } else {
@@ -397,7 +442,8 @@ impl EmbodiedEnv for TableTopEnv {
         );
         self.world.insert(self.obj, SimObject);
         self.world.insert(self.obj, PropPhys { density, friction });
-        self.sys = MultibodySystem::new(self.desc.clone(), self.scene.clone());
+        self.world.insert_resource(self.physics);
+        self.sys = MultibodySystem::new(self.desc_working.clone(), self.scene.clone());
 
         // Settle: let the cube land and the chain stabilize, so every
         // episode starts from the same resting posture.
@@ -690,6 +736,27 @@ mod tests {
         env.randomize = false;
         env.reset(9);
         assert!(env.randomization_receipt().contains("profile=off"));
+    }
+
+    #[test]
+    fn arm_side_dr_changes_the_episode_and_is_recorded() {
+        let mut a = TableTopEnv::new();
+        let mut b = TableTopEnv::new();
+        a.kp_jitter = 0.2;
+        a.mass_jitter = 0.15;
+        let o1 = a.reset(21);
+        let o2 = b.reset(21);
+        assert_ne!(o1, o2, "gain/mass jitter ⇒ different rollout");
+        let note = a.randomization_receipt();
+        assert!(note.contains("gain_x") && note.contains("mass_x"), "{note}");
+        // Determinism: same seed + same knobs ⇒ identical episode.
+        let mut c = TableTopEnv::new();
+        c.kp_jitter = 0.2;
+        c.mass_jitter = 0.15;
+        c.reset(21);
+        for i in 0..30 {
+            assert_eq!(a.step(&wiggle_policy(i)), c.step(&wiggle_policy(i)));
+        }
     }
 
     #[test]

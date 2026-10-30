@@ -68,6 +68,10 @@ rapier3d = "0.36"
 # encoder for the deterministic top-down RGB camera track. Tiny dep tree,
 # Apache-2.0/MIT, feature-gated — default builds stay dependency-free.
 png = "0.17"
+# L9→Python gymnasium bridge (feature `python`, PLAN-embodied-sim M1
+# #1): PyO3 extension module exposing TableTopEnv to SB3/lerobot
+# training loops. Optional — default builds never compile it.
+pyo3 = "0.26"
 criterion = "0.5"
 
 [profile.release]

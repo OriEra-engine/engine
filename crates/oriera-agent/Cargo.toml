@@ -9,6 +9,9 @@ description = "OriEra L9 agent layer: cognition systems, long-term memory, AI di
 [lib]
 name = "oriera_agent"
 path = "src/lib.rs"
+# The `python` feature builds the same lib as the `oriera_sim`
+# extension module; without it the cdylib stays empty (harmless).
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 oriera-common.workspace = true
@@ -24,6 +27,7 @@ serde = { workspace = true, features = ["derive"] }
 # feature is on; examples/tests opt into backends through
 # `rigid`/`rigid3d`.
 oriera-subsys = { workspace = true }
+pyo3 = { workspace = true, optional = true }
 # MemoryStore ↔ JSON (feature `json`): the persistence boundary for
 # cross-session companion memory. Optional like genai's `providers`
 # feature — wasm budget stays minimal unless the shell asks for it.
@@ -39,6 +43,8 @@ rigid = ["oriera-subsys/rigid"]
 rigid3d = ["oriera-subsys/rigid3d"]
 # Top-down camera track through the env (PNG frames).
 cam = ["oriera-subsys/cam"]
+# PyO3 gymnasium bridge (cdylib `oriera_sim`): online training loops.
+python = ["dep:pyo3", "rigid3d", "cam"]
 
 [dev-dependencies]
 oriera-render = { path = "../oriera-render" }

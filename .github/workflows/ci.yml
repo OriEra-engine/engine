@@ -54,6 +54,10 @@ jobs:
           - name: agent-rigid3d-cam
             test: cargo test -p oriera-agent --features rigid3d,cam
             clippy: cargo clippy -p oriera-agent --all-targets --features rigid3d,cam -- -D warnings
+          # pyo3 桥腿：Windows 下 cdylib+测试二进制并行有已知交互，串行跑
+          - name: agent-python-bridge
+            test: cargo test -p oriera-agent --features python -- --test-threads=1
+            clippy: cargo clippy -p oriera-agent --all-targets --features python -- -D warnings
     name: rust (${{ matrix.leg.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 60

@@ -14,8 +14,8 @@ pub use rigid::RigidBodySystem;
 pub mod rigid3d;
 #[cfg(feature = "rigid3d")]
 pub use rigid3d::{
-    sim_fingerprint, ArmDescription, JointTargets, JointTelemetry, MultibodySystem, Pose3,
-    PropPhys, Scene3D, SimObject, GRASP_RADIUS, JOINT_NAMES, PROP_HALF,
+    sim_fingerprint, ArmDescription, JointTargets, JointTelemetry, MultibodySystem, PhysicsParams,
+    Pose3, PropPhys, Scene3D, SimObject, GRASP_RADIUS, JOINT_NAMES, PROP_HALF,
 };
 
 #[cfg(feature = "cam")]

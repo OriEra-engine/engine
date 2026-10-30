@@ -144,6 +144,10 @@ pub struct ArmDescription {
     /// Joint-space PD gains (N·m/rad, N·m·s/rad).
     pub kp: f32,
     pub kd: f32,
+    /// Uniform link-mass scale (domain-randomization knob: jitter this
+    /// ±15% in `reset`-mode draws so policies don't overfit the exact
+    /// inertias). 1.0 = nominal.
+    pub mass_scale: f32,
 }
 
 impl Default for ArmDescription {
@@ -167,8 +171,21 @@ impl Default for ArmDescription {
             // a kilogram-scale arm's gravity torque.
             kp: 60.0,
             kd: 4.0,
+            mass_scale: 1.0,
         }
     }
+}
+
+/// Exposed solver knobs (resource on the world; `None` = rapier
+/// default). Folded into `sim_fingerprint` — a tuned solver is part of
+/// the experiment's identity and must show up in the receipt.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PhysicsParams {
+    pub solver_iterations: Option<usize>,
+    /// Soft-contact spring frequency (Hz) — the ERP/CFM analogue.
+    pub contact_softness_hz: Option<f32>,
+    /// Velocity warmstart blending (0..1).
+    pub warmstart_coefficient: Option<f32>,
 }
 
 /// Static furniture built once at construction: a ground slab and an
@@ -288,6 +305,14 @@ pub fn sim_fingerprint(world: &World) -> u64 {
             h = bits(h, v);
         }
     }
+    // Solver knobs are part of the experiment identity (review: a
+    // tuned solver must show in the receipt).
+    if let Some(pp) = world.resource::<PhysicsParams>() {
+        h = mix(h, pp.solver_iterations.map_or(0, |v| v as u64));
+        for v in [pp.contact_softness_hz, pp.warmstart_coefficient] {
+            h = bits(h, v.unwrap_or(0.0));
+        }
+    }
     h
 }
 
@@ -311,6 +336,9 @@ fn angle_about(q: Rotation, axis: Vec3) -> f32 {
 /// mutable lives in the body/joint sets).
 pub struct MultibodySystem {
     pub desc: ArmDescription,
+    /// Solver knobs (see [`PhysicsParams`]) — applied each tick,
+    /// `None` fields keep rapier defaults.
+    pub physics: PhysicsParams,
     pipeline: PhysicsPipeline,
     islands: IslandManager,
     broad_phase: DefaultBroadPhase,
@@ -350,6 +378,7 @@ impl MultibodySystem {
     pub fn new(desc: ArmDescription, scene: Scene3D) -> Self {
         let mut sys = Self {
             desc,
+            physics: PhysicsParams::default(),
             pipeline: PhysicsPipeline::new(),
             islands: IslandManager::new(),
             broad_phase: DefaultBroadPhase::new(),
@@ -421,7 +450,7 @@ impl MultibodySystem {
             this.bodies.insert(
                 RigidBodyBuilder::dynamic()
                     .can_sleep(false)
-                    .additional_mass(LINK_ADDED_MASS)
+                    .additional_mass(LINK_ADDED_MASS * d.mass_scale)
                     .translation(t)
                     .build(),
             )
@@ -441,7 +470,7 @@ impl MultibodySystem {
         // Colliders: carrier cube; links as cuboids centred mid-link.
         let collider = |this: &mut Self, body: RigidBodyHandle, half: [f32; 3], off: Vec3| {
             let c = ColliderBuilder::cuboid(half[0], half[1], half[2])
-                .density(LINK_DENSITY)
+                .density(LINK_DENSITY * d.mass_scale)
                 .friction(0.7)
                 .translation(off)
                 .collision_groups(arm_groups())
@@ -759,10 +788,20 @@ impl System<World> for MultibodySystem {
         // 4. Step the pipeline — SUBSTEPS internal physics steps per
         // engine tick (decimation; 3D worlds are y-up).
         let gravity = Vec3::new(0.0, -g, 0.0);
-        let params = IntegrationParameters {
+        let mut params = IntegrationParameters {
             dt: dt / SUBSTEPS as f32,
             ..IntegrationParameters::default()
         };
+        let p = self.physics;
+        if let Some(v) = p.solver_iterations {
+            params.num_solver_iterations = v;
+        }
+        if let Some(v) = p.contact_softness_hz {
+            params.contact_softness.natural_frequency = v;
+        }
+        if let Some(v) = p.warmstart_coefficient {
+            params.warmstart_coefficient = v;
+        }
         for _ in 0..SUBSTEPS {
             self.pipeline.step(
                 gravity,

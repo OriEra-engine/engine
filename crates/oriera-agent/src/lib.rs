@@ -35,6 +35,8 @@ pub mod goal;
 pub mod lerobot;
 pub mod memory;
 pub mod prefab;
+#[cfg(feature = "python")]
+pub mod python;
 pub mod story;
 #[cfg(feature = "json")]
 pub mod tools;
