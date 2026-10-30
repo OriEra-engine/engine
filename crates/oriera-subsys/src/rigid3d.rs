@@ -130,6 +130,7 @@ pub const JOINT_NAMES: [&str; 5] = ["base_yaw", "shoulder", "elbow", "wrist_pitc
 /// Lengths in metres. The home pose stretches along world +X at
 /// shoulder height (all angles zero).
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArmDescription {
     /// World position of the base column centre.
     pub base: [f32; 3],
@@ -180,6 +181,7 @@ impl Default for ArmDescription {
 /// default). Folded into `sim_fingerprint` — a tuned solver is part of
 /// the experiment's identity and must show up in the receipt.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PhysicsParams {
     pub solver_iterations: Option<usize>,
     /// Physics substeps per engine tick (None ⇒ [`SUBSTEPS`]).
@@ -193,6 +195,7 @@ pub struct PhysicsParams {
 /// Static furniture built once at construction: a ground slab and an
 /// optional table, each `(center, half_extents)` in metres.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Scene3D {
     pub ground: ([f32; 3], [f32; 3]),
     pub table: Option<([f32; 3], [f32; 3])>,

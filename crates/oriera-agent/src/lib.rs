@@ -37,6 +37,7 @@ pub mod memory;
 pub mod prefab;
 #[cfg(feature = "python")]
 pub mod python;
+pub mod spec;
 pub mod story;
 #[cfg(feature = "json")]
 pub mod tools;

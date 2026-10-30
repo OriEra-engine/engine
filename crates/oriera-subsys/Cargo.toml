@@ -26,9 +26,12 @@ rapier2d = { workspace = true, optional = true }
 rapier3d = { workspace = true, optional = true }
 # Top-down RGB camera track (PNG frames) for the embodied bench.
 png = { workspace = true, optional = true }
+# SceneSpec serde (M1 #5): Scene3D/ArmDescription as JSON scene files.
+serde = { workspace = true, optional = true }
 
 [features]
 default = []
 rigid = ["dep:rapier2d"]
 rigid3d = ["dep:rapier3d"]
 cam = ["dep:png"]
+serde = ["dep:serde"]

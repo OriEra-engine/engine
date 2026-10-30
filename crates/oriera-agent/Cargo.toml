@@ -45,6 +45,8 @@ rigid3d = ["oriera-subsys/rigid3d"]
 cam = ["oriera-subsys/cam"]
 # PyO3 gymnasium bridge (cdylib `oriera_sim`): online training loops.
 python = ["dep:pyo3", "rigid3d", "cam"]
+# SceneSpec（实验即文件）：serde 化场景描述 + JSON 加载。
+spec = ["rigid3d", "oriera-subsys/serde", "json"]
 
 [dev-dependencies]
 oriera-render = { path = "../oriera-render" }
