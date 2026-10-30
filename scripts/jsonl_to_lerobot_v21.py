@@ -72,7 +72,7 @@ def convert(root: Path) -> None:
                     continue
                 mp4 = ep_dir.parent / f"{ep_dir.name}.mp4"
                 fps = next(
-                    (v.get("info", {}).get("video.fps", 60.0) for k, v in video_feats.items() if k.endswith("." + cam_dir.name)),
+                    (v.get("info", {}).get("video.fps", 60.0) for k, v in video_feats.items() if k == cam_dir.name),
                     60.0,
                 )
                 with iio.get_writer(mp4, fps=fps, codec="libx264", pixelformat="yuv420p", macro_block_size=1) as w:
