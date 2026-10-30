@@ -182,6 +182,8 @@ impl Default for ArmDescription {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PhysicsParams {
     pub solver_iterations: Option<usize>,
+    /// Physics substeps per engine tick (None ⇒ [`SUBSTEPS`]).
+    pub substeps: Option<u32>,
     /// Soft-contact spring frequency (Hz) — the ERP/CFM analogue.
     pub contact_softness_hz: Option<f32>,
     /// Velocity warmstart blending (0..1).
@@ -308,11 +310,17 @@ pub fn sim_fingerprint(world: &World) -> u64 {
     // Solver knobs are part of the experiment identity (review: a
     // tuned solver must show in the receipt).
     if let Some(pp) = world.resource::<PhysicsParams>() {
-        h = mix(h, pp.solver_iterations.map_or(0, |v| v as u64));
-        for v in [pp.contact_softness_hz, pp.warmstart_coefficient] {
-            h = bits(h, v.unwrap_or(0.0));
-        }
+        // None folds to a sentinel (u64::MAX / NaN bits) — Some(0) and
+        // None must NOT collide (review: ambiguous receipts).
+        let opt_u = |v: Option<u64>| v.unwrap_or(u64::MAX);
+        let opt_f = |v: Option<f32>| v.map_or(u64::MAX, |x| x.to_bits() as u64);
+        h = mix(h, opt_u(pp.solver_iterations.map(|v| v as u64)));
+        h = mix(h, opt_u(pp.substeps.map(|v| v as u64)));
+        h = mix(h, opt_f(pp.contact_softness_hz));
+        h = mix(h, opt_f(pp.warmstart_coefficient));
     }
+    // Gravity is part of the experiment identity too.
+    h = bits(h, world.resource::<Gravity>().map_or(f32::NAN, |g| g.0));
     h
 }
 

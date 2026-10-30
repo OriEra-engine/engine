@@ -145,6 +145,15 @@ impl LeRobotV21 {
         Ok(())
     }
 
+    /// Discard the open episode (degenerate runs — e.g. a spawn that
+    /// lands in the goal zone and terminates on step 1 — must not
+    /// become a 1-row/1-frame dataset entry).
+    pub fn drop_episode(&mut self) {
+        if let Some(ep) = self.current.take() {
+            self.next_index -= ep.rows.len() as u64;
+        }
+    }
+
     /// Close the open episode.
     pub fn finish_episode(&mut self) {
         if let Some(ep) = self.current.take() {
@@ -379,6 +388,7 @@ impl LeRobotV21 {
             concat!(
                 "---\n",
                 "task_categories: [robotics]\n",
+                "license: apache-2.0\n",
                 "tags: [oriera, embodied-ai, lerobot, simulation]\n",
                 "---\n\n",
                 "# OriEra 具身仿真数据集（LeRobotDataset v2.1）\n\n",

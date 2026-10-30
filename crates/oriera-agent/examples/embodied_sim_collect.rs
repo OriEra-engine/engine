@@ -293,7 +293,9 @@ fn collect(args: &Args) -> Result<RunResult, String> {
 
     let mut rows = Vec::new();
     let mut hashes = Vec::new();
-    for ep in 0..args.episodes {
+    let mut ep: i32 = -1;
+    while ((ep + 1) as u32) < args.episodes {
+        ep += 1;
         let seed = args.seed0 + ep as u64;
         let mut obs = env.reset(seed);
         // episode 语言标注 = 任务自然语言短语（SmolVLA/π0 语言条件）
@@ -304,18 +306,27 @@ fn collect(args: &Args) -> Result<RunResult, String> {
         let max_steps = env.spec().max_steps;
         while step < max_steps && !terminated {
             let action = policy(&obs, &phases, step, &desc);
-            // LeRobot row t = (state_t, action_t); the env's next obs
-            // becomes the next row's state.
+            // env.step FIRST — it captures frame t for state_t — then
+            // row t = (state_t, action_t), then drain. Frame count ==
+            // row count by construction (off-by-one, round-2 review).
+            let out = env.step(&action);
             ds.push_step(&obs, &action)?;
             #[cfg(feature = "cam")]
             for (_ft, png) in env.take_frames() {
                 ds.push_frame(png)?;
             }
-            let out = env.step(&action);
             obs = out.obs;
             reward_sum += out.reward;
             terminated = out.terminated;
             step += 1;
+        }
+        // Degenerate filter: a spawn landing in the goal zone ends on
+        // step ~1 and would enter the dataset as a 1-row/1-frame entry
+        // (round-2 finding) — discard and re-draw the seed.
+        if step < 5 {
+            ds.drop_episode();
+            println!("  · 集 {ep}（seed {seed}）生成即入区，已剔除重抽（新种子带）");
+            continue;
         }
         hashes.push(env.fingerprint());
         rows.push((seed, terminated, step, reward_sum));

@@ -111,21 +111,26 @@ impl TaskKind {
             _ => None,
         }
     }
-    /// Language→task resolution (the NL→embodied pivot): a natural
-    /// phrase maps back to the task that promises it.
+    /// Language→task resolution (the NL→embodied pivot): exact phrase
+    /// first, then distinctive keywords. "push the cube" routes to Push
+    /// even though it contains "cube" — keyword sets are disjoint.
     pub fn from_phrase(phrase: &str) -> Option<Self> {
-        [Self::Reach, Self::PickPlace, Self::Push]
-            .into_iter()
-            .find(|t| {
-                phrase
-                    .to_ascii_lowercase()
-                    .contains(&t.phrase().to_ascii_lowercase())
-                    || t.phrase()
-                        .to_ascii_lowercase()
-                        .split(' ')
-                        .filter(|w| w.len() > 3)
-                        .any(|w| phrase.to_ascii_lowercase().contains(w))
-            })
+        let p = phrase.to_ascii_lowercase();
+        for t in [Self::Reach, Self::PickPlace, Self::Push] {
+            if p.contains(&t.phrase().to_ascii_lowercase()) {
+                return Some(t);
+            }
+        }
+        let hits = |words: &[&str]| words.iter().any(|w| p.contains(w));
+        if hits(&["push"]) {
+            Some(Self::Push)
+        } else if hits(&["pick", "place"]) {
+            Some(Self::PickPlace)
+        } else if hits(&["reach", "touch"]) {
+            Some(Self::Reach)
+        } else {
+            None
+        }
     }
     pub fn phrase(self) -> &'static str {
         match self {
@@ -181,7 +186,7 @@ pub struct TableTopEnv {
     /// The (possibly randomized) description this episode runs with —
     /// nominal `desc` is never mutated.
     desc_working: ArmDescription,
-    /// Top-down camera (feature `cam`): Some ⇒ frames captured at half
+    /// Top-down camera (feature `cam`): Some ⇒ frames captured at the
     /// the control rate (30 Hz under the 60 Hz loop).
     #[cfg(feature = "cam")]
     cam: Option<CameraView>,
@@ -202,13 +207,6 @@ pub const GOAL_Y_MIN: f32 = 0.5;
 pub const GOAL_Y_MAX: f32 = 0.62;
 /// Reach termination radius (tip-to-cube distance).
 pub const REACH_RADIUS: f32 = 0.055;
-
-/// Camera capture cadence: every control tick — the track MUST run at
-/// the control rate, because HF lerobot indexes video frames by
-/// `timestamp × video_fps`; a half-rate track desyncs (the 30 Hz
-/// variant was a live bug found in review, 2026-10-30).
-#[cfg(feature = "cam")]
-pub const CAM_EVERY: u64 = 1;
 
 /// `PickPlace3D` — the flagship task, kept as the pre-family name.
 pub type PickPlace3D = TableTopEnv;
@@ -418,7 +416,28 @@ impl EmbodiedEnv for TableTopEnv {
                 "profile=off"
             }
         );
-        self.goal = goal;
+        // Minimum spawn separation: the placement zones are adjacent in
+        // XZ, so a naive draw can land the cube INSIDE the goal zone
+        // (seeds 1009/1010 terminated on step 1 — round-2 finding).
+        // Re-draw the goal until it is at least 12 cm away in XZ.
+        let mut goal_final = goal;
+        if !matches!(self.task, TaskKind::Reach) {
+            let mut attempts = 0;
+            loop {
+                let d =
+                    ((obj[0] - goal_final[0]).powi(2) + (obj[2] - goal_final[2]).powi(2)).sqrt();
+                if d >= 0.12 || attempts >= 8 {
+                    break;
+                }
+                goal_final = [
+                    self.rng.next_f32(0.24, 0.31),
+                    0.5,
+                    self.rng.next_f32(-0.08, 0.08),
+                ];
+                attempts += 1;
+            }
+        }
+        self.goal = goal_final;
 
         self.world = World::new();
         self.world.insert_resource(Gravity(9.8));
@@ -464,6 +483,23 @@ impl EmbodiedEnv for TableTopEnv {
             t.angles = angles;
             t.gripper = gripper;
         }
+        // Top-down camera at the control rate — frame t shows state_t,
+        // the same state obs row t describes; one capture per step ⇒
+        // frame count == row count by construction (the off-by-one of
+        // the previous placement is gone).
+        #[cfg(feature = "cam")]
+        if let Some(view) = &self.cam {
+            let obj_now = self
+                .world
+                .get::<Pose3>(self.obj)
+                .copied()
+                .unwrap_or_default();
+            let chain = self.sys.chain_points();
+            if let Ok(png) = capture_png(view, &self.scene, &chain, obj_now.pos, self.goal) {
+                self.frames.push((self.tick, png));
+            }
+        }
+
         self.sys.run(&self.ctx(), &mut self.world);
         self.tick += 1;
         self.steps += 1;
@@ -526,17 +562,6 @@ impl EmbodiedEnv for TableTopEnv {
         }
         self.was_holding = tel.holding;
         let truncated = !terminated && self.steps >= self.max_steps;
-
-        // Top-down camera at half the control rate (30 Hz @ 60 Hz loop).
-        #[cfg(feature = "cam")]
-        if let Some(view) = &self.cam {
-            if self.tick.is_multiple_of(crate::embodied_env::CAM_EVERY) {
-                let chain = self.sys.chain_points();
-                if let Ok(png) = capture_png(view, &self.scene, &chain, obj.pos, self.goal) {
-                    self.frames.push((self.tick, png));
-                }
-            }
-        }
 
         StepOutcome {
             obs: self.observe(),
@@ -757,6 +782,20 @@ mod tests {
         for i in 0..30 {
             assert_eq!(a.step(&wiggle_policy(i)), c.step(&wiggle_policy(i)));
         }
+    }
+
+    #[test]
+    fn from_phrase_routes_keywords_without_cube_trap() {
+        assert_eq!(
+            TaskKind::from_phrase("pick up the cube"),
+            Some(TaskKind::PickPlace)
+        );
+        assert_eq!(TaskKind::from_phrase("push the cube"), Some(TaskKind::Push));
+        assert_eq!(
+            TaskKind::from_phrase("reach the cube"),
+            Some(TaskKind::Reach)
+        );
+        assert_eq!(TaskKind::from_phrase("fly to the moon"), None);
     }
 
     #[test]

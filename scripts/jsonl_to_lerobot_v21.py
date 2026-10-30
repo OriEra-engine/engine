@@ -78,6 +78,11 @@ def convert(root: Path) -> None:
                 with iio.get_writer(mp4, fps=fps, codec="libx264", pixelformat="yuv420p", macro_block_size=1) as w:
                     for f in frames:
                         w.append_data(iio.imread(f))
+                # 写后即验：mp4 帧数必须等于 PNG 帧数（off-by-one 实录）
+                check = iio.get_reader(mp4)
+                n = sum(1 for _ in check)
+                if n != len(frames):
+                    sys.exit(f"错误：{mp4} 帧数 {n} != PNG {len(frames)}——保留 PNG 目录供排查")
                 shutil.rmtree(ep_dir)
                 mp4_made += 1
     except ImportError:

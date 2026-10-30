@@ -20,6 +20,9 @@ import gymnasium as gym
 import numpy as np
 
 
+TASK_ALIASES = {"pick": "pick_place", "pickplace": "pick_place"}
+
+
 class OrieraPickPlaceEnv(gym.Env):
     metadata = {"render_modes": []}
 
@@ -30,6 +33,7 @@ class OrieraPickPlaceEnv(gym.Env):
             sys.path.insert(0, str(target))
         import oriera_sim  # the cdylib extension module
 
+        task = TASK_ALIASES.get(task, task)  # "pick" → "pick_place"
         self._env = oriera_sim.PickPlaceEnv(
             task, 0, kp_jitter, mass_jitter, obs_noise)
         self.observation_space = gym.spaces.Box(
@@ -56,3 +60,11 @@ class OrieraPickPlaceEnv(gym.Env):
 
     def close(self):
         pass
+
+
+# gym.make 标准入口（注册表 + max_steps 700 语义已在 env 内）
+gym.register(
+    id="OrieraPickPlace-v0",
+    entry_point="oriera_gym:OrieraPickPlaceEnv",
+    kwargs={"task": "pick_place"},
+)

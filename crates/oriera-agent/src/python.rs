@@ -38,11 +38,13 @@ impl PickPlaceEnv {
         obs_noise: f32,
     ) -> PyResult<Self> {
         let mut env = TableTopEnv::new();
-        env.task = TaskKind::parse(task).ok_or_else(|| {
-            PyErr::new::<PyValueError, _>(format!(
-                "unknown task {task:?} (reach | pick_place | push)"
-            ))
-        })?;
+        env.task = TaskKind::parse(task)
+            .or_else(|| TaskKind::from_phrase(task))
+            .ok_or_else(|| {
+                PyErr::new::<PyValueError, _>(format!(
+                    "unknown task {task:?} (reach | pick_place | push,或自然短语如 \"pick up the cube\")"
+                ))
+            })?;
         env.kp_jitter = kp_jitter;
         env.mass_jitter = mass_jitter;
         env.obs_noise = obs_noise;
