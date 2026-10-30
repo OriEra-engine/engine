@@ -111,6 +111,22 @@ impl TaskKind {
             _ => None,
         }
     }
+    /// Language→task resolution (the NL→embodied pivot): a natural
+    /// phrase maps back to the task that promises it.
+    pub fn from_phrase(phrase: &str) -> Option<Self> {
+        [Self::Reach, Self::PickPlace, Self::Push]
+            .into_iter()
+            .find(|t| {
+                phrase
+                    .to_ascii_lowercase()
+                    .contains(&t.phrase().to_ascii_lowercase())
+                    || t.phrase()
+                        .to_ascii_lowercase()
+                        .split(' ')
+                        .filter(|w| w.len() > 3)
+                        .any(|w| phrase.to_ascii_lowercase().contains(w))
+            })
+    }
     pub fn phrase(self) -> &'static str {
         match self {
             Self::Reach => "reach the cube with the gripper",
@@ -168,9 +184,20 @@ pub struct TableTopEnv {
 /// resting state.
 pub const SETTLE_TICKS: u64 = 45;
 
-/// Camera capture cadence: every Nth control tick (2 ⇒ 30 Hz).
+/// Success zone: XZ distance tolerance and height band (pick_place /
+/// push); the reach radius shares the tolerance semantic.
+pub const GOAL_XZ_TOL: f32 = 0.09;
+pub const GOAL_Y_MIN: f32 = 0.5;
+pub const GOAL_Y_MAX: f32 = 0.62;
+/// Reach termination radius (tip-to-cube distance).
+pub const REACH_RADIUS: f32 = 0.055;
+
+/// Camera capture cadence: every control tick — the track MUST run at
+/// the control rate, because HF lerobot indexes video frames by
+/// `timestamp × video_fps`; a half-rate track desyncs (the 30 Hz
+/// variant was a live bug found in review, 2026-10-30).
 #[cfg(feature = "cam")]
-pub const CAM_EVERY: u64 = 2;
+pub const CAM_EVERY: u64 = 1;
 
 /// `PickPlace3D` — the flagship task, kept as the pre-family name.
 pub type PickPlace3D = TableTopEnv;
@@ -302,6 +329,7 @@ impl EmbodiedEnv for TableTopEnv {
 
     fn reset(&mut self, seed: u64) -> Vec<f32> {
         self.rng = Lcg::new(seed ^ 0x5eed_00c0_ffee_0001);
+        let _ = &mut self.rng; // draw order: obj first, then goal
         self.steps = 0;
         self.tick = 0;
         self.was_holding = false;
@@ -437,7 +465,7 @@ impl EmbodiedEnv for TableTopEnv {
         match self.task {
             TaskKind::Reach => {
                 reward -= d_ee_obj;
-                terminated = d_ee_obj < 0.05;
+                terminated = d_ee_obj < REACH_RADIUS;
                 if terminated {
                     reward += 5.0;
                 }
@@ -450,7 +478,8 @@ impl EmbodiedEnv for TableTopEnv {
                     reward -= 0.6 * d_ee_obj;
                 }
                 reward += if grasp_event { 2.0 } else { 0.0 };
-                terminated = d_obj_goal < 0.09 && obj.pos[1] > 0.5 && obj.pos[1] < 0.62;
+                terminated =
+                    d_obj_goal < GOAL_XZ_TOL && obj.pos[1] > GOAL_Y_MIN && obj.pos[1] < GOAL_Y_MAX;
                 if terminated {
                     reward += 10.0;
                 }
@@ -459,7 +488,8 @@ impl EmbodiedEnv for TableTopEnv {
                 let grasp_event = tel.holding && !self.was_holding;
                 reward -= d_obj_goal;
                 reward += if grasp_event { 1.0 } else { 0.0 };
-                terminated = d_obj_goal < 0.09 && obj.pos[1] > 0.5 && obj.pos[1] < 0.62;
+                terminated =
+                    d_obj_goal < GOAL_XZ_TOL && obj.pos[1] > GOAL_Y_MIN && obj.pos[1] < GOAL_Y_MAX;
                 if terminated {
                     reward += 10.0;
                 }

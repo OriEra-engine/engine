@@ -53,7 +53,10 @@ def convert(root: Path) -> None:
         table = pa.table(columns)
         dst = src.with_suffix(".parquet")
         pq.write_table(table, dst)
-        src.unlink()
+        # 非破坏性：源 JSONL 归档到 raw/（调试与审计留底），不再删除
+        raw = root / "raw_jsonl"
+        raw.mkdir(exist_ok=True)
+        src.rename(raw / src.name)
         print(f"  {src.name} → {dst.name}  ({table.num_rows} rows)")
 
     # Camera tracks: assemble frame_*.png dirs into mp4 (LeRobot v2.1
@@ -68,13 +71,19 @@ def convert(root: Path) -> None:
                 if not frames:
                     continue
                 mp4 = ep_dir.parent / f"{ep_dir.name}.mp4"
-                with iio.get_writer(mp4, fps=30, codec="libx264", pixelformat="yuv420p", macro_block_size=1) as w:
+                fps = next(
+                    (v.get("info", {}).get("video.fps", 60.0) for k, v in video_feats.items() if k.endswith("." + cam_dir.name)),
+                    60.0,
+                )
+                with iio.get_writer(mp4, fps=fps, codec="libx264", pixelformat="yuv420p", macro_block_size=1) as w:
                     for f in frames:
                         w.append_data(iio.imread(f))
                 shutil.rmtree(ep_dir)
                 mp4_made += 1
     except ImportError:
-        print("  提示：pip install imageio[ffmpeg] 后重跑可将 PNG 帧组装为 mp4")
+        # 静默保留 PNG 目录会让 lerobot reader 挂掉——这里显式报错退出，
+        # 由用户装好 imageio 后重跑（非破坏，可重入）。
+        sys.exit("错误：检测到相机帧目录但缺 imageio[ffmpeg]——pip install imageio imageio-ffmpeg 后重跑")
 
     print(f"done: {len(eps)} episode(s) under {root}" + (f"，{mp4_made} 段相机视频" if mp4_made else ""))
 

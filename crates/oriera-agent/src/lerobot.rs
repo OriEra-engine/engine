@@ -95,12 +95,13 @@ impl LeRobotV21 {
     }
 
     /// Record one camera frame (PNG bytes) for the open episode.
-    pub fn push_frame(&mut self, png: Vec<u8>) {
+    pub fn push_frame(&mut self, png: Vec<u8>) -> Result<(), String> {
         let ep = self
             .current
             .as_mut()
-            .expect("push_frame before start_episode");
+            .ok_or("push_frame 前须 start_episode")?;
         ep.frames.push(png);
+        Ok(())
     }
 
     /// Start an episode; repeated task strings deduplicate into
@@ -120,17 +121,28 @@ impl LeRobotV21 {
         });
     }
 
-    /// Record one step of the open episode.
-    pub fn push_step(&mut self, state: &[f32], action: &[f32]) {
+    /// Record one step of the open episode. Dimension mismatches
+    /// against the declared features are contract errors, not panics.
+    pub fn push_step(&mut self, state: &[f32], action: &[f32]) -> Result<(), String> {
+        if state.len() != self.obs_names.len() || action.len() != self.action_names.len() {
+            return Err(format!(
+                "维度契约不符：state {}/{}，action {}/{}",
+                state.len(),
+                self.obs_names.len(),
+                action.len(),
+                self.action_names.len()
+            ));
+        }
         let ep = self
             .current
             .as_mut()
-            .expect("push_step before start_episode");
+            .ok_or("push_step 前须 start_episode")?;
         ep.rows.push(Row {
             state: state.to_vec(),
             action: action.to_vec(),
         });
         self.next_index += 1;
+        Ok(())
     }
 
     /// Close the open episode.
@@ -184,7 +196,7 @@ impl LeRobotV21 {
         let total_videos = total_videos.to_string();
         format!(
             concat!(
-                "{{\"codebase_version\":\"v2.1\",\"robot_type\":\"{robot}\",",
+                "{{\"codebase_version\":\"v2.1\",\"robot_type\":\"{robot}\",\"license\":\"apache-2.0\",",
                 "\"total_episodes\":{eps},\"total_frames\":{frames},",
                 "\"total_tasks\":{tasks},\"total_videos\":{videos},\"total_chunks\":1,",
                 "\"chunks_size\":1000,\"fps\":{fps},\"splits\":{{\"train\":\"0:{eps}\"}},",
@@ -455,8 +467,8 @@ mod tests {
             vec!["a0".to_string()],
         );
         ds.start_episode("pick up the cube");
-        ds.push_step(&[0.0, 1.0], &[0.5]);
-        ds.push_step(&[0.1, 0.9], &[-0.5]);
+        ds.push_step(&[0.0, 1.0], &[0.5]).unwrap();
+        ds.push_step(&[0.1, 0.9], &[-0.5]).unwrap();
         ds.finish_episode();
         ds
     }
@@ -483,8 +495,8 @@ mod tests {
     fn stats_are_exact_on_toy_data() {
         let mut ds = LeRobotV21::new(60.0, "t", vec!["x".into()], vec!["a".into()]);
         ds.start_episode("t");
-        ds.push_step(&[1.0], &[0.0]);
-        ds.push_step(&[3.0], &[0.0]);
+        ds.push_step(&[1.0], &[0.0]).unwrap();
+        ds.push_step(&[3.0], &[0.0]).unwrap();
         ds.finish_episode();
         let stats = ds.stats_json();
         // state column: min 1, max 3, mean 2, std 1, count 2

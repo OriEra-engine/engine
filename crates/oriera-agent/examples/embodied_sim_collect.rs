@@ -228,6 +228,13 @@ fn parse_args() -> Args {
                 let v = it.next().expect("--task 需要一个值");
                 a.task = TaskKind::parse(&v).expect("task: reach|pick_place|push");
             }
+            "--phrase" => {
+                // 语言→具身最小桥：自然语言短语解析出任务（NLU→seed 组合
+                // 由调用方继续），例如 --phrase "pick up the cube"。
+                let v = it.next().expect("--phrase 需要一个值");
+                a.task =
+                    TaskKind::from_phrase(&v).unwrap_or_else(|| panic!("无法从短语解析任务：{v}"));
+            }
             "--episodes" => {
                 let v = it.next().expect("--episodes 需要一个值");
                 a.episodes = v.parse().expect("episodes: 数字");
@@ -254,7 +261,7 @@ struct RunResult {
     hashes: Vec<u64>,
 }
 
-fn collect(args: &Args) -> RunResult {
+fn collect(args: &Args) -> Result<RunResult, String> {
     let desc = ArmDescription::default();
     let mut env = TableTopEnv::new();
     env.task = args.task;
@@ -274,7 +281,7 @@ fn collect(args: &Args) -> RunResult {
             name: "top".into(),
             w: 168,
             h: 168,
-            fps: 30.0,
+            fps: (1.0 / DT).round(), // 与控制率同频（60Hz 双轨错位修复）
         });
     }
 
@@ -289,7 +296,8 @@ fn collect(args: &Args) -> RunResult {
     for ep in 0..args.episodes {
         let seed = args.seed0 + ep as u64;
         let mut obs = env.reset(seed);
-        ds.start_episode(env.spec().name);
+        // episode 语言标注 = 任务自然语言短语（SmolVLA/π0 语言条件）
+        ds.start_episode(env.task.phrase());
         let mut step = 0u64;
         let mut terminated = false;
         let mut reward_sum = 0.0f32;
@@ -298,10 +306,10 @@ fn collect(args: &Args) -> RunResult {
             let action = policy(&obs, &phases, step, &desc);
             // LeRobot row t = (state_t, action_t); the env's next obs
             // becomes the next row's state.
-            ds.push_step(&obs, &action);
+            ds.push_step(&obs, &action)?;
             #[cfg(feature = "cam")]
             for (_ft, png) in env.take_frames() {
-                ds.push_frame(png);
+                ds.push_frame(png)?;
             }
             let out = env.step(&action);
             obs = out.obs;
@@ -313,7 +321,7 @@ fn collect(args: &Args) -> RunResult {
         rows.push((seed, terminated, step, reward_sum));
         ds.finish_episode();
     }
-    RunResult { ds, rows, hashes }
+    Ok(RunResult { ds, rows, hashes })
 }
 
 fn main() {
@@ -336,8 +344,8 @@ fn main() {
     );
 
     // The determinism receipt: collect twice, demand bit equality.
-    let r1 = collect(&args);
-    let r2 = collect(&args);
+    let r1 = collect(&args).expect("采集失败");
+    let r2 = collect(&args).expect("采集失败");
     assert_eq!(
         r1.hashes, r2.hashes,
         "#66+#67: episode fingerprints must match"
@@ -359,14 +367,22 @@ fn main() {
         successes * 100 / args.episodes.max(1) as usize
     );
 
-    // Solvability gate: reach 与 pick_place 的基线必须过半（push 的接触
-    // 基线允许不稳，如实报告）。
+    // Solvability gate: ≥50% 是「任务可解」的硬闸（push 的接触基线允许
+    // 不稳，如实报告）；≥90% 的优秀线当前基线未达标（reach/pick ≈62-66%，
+    // IK 伺服打磨排期中）——打警告不拦流程。
     if matches!(args.task, TaskKind::Reach | TaskKind::PickPlace) {
         assert!(
             successes * 2 >= args.episodes as usize,
             "scripted baseline must solve at least half the seeds (got {successes}/{})",
             args.episodes
         );
+        let rate = successes as f64 / args.episodes.max(1) as f64;
+        if rate < 0.9 {
+            println!(
+                "  ⚠ 基线成功率 {:.0}% < 90% 优秀线（IK 伺服打磨待办，报告如实携带）",
+                rate * 100.0
+            );
+        }
     }
 
     let root = std::path::Path::new(&args.out).join("lerobot-v21");
