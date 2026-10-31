@@ -31,8 +31,18 @@ pub struct UrdfLink {
 #[derive(Debug, Clone)]
 pub enum UrdfGeom {
     Box([f32; 3]),
-    Cylinder { radius: f32, length: f32 },
-    Sphere { radius: f32 },
+    Cylinder {
+        radius: f32,
+        length: f32,
+    },
+    Sphere {
+        radius: f32,
+    },
+    /// `<mesh filename="package://...">` — URI recorded for L4 asset
+    /// pipeline (GLB/STL loading when the asset center lands).
+    Mesh {
+        uri: String,
+    },
 }
 
 /// One parsed joint.
@@ -166,8 +176,12 @@ impl UrdfReport {
                 radius: s.attribute("radius")?.parse().ok()?,
             });
         }
-        if geo.children().any(|c| c.has_tag_name("mesh")) {
-            return None; // mesh 记录在 skipped（由调用方统计），几何留空
+        if let Some(m) = geo.children().find(|c| c.has_tag_name("mesh")) {
+            // U2: mesh URI 记录（L4 资产管线上岗时按 URI 加载 GLB/STL）
+            let uri = m.attribute("filename").unwrap_or_default().to_string();
+            if !uri.is_empty() {
+                return Some(UrdfGeom::Mesh { uri });
+            }
         }
         None
     }
@@ -254,7 +268,7 @@ impl UrdfReport {
             let Some(j) = self.joints.iter().find(|j| j.parent == link) else {
                 break;
             };
-            if j.kind == "revolute" || j.kind == "continuous" {
+            if j.kind == "revolute" || j.kind == "continuous" || j.kind == "prismatic" {
                 actuated += 1;
                 // 轴校验（拒绝式——sim-engine review：非常规轴静默错映）
                 let a = j.axis;
@@ -271,7 +285,7 @@ impl UrdfReport {
                         j.name, a[0], a[1], a[2]
                     ));
                 }
-            } else if j.kind == "prismatic" || j.kind == "floating" {
+            } else if j.kind == "floating" {
                 issues.push(format!(
                     "关节 {} 类型 {}（OriEra 仅支持 revolute/continuous/fixed——prismatic U2 后期）",
                     j.name, j.kind
