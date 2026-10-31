@@ -83,4 +83,6 @@ required-features = ["rigid"]
 [[example]]
 name = "embodied_sim_collect"
 path = "examples/embodied_sim_collect.rs"
-required-features = ["rigid3d"]
+# spec+urdf 必列：example 引用门控模块 oriera_agent::{spec,urdf}；
+# 缺列时凡开 rigid3d 的腿构建 examples 即 E0433（PR #165 三红腿根因）。
+required-features = ["rigid3d", "spec", "urdf"]

@@ -287,18 +287,20 @@ struct Stage {
 /// float ⇒ different hash. This is the 3D episode receipt — the
 /// ECS-wide `state_hash` stays 2D on purpose (PLAN-embodied-sim 2.1 #2:
 /// don't freeze a global contract onto one subsystem's columns).
+fn mix(mut h: u64, x: u64) -> u64 {
+    h ^= x;
+    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    h ^= h >> 29;
+    h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    h ^= h >> 32;
+    h
+}
+
+fn bits(h: u64, v: f32) -> u64 {
+    mix(h, v.to_bits() as u64)
+}
+
 pub fn sim_fingerprint(world: &World) -> u64 {
-    fn mix(mut h: u64, x: u64) -> u64 {
-        h ^= x;
-        h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
-        h ^= h >> 29;
-        h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
-        h ^= h >> 32;
-        h
-    }
-    fn bits(h: u64, v: f32) -> u64 {
-        mix(h, v.to_bits() as u64)
-    }
     let mut h = mix(0x0000_6f72_6965_7261, 0x0051_4D03);
     let ekey = |e: Entity| {
         let k = key(e);
@@ -319,6 +321,13 @@ pub fn sim_fingerprint(world: &World) -> u64 {
         for v in p.pos.into_iter().chain(p.rot) {
             h = bits(h, v);
         }
+    }
+    // Prop physics overrides are identity too (density/friction change
+    // trajectories even at identical states).
+    for (e, pp) in world.query::<PropPhys>() {
+        h = mix(h, ((key(e).0 as u64) << 32) | key(e).1 as u64);
+        h = bits(h, pp.density);
+        h = bits(h, pp.friction);
     }
     // Solver knobs are part of the experiment identity (review: a
     // tuned solver must show in the receipt).
@@ -705,6 +714,20 @@ impl MultibodySystem {
         };
     }
 
+    /// Complete experiment fingerprint: sim state + solver knobs +
+    /// prop physics + arm identity (kp/kd/mass_scale). Two runs with
+    /// different servo params that happen to converge to identical
+    /// states are NOT the same experiment (sim-engine review: identity
+    /// completeness).
+    pub fn fingerprint(&self, world: &World) -> u64 {
+        let d = &self.desc;
+        let h = sim_fingerprint(world);
+        mix(
+            mix(mix(h, d.kp.to_bits() as u64), d.kd.to_bits() as u64),
+            d.mass_scale.to_bits() as u64,
+        )
+    }
+
     /// Contact-inspection probe (temporary): plate world positions and
     /// per-prop contact-pair counts.
     pub fn debug_contact_state(&self) -> (Vec<[f32; 3]>, Vec<usize>) {
@@ -835,11 +858,14 @@ impl System<World> for MultibodySystem {
         // 3.5 Drive gripper plates (kinematic) for THIS tick's step.
         self.drive_fingers(gripper);
 
-        // 4. Step the pipeline — SUBSTEPS internal physics steps per
-        // engine tick (decimation; 3D worlds are y-up).
+        // 4. Step the pipeline — internal physics substeps per engine
+        // tick (decimation; 3D worlds are y-up). The substep count is a
+        // live PhysicsParams knob (the dead-constant version made the
+        // receipt lie — sim-engine review).
         let gravity = Vec3::new(0.0, -g, 0.0);
+        let substeps = self.physics.substeps.unwrap_or(SUBSTEPS).max(1);
         let mut params = IntegrationParameters {
-            dt: dt / SUBSTEPS as f32,
+            dt: dt / substeps as f32,
             ..IntegrationParameters::default()
         };
         let p = self.physics;
@@ -852,7 +878,7 @@ impl System<World> for MultibodySystem {
         if let Some(v) = p.warmstart_coefficient {
             params.warmstart_coefficient = v;
         }
-        for _ in 0..SUBSTEPS {
+        for _ in 0..substeps {
             self.pipeline.step(
                 gravity,
                 &params,

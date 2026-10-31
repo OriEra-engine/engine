@@ -28,8 +28,8 @@ use self::embodied_env_defaults::*;
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Entity, World};
 use oriera_subsys::{
-    sim_fingerprint, ArmDescription, Gravity, JointTargets, JointTelemetry, MultibodySystem,
-    PhysicsParams, Pose3, PropPhys, Scene3D, SimObject, TimeScale,
+    ArmDescription, Gravity, JointTargets, JointTelemetry, MultibodySystem, PhysicsParams, Pose3,
+    PropPhys, Scene3D, SimObject, TimeScale,
 };
 
 #[cfg(feature = "cam")]
@@ -305,9 +305,14 @@ impl TableTopEnv {
         obs.push(dist);
         // Observation corruption (IsaacLab `enable_corruption`): uniform
         // additive noise on the float channels, drawn from the episode
-        // rng — same seed ⇒ same noise sequence. Flags stay clean.
+        // rng — same seed ⇒ same noise sequence. idx18 (holding flag)
+        // stays clean by name, not by count (take(20) used to corrupt
+        // it — caught in the 20-role review).
         if self.obs_noise > 0.0 {
-            for v in obs.iter_mut().take(20) {
+            for (i, v) in obs.iter_mut().enumerate() {
+                if i == 18 {
+                    continue;
+                }
                 *v += self.rng.next_f32(-self.obs_noise, self.obs_noise);
             }
         }
@@ -408,8 +413,16 @@ impl EmbodiedEnv for TableTopEnv {
             dr_note.push_str(&format!(" mass_x{g:.3}"));
         }
         self.desc_working = desc;
+        // Receipt v2: obs-noise profile appended so downstream consumers
+        // can distinguish channel semantics (v2 = noise on all float
+        // channels EXCEPT idx18; v1 datasets noised idx18 by accident).
+        let noise_tag = if self.obs_noise > 0.0 {
+            format!(" obsnoise=v2/±{}", self.obs_noise)
+        } else {
+            String::new()
+        };
         self.rand_note = format!(
-            "cube_density={density:.0}kg/m3 cube_friction={friction:.2}{dr_note} {}",
+            "cube_density={density:.0}kg/m3 cube_friction={friction:.2}{dr_note}{noise_tag} {}",
             if self.randomize {
                 "profile=default"
             } else {
@@ -474,6 +487,17 @@ impl EmbodiedEnv for TableTopEnv {
     }
 
     fn step(&mut self, action: &[f32]) -> StepOutcome {
+        // NaN/Inf 拒绝（np.clip(NaN)=NaN 只靠包装层是假的——Rust 侧是
+        // 最后防线；NN 策略发散时输出非有限值是真实场景）。
+        if action.iter().any(|a| !a.is_finite()) {
+            return StepOutcome {
+                obs: self.observe(),
+                reward: 0.0,
+                terminated: false,
+                truncated: false,
+                success: false,
+            };
+        }
         let mut angles: Vec<f32> = self.desc.home.to_vec();
         for (i, a) in angles.iter_mut().enumerate() {
             *a = action.get(i).copied().unwrap_or(*a);
@@ -573,7 +597,8 @@ impl EmbodiedEnv for TableTopEnv {
     }
 
     fn fingerprint(&self) -> u64 {
-        sim_fingerprint(&self.world)
+        // 完整实验身份：sim 状态 + 臂参数（sim-engine review 补全）
+        self.sys.fingerprint(&self.world)
     }
 }
 

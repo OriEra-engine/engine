@@ -28,7 +28,13 @@ class OrieraPickPlaceEnv(gym.Env):
 
     def __init__(self, task: str = "pick_place", kp_jitter: float = 0.0,
                  mass_jitter: float = 0.0, obs_noise: float = 0.0):
-        target = Path(__file__).resolve().parent.parent / "target/debug"
+        # release 优先（RL 实测 8956 vs debug 118 steps/s——75×差距），
+        # debug 仅作本地调试兜底。
+        base = Path(__file__).resolve().parent.parent / "target"
+        for profile in ("release", "debug"):
+            target = base / profile
+            if (target / "oriera_sim.pyd").exists() or (target / "oriera_sim.so").exists():
+                break
         if str(target) not in sys.path:
             sys.path.insert(0, str(target))
         import oriera_sim  # the cdylib extension module
@@ -36,14 +42,20 @@ class OrieraPickPlaceEnv(gym.Env):
         task = TASK_ALIASES.get(task, task)  # "pick" → "pick_place"
         self._env = oriera_sim.PickPlaceEnv(
             task, 0, kp_jitter, mass_jitter, obs_noise)
+        self._seed_series = 1000  # reset(seed=None) 时的确定性序列
         self.observation_space = gym.spaces.Box(
             -np.inf, np.inf, shape=(21,), dtype=np.float32)
         self.action_space = gym.spaces.Box(
             -1.0, 1.0, shape=(5,), dtype=np.float32)
 
     def reset(self, *, seed: int | None = None, options=None):
+        # Gymnasium 惯例：seed=None 延续序列（不复位同一集）；显式 seed
+        # 完全决定该集（指纹回执可复现）。
         super().reset(seed=seed)
-        obs = self._env.reset(seed if seed is not None else 1000)
+        if seed is None:
+            seed = self._seed_series
+        self._seed_series = seed + 1
+        obs = self._env.reset(seed)
         return np.asarray(obs, dtype=np.float32), {
             "task": self._env.task_phrase,
             "randomization": self._env.randomization,

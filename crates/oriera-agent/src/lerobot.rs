@@ -201,8 +201,16 @@ impl LeRobotV21 {
                 )
             })
             .unwrap_or_default();
-        let total_videos = self.camera.as_ref().map_or(0, |_| self.episodes.len());
-        let total_videos = total_videos.to_string();
+        let total_videos = self
+            .camera
+            .as_ref()
+            .map_or(0, |_| {
+                self.episodes
+                    .iter()
+                    .filter(|e| !e.frames.is_empty())
+                    .count()
+            })
+            .to_string();
         format!(
             concat!(
                 "{{\"codebase_version\":\"v2.1\",\"robot_type\":\"{robot}\",\"license\":\"apache-2.0\",",
@@ -258,45 +266,57 @@ impl LeRobotV21 {
     }
 
     /// Write the whole tree under `root`. Returns the number of
-    /// episodes written.
+    /// episodes written. Every file is content-hashed into
+    /// `MANIFEST.jsonl` — written LAST via tmp+rename as the atomic
+    /// commit point: a reader verifies the manifest before trusting
+    /// the tree, and a crashed run leaves no valid commit (deterministic
+    /// re-export is byte-identical, so re-runs are naturally idempotent).
     pub fn write_dir(&self, root: &Path) -> std::io::Result<u32> {
         let meta = root.join("meta");
         std::fs::create_dir_all(root.join("data/chunk-000"))?;
         std::fs::create_dir_all(&meta)?;
-        let mut info = std::fs::File::create(meta.join("info.json"))?;
-        info.write_all(self.info_json().as_bytes())?;
-        let mut stats = std::fs::File::create(meta.join("stats.json"))?;
-        stats.write_all(self.stats_json().as_bytes())?;
+        let mut files: Vec<(String, u64)> = Vec::new();
+        let mut put = |rel: &str, content: &[u8]| -> std::io::Result<()> {
+            std::fs::write(root.join(rel), content)?;
+            files.push((rel.to_string(), content_hash(content)));
+            Ok(())
+        };
+        put("meta/info.json", self.info_json().as_bytes())?;
+        put("meta/stats.json", self.stats_json().as_bytes())?;
 
-        let mut tasks = std::fs::File::create(meta.join("tasks.jsonl"))?;
+        let mut tasks = String::new();
         for (i, t) in self.tasks.iter().enumerate() {
-            writeln!(
-                tasks,
-                "{{\"task_index\":{},\"task\":\"{}\"}}",
+            tasks.push_str(&format!(
+                "{{\"task_index\":{},\"task\":\"{}\"}}\n",
                 i,
                 json_escape(t)
-            )?;
+            ));
         }
-        let mut episodes = std::fs::File::create(meta.join("episodes.jsonl"))?;
+        put("meta/tasks.jsonl", tasks.as_bytes())?;
+
+        let mut episodes = String::new();
         for (i, ep) in self.episodes.iter().enumerate() {
-            writeln!(
-                episodes,
-                "{{\"episode_index\":{},\"tasks\":[\"{}\"],\"length\":{}}}",
+            episodes.push_str(&format!(
+                "{{\"episode_index\":{},\"tasks\":[\"{}\"],\"length\":{}}}\n",
                 i,
                 json_escape(&self.tasks[ep.task_index as usize]),
                 ep.rows.len()
-            )?;
+            ));
         }
+        put("meta/episodes.jsonl", episodes.as_bytes())?;
+
         // Rows: one JSONL per episode, the converter's input.
         let mut global = 0u64;
         for (i, ep) in self.episodes.iter().enumerate() {
-            let path = root.join(format!("data/chunk-000/episode_{i:06}.jsonl"));
-            let mut f = std::fs::File::create(path)?;
+            let mut body = String::new();
             for (ri, _row) in ep.rows.iter().enumerate() {
-                let line = self.row_jsonl(i as u32, ep, ri, global);
-                f.write_all(line.as_bytes())?;
+                body.push_str(&self.row_jsonl(i as u32, ep, ri, global));
                 global += 1;
             }
+            put(
+                &format!("data/chunk-000/episode_{i:06}.jsonl"),
+                body.as_bytes(),
+            )?;
         }
         // Camera track: PNG frame dirs — the converter assembles mp4
         // (v2.1 video features live outside the parquet tables).
@@ -311,11 +331,32 @@ impl LeRobotV21 {
                 ));
                 std::fs::create_dir_all(&dir)?;
                 for (k, png) in ep.frames.iter().enumerate() {
-                    std::fs::write(dir.join(format!("frame_{k:06}.png")), png)?;
+                    let rel = format!(
+                        "videos/chunk-000/observation.images.{}/episode_{i:06}/frame_{k:06}.png",
+                        cam.name
+                    );
+                    put(&rel, png)?;
                 }
             }
         }
         self.write_modality(root)?;
+        // write_modality writes its own file — hash it too (re-read).
+        let modality_rel = "meta/modality.json";
+        let modality_bytes = std::fs::read(root.join(modality_rel))?;
+        files.push((modality_rel.to_string(), content_hash(&modality_bytes)));
+
+        // Atomic commit: MANIFEST last, via tmp+rename (the only
+        // multi-word op; everything else is already durable).
+        let mut manifest = String::new();
+        for (rel, hash) in &files {
+            manifest.push_str(&format!(
+                "{{\"file\":\"{rel}\",\"hash\":\"{hash:016x}\"}}\n"
+            ));
+        }
+        let manifest_path = root.join("MANIFEST.jsonl");
+        let tmp = root.join("MANIFEST.jsonl.tmp");
+        std::fs::write(&tmp, manifest.as_bytes())?;
+        std::fs::rename(&tmp, &manifest_path)?;
         Ok(self.episodes.len() as u32)
     }
 
@@ -406,8 +447,44 @@ impl LeRobotV21 {
     }
 }
 
+/// Content hash for MANIFEST (splitmix64 byte-fold - corruption
+/// detection, not cryptographic; swap to sha2 for public distribution).
+/// Self-contained: lerobot.rs is a vendored single-file module (studio
+/// single-source copy) and must not couple to oriera-subsys internals.
+fn mix64(mut h: u64, x: u64) -> u64 {
+    h ^= x;
+    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    h ^= h >> 29;
+    h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    h ^= h >> 32;
+    h
+}
+
+fn content_hash(bytes: &[u8]) -> u64 {
+    let mut h = 0x0000_6f72_6965_7261;
+    for chunk in bytes.chunks(8) {
+        let mut buf = [0u8; 8];
+        buf[..chunk.len()].copy_from_slice(chunk);
+        h = mix64(h, u64::from_le_bytes(buf));
+    }
+    mix64(h, bytes.len() as u64)
+}
+
 fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    // 控制字符全转义（安全深检：task 含 \n 可产生非法 JSONL 毒化下游）。
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn json_string_array(items: &[String]) -> String {

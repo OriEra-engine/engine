@@ -578,8 +578,16 @@ export async function boot(viewport) {
     }
   });
 
-  function post(msg) { try { window.parent.postMessage({ source: "oriera-sim", ...msg }, "*"); } catch {} }
+  function post(msg) {
+    try {
+      // targetOrigin 收紧：仅父窗口同源（独立打开时为自身 origin）。
+      const parentOrigin = window.parent !== window ? new URL(document.referrer || location.href).origin : location.origin;
+      window.parent.postMessage({ source: "oriera-sim", ...msg }, parentOrigin);
+    } catch {}
+  }
   addEventListener("message", (e) => {
+    // 信任边界（安全深检）：仅接受父窗口/自身的控制消息。
+    if (e.source !== window.parent && e.source !== window) return;
     const m = e.data;
     if (!m || m.source !== "oriera-sim" || !m.cmd) return;
     if (m.cmd === "reset") envReset(m.seed ?? ((Math.random() * 1e9) | 0));

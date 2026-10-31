@@ -44,13 +44,25 @@ def convert(root: Path) -> None:
         for key, feat in table_feats.items():
             dtype = DTYPES[feat["dtype"]]
             shape = feat.get("shape", [1])
-            if len(shape) > 1:  # vector feature → fixed-size list
+            # P0 修复（数据工程师深检）：判据是 shape[0]（元素数）而非
+            # len(shape)（维数）——[21] 一维矢量曾被误判为标量，每行
+            # 只留第 0 维，20/21 维训练数据静默丢失。
+            if shape[0] > 1:  # vector feature → fixed-size list
                 values = [row[key] for row in rows]
                 columns[key] = pa.array(values, pa.list_(dtype, shape[0]))
             else:
                 values = [row[key][0] if isinstance(row[key], list) else row[key] for row in rows]
                 columns[key] = pa.array(values, dtype)
         table = pa.table(columns)
+        # 写后断言：parquet 字段结构必须与 info.json 声明一致
+        for key, feat in table_feats.items():
+            f = table.schema.field(key)
+            declared = feat.get("shape", [1])
+            if declared[0] > 1:
+                is_vec = pa.types.is_list(f.type) or pa.types.is_fixed_size_list(f.type)
+                actual = f.type.list_size if is_vec else -1
+                assert actual == declared[0], (
+                    f"{src.name} 字段 {key}: parquet list_size {actual} != 声明 {declared[0]}")
         dst = src.with_suffix(".parquet")
         pq.write_table(table, dst)
         # 非破坏性：源 JSONL 归档到 raw/（调试与审计留底），不再删除

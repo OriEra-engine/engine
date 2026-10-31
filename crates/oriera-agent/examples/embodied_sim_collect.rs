@@ -263,6 +263,8 @@ struct RunResult {
     /// (seed, success, steps, reward_sum) per episode.
     rows: Vec<(u64, bool, u64, f32)>,
     hashes: Vec<u64>,
+    /// Per-episode randomization receipts (draws differ per episode).
+    rand_receipts: Vec<String>,
 }
 
 fn collect(args: &Args) -> Result<RunResult, String> {
@@ -297,10 +299,16 @@ fn collect(args: &Args) -> Result<RunResult, String> {
 
     let mut rows = Vec::new();
     let mut hashes = Vec::new();
-    let mut ep: i32 = -1;
-    while ((ep + 1) as u32) < args.episodes {
-        ep += 1;
-        let seed = args.seed0 + ep as u64;
+    let mut rand_receipts: Vec<String> = Vec::new();
+    // 重抽语义：退化集不占 episodes 预算（Rust 架构师 review——原实现
+    // 是"少采"不是"重抽"，成功率分母失真）。displaced seed band 保证
+    // 同种子不再撞同一 in-zone 生成。
+    let mut kept: u32 = 0;
+    let mut redraws: u64 = 0;
+    let mut draws: u64 = 0;
+    while kept < args.episodes {
+        draws += 1;
+        let seed = args.seed0 + (draws - 1) + 65536 * redraws;
         let mut obs = env.reset(seed);
         // episode 语言标注 = 任务自然语言短语（SmolVLA/π0 语言条件）
         ds.start_episode(env.task.phrase());
@@ -329,16 +337,19 @@ fn collect(args: &Args) -> Result<RunResult, String> {
         // (round-2 finding) — discard and re-draw the seed.
         if step < 5 {
             ds.drop_episode();
-            println!("  · 集 {ep}（seed {seed}）生成即入区，已剔除重抽（新种子带）");
+            redraws += 1;
+            println!("  · 抽签 {draws}（seed {seed}）生成即入区，已剔除重抽");
             continue;
         }
+        kept += 1;
         hashes.push(env.fingerprint());
+        rand_receipts.push(env.randomization_receipt().to_string());
         rows.push((seed, terminated, step, reward_sum));
         if std::env::var("ORIERA_SIM_DEBUG").is_ok() {
             let c = env.cube_pos();
             let g = env.goal();
             eprintln!(
-                "ep {ep}: ok={terminated} hold={} cube=({:.3},{:.3},{:.3}) goal=({:.3},{:.3})",
+                "抽签 {draws}: ok={terminated} hold={} cube=({:.3},{:.3},{:.3}) goal=({:.3},{:.3})",
                 env.holding(),
                 c[0],
                 c[1],
@@ -349,7 +360,12 @@ fn collect(args: &Args) -> Result<RunResult, String> {
         }
         ds.finish_episode();
     }
-    Ok(RunResult { ds, rows, hashes })
+    Ok(RunResult {
+        ds,
+        rows,
+        hashes,
+        rand_receipts,
+    })
 }
 
 /// U1: URDF → SceneSpec 落盘（不采集）——一次导入 = 一份实验。
@@ -453,14 +469,16 @@ fn main() {
     let per_ep: Vec<String> = r1
         .rows
         .iter()
-        .map(|(seed, ok, steps, ret)| {
+        .enumerate()
+        .map(|(i, (seed, ok, steps, ret))| {
+            let rand = r1.rand_receipts[i].replace('"', "'");
             format!(
-                "{{\"seed\":{seed},\"success\":{ok},\"steps\":{steps},\"reward_sum\":{ret:.3}}}"
+                "{{\"seed\":{seed},\"success\":{ok},\"steps\":{steps},\"reward_sum\":{ret:.3},\"rand\":\"{rand}\"}}"
             )
         })
         .collect();
     let report = format!(
-        "{{\"task\":\"{}\",\"engine\":\"oriera-engine/{}\",\"backend\":\"{}\",\"dt\":{},\"episodes\":{},\"successes\":{},\"success_rate\":{:.4},\"wilson95\":[{:.4},{:.4}],\"randomization\":\"cube_density 240-640 kg/m3, cube_friction 0.5-1.1, placements\",\"runs\":[{}]}}\n",
+        "{{\"task\":\"{}\",\"engine\":\"oriera-engine/{}\",\"backend\":\"{}\",\"dt\":{},\"episodes\":{},\"successes\":{},\"success_rate\":{:.4},\"wilson95\":[{:.4},{:.4}],\"randomization\":\"{}\",\"runs\":[{}]}}\n",
         args.task.phrase(),
         env!("CARGO_PKG_VERSION"),
         feat,
@@ -470,6 +488,7 @@ fn main() {
         successes as f64 / args.episodes.max(1) as f64,
         lo,
         hi,
+        r1.rand_receipts.first().map(|s| s.replace('"', "'")).unwrap_or_default(),
         per_ep.join(",")
     );
     let report_path = std::path::Path::new(&args.out).join("eval_report.json");
