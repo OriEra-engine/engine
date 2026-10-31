@@ -28,6 +28,7 @@ serde = { workspace = true, features = ["derive"] }
 # `rigid`/`rigid3d`.
 oriera-subsys = { workspace = true }
 pyo3 = { workspace = true, optional = true }
+roxmltree = { workspace = true, optional = true }
 # MemoryStore ↔ JSON (feature `json`): the persistence boundary for
 # cross-session companion memory. Optional like genai's `providers`
 # feature — wasm budget stays minimal unless the shell asks for it.
@@ -47,6 +48,8 @@ cam = ["oriera-subsys/cam"]
 python = ["dep:pyo3", "rigid3d", "cam"]
 # SceneSpec（实验即文件）：serde 化场景描述 + JSON 加载。
 spec = ["rigid3d", "oriera-subsys/serde", "json"]
+# URDF 导入：机器人描述文件 → 关节链 → ArmDescription（M1 设计稿落地）。
+urdf = ["dep:roxmltree", "rigid3d"]
 
 [dev-dependencies]
 oriera-render = { path = "../oriera-render" }

@@ -42,6 +42,8 @@ pub mod spec;
 pub mod story;
 #[cfg(feature = "json")]
 pub mod tools;
+#[cfg(feature = "urdf")]
+pub mod urdf;
 
 pub use cognition::{
     CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WakeEvent, WorldStory,

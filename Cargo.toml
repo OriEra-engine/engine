@@ -72,6 +72,9 @@ png = "0.17"
 # #1): PyO3 extension module exposing TableTopEnv to SB3/lerobot
 # training loops. Optional — default builds never compile it.
 pyo3 = "0.26"
+# URDF import (feature `urdf`, PLAN-embodied-sim M1): pure-Rust XML
+# parsing for robot description files (Apache-2.0/MIT, zero sys deps).
+roxmltree = "0.20"
 criterion = "0.5"
 
 [profile.release]
