@@ -49,10 +49,33 @@ cargo run -p oriera-agent --example embodied_collect --features rigid
 ```
 
 good-first-issue 候选：
-1. JSONL→parquet 转换器（Python + pyarrow，LeRobot v3 直读）
-2. MuJoCo 后端（feature `mujoco`，C 工具链方案评审先行）
+1. ~~JSONL→parquet 转换器~~ ✅ 3D 线已带 `scripts/jsonl_to_lerobot_v21.py`（pyarrow，v2.1 直读）
+2. MuJoCo 后端（feature `mujoco`，C 工具链方案评审先行；wasm 参照面板先行）
 3. 传感器观察扩展（碰撞事件/邻域扫描进 observation）
-4. 视频轨（L5 帧导出→MP4，对齐 v3 的 video 列）
+4. 视频轨（L5 帧导出→MP4，对齐 v2.1 的 video 列）
+5. 3D 线：~~摩擦/接触抓取~~ ✅ 已落地（2026-10-30 四轮攻坚：双指运动学夹板×摩擦承载，探针最小复现定位——机制成立、集成难点在接近几何，夹板须悬垂于工具中心点之外）、MJCF 子集导入、腕滚转第 5 轴
+
+## 6. 3D 具身训练台（PLAN-embodied-sim，2026-10-29）
+
+> 一句话：L6 新增 `rigid3d` 后端（rapier3d multibody 关节臂）× L9
+> `embodied_env`（Gymnasium 签名镜像 + PickPlace3D）× `lerobot`
+> 模块（**LeRobotDataset v2.1 全文件树导出**）——导出物直连
+> lerobot-train / openpi / GR00T 三条训练管线。
+
+```bash
+cargo test -p oriera-subsys --features rigid3d        # 14 测试（含双跑逐位一致）
+cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d
+# → out/embodied-sim/lerobot-v21/（meta 全套 + 每集 sim_fingerprint 回执）
+python scripts/jsonl_to_lerobot_v21.py out/embodied-sim/lerobot-v21   # → parquet，lerobot 直读
+```
+
+选型结论（详见 growth/PLAN-embodied-sim.md）：**rapier3d multibody
+为主**（纯 Rust/Apache-2.0/wasm32 一等公民/与 rigid2d 同契约）；
+MuJoCo 只作 M1 wasm 参照面板；**Jolt 撤出路线**（无 reduced-coordinate
+articulation，Rust 绑定青年期）。马达三坑（都踩过）：`motor_axes`
+位掩码默认空（不启用=马达死的）、`AccelerationBased` 增益单位是角
+加速度（对公斤级臂太软，须 `ForceBased`）、角度读出须用
+`local_to_parent`（与马达同约定，体姿相除的几何读出符号反相）。
 
 ## 5. 定位声明
 

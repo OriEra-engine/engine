@@ -60,6 +60,21 @@ ureq = { version = "2.10", default-features = false, features = ["tls"] }
 # L6 rigid backend (#80): pure Rust, Apache-2.0, 2026 roadmap targets
 # robotics accuracy. Feature-gated per crate (`rigid`).
 rapier2d = "0.36"
+# L6 rigid3d backend (PLAN-embodied-sim): same family as rapier2d —
+# multibody revolute chains for articulated arms, wasm32 first-class,
+# same-build deterministic. Same rules: no C toolchain, optional dep.
+rapier3d = "0.36"
+# L6 embodied camera (feature `cam`, PLAN-embodied-sim P0): pure-Rust PNG
+# encoder for the deterministic top-down RGB camera track. Tiny dep tree,
+# Apache-2.0/MIT, feature-gated — default builds stay dependency-free.
+png = "0.17"
+# L9→Python gymnasium bridge (feature `python`, PLAN-embodied-sim M1
+# #1): PyO3 extension module exposing TableTopEnv to SB3/lerobot
+# training loops. Optional — default builds never compile it.
+pyo3 = "0.26"
+# URDF import (feature `urdf`, PLAN-embodied-sim M1): pure-Rust XML
+# parsing for robot description files (Apache-2.0/MIT, zero sys deps).
+roxmltree = "0.20"
 criterion = "0.5"
 
 [profile.release]

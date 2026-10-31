@@ -27,13 +27,23 @@
 
 pub mod cognition;
 pub mod embodied;
+#[cfg(feature = "rigid3d")]
+pub mod embodied_env;
 pub mod genai;
 pub mod goal;
+#[cfg(feature = "rigid3d")]
+pub mod lerobot;
 pub mod memory;
 pub mod prefab;
+#[cfg(feature = "python")]
+pub mod python;
+#[cfg(feature = "spec")]
+pub mod spec;
 pub mod story;
 #[cfg(feature = "json")]
 pub mod tools;
+#[cfg(feature = "urdf")]
+pub mod urdf;
 
 pub use cognition::{
     CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WakeEvent, WorldStory,

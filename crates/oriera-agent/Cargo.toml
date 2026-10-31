@@ -9,6 +9,9 @@ description = "OriEra L9 agent layer: cognition systems, long-term memory, AI di
 [lib]
 name = "oriera_agent"
 path = "src/lib.rs"
+# The `python` feature builds the same lib as the `oriera_sim`
+# extension module; without it the cdylib stays empty (harmless).
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 oriera-common.workspace = true
@@ -17,6 +20,15 @@ oriera-ecs.workspace = true
 oriera-genai.workspace = true
 oriera-infer.workspace = true
 serde = { workspace = true, features = ["derive"] }
+# L6 physics (PLAN-embodied-sim): the embodied environment and
+# dataset-exporter modules live here (L9) and drive L6 systems. The dep
+# is NOT optional because studio_e2e (CI, featureless) uses the base
+# subsys — which itself pulls zero external deps until a backend
+# feature is on; examples/tests opt into backends through
+# `rigid`/`rigid3d`.
+oriera-subsys = { workspace = true }
+pyo3 = { workspace = true, optional = true }
+roxmltree = { workspace = true, optional = true }
 # MemoryStore ↔ JSON (feature `json`): the persistence boundary for
 # cross-session companion memory. Optional like genai's `providers`
 # feature — wasm budget stays minimal unless the shell asks for it.
@@ -25,15 +37,24 @@ serde_json = { workspace = true, optional = true }
 [features]
 default = []
 json = ["dep:serde_json"]
-# Passthrough to the dev-depended L6 crate: examples/tests opt into the
-# rapier2d backend through THIS feature (required-features).
+# Passthrough to the L6 crate: examples/tests opt into the rapier2d
+# backend through THIS feature (required-features).
 rigid = ["oriera-subsys/rigid"]
+# 3D articulated backend + the embodied environment/exporter modules.
+rigid3d = ["oriera-subsys/rigid3d"]
+# Top-down camera track through the env (PNG frames).
+cam = ["oriera-subsys/cam"]
+# PyO3 gymnasium bridge (cdylib `oriera_sim`): online training loops.
+python = ["dep:pyo3", "rigid3d", "cam"]
+# SceneSpec（实验即文件）：serde 化场景描述 + JSON 加载。
+spec = ["rigid3d", "oriera-subsys/serde", "json"]
+# URDF 导入：机器人描述文件 → 关节链 → ArmDescription（M1 设计稿落地）。
+urdf = ["dep:roxmltree", "rigid3d"]
 
 [dev-dependencies]
 oriera-render = { path = "../oriera-render" }
 # golden fixture tests (#98) read contracts/golden/*.json on every test leg
 serde_json = { workspace = true }
-oriera-subsys = { path = "../oriera-subsys" }
 
 [[example]]
 name = "tool_loop"
@@ -56,3 +77,10 @@ name = "embodied_collect"
 path = "examples/embodied_collect.rs"
 required-features = ["rigid"]
 
+# PLAN-embodied-sim: the 3D pick-and-place collection harness —
+# IK-scripted baseline policy × PickPlace3D × LeRobot v2.1 export,
+# double-run bit-equality asserted.
+[[example]]
+name = "embodied_sim_collect"
+path = "examples/embodied_sim_collect.rs"
+required-features = ["rigid3d"]
