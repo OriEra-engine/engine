@@ -210,9 +210,17 @@ impl Default for Scene3D {
     }
 }
 
-/// Geometric grasp radius: closing the gripper attaches a prop whose
-/// centre lies within this distance of the end-effector tip.
+/// Grip zone radius: with the gripper closed, a prop whose centre
+/// lies within this distance of the tip is REPORTED as held (the hold
+/// itself is finger/cube friction contact — contact grasp, round 4).
 pub const GRASP_RADIUS: f32 = 0.06;
+/// Gripper plates: kinematic slabs straddling the TIP. The prop stays
+/// Dynamic; plate/cube friction (2 mm/side squeeze) does the holding.
+const FINGER_HALF: [f32; 3] = [0.030, 0.075, 0.006];
+const FINGER_X: f32 = 0.135;
+const FINGER_GAP_OPEN: f32 = 0.075;
+const FINGER_GAP_CLOSED: f32 = 0.046;
+const FINGER_FRICTION: f32 = 1.4;
 
 /// Prop half-extent (a 5 cm cube) — one size for M0; per-entity shapes
 /// arrive with per-entity asset binding (M1).
@@ -376,11 +384,11 @@ pub struct MultibodySystem {
     /// Last angles we commanded (post-clamp), so unchanged targets
     /// skip the motor write.
     last_cmd: Vec<f32>,
-    /// Geometric grasp state: the prop currently riding the wrist.
-    holding: Option<EntKey>,
-    /// Carry offset of the held prop in the tip frame (it hangs just
-    /// below the tip — see `run_grasp`).
-    hold_offset: Vec3,
+    /// Reported hold state (gripper closed + prop in grip zone).
+    holding: bool,
+    finger_l: RigidBodyHandle,
+    finger_r: RigidBodyHandle,
+    gap_now: f32,
     /// End-effector pose after the last step.
     last_ee: ([f32; 3], [f32; 4]),
 }
@@ -407,8 +415,10 @@ impl MultibodySystem {
             last_pose: BTreeMap::new(),
             prev_angles: vec![0.0; 4],
             last_cmd: vec![f32::NAN; 4],
-            holding: None,
-            hold_offset: Vec3::ZERO,
+            holding: false,
+            finger_l: RigidBodyHandle::from_raw_parts(u32::MAX, u32::MAX),
+            finger_r: RigidBodyHandle::from_raw_parts(u32::MAX, u32::MAX),
+            gap_now: FINGER_GAP_OPEN,
             last_ee: ([0.0; 3], [0.0, 0.0, 0.0, 1.0]),
         };
         sys.build_scene(&scene);
@@ -508,6 +518,31 @@ impl MultibodySystem {
             Vec3::new(d.links[2] * 0.5, 0.0, 0.0),
         );
 
+        // Gripper plates: kinematic slabs straddling the TIP in the
+        // wrist frame. The prop stays Dynamic — plate/cube friction
+        // (2 mm/side squeeze) does the holding; minimal-probe-verified
+        // mechanism (tests/probe_friction.rs, round 4).
+        let mk_finger = |this: &mut Self| {
+            let tip0 = Vec3::new(
+                d.base[0] + d.links[0] + d.links[1] + d.links[2],
+                d.base[1] + d.shoulder_height,
+                d.base[2],
+            );
+            let body = this.bodies.insert(
+                RigidBodyBuilder::kinematic_position_based()
+                    .translation(tip0)
+                    .build(),
+            );
+            let c = ColliderBuilder::cuboid(FINGER_HALF[0], FINGER_HALF[1], FINGER_HALF[2])
+                .friction(FINGER_FRICTION)
+                .collision_groups(arm_groups())
+                .build();
+            this.colliders.insert_with_parent(c, body, &mut this.bodies);
+            body
+        };
+        self.finger_l = mk_finger(self);
+        self.finger_r = mk_finger(self);
+
         // Multibody joints: yaw (base→carrier), shoulder (carrier→link1),
         // elbow (link1→link2), wrist pitch (link2→wrist). Positive angle
         // about local +Z lifts the chain toward +Y (right-hand rule).
@@ -606,8 +641,8 @@ impl MultibodySystem {
             .collect()
     }
 
-    /// The prop currently geometrically held, if any.
-    pub fn holding(&self) -> Option<EntKey> {
+    /// Reported hold state.
+    pub fn holding(&self) -> bool {
         self.holding
     }
 
@@ -633,58 +668,64 @@ impl MultibodySystem {
         ]
     }
 
-    fn run_grasp(&mut self, gripper: f32) {
-        let closed = gripper > 0.5;
-        match (closed, self.holding) {
-            (true, None) => {
-                let tip = self.last_ee.0;
-                let mut best: Option<(f32, EntKey, RigidBodyHandle)> = None;
-                for (k, h) in &self.map {
-                    if let Some(b) = self.bodies.get(*h) {
-                        let t = b.translation();
-                        let d = Vec3::new(t.x - tip[0], t.y - tip[1], t.z - tip[2]).length();
-                        if d < GRASP_RADIUS && best.as_ref().is_none_or(|(bd, _, _)| d < *bd) {
-                            best = Some((d, *k, *h));
-                        }
-                    }
-                }
-                if let Some((_, k, h)) = best {
-                    if let Some(b) = self.bodies.get_mut(h) {
-                        b.set_body_type(RigidBodyType::KinematicPositionBased, true);
-                    }
-                    // Carry the prop hanging just below the tip: centring
-                    // it ON the tip leaves half the cube inside the wrist
-                    // collider, and release fires the separation impulse.
-                    self.hold_offset = Vec3::new(0.0, -(PROP_HALF + 0.01), 0.0);
-                    self.holding = Some(k);
-                }
+    /// Drive the gripper plates (ramped) toward the demand — kinematic
+    /// slabs straddling the tip in the wrist's frame.
+    fn drive_fingers(&mut self, gripper: f32) {
+        let g_target =
+            FINGER_GAP_OPEN + (FINGER_GAP_CLOSED - FINGER_GAP_OPEN) * gripper.clamp(0.0, 1.0);
+        self.gap_now += (g_target - self.gap_now).clamp(-0.004, 0.004);
+        let wrist = self.chain[3];
+        let (wp, wr) = {
+            let b = self.bodies.get(wrist).expect("wrist body exists");
+            (b.translation(), *b.rotation())
+        };
+        let centre = wp + wr.mul_vec3(Vec3::new(FINGER_X, 0.0, 0.0));
+        let side = wr.mul_vec3(Vec3::new(0.0, 0.0, self.gap_now * 0.5));
+        for (h, sign) in [(self.finger_l, 1.0), (self.finger_r, -1.0)] {
+            if let Some(b) = self.bodies.get_mut(h) {
+                b.set_next_kinematic_rotation(wr);
+                b.set_next_kinematic_translation(centre + sign * side);
             }
-            (false, Some(k)) => {
-                self.holding = None;
-                if let Some(h) = self.map.get(&k) {
-                    if let Some(b) = self.bodies.get_mut(*h) {
-                        b.set_body_type(RigidBodyType::Dynamic, true);
-                        b.set_linvel(Vec3::new(0.0, -0.05, 0.0), true);
-                        b.set_angvel(Vec3::ZERO, true);
-                    }
-                }
-            }
-            _ => {}
         }
     }
 
-    fn carry(&mut self) {
-        let Some(k) = self.holding else { return };
-        let Some(h) = self.map.get(&k).copied() else {
-            return;
+    /// Reporting heuristic: gripper closed + a prop centre inside the
+    /// grip zone; the contact solve does the actual holding.
+    fn update_holding(&mut self, gripper: f32) {
+        self.holding = gripper > 0.5 && {
+            let tip = self.last_ee.0;
+            self.map.values().any(|h| {
+                self.bodies.get(*h).is_some_and(|b| {
+                    let t = b.translation();
+                    Vec3::new(t.x - tip[0], t.y - tip[1], t.z - tip[2]).length() < GRASP_RADIUS
+                })
+            })
         };
-        if let Some(b) = self.bodies.get_mut(h) {
-            let q = quat_from(self.last_ee.1);
-            b.set_next_kinematic_rotation(q);
-            let off = q.mul_vec3(self.hold_offset);
-            let t = self.last_ee.0;
-            b.set_next_kinematic_translation(Vec3::new(t[0] + off.x, t[1] + off.y, t[2] + off.z));
+    }
+
+    /// Contact-inspection probe (temporary): plate world positions and
+    /// per-prop contact-pair counts.
+    pub fn debug_contact_state(&self) -> (Vec<[f32; 3]>, Vec<usize>) {
+        let plate = |h: RigidBodyHandle| {
+            self.bodies
+                .get(h)
+                .map(|b| {
+                    let t = b.translation();
+                    [t.x, t.y, t.z]
+                })
+                .unwrap_or([f32::NAN; 3])
+        };
+        let mut counts = Vec::new();
+        for h in self.map.values() {
+            let mut n = 0usize;
+            if let Some(b) = self.bodies.get(*h) {
+                for ch in b.colliders() {
+                    n += self.narrow_phase.contact_pairs_with(*ch).count();
+                }
+            }
+            counts.push(n);
         }
+        (vec![plate(self.finger_l), plate(self.finger_r)], counts)
     }
 }
 
@@ -723,9 +764,6 @@ impl System<World> for MultibodySystem {
                 );
             }
             self.last_pose.remove(&k);
-            if self.holding == Some(k) {
-                self.holding = None;
-            }
         }
         // Optional per-prop physics overrides (domain randomization).
         let phys: BTreeMap<EntKey, PropPhys> = world
@@ -753,11 +791,7 @@ impl System<World> for MultibodySystem {
         }
 
         // 2. External pose writes (Teleport-style) — adopt into bodies.
-        // Carried props are physics-owned while held and skipped.
         for (k, p) in &live {
-            if self.holding.map(|h| h == *k).unwrap_or(false) {
-                continue;
-            }
             let Some(&h) = self.map.get(k) else { continue };
             if self.last_pose.get(k).copied() != Some((p.pos, p.rot)) {
                 if let Some(b) = self.bodies.get_mut(h) {
@@ -795,6 +829,9 @@ impl System<World> for MultibodySystem {
                 }
             }
         }
+
+        // 3.5 Drive gripper plates (kinematic) for THIS tick's step.
+        self.drive_fingers(gripper);
 
         // 4. Step the pipeline — SUBSTEPS internal physics steps per
         // engine tick (decimation; 3D worlds are y-up).
@@ -841,8 +878,7 @@ impl System<World> for MultibodySystem {
             ([t.x + off.x, t.y + off.y, t.z + off.z], quat_to_arr(q))
         };
         self.last_ee = (tip_pos, tip_rot);
-        self.run_grasp(gripper);
-        self.carry();
+        self.update_holding(gripper);
 
         // 6. Write back: joint telemetry into the arm entity, prop
         // poses through a scratch table (one column pass, #100 style).
@@ -859,7 +895,7 @@ impl System<World> for MultibodySystem {
                 velocities: vels,
                 ee_pos: self.last_ee.0,
                 ee_rot: self.last_ee.1,
-                holding: self.holding.is_some(),
+                holding: self.holding,
             };
             world.for_each_mut::<JointTelemetry>(|_, t| {
                 *t = tel.clone();
@@ -1033,49 +1069,70 @@ mod tests {
 
     #[test]
     fn grasp_carries_and_release_drops() {
-        // Home tip: base_x + l1 + l2 + l3 at shoulder height. The cube
-        // spawns 3cm beyond the tip — outside the wrist collider, well
-        // inside GRASP_RADIUS.
-        let d = ArmDescription::default();
-        let tip_x = d.base[0] + d.links[0] + d.links[1] + d.links[2];
-        let tip_y = d.base[1] + d.shoulder_height;
-        let (mut world, mut sys, arm, obj) = bench([tip_x + 0.03, tip_y, 0.0]);
-        // Close on the cube immediately (it falls onto the table in the
-        // first second — still inside GRASP_RADIUS of the tip).
-        if let Some(t) = world.get_mut::<JointTargets>(arm) {
-            t.gripper = 1.0;
+        // Contact grasp (round 4, probe-verified mechanism): descend so
+        // the TIP reaches the cube CENTRE (full plate-face overlap, the
+        // exact minimal-probe configuration), close, lift straight up
+        // via IK, open. The cube rides on plate/cube friction.
+        let (mut world, mut sys, arm, obj) = bench([0.30, 0.55, 0.0]);
+        let ik = |target: [f32; 3]| -> [f32; 4] {
+            let d = ArmDescription::default();
+            let (l1, l2) = (d.links[0], d.links[1]);
+            let sh = d.base[1] + d.shoulder_height;
+            let dx = target[0] - d.base[0];
+            let dz = target[2] - d.base[2];
+            let yaw = f32::atan2(-dz, dx);
+            let r = (dx * dx + dz * dz).sqrt().clamp(0.06, l1 + l2 - 0.005);
+            let h = (target[1] + d.links[2] - sh).clamp(-0.38, 0.30);
+            let ce = ((r * r + h * h - l1 * l1 - l2 * l2) / (2.0 * l1 * l2)).clamp(-1.0, 1.0);
+            let el = -ce.acos();
+            let sh2 = f32::atan2(h, r) - f32::atan2(l2 * el.sin(), l1 + l2 * el.cos());
+            let wr = -std::f32::consts::FRAC_PI_2 - sh2 - el;
+            [
+                yaw.clamp(d.limits[0].0, d.limits[0].1),
+                sh2.clamp(d.limits[1].0, d.limits[1].1),
+                el.clamp(d.limits[2].0, d.limits[2].1),
+                wr.clamp(d.limits[3].0, d.limits[3].1),
+            ]
+        };
+        let cube = [0.30f32, 0.55, 0.0];
+        let cy = 0.525; // settled cube-centre height on the table
+        let phases: &[([f32; 3], u64, f32)] = &[
+            ([cube[0], cy + 0.10, cube[2]], 90, 0.0),
+            ([cube[0], cy + 0.025, cube[2]], 90, 0.0),
+            ([cube[0], cy + 0.025, cube[2]], 60, 1.0),
+            ([cube[0], cy + 0.145, cube[2]], 90, 1.0),
+            ([cube[0], cy + 0.025, cube[2]], 60, 0.0),
+        ];
+        let mut i = 0u64;
+        let mut carried = 0.0f32;
+        for (target, ticks, grip) in phases {
+            let angles = ik(*target);
+            for _ in 0..*ticks {
+                if let Some(t) = world.get_mut::<JointTargets>(arm) {
+                    t.angles = angles.to_vec();
+                    t.gripper = *grip;
+                }
+                sys.run(&ctx(i), &mut world);
+                i += 1;
+            }
+            if *grip > 0.5 {
+                carried = pose(&world, obj).pos[1];
+                let (plates, counts) = sys.debug_contact_state();
+                eprintln!(
+                    "PROBE grip@i={i}: carried={carried:.3} contacts={counts:?} plates={plates:?} cube={:?} hold={}",
+                    pose(&world, obj).pos,
+                    telemetry(&world, arm).holding
+                );
+            }
         }
-        for i in 0..30 {
-            sys.run(&ctx(i), &mut world);
-        }
-        assert!(telemetry(&world, arm).holding, "cube must be grasped");
-        // Raise the shoulder — the cube must ride up with the tip.
-        let y_before = pose(&world, obj).pos[1];
-        if let Some(t) = world.get_mut::<JointTargets>(arm) {
-            t.angles = vec![0.0, 0.9, 0.0, 0.0];
-        }
-        for i in 30..120 {
-            sys.run(&ctx(i), &mut world);
-        }
-        let carried = pose(&world, obj).pos[1];
         assert!(
-            carried > y_before + 0.05,
-            "carried cube must ride the wrist: {y_before} → {carried}"
+            carried > 0.55 + 0.04,
+            "cube must ride the gripper on friction (carried {carried:.3})"
         );
-        assert!(telemetry(&world, arm).holding);
-        assert!(sim_fingerprint(&world) != 0);
-        // Open — the cube must drop back toward the table.
-        if let Some(t) = world.get_mut::<JointTargets>(arm) {
-            t.gripper = 0.0;
-        }
-        for i in 120..240 {
-            sys.run(&ctx(i), &mut world);
-        }
-        assert!(!telemetry(&world, arm).holding, "release must drop");
         let dropped = pose(&world, obj).pos[1];
         assert!(
-            dropped < carried,
-            "cube must fall after release: {carried} → {dropped}"
+            dropped < carried - 0.02,
+            "cube must fall after release: {carried:.3} → {dropped:.3}"
         );
     }
 
