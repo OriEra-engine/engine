@@ -17,6 +17,7 @@ import { RenderPass } from "../vendor/jsm/post/RenderPass.js";
 import { UnrealBloomPass } from "../vendor/jsm/post/UnrealBloomPass.js";
 import { OutputPass } from "../vendor/jsm/post/OutputPass.js";
 import { RoomEnvironment } from "../vendor/jsm/environments/RoomEnvironment.js";
+import { RGBELoader } from "../vendor/jsm/loaders/RGBELoader.js";
 
 // ── 场景与机械臂常量（对照 ArmDescription / Scene3D / PickPlace3D）──
 const DT = 1 / 60;
@@ -367,7 +368,7 @@ export async function boot(viewport) {
   renderer.setSize(viewport.clientWidth, viewport.clientHeight);
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 1.25;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   viewport.appendChild(renderer.domElement);
@@ -376,8 +377,18 @@ export async function boot(viewport) {
   scene.fog = new THREE.Fog(0x0a0d14, 3.5, 8);
   // 环境光：RoomEnvironment 经 PMREM——PBR 反射质感免费提升
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-  pmrem.dispose();
+  // HDRI 环境光（Poly Haven CC0 摄影棚）：真实感光的第一来源；
+  // 加载失败回退 RoomEnvironment（离线兜底）。
+  new RGBELoader().load(
+    "../vendor/assets/env_1k.hdr?v=2",
+    (hdr) => {
+      const tex = pmrem.fromEquirectangular(hdr).texture;
+      scene.environment = tex;
+      hdr.dispose();
+    },
+    undefined,
+    () => { scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture; },
+  );
   const camera = new THREE.PerspectiveCamera(50, viewport.clientWidth / viewport.clientHeight, 0.05, 50);
   const cam = { theta: 0.9, phi: 1.05, r: 1.9, target: new THREE.Vector3(0.35, 0.45, 0) };
   function placeCam() {
@@ -396,7 +407,7 @@ export async function boot(viewport) {
   K.visuals.composer = composer;
 
   // 灯光：主光带软阴影 + 半球底光
-  const dl = new THREE.DirectionalLight(0xfff2e0, 2.2);
+  const dl = new THREE.DirectionalLight(0xfff2e0, 3.2);
   dl.position.set(1.4, 2.6, 0.9);
   dl.castShadow = true;
   dl.shadow.mapSize.set(2048, 2048);
@@ -406,17 +417,36 @@ export async function boot(viewport) {
   dl.shadow.bias = -0.0006;
   dl.shadow.radius = 4;
   scene.add(dl);
-  scene.add(new THREE.HemisphereLight(0x8899cc, 0x20242e, 0.55));
+  scene.add(new THREE.HemisphereLight(0x8899cc, 0x20242e, 0.9));
   // 地面/桌面/目标圈
-  const mat = (c, r = 0.8, m = 0.0) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
+  const mat = (c, r = 0.8, m = 0.0) => {
+    const mt = new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
+    mt.envMapIntensity = 1.1;
+    return mt;
+  };
+  // 纹理贴图暂缓（IAB WebView2 宿主失焦时 GPU 纹理上传非确定性变黑，
+  // 需前台专项调查；HDRI 环境光与后处理链保留）。资产已就位
+  // vendor/assets/（Poly Haven CC0，见 ASSETS-NOTICE.md）。
+
   const ground = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.1, 3.0), mat(0x141a26, 0.95));
   ground.position.set(0, -0.05, 0);
   ground.receiveShadow = true;
   scene.add(ground);
   const table = new THREE.Mesh(new THREE.BoxGeometry(...TABLE.half.map((v) => v * 2)), mat(0x2b3542, 0.55, 0.05));
   table.position.set(...TABLE.center);
-  table.castShadow = table.receiveShadow = true;
+  table.castShadow = true;
+  table.receiveShadow = true;
   scene.add(table);
+  // 实验室墙角：两面墙收拢虚空感
+  const wallMat = mat(0x3a4150, 0.95);
+  const wallBack = new THREE.Mesh(new THREE.BoxGeometry(4.0, 2.2, 0.06), wallMat);
+  wallBack.position.set(0, 1.05, -1.55);
+  wallBack.receiveShadow = true;
+  scene.add(wallBack);
+  const wallSide = new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.2, 3.0), wallMat);
+  wallSide.position.set(-2.0, 1.05, 0);
+  wallSide.receiveShadow = true;
+  scene.add(wallSide);
   // 末端轨迹拖尾（信息层：最近 120 个 EE 位置）
   const TRAIL_N = 120;
   const trailPos = new Float32Array(TRAIL_N * 3);
