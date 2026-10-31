@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "oriera-sim"
+version = "0.10.0"
+description = "OriEra embodied simulation Gymnasium bridge (PyO3)"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+
+[tool.maturin]
+module-name = "oriera_sim"
+features = ["pyo3/python"]
+manifest-path = "crates/oriera-agent/Cargo.toml"
+python-source = "scripts"
+include = ["scripts/oriera_gym.py"]

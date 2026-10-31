@@ -247,7 +247,9 @@ impl UrdfReport {
                 }
             }
             if let Some(d) = j.damping {
-                desc.kd = desc.kd.max(d.abs());
+                // URDF <dynamics damping> 是被动关节摩擦（齿轮箱黏性），
+                // 不是 PD 控制器的 kd——sim-engine review 语义修正。
+                desc.passive_damping = Some(d.abs());
             }
         }
         Ok((desc, skipped_names))

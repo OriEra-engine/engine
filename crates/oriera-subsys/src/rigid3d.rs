@@ -149,6 +149,11 @@ pub struct ArmDescription {
     /// ±15% in `reset`-mode draws so policies don't overfit the exact
     /// inertias). 1.0 = nominal.
     pub mass_scale: f32,
+    /// Passive joint damping (viscous friction in the motor gearbox —
+    /// NOT the PD controller's kd, which is a separate servo gain).
+    /// None ⇒ [`JOINT_DAMPING`] default. URDF `<dynamics damping>` maps
+    /// here (the sim-engine review caught the kd mis-assignment).
+    pub passive_damping: Option<f32>,
 }
 
 impl Default for ArmDescription {
@@ -173,6 +178,7 @@ impl Default for ArmDescription {
             kp: 60.0,
             kd: 4.0,
             mass_scale: 1.0,
+            passive_damping: None,
         }
     }
 }
@@ -621,8 +627,9 @@ impl MultibodySystem {
                 for v in mb.armature_mut().iter_mut() {
                     *v = ARMATURE;
                 }
+                let pd = d.passive_damping.unwrap_or(JOINT_DAMPING);
                 for v in mb.damping_mut().iter_mut() {
-                    *v = JOINT_DAMPING;
+                    *v = pd;
                 }
             }
         }
