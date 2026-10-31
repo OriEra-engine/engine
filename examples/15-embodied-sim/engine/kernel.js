@@ -102,7 +102,7 @@ const K = {
   world: null, joints: [], bodies: {}, visuals: {},
   targets: [0, 0, 0, 0], gripper: 0, lastCmd: [NaN, NaN, NaN, NaN],
   prevAngles: [0, 0, 0, 0], lastVel: [0, 0, 0, 0], lastEE: [0, 0, 0],
-  holding: false,
+  holding: false, _lastHolding: false,
   fingerL: null, fingerR: null, gapNow: FINGER_GAP_OPEN,
   goal: [0.28, 0.5, 0], rng: { s: 1n }, tick: 0, steps: 0, wasHolding: false,
   recording: false, episode: null, episodes: [], policyMode: false, policyStep: 0,
@@ -372,6 +372,12 @@ export async function boot(viewport) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   viewport.appendChild(renderer.domElement);
+  // REC 角标（录制时可见）
+  const recBadge = document.createElement("div");
+  recBadge.style.cssText = "position:absolute;top:10px;left:10px;z-index:4;display:none;align-items:center;gap:6px;background:rgba(0,0,0,0.6);padding:4px 10px;border-radius:4px;font:12px ui-monospace;color:#ff6b81;";
+  recBadge.innerHTML = '<span style="width:8px;height:8px;border-radius:50%;background:#ff4444;display:inline-block;animation:blink 1s infinite;"></span> REC';
+  viewport.style.position = "relative";
+  viewport.appendChild(recBadge);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0d14);
   scene.fog = new THREE.Fog(0x0a0d14, 3.5, 8);
@@ -400,7 +406,8 @@ export async function boot(viewport) {
   }
   placeCam();
   // 后处理：轻量 bloom + 输出色调
-  const composer = new EffectComposer(renderer);
+  const rt = new THREE.WebGLRenderTarget(viewport.clientWidth, viewport.clientHeight, { samples: 4, type: THREE.HalfFloatType });
+  const composer = new EffectComposer(renderer, rt);
   composer.addPass(new RenderPass(scene, camera));
   composer.addPass(new UnrealBloomPass(new THREE.Vector2(viewport.clientWidth, viewport.clientHeight), 0.32, 0.6, 0.92));
   composer.addPass(new OutputPass());
@@ -418,21 +425,36 @@ export async function boot(viewport) {
   dl.shadow.radius = 4;
   scene.add(dl);
   scene.add(new THREE.HemisphereLight(0x8899cc, 0x20242e, 0.9));
+  // 冷色 rim 逆光（从墙侧）——机械臂与背景轮廓分离
+  const rim = new THREE.DirectionalLight(0x88bbff, 1.2);
+  rim.position.set(-1.2, 1.8, -1.4);
+  scene.add(rim);
+  // 地面网格（MuJoCo 式空间锚点）
+  const grid = new THREE.GridHelper(2.5, 25, 0x1a2030, 0x1a2030);
+  grid.position.set(0, 0.005, 0);
+  scene.add(grid);
   // 地面/桌面/目标圈
   const mat = (c, r = 0.8, m = 0.0) => {
     const mt = new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
     mt.envMapIntensity = 1.1;
     return mt;
   };
-  // 纹理贴图暂缓（IAB WebView2 宿主失焦时 GPU 纹理上传非确定性变黑，
-  // 需前台专项调查；HDRI 环境光与后处理链保留）。资产已就位
-  // vendor/assets/（Poly Haven CC0，见 ASSETS-NOTICE.md）。
+  // B3 纹理启用（restored 钩子保护 + 确定性重导出字节相同=幂等）：
+  // Poly Haven CC0 木桌面 × 磨损混凝土地面——研究所质感的最大单变量。
+  const texLoader = new THREE.TextureLoader();
+  const woodD = texLoader.load("../vendor/assets/wood_orig_diff.jpg?v=5");
+  const woodR = texLoader.load("../vendor/assets/wood_table_worn_rough_1k.jpg?v=3");
+  for (const t of [woodD, woodR]) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1.4, 1.4); t.colorSpace = THREE.SRGBColorSpace; }
+  const floorD = texLoader.load("../vendor/assets/floor_diff.jpg?v=2");
+  for (const t of [floorD]) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(4, 3); t.colorSpace = THREE.SRGBColorSpace; }
 
-  const ground = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.1, 3.0), mat(0x141a26, 0.95));
+  const ground = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.1, 3.0),
+    new THREE.MeshStandardMaterial({ map: floorD, roughness: 0.92, envMapIntensity: 1.1 }));
   ground.position.set(0, -0.05, 0);
   ground.receiveShadow = true;
   scene.add(ground);
-  const table = new THREE.Mesh(new THREE.BoxGeometry(...TABLE.half.map((v) => v * 2)), mat(0x2b3542, 0.55, 0.05));
+  const table = new THREE.Mesh(new THREE.BoxGeometry(...TABLE.half.map((v) => v * 2)),
+    new THREE.MeshStandardMaterial({ map: woodD, roughnessMap: woodR, roughness: 0.7, metalness: 0.02, color: 0xd8c8b0, envMapIntensity: 1.1 }));
   table.position.set(...TABLE.center);
   table.castShadow = true;
   table.receiveShadow = true;
@@ -553,6 +575,7 @@ export async function boot(viewport) {
     K.recording = !K.recording;
     e.target.textContent = K.recording ? "■ 停止录制" : "● 开始录制";
     e.target.classList.toggle("rec", K.recording);
+    recBadge.style.display = K.recording ? "flex" : "none";
     if (K.recording) {
       K.episode = { task: TASK_PHRASE, rows: [], obs: observe() };
       K.recCb?.(true);
@@ -611,6 +634,14 @@ export async function boot(viewport) {
       const m = keyMap[k];
       if (m) { K.targets[m[0]] = Math.min(Math.max(K.targets[m[0]] + m[1], DESC.limits[m[0]][0]), DESC.limits[m[0]][1]); }
     }
+    // 遥操作闭环：键盘改 K.targets 后回写滑条（UX review：按 Q/A 臂在
+    // 动滑条纹丝不动）
+    if (!K.policyMode) {
+      for (let i = 0; i < 4; i++) {
+        sliders[i].input.value = K.targets[i];
+        sliders[i].val.textContent = K.targets[i].toFixed(2);
+      }
+    }
     if (K.policyMode) {
       const obs = observe();
       const ee = [obs[9], obs[10], obs[11]];
@@ -626,6 +657,12 @@ export async function boot(viewport) {
     }
     const out = envStep(action);
     rewardAvg = rewardAvg * 0.98 + out.reward * 0.02;
+    // 抓取发光脉冲（UX review：抓住瞬间给视觉反馈）
+    if (K.holding !== K._lastHolding) {
+      const m = K.visuals.cube.material;
+      m.emissive.set(K.holding ? 0x1a4a2a : 0x000000);
+      K._lastHolding = K.holding;
+    }
     if (K.recording && K.episode) {
       K.episode.rows.push({ state: out.obs, action });
       if (K.episode.rows.length % 30 === 0) {
@@ -690,3 +727,12 @@ export async function boot(viewport) {
     },
   };
 }
+
+// ── 测试导出（node:test + JS↔Rust parity 守卫）──────────────────
+export const CONSTANTS = Object.freeze({
+  DT, SUBSTEPS, PROP_HALF, GRASP_RADIUS, ZONE_RADIUS,
+  FINGER_HALF, FINGER_X, FINGER_GAP_OPEN, FINGER_GAP_CLOSED,
+  FINGER_FRICTION, OBJ_RANGE, GOAL_RANGE, SETTLE_TICKS,
+  MAX_STEPS, TASK_PHRASE, OBS_NAMES, ACTION_NAMES, DESC, TABLE,
+});
+export { ik, above, lcgNext, PHASES };
