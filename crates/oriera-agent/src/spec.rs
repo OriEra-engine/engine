@@ -8,7 +8,7 @@
 //! contract in the tests. serde derives live behind subsys' `serde`
 //! feature; no new dependencies.
 
-use crate::embodied_env::{EmbodiedEnv, TableTopEnv, TaskKind};
+use crate::embodied_env::{TableTopEnv, TaskKind};
 use oriera_subsys::{ArmDescription, PhysicsParams, Scene3D};
 use serde::{Deserialize, Serialize};
 
@@ -112,6 +112,7 @@ pub const GOLDEN_PICK_PLACE_SPEC: &str = r#"{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embodied_env::EmbodiedEnv;
 
     #[cfg(feature = "json")]
     #[test]
