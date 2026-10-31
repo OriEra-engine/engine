@@ -46,7 +46,7 @@ class OrieraPickPlaceEnv(gym.Env):
         obs = self._env.reset(seed if seed is not None else 1000)
         return np.asarray(obs, dtype=np.float32), {
             "task": self._env.task_phrase,
-            "randomization": self._env.randomization(),
+            "randomization": self._env.randomization,
         }
 
     def step(self, action):
