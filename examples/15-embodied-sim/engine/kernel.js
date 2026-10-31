@@ -33,6 +33,13 @@ const DESC = {
 };
 const JOINT_NAMES = ["base_yaw", "shoulder", "elbow", "wrist_pitch", "wrist_roll"];
 const PROP_HALF = 0.025;
+// 接触抓取夹板（与 Rust rigid3d.rs round-4 同参数）：
+// 运动学薄板悬垂于工具中心点之外，摩擦承载，方块全程 Dynamic。
+const FINGER_HALF = [0.030, 0.075, 0.006];
+const FINGER_X = 0.135; // 板心 = 腕 + 旋转*(0.135,0,0)：TCP 外 4.5cm
+const FINGER_GAP_OPEN = 0.075;
+const FINGER_GAP_CLOSED = 0.046;
+const FINGER_FRICTION = 1.4;
 const GRASP_RADIUS = 0.06;
 const TABLE = { center: [0.32, 0.25, 0.0], half: [0.28, 0.25, 0.32] };
 const OBJ_RANGE = { x: [0.14, 0.22], z: [-0.10, 0.10] };
@@ -89,7 +96,8 @@ const K = {
   world: null, joints: [], bodies: {}, visuals: {},
   targets: [0, 0, 0, 0], gripper: 0, lastCmd: [NaN, NaN, NaN, NaN],
   prevAngles: [0, 0, 0, 0], lastVel: [0, 0, 0, 0], lastEE: [0, 0, 0],
-  holding: false, holdOffset: [0, -(PROP_HALF + 0.01), 0],
+  holding: false,
+  fingerL: null, fingerR: null, gapNow: FINGER_GAP_OPEN,
   goal: [0.28, 0.5, 0], rng: { s: 1n }, tick: 0, steps: 0, wasHolding: false,
   recording: false, episode: null, episodes: [], policyMode: false, policyStep: 0,
   keys: new Set(), hudCb: null, logCb: null, recCb: null,
@@ -153,7 +161,19 @@ function makeWorld(seed) {
       .setTranslation(...K.spawn));
   world.createCollider(
     RAPIER.ColliderDesc.cuboid(PROP_HALF, PROP_HALF, PROP_HALF).setDensity(400).setFriction(0.8), cube);
+  // 夹板（运动学，随腕架位姿驱动）
+  const mkFinger = () => {
+    const b = world.createRigidBody(
+      RAPIER.RigidBodyDesc.kinematicPositionBased()
+        .setTranslation(0, 0, 0));
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(...FINGER_HALF).setFriction(FINGER_FRICTION), b);
+    return b;
+  };
+  const fingerL = mkFinger();
+  const fingerR = mkFinger();
   K.bodies = { base, carrier, link1, link2, wrist, cube };
+  K.fingerL = fingerL; K.fingerR = fingerR; K.gapNow = FINGER_GAP_OPEN;
   K.joints = joints;
   K.stages = stages.map(({ p, c, axis }) => ({ p: p.handle, c: c.handle, axis }));
   return world;
@@ -194,28 +214,27 @@ function observe() {
   ];
 }
 
-function graspTick() {
+function driveFingers() {
+  const gTarget = FINGER_GAP_OPEN + (FINGER_GAP_CLOSED - FINGER_GAP_OPEN) * Math.min(Math.max(K.gripper, 0), 1);
+  K.gapNow += Math.min(Math.max(gTarget - K.gapNow, -0.004), 0.004);
+  const wrist = K.bodies.wrist;
+  const t = wrist.translation();
+  const r = wrist.rotation();
+  const q = new THREE.Quaternion(r.x, r.y, r.z, r.w);
+  const centre = new THREE.Vector3(FINGER_X, 0, 0).applyQuaternion(q).add(new THREE.Vector3(t.x, t.y, t.z));
+  const side = new THREE.Vector3(0, 0, K.gapNow / 2).applyQuaternion(q);
+  for (const [body, sign] of [[K.fingerL, 1], [K.fingerR, -1]]) {
+    body.setNextKinematicRotation(r);
+    body.setNextKinematicTranslation(centre.clone().addScaledVector(side, sign));
+  }
+}
+
+// 报告式握持：合爪 + 方块在握区（真正持取由摩擦接触求解完成）。
+function updateHolding() {
   const tip = K.lastEE;
-  if (K.gripper > 0.5 && !K.holding) {
-    const ct = K.bodies.cube.translation();
-    const d = Math.hypot(ct.x - tip[0], ct.y - tip[1], ct.z - tip[2]);
-    if (d < GRASP_RADIUS) {
-      K.bodies.cube.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
-      K.holding = true;
-    }
-  } else if (K.gripper <= 0.5 && K.holding) {
-    K.bodies.cube.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
-    K.bodies.cube.setLinvel({ x: 0, y: -0.05, z: 0 }, true);
-    K.holding = false;
-  }
-  if (K.holding) {
-    const r = K.bodies.wrist.rotation();
-    const q = new THREE.Quaternion(r.x, r.y, r.z, r.w);
-    const off = new THREE.Vector3(...K.holdOffset).applyQuaternion(q);
-    const t = { x: tip[0] + off.x, y: tip[1] + off.y, z: tip[2] + off.z };
-    K.bodies.cube.setNextKinematicRotation(r);
-    K.bodies.cube.setNextKinematicTranslation(t);
-  }
+  const ct = K.bodies.cube.translation();
+  K.holding = K.gripper > 0.5 &&
+    Math.hypot(ct.x - tip[0], ct.y - tip[1], ct.z - tip[2]) < GRASP_RADIUS;
 }
 
 function stepOnce(action) {
@@ -230,7 +249,8 @@ function stepOnce(action) {
   K.gripper = Math.min(Math.max(action[4] ?? 0, 0), 1);
   for (let s = 0; s < SUBSTEPS; s++) K.world.step();
   K.lastEE = eePose();
-  graspTick();
+  driveFingers();
+  updateHolding();
   const angles = readAngles();
   K.lastVel = angles.map((a, i) => (a - K.prevAngles[i]) / DT);
   K.prevAngles = angles.slice();
@@ -271,6 +291,7 @@ function envReset(seed) {
   K.world = makeWorld(seed);
   K.targets = [0, 0, 0, 0]; K.gripper = 0; K.lastCmd = [NaN, NaN, NaN, NaN];
   K.prevAngles = [0, 0, 0, 0]; K.lastVel = [0, 0, 0, 0]; K.holding = false;
+  K.gapNow = FINGER_GAP_OPEN;
   K.wasHolding = false; K.steps = 0; K.tick = 0; K.policyMode = false; K.policyStep = 0;
   K.episode = null;
   for (let i = 0; i < SETTLE_TICKS; i++) { stepOnce([0, 0, 0, 0, 0]); }
@@ -487,8 +508,20 @@ export async function boot(viewport) {
       sliders.forEach((s, i) => (s.val.textContent = K.prevAngles[i].toFixed(2)));
       K.logCb?.(`录制中：${K.episode.rows.length} 行 · r̄=${rewardAvg.toFixed(3)}${K.holding ? " · 🤏已抓住" : ""}`);
     }
-    if (out.terminated) { successCount++; episodesRun++; K.policyMode = false; post({ type: "state", note: "success" }); }
-    else if (out.truncated) episodesRun++;
+    // 回合语义与 Rust env 循环对齐：终止/截断即回合结束——自动重置
+    // （此前 steps 超限后每帧都计一次 episode，HUD 集数虚高）。
+    // 录制卫生：回合结束先切录音带（当前 episode 落列表），再重置。
+    if (out.terminated || out.truncated) {
+      if (K.recording && K.episode?.rows?.length) K.episodes.push(K.episode);
+      K.episode = K.recording ? { task: TASK_PHRASE, rows: [], obs: observe() } : null;
+      episodesRun++;
+      if (out.terminated) {
+        successCount++; K.policyMode = false;
+        post({ type: "state", note: "success" });
+      }
+      envReset((Math.random() * 1e9) | 0);
+      if (K.policyMode) K.policyStep = 0;
+    }
     syncVisuals();
     const ct = K.bodies.cube.translation();
     K.hudCb?.(
