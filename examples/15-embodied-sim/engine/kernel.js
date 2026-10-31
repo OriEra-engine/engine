@@ -287,8 +287,31 @@ function envReset(seed) {
     lcgNext(K.rng, GOAL_RANGE.x[0], GOAL_RANGE.x[1]), 0.5,
     lcgNext(K.rng, GOAL_RANGE.z[0], GOAL_RANGE.z[1]),
   ];
-  K.world?.free?.();
-  K.world = makeWorld(seed);
+  // 原地重置（MJ resetData 式）：world 只建一次——free/重建每次
+  // 泄漏 wasm 内存，auto-reset 下 ~12s 撑爆一次（WebView2 反复重载
+  // 的根因）。复位方块、链位姿、速度与马达目标即可。
+  const first = !K.world;
+  if (first) { K.world = makeWorld(seed); }
+  const B = K.bodies;
+  B.cube.setTranslation({ x: K.spawn[0], y: K.spawn[1], z: K.spawn[2] }, true);
+  B.cube.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  B.cube.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  B.cube.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+  const sh = DESC.base[1] + DESC.shoulderHeight;
+  const homes = {
+    base: [DESC.base[0], DESC.base[1] + DESC.shoulderHeight / 2, DESC.base[2]],
+    carrier: [DESC.base[0], sh, DESC.base[2]],
+    link1: [DESC.base[0], sh, DESC.base[2]],
+    link2: [DESC.base[0] + DESC.links[0], sh, DESC.base[2]],
+    wrist: [DESC.base[0] + DESC.links[0] + DESC.links[1], sh, DESC.base[2]],
+  };
+  for (const [name, t] of Object.entries(homes)) {
+    const b = B[name];
+    b.setTranslation({ x: t[0], y: t[1], z: t[2] }, true);
+    b.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+    b.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    b.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  }
   K.targets = [0, 0, 0, 0]; K.gripper = 0; K.lastCmd = [NaN, NaN, NaN, NaN];
   K.prevAngles = [0, 0, 0, 0]; K.lastVel = [0, 0, 0, 0]; K.holding = false;
   K.gapNow = FINGER_GAP_OPEN;
@@ -467,7 +490,7 @@ export async function boot(viewport) {
     if (m.cmd === "reset") envReset(m.seed ?? ((Math.random() * 1e9) | 0));
     else if (m.cmd === "policy") { K.policyMode = true; K.policyStep = 0; }
     else if (m.cmd === "grip") K.gripper = m.value;
-    else if (m.cmd === "teleop") { for (let i = 0; i < 4; i++) K.targets[i] = m.angles[i]; K.gripper = m.gripper ?? K.gripper; }
+    else if (m.cmd === "teleop") { K.policyMode = false; for (let i = 0; i < 4; i++) K.targets[i] = m.angles[i]; K.gripper = m.gripper ?? K.gripper; }
     else if (m.cmd === "record") document.getElementById("btn-rec").click();
     else if (m.cmd === "export") document.getElementById("btn-export").click();
   });
@@ -537,4 +560,18 @@ export async function boot(viewport) {
     camera.updateProjectionMatrix();
   });
   post({ type: "state", note: "ready" });
+
+  // CDP/测试钩子（Studio cdp_*.mjs 传统）：确定性地驱动与读态。
+  window.__orieraSim = {
+    state: () => {
+      const ct = K.bodies.cube.translation();
+      return {
+        cube: [ct.x, ct.y, ct.z],
+        ee: K.lastEE,
+        holding: K.holding,
+        gripper: K.gripper,
+        tick: K.tick,
+      };
+    },
+  };
 }
