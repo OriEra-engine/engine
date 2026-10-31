@@ -216,7 +216,9 @@ impl Default for Scene3D {
 pub const GRASP_RADIUS: f32 = 0.06;
 /// Gripper plates: kinematic slabs straddling the TIP. The prop stays
 /// Dynamic; plate/cube friction (2 mm/side squeeze) does the holding.
-const FINGER_HALF: [f32; 3] = [0.030, 0.075, 0.006];
+// half_y=0.045（板长 9cm）：板顶恒不高于尖端——悬停/下探全程夹板
+// 不会铲过方块顶面（0.075 版会先铲顶把方块挤飞，浏览器实测定位）。
+const FINGER_HALF: [f32; 3] = [0.030, 0.045, 0.006];
 const FINGER_X: f32 = 0.135;
 const FINGER_GAP_OPEN: f32 = 0.075;
 const FINGER_GAP_CLOSED: f32 = 0.046;

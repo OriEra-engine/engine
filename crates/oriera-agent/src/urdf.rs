@@ -190,8 +190,9 @@ impl UrdfReport {
     }
 
     /// Extract the FIRST linear chain of actuated revolute/continuous
-    /// joints from the root, and map it onto [`ArmDescription`] — the
-    /// bridge into `TableTopEnv`/`SceneSpec` (via `to_env`).
+    /// joints from the root (up to `want`; shorter chains are padded
+    /// with defaults — an empty chain errors), and map it onto
+    /// [`ArmDescription`] — the bridge into `TableTopEnv`/`SceneSpec`.
     ///
     /// Mapping: consecutive joint-origin displacements give link
     /// lengths (‖xyz‖ of each child origin), limits map 1:1, damping
@@ -222,12 +223,14 @@ impl UrdfReport {
             }
             link = j.child.clone();
         }
-        if chain.len() < want {
+        if chain.is_empty() {
             return Err(format!(
-                "URDF 链长不足：需 {want} 个 revolute 关节，实得 {}（skipped: {skipped_names:?}）",
-                chain.len()
+                "URDF 链提取失败：根 {root} 下无可用的 revolute 关节（skipped: {skipped_names:?}）",
+                root = self.root
             ));
         }
+        // 不足 want 时按实得轴数返回（短链沿用默认限位/杆长补齐）——真实
+        // 描述文件轴数各异，宁可部分映射也不整份拒绝。
         let mut desc = ArmDescription::default();
         for (i, j) in chain.iter().enumerate() {
             let len = (j.origin_xyz[0] * j.origin_xyz[0]
@@ -310,10 +313,6 @@ mod tests {
         let rep = UrdfReport::parse(FIXTURE).unwrap();
         // chain walk: base →(j1)→ l1 →(j2)→ l2 →(j3)→ l3 →(j4 fixed)→ tool
         // want=4 stops at 3 revolute + fixed absorb; expect Err on 4.
-        assert!(
-            rep.first_revolute_chain(4).is_err(),
-            "fixture has only 3 revolute joints"
-        );
         let (desc, skipped) = rep.first_revolute_chain(3).expect("3 revolute chain");
         assert!(skipped.is_empty());
         assert!(

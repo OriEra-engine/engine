@@ -211,6 +211,8 @@ struct Args {
     seed0: u64,
     cam: bool,
     out: String,
+    /// U1: URDF→SceneSpec 导出路径（设置即只做导入不采集）。
+    urdf: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -220,6 +222,7 @@ fn parse_args() -> Args {
         seed0: 1000,
         cam: true,
         out: "out/embodied-sim".into(),
+        urdf: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -228,6 +231,7 @@ fn parse_args() -> Args {
                 let v = it.next().expect("--task 需要一个值");
                 a.task = TaskKind::parse(&v).expect("task: reach|pick_place|push");
             }
+            "--urdf" => a.urdf = Some(it.next().expect("--urdf 需要一个文件路径")),
             "--phrase" => {
                 // 语言→具身最小桥：自然语言短语解析出任务（NLU→seed 组合
                 // 由调用方继续），例如 --phrase "pick up the cube"。
@@ -348,8 +352,36 @@ fn collect(args: &Args) -> Result<RunResult, String> {
     Ok(RunResult { ds, rows, hashes })
 }
 
+/// U1: URDF → SceneSpec 落盘（不采集）——一次导入 = 一份实验。
+fn import_urdf(args: &Args) {
+    let xml = std::fs::read_to_string(args.urdf.as_ref().unwrap()).expect("读 URDF 失败");
+    let rep = oriera_agent::urdf::UrdfReport::parse(&xml).expect("URDF 解析失败");
+    let (desc, skipped) = rep.first_revolute_chain(4).expect("URDF 链提取失败");
+    let spec = oriera_agent::spec::SceneSpec {
+        desc,
+        scene: oriera_subsys::Scene3D::default(),
+        task: oriera_agent::spec::Task::PickPlace,
+        dt: DT,
+        max_steps: 700,
+        randomize: true,
+        kp_jitter: 0.0,
+        mass_jitter: 0.0,
+        obs_noise: 0.0,
+        physics: Default::default(),
+    };
+    let out_dir = std::path::Path::new(&args.out);
+    std::fs::create_dir_all(out_dir).unwrap();
+    let path = out_dir.join("scene_spec.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
+    println!("  ✓ URDF → {}（skipped: {skipped:?}）", path.display());
+}
+
 fn main() {
     let args = parse_args();
+    if args.urdf.is_some() {
+        import_urdf(&args);
+        return;
+    }
     let feat = if cfg!(feature = "cam") && args.cam {
         "rigid3d+cam"
     } else {

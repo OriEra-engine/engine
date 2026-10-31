@@ -35,7 +35,7 @@ const JOINT_NAMES = ["base_yaw", "shoulder", "elbow", "wrist_pitch", "wrist_roll
 const PROP_HALF = 0.025;
 // 接触抓取夹板（与 Rust rigid3d.rs round-4 同参数）：
 // 运动学薄板悬垂于工具中心点之外，摩擦承载，方块全程 Dynamic。
-const FINGER_HALF = [0.030, 0.075, 0.006];
+const FINGER_HALF = [0.030, 0.045, 0.006]; // 板顶恒≤尖端，不铲方块顶
 const FINGER_X = 0.135; // 板心 = 腕 + 旋转*(0.135,0,0)：TCP 外 4.5cm
 const FINGER_GAP_OPEN = 0.075;
 const FINGER_GAP_CLOSED = 0.046;
