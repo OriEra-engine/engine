@@ -23,6 +23,8 @@ pub struct UrdfLink {
     pub name: String,
     /// Collision-geometry primitive, in metres: (kind, dims).
     pub geometry: Option<UrdfGeom>,
+    /// `<inertial>` block (U2: parsed for bookkeeping).
+    pub inertial: Option<UrdfInertial>,
 }
 
 /// Parsed geometry primitives (meshes are reported and skipped).
@@ -47,6 +49,19 @@ pub struct UrdfJoint {
     pub limit_lower: Option<f32>,
     pub limit_upper: Option<f32>,
     pub damping: Option<f32>,
+    /// `<limit effort>` — maps to `MOTOR_MAX_FORCE` reference (U2).
+    pub effort: Option<f32>,
+}
+
+/// `<inertial>` block (U2: parsed for bookkeeping; physics still uses
+/// geometric density derivation — the gap is recorded in the receipt).
+#[derive(Debug, Clone, Default)]
+pub struct UrdfInertial {
+    pub mass: f32,
+    pub ixx: f32,
+    pub iyy: f32,
+    pub izz: f32,
+    pub origin_xyz: [f32; 3],
 }
 
 /// Parse outcome: the tree plus an honest skip list.
@@ -91,11 +106,40 @@ impl UrdfReport {
         let mut link = UrdfLink {
             name: n.attribute("name").unwrap_or_default().to_string(),
             geometry: None,
+            inertial: None,
         };
         if let Some(col) = n.children().find(|c| c.has_tag_name("collision")) {
             link.geometry = Self::parse_geometry(col);
         }
+        if let Some(iner) = n.children().find(|c| c.has_tag_name("inertial")) {
+            link.inertial = Self::parse_inertial(iner);
+        }
         self.links.push(link);
+    }
+
+    fn parse_inertial(iner: roxmltree::Node) -> Option<UrdfInertial> {
+        let mut iner_data = UrdfInertial::default();
+        if let Some(m) = iner.children().find(|c| c.has_tag_name("mass")) {
+            iner_data.mass = m.attribute("value")?.parse().ok()?;
+        }
+        if let Some(i) = iner.children().find(|c| c.has_tag_name("inertia")) {
+            iner_data.ixx = i
+                .attribute("ixx")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0);
+            iner_data.iyy = i
+                .attribute("iyy")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0);
+            iner_data.izz = i
+                .attribute("izz")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0);
+        }
+        if let Some(o) = iner.children().find(|c| c.has_tag_name("origin")) {
+            iner_data.origin_xyz = Self::vec3(o.attribute("xyz"));
+        }
+        Some(iner_data)
     }
 
     fn parse_geometry(col: roxmltree::Node) -> Option<UrdfGeom> {
@@ -149,6 +193,7 @@ impl UrdfReport {
                 "limit" => {
                     j.limit_lower = c.attribute("lower").and_then(|v| v.parse().ok());
                     j.limit_upper = c.attribute("upper").and_then(|v| v.parse().ok());
+                    j.effort = c.attribute("effort").and_then(|v| v.parse().ok());
                 }
                 "dynamics" => j.damping = c.attribute("damping").and_then(|v| v.parse().ok()),
                 "mimic" => self
@@ -187,6 +232,60 @@ impl UrdfReport {
             .find(|n| !children.contains(n))
             .unwrap_or_default()
             .to_string()
+    }
+
+    /// U2 链校验报告：断链/环/类型错误/轴偏移——人话列表。
+    pub fn validate_chain(&self, want: usize) -> Vec<String> {
+        let mut issues = Vec::new();
+        // 根识别
+        if self.root.is_empty() {
+            issues.push("无法识别根 link（可能存在环或孤立 link）".into());
+            return issues;
+        }
+        // 链走查
+        let mut visited = std::collections::BTreeSet::new();
+        let mut link = self.root.clone();
+        let mut actuated = 0;
+        loop {
+            if !visited.insert(link.clone()) {
+                issues.push(format!("检测到环：link {link} 被访问两次"));
+                break;
+            }
+            let Some(j) = self.joints.iter().find(|j| j.parent == link) else {
+                break;
+            };
+            if j.kind == "revolute" || j.kind == "continuous" {
+                actuated += 1;
+                // 轴校验（拒绝式——sim-engine review：非常规轴静默错映）
+                let a = j.axis;
+                let mag = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+                if mag < 0.9 {
+                    issues.push(format!(
+                        "关节 {} 轴向量模长 {:.2} ≈ 0（归一化你的 URDF）",
+                        j.name, mag
+                    ));
+                } else if a[2].abs() / mag < 0.99 {
+                    // OriEra 链约定关节轴沿 ±Z（关节系 Z 主轴）；非常规轴需 U2 重映射
+                    issues.push(format!(
+                        "关节 {} 轴 ({:.3},{:.3},{:.3}) 非 ±Z 主轴（OriEra 映射假设 Z 轴，U2 支持非常规轴重定向）",
+                        j.name, a[0], a[1], a[2]
+                    ));
+                }
+            } else if j.kind == "prismatic" || j.kind == "floating" {
+                issues.push(format!(
+                    "关节 {} 类型 {}（OriEra 仅支持 revolute/continuous/fixed——prismatic U2 后期）",
+                    j.name, j.kind
+                ));
+            }
+            link = j.child.clone();
+            if actuated >= want {
+                break;
+            }
+        }
+        if actuated == 0 {
+            issues.push("根 link 下未找到任何 revolute/continuous 关节".into());
+        }
+        issues
     }
 
     /// Extract the FIRST linear chain of actuated revolute/continuous
@@ -327,6 +426,30 @@ mod tests {
             (desc.limits[2].0 - (-2.5)).abs() < 1e-5,
             "j3 lower limit (Rust round-4 肘限位)"
         );
+    }
+
+    #[test]
+    fn inertial_and_effort_parsed() {
+        let rep = UrdfReport::parse(FIXTURE).unwrap();
+        let l1 = rep.links.iter().find(|l| l.name == "base").unwrap();
+        assert!(l1.inertial.is_none(), "fixture base has no <inertial>");
+        let j1 = rep.joints.iter().find(|j| j.name == "j1").unwrap();
+        assert_eq!(j1.effort, Some(80.0));
+    }
+
+    #[test]
+    fn chain_validation_catches_issues() {
+        let rep = UrdfReport::parse(FIXTURE).unwrap();
+        let issues = rep.validate_chain(4);
+        // fixture 的 j1 轴是 +Y（非常规 ±Z）——校验应捕获
+        assert!(
+            issues.iter().any(|i| i.contains("非 ±Z 主轴")),
+            "y-axis must be flagged: {issues:?}"
+        );
+        // 无环/断链
+        assert!(!issues
+            .iter()
+            .any(|i| i.contains("环") || i.contains("断链")));
     }
 
     #[test]
