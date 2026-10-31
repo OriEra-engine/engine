@@ -372,6 +372,14 @@ export async function boot(viewport) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   viewport.appendChild(renderer.domElement);
+  // PiP 顶视相机（对齐 Rust camera.rs CameraView：正交俯视桌面工作区）
+  const pipCam = new THREE.OrthographicCamera(
+    -0.46, 0.46, 0.46, -0.46, 0.01, 5);
+  pipCam.position.set(0.32, 3.0, 0);
+  pipCam.up.set(0, 0, -1); // +x→右, +z→下（与 camera.rs 的 x→右/z→下映射一致）
+  pipCam.lookAt(0.32, 0, 0);
+  const pipSize = 160;
+
   // REC 角标（录制时可见）
   const recBadge = document.createElement("div");
   recBadge.style.cssText = "position:absolute;top:10px;left:10px;z-index:4;display:none;align-items:center;gap:6px;background:rgba(0,0,0,0.6);padding:4px 10px;border-radius:4px;font:12px ui-monospace;color:#ff6b81;";
@@ -702,6 +710,18 @@ export async function boot(viewport) {
       `tick ${K.tick} · r̄ ${rewardAvg.toFixed(3)} · 距目标 ${Math.hypot(ct.x - K.goal[0], ct.z - K.goal[2]).toFixed(3)}m` +
       `<br>成功 ${successCount}/${episodesRun} · ${K.holding ? "🤏 抓住" : "✋ 松开"} · obs 21 维 / act 5 维`);
     K.visuals.composer.render();
+    // PiP 顶视渲染（右上角小图：与 Rust camera.rs 的俯视映射一致）
+    renderer.autoClear = false;
+    renderer.setScissorTest(true);
+    const pw = viewport.clientWidth;
+    const px = pw - pipSize - 10;
+    renderer.setViewport(px, 10, pipSize, pipSize);
+    renderer.setScissor(px, 10, pipSize, pipSize);
+    renderer.setScissorTest(true);
+    renderer.render(scene, pipCam);
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, pw, viewport.clientHeight);
+    renderer.autoClear = true;
     requestAnimationFrame(loop);
   }
   loop();
