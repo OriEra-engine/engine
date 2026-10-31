@@ -12,6 +12,11 @@
 
 import * as THREE from "three";
 import RAPIER from "rapier";
+import { EffectComposer } from "../vendor/jsm/post/EffectComposer.js";
+import { RenderPass } from "../vendor/jsm/post/RenderPass.js";
+import { UnrealBloomPass } from "../vendor/jsm/post/UnrealBloomPass.js";
+import { OutputPass } from "../vendor/jsm/post/OutputPass.js";
+import { RoomEnvironment } from "../vendor/jsm/environments/RoomEnvironment.js";
 
 // ── 场景与机械臂常量（对照 ArmDescription / Scene3D / PickPlace3D）──
 const DT = 1 / 60;
@@ -223,9 +228,14 @@ function driveFingers() {
   const q = new THREE.Quaternion(r.x, r.y, r.z, r.w);
   const centre = new THREE.Vector3(FINGER_X, 0, 0).applyQuaternion(q).add(new THREE.Vector3(t.x, t.y, t.z));
   const side = new THREE.Vector3(0, 0, K.gapNow / 2).applyQuaternion(q);
-  for (const [body, sign] of [[K.fingerL, 1], [K.fingerR, -1]]) {
+  for (const [body, sign, vis] of [[K.fingerL, 1, K.visuals.plateL], [K.fingerR, -1, K.visuals.plateR]]) {
+    const p = centre.clone().addScaledVector(side, sign);
     body.setNextKinematicRotation(r);
-    body.setNextKinematicTranslation(centre.clone().addScaledVector(side, sign));
+    body.setNextKinematicTranslation(p);
+    if (vis) {
+      vis.position.copy(p);
+      vis.quaternion.copy(r);
+    }
   }
 }
 
@@ -273,6 +283,12 @@ function syncVisuals() {
   set(K.visuals.link2, K.bodies.link2);
   set(K.visuals.wrist, K.bodies.wrist);
   set(K.visuals.cube, K.bodies.cube);
+  const place = (mesh, b) => {
+    const t = b.translation();
+    mesh.position.set(t.x, t.y, t.z);
+  };
+  place(K.visuals.hub1, K.bodies.link1);
+  place(K.visuals.hub2, K.bodies.link2);
   K.visuals.goal.position.set(K.goal[0], 0.501, K.goal[2]);
 }
 
@@ -350,9 +366,18 @@ export async function boot(viewport) {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(viewport.clientWidth, viewport.clientHeight);
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   viewport.appendChild(renderer.domElement);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0d14);
+  scene.fog = new THREE.Fog(0x0a0d14, 3.5, 8);
+  // 环境光：RoomEnvironment 经 PMREM——PBR 反射质感免费提升
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  pmrem.dispose();
   const camera = new THREE.PerspectiveCamera(50, viewport.clientWidth / viewport.clientHeight, 0.05, 50);
   const cam = { theta: 0.9, phi: 1.05, r: 1.9, target: new THREE.Vector3(0.35, 0.45, 0) };
   function placeCam() {
@@ -363,26 +388,56 @@ export async function boot(viewport) {
     camera.lookAt(cam.target);
   }
   placeCam();
-  // 灯光
-  scene.add(new THREE.AmbientLight(0x8899bb, 0.7));
-  const dl = new THREE.DirectionalLight(0xffffff, 1.4);
-  dl.position.set(1.5, 2.5, 1.0);
+  // 后处理：轻量 bloom + 输出色调
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(viewport.clientWidth, viewport.clientHeight), 0.32, 0.6, 0.92));
+  composer.addPass(new OutputPass());
+  K.visuals.composer = composer;
+
+  // 灯光：主光带软阴影 + 半球底光
+  const dl = new THREE.DirectionalLight(0xfff2e0, 2.2);
+  dl.position.set(1.4, 2.6, 0.9);
+  dl.castShadow = true;
+  dl.shadow.mapSize.set(2048, 2048);
+  dl.shadow.camera.left = -1.2; dl.shadow.camera.right = 1.2;
+  dl.shadow.camera.top = 1.2; dl.shadow.camera.bottom = -1.2;
+  dl.shadow.camera.far = 8;
+  dl.shadow.bias = -0.0006;
+  dl.shadow.radius = 4;
   scene.add(dl);
+  scene.add(new THREE.HemisphereLight(0x8899cc, 0x20242e, 0.55));
   // 地面/桌面/目标圈
-  const mat = (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85 });
-  const ground = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.1, 3.0), mat(0x141a26));
+  const mat = (c, r = 0.8, m = 0.0) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
+  const ground = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.1, 3.0), mat(0x141a26, 0.95));
   ground.position.set(0, -0.05, 0);
+  ground.receiveShadow = true;
   scene.add(ground);
-  const table = new THREE.Mesh(new THREE.BoxGeometry(...TABLE.half.map((v) => v * 2)), mat(0x27313f));
+  const table = new THREE.Mesh(new THREE.BoxGeometry(...TABLE.half.map((v) => v * 2)), mat(0x2b3542, 0.55, 0.05));
   table.position.set(...TABLE.center);
+  table.castShadow = table.receiveShadow = true;
   scene.add(table);
+  // 末端轨迹拖尾（信息层：最近 120 个 EE 位置）
+  const TRAIL_N = 120;
+  const trailPos = new Float32Array(TRAIL_N * 3);
+  const trailGeo = new THREE.BufferGeometry();
+  trailGeo.setAttribute("position", new THREE.BufferAttribute(trailPos, 3));
+  const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0x5b8def, transparent: true, opacity: 0.45 }));
+  trail.frustumCulled = false;
+  scene.add(trail);
   const goal = new THREE.Mesh(
-    new THREE.RingGeometry(ZONE_RADIUS * 0.75, ZONE_RADIUS, 40),
-    new THREE.MeshBasicMaterial({ color: 0x7be0a0, side: THREE.DoubleSide, transparent: true, opacity: 0.8 }));
+    new THREE.RingGeometry(ZONE_RADIUS * 0.75, ZONE_RADIUS, 48),
+    new THREE.MeshBasicMaterial({ color: 0x7be0a0, side: THREE.DoubleSide, transparent: true, opacity: 0.85 }));
   goal.rotation.x = -Math.PI / 2;
   goal.position.set(0.28, 0.501, 0);
   scene.add(goal);
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(ZONE_RADIUS, ZONE_RADIUS, 0.32, 48, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0x7be0a0, transparent: true, opacity: 0.055, side: THREE.DoubleSide, depthWrite: false }));
+  beam.position.set(0.28, 0.66, 0);
+  scene.add(beam);
   K.visuals.goal = goal;
+  K.visuals.beam = beam;
   // 机械臂与方块
   const armMat = mat(0x5b8def);
   const group = (parent) => { const g = new THREE.Group(); parent.add(g); return g; };
@@ -390,15 +445,25 @@ export async function boot(viewport) {
   const mkBox = (hw, c) => new THREE.Mesh(new THREE.BoxGeometry(hw[0] * 2, hw[1] * 2, hw[2] * 2), mat(c));
   K.visuals.baseCol = mkBox([DESC.radius * 1.8, DESC.shoulderHeight / 2, DESC.radius * 1.8], 0x39415a);
   K.visuals.carrier = mkBox([0.015, 0.015, 0.015], 0x8fa8d8);
-  // 圆柱长轴是 Y；连杆体坐标沿 +X——把旋转烘进几何体，四元数才不覆盖
-  const linkGeo = (len) => new THREE.CylinderGeometry(DESC.radius, DESC.radius, len, 16).rotateZ(-Math.PI / 2);
+  // 连杆：胶囊体（长轴 Y 烘转为 X），关节轮毂圆盘，全部投影
+  const linkGeo = (len) => new THREE.CapsuleGeometry(DESC.radius, Math.max(len - DESC.radius * 2, 0.02), 6, 20).rotateZ(-Math.PI / 2);
+  const hubGeo = (r) => new THREE.CylinderGeometry(r, r, 0.012, 24).rotateX(Math.PI / 2);
   K.visuals.link1 = new THREE.Mesh(linkGeo(DESC.links[0]), armMat);
   K.visuals.link2 = new THREE.Mesh(linkGeo(DESC.links[1]), armMat);
-  K.visuals.wrist = new THREE.Mesh(linkGeo(DESC.links[2]), mat(0x8fa8d8));
+  K.visuals.wrist = new THREE.Mesh(linkGeo(DESC.links[2]), mat(0x8fa8d8, 0.35, 0.6));
   K.visuals.cube = mkBox([PROP_HALF, PROP_HALF, PROP_HALF], 0xffd479);
+  K.visuals.hub1 = new THREE.Mesh(hubGeo(0.032), mat(0x8fa8d8, 0.35, 0.7));
+  K.visuals.hub2 = new THREE.Mesh(hubGeo(0.030), mat(0x8fa8d8, 0.35, 0.7));
+  // 夹爪指板可视化：与物理夹板同尺寸同位姿（合爪看得见）
+  const plateGeo = new THREE.BoxGeometry(FINGER_HALF[0] * 2, FINGER_HALF[1] * 2, FINGER_HALF[2] * 2);
+  const plateMat = new THREE.MeshStandardMaterial({ color: 0x9fb6e8, roughness: 0.35, metalness: 0.7, transparent: true, opacity: 0.92 });
+  K.visuals.plateL = new THREE.Mesh(plateGeo, plateMat);
+  K.visuals.plateR = new THREE.Mesh(plateGeo, plateMat);
   const g2 = new THREE.Group();
   g2.add(K.visuals.link1, K.visuals.link2, K.visuals.wrist, K.visuals.cube,
-         K.visuals.baseCol, K.visuals.carrier);
+         K.visuals.baseCol, K.visuals.carrier, K.visuals.hub1, K.visuals.hub2,
+         K.visuals.plateL, K.visuals.plateR);
+  g2.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   scene.add(g2);
   // 相机拖拽
   let drag = null;
@@ -546,16 +611,28 @@ export async function boot(viewport) {
       if (K.policyMode) K.policyStep = 0;
     }
     syncVisuals();
+    // 目标圈呼吸脉冲 + 光柱随目标 + EE 拖尾滚动
+    const pulse = 1 + 0.06 * Math.sin(performance.now() * 0.003);
+    K.visuals.goal.scale.set(pulse, pulse, 1);
+    K.visuals.beam.position.set(K.goal[0], 0.66, K.goal[2]);
+    {
+      const attr = trail.geometry.getAttribute("position");
+      const arr = attr.array;
+      arr.copyWithin(0, 3);
+      attr.setXYZ(TRAIL_N - 1, K.lastEE[0], K.lastEE[1], K.lastEE[2]);
+      attr.needsUpdate = true;
+    }
     const ct = K.bodies.cube.translation();
     K.hudCb?.(
       `tick ${K.tick} · r̄ ${rewardAvg.toFixed(3)} · 距目标 ${Math.hypot(ct.x - K.goal[0], ct.z - K.goal[2]).toFixed(3)}m` +
       `<br>成功 ${successCount}/${episodesRun} · ${K.holding ? "🤏 抓住" : "✋ 松开"} · obs 21 维 / act 5 维`);
-    renderer.render(scene, camera);
+    K.visuals.composer.render();
     requestAnimationFrame(loop);
   }
   loop();
   addEventListener("resize", () => {
     renderer.setSize(viewport.clientWidth, viewport.clientHeight);
+    K.visuals.composer.setSize(viewport.clientWidth, viewport.clientHeight);
     camera.aspect = viewport.clientWidth / viewport.clientHeight;
     camera.updateProjectionMatrix();
   });
