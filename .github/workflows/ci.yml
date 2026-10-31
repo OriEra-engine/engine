@@ -55,6 +55,9 @@ jobs:
             test: cargo test -p oriera-agent --features rigid3d,cam
             clippy: cargo clippy -p oriera-agent --all-targets --features rigid3d,cam -- -D warnings
           # pyo3 桥腿：Windows 下 cdylib+测试二进制并行有已知交互，串行跑
+          - name: agent-spec
+            test: cargo test -p oriera-agent --features spec,rigid3d,cam,json
+            clippy: cargo clippy -p oriera-agent --all-targets --features spec,rigid3d,cam,json -- -D warnings
           - name: agent-python-bridge
             test: cargo test -p oriera-agent --features python -- --test-threads=1
             clippy: cargo clippy -p oriera-agent --all-targets --features python -- -D warnings
