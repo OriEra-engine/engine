@@ -86,11 +86,14 @@ function ik(target) {
   return [cl(yaw, 0), cl(shoulder, 1), cl(elbow, 2), cl(wrist, 3)];
 }
 const above = (p, h) => [p[0], p[1] + h, p[2]];
+// PHASES 对齐 Rust round-4（embodied_sim_collect.rs）：下探 0.025 +
+// 两段提升 + 落回原位再松开——与 Rust 91.7% 同策略。
 const PHASES = [
   { grip: 0, ticks: 70, target: (o) => above(o, 0.12) },
-  { grip: 0, ticks: 60, target: (o) => above(o, 0.030) },
-  { grip: 1, ticks: 40, target: (o) => above(o, 0.030) },
-  { grip: 1, ticks: 70, target: (o) => above(o, 0.20) },
+  { grip: 0, ticks: 60, target: (o) => above(o, 0.025) },
+  { grip: 1, ticks: 40, target: (o) => above(o, 0.025) },
+  { grip: 1, ticks: 50, target: (o) => above(o, 0.10) },
+  { grip: 1, ticks: 60, target: (o) => above(o, 0.20) },
   { grip: 1, ticks: 95, target: (_o, g) => above(g, 0.20) },
   { grip: 1, ticks: 70, target: (_o, g) => above(g, 0.06) },
   { grip: 0, ticks: 35, target: (_o, g) => above(g, 0.06) },
