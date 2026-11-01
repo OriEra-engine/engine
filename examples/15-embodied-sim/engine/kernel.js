@@ -118,7 +118,7 @@ const K = {
   holding: false, _lastHolding: false,
   fingerL: null, fingerR: null, gapNow: FINGER_GAP_OPEN,
   goal: [0.28, 0.5, 0], rng: { s: 1n }, tick: 0, steps: 0, wasHolding: false,
-  recording: false, episode: null, episodes: [], policyMode: false, policyStep: 0,
+  recording: false, episode: null, episodes: [], policyMode: false, policyStep: 0, phaseIdx: 0,
   keys: new Set(), hudCb: null, logCb: null, recCb: null,
 };
 
@@ -360,7 +360,7 @@ function envReset(seed) {
   K.targets = [0, 0, 0, 0]; K.gripper = 0; K.lastCmd = [NaN, NaN, NaN, NaN];
   K.prevAngles = [0, 0, 0, 0]; K.lastVel = [0, 0, 0, 0]; K.holding = false;
   K.gapNow = FINGER_GAP_OPEN;
-  K.wasHolding = false; K.steps = 0; K.tick = 0; K.policyMode = false; K.policyStep = 0;
+  K.wasHolding = false; K.steps = 0; K.tick = 0; K.policyMode = false; K.policyStep = 0; K.phaseIdx = 0;
   K.episode = null;
   // 指板瞬移到家 TCP（前台验证实测）：settle 首拍 driveFingers 才经
   // setNextKinematic 逐帧回家，上一集终点→家的扫掠路径会穿过重生
@@ -618,7 +618,7 @@ export async function boot(viewport) {
   });
   const btn = (id, fn) => document.getElementById(id).addEventListener("click", fn);
   btn("btn-reset", () => { const o = envReset((Math.random() * 1e9) | 0); log.textContent = "已重置（随机种子）"; post({ type: "state", note: "reset" }); return o; });
-  btn("btn-policy", () => { K.policyMode = true; K.policyStep = 0; log.textContent = "脚本策略运行中…"; });
+  btn("btn-policy", () => { K.policyMode = true; K.policyStep = 0; K.phaseIdx = 0; log.textContent = "脚本策略运行中…"; });
   btn("btn-rec", (e) => {
     K.recording = !K.recording;
     e.target.textContent = K.recording ? "■ 停止录制" : "● 开始录制";
@@ -662,7 +662,7 @@ export async function boot(viewport) {
     const m = e.data;
     if (!m || m.source !== "oriera-sim" || !m.cmd) return;
     if (m.cmd === "reset") envReset(m.seed ?? ((Math.random() * 1e9) | 0));
-    else if (m.cmd === "policy") { K.policyMode = true; K.policyStep = 0; }
+    else if (m.cmd === "policy") { K.policyMode = true; K.policyStep = 0; K.phaseIdx = 0; }
     else if (m.cmd === "grip") K.gripper = m.value;
     else if (m.cmd === "teleop") { K.policyMode = false; for (let i = 0; i < 4; i++) K.targets[i] = m.angles[i]; K.gripper = m.gripper ?? K.gripper; }
     else if (m.cmd === "record") document.getElementById("btn-rec").click();
@@ -695,10 +695,22 @@ export async function boot(viewport) {
       const ee = [obs[9], obs[10], obs[11]];
       const obj = [ee[0] + obs[12], ee[1] + obs[13], ee[2] + obs[14]];
       const gol = [ee[0] + obs[15], ee[1] + obs[16], ee[2] + obs[17]];
-      let acc = 0;
-      const ph = PHASES.find((p) => (acc += p.ticks) > K.policyStep);
+      // 收敛门控相位机（对齐 Rust embodied_env：误差 <0.12 rad + 最短
+      // 驻留 25 tick 才推进）。此前开环固定节拍：跟踪滞后下相位错位，
+      // 下探未到位就闭爪/提前松开——前台验证 12 集余差的根因。
+      // 逃逸阀 dwell>110：impulse 链在接触下（夹板碰桌/贴方块）误差
+      // 地面高于 0.12，无阀会活锁到截断（实测两集全败后加）。
+      // p.ticks 保留数组结构（parity 导出），运行时用统一驻留参数。
+      const ph = K.phaseIdx < PHASES.length ? PHASES[K.phaseIdx] : null;
       action = ph ? [...ik(ph.target(obj, gol)), ph.grip] : [...ik(above(gol, 0.22)), 0];
-      K.policyStep++;
+      if (ph) {
+        const angles = readAngles();
+        let err = 0;
+        for (let i = 0; i < 4; i++) err = Math.max(err, Math.abs(angles[i] - action[i]));
+        const dwell = K.policyStep;
+        if (dwell >= 25 && (err < 0.12 || dwell >= 110)) { K.phaseIdx++; K.policyStep = 0; }
+        else K.policyStep++;
+      } else K.policyStep++;
       for (let i = 0; i < 4; i++) sliders[i].input.value = action[i];
     } else {
       action = [...K.targets, K.gripper];
@@ -731,7 +743,7 @@ export async function boot(viewport) {
         post({ type: "state", note: "success" });
       }
       envReset((Math.random() * 1e9) | 0);
-      if (K.policyMode) K.policyStep = 0;
+      if (K.policyMode) { K.policyStep = 0; K.phaseIdx = 0; }
     }
     syncVisuals();
     // 目标圈呼吸脉冲 + 光柱随目标 + EE 拖尾滚动
@@ -796,6 +808,8 @@ export async function boot(viewport) {
       policyMode: K.policyMode,
       holding: K.holding,
       goal: [...K.goal],
+      phase: K.phaseIdx,
+      step: K.policyStep,
     }),
     // 诊断出口（Studio cdp 传统）：马达/求解器对照实验用。
     debug: {
