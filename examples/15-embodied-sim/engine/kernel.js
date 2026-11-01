@@ -119,6 +119,7 @@ const K = {
   fingerL: null, fingerR: null, gapNow: FINGER_GAP_OPEN,
   goal: [0.28, 0.5, 0], rng: { s: 1n }, tick: 0, steps: 0, wasHolding: false,
   recording: false, episode: null, episodes: [], policyMode: false, policyStep: 0, phaseIdx: 0,
+  redraws: 0, // 退化重抽累计（跨集不复位：seed 位移 + stats 可观测）
   keys: new Set(), hudCb: null, logCb: null, recCb: null,
 };
 
@@ -749,19 +750,25 @@ export async function boot(viewport) {
       // 「成功 N/M」虚高一个数量级的分母污染。
       if (out.terminated && K.steps < 5) {
         K.redraws = (K.redraws || 0) + 1;
+        // envReset 会清 policyMode（一次性演示语义）——重抽不是回合
+        // 结束，策略要在新抽签上继续跑，否则演示被退化命中无声掐停。
+        const keepPolicy = K.policyMode;
         envReset(((Math.random() * 1e9) | 0) + 65536 * K.redraws);
         if (K.recording) K.episode = { task: TASK_PHRASE, rows: [], obs: observe() };
-        if (K.policyMode) { K.policyStep = 0; K.phaseIdx = 0; }
+        if (keepPolicy) { K.policyMode = true; K.policyStep = 0; K.phaseIdx = 0; }
       } else {
         if (K.recording && K.episode && K.episode.rows.length >= 5) K.episodes.push(K.episode);
-        K.episode = K.recording ? { task: TASK_PHRASE, rows: [], obs: observe() } : null;
         episodesRun++;
         if (out.terminated) {
           successCount++; K.policyMode = false;
           post({ type: "state", note: "success" });
         }
         envReset((Math.random() * 1e9) | 0);
-        if (K.policyMode) { K.policyStep = 0; K.phaseIdx = 0; }
+        // 下一集录制对象必须在 envReset **之后**建：envReset 置
+        // K.episode=null，此前先建后重置 → 录制+自动重置下只采到第一集
+        //（审查 P1 实锤的数据管线静默缺口），且 obs 本该是新集初态。
+        // 截断/成功后策略按一次性演示语义停止（envReset 已清）。
+        K.episode = K.recording ? { task: TASK_PHRASE, rows: [], obs: observe() } : null;
       }
     }
     syncVisuals();

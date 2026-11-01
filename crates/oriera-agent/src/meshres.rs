@@ -110,7 +110,17 @@ pub fn resolve_mesh_uri(
 /// 本地路径（file:// 剥前缀后的剩余物或裸路径）：绝对 → 锚点下归一；
 /// 相对 → base_dir 之下归一（`..` 越过 base_dir 拒绝）。
 fn resolve_local(rest: &str, base_dir: &Path) -> Result<PathBuf, String> {
-    let p = rest.replace('\\', "/");
+    let mut p = rest.replace('\\', "/");
+    // RFC 8089 三斜杠形式 `file:///C:/x.stl` 剥前缀后是 `/C:/x.stl`——
+    // Windows 上无 Prefix 组件不算绝对路径（审查 P1：会落入相对分支
+    // 且 `C:` 组件被当盘符逃逸误拒）。前导 `/` + 盘符 → 去掉前导 `/`。
+    if p.len() >= 3
+        && p.as_bytes()[0] == b'/'
+        && p.as_bytes()[1].is_ascii_alphabetic()
+        && p.as_bytes()[2] == b':'
+    {
+        p.remove(0);
+    }
     let candidate = Path::new(&p);
     if candidate.is_absolute() {
         normalize_absolute(candidate)
@@ -770,6 +780,14 @@ endfacet
         let abs = t.0.join("abs.stl");
         let uri = format!("file://{}", abs.display());
         assert_eq!(resolve_mesh_uri(&uri, &t.0, &pkgs).unwrap(), abs);
+        // RFC 8089 三斜杠 + 盘符（Windows 最常见写法）：`file:///C:/..`
+        // 剥前缀后 `/C:/..` 要被识别为绝对路径而非盘符逃逸误拒（审查 P1）。
+        #[cfg(windows)]
+        {
+            let uri3 = format!("file:///{}", abs.display().to_string().replace('\\', "/"));
+            assert!(uri3.starts_with("file:///") && uri3.as_bytes()[9] == b':', "fixture: {uri3}");
+            assert_eq!(resolve_mesh_uri(&uri3, &t.0, &pkgs).unwrap(), abs);
+        }
         // 空 URI
         assert!(resolve_mesh_uri("  ", &t.0, &pkgs).is_err());
     }

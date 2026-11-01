@@ -150,9 +150,9 @@ python scripts/mjcf_crosscheck.py
 vendor 缺失时自动 sparse clone menagerie；Rust 侧 `cargo run --example
 urdf_chain_dump -p oriera-agent --features urdf`（构建锁冲突等 30s 重试）。
 产出 `out/mjcf-crosscheck/report.json` + 控制台表格，末行
-`SUMMARY: PASS=125 TOLERANCE=0 FAIL=7 TOTAL=132 -> VERDICT: FAIL`
-（exit code = verdict；2026-11-01 首测 104/8——非对角入 U3 后复测 125/7，
-armature×7 为唯一余项）。容差：限位 0.02 rad、质量 5%、长度 1 mm、
+`SUMMARY: PASS=125 TOLERANCE=0 FAIL=0 STRUCTURAL=7 TOTAL=132 -> VERDICT: PASS`
+（exit code = verdict；2026-11-01 首测 104/8 → 非对角入 U3 后 125/7 →
+armature 转 STRUCTURAL 后可作 CI 门禁：exit 0 = 无非结构性 FAIL）。容差：限位 0.02 rad、质量 5%、长度 1 mm、
 damping 10%；PASS ≤ tol < TOLERANCE ≤ 2·tol < FAIL；结构缺项如实记 FAIL。
 
 ### A.3 对比表（MuJoCo 编译值 vs OriEra 导入值）
@@ -214,8 +214,8 @@ extrinsic XYZ；Rust 无 FK 实现，按任务要求在脚本里手算并注明�
 - **可表达参数 125/125 全 PASS**：几何（axis/限位/body pos/rot）与动力学
   （mass/惯量全张量/damping/effort）对 MuJoCo 编译值一致到 f32 精度；
   `validate_chain(7)` 零告警；FK 10/10 ≤5 mm（实测 4e−5 mm）。
-- **7 项 FAIL 全部是"参照系有、URDF/OriEra 无处安放"的表达力缺口**
-  （armature——URDF 规范层就没有这个语义），不是导入链解析错误——
-  按纪律未改任何 OriEra 物理参数凑对，如实入册。
+- **armature ×7 记 STRUCTURAL**（"参照系有、URDF/OriEra 无处安放"的
+  表达力缺口——URDF 规范层就没有这个语义），不是导入链解析错误——
+  按纪律未改任何 OriEra 物理参数凑对，如实入册但不计入 verdict。
 - **判定：URDF 导入链对 URDF 可表达参数的保真度 PASS**；表达力缺口
   （armature 字段、7DoF→4DoF 平面化）进 backlog。

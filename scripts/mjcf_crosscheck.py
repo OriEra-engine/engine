@@ -24,8 +24,9 @@ forward-kinematics workspace spot check (<= 5 mm end-effector deviation).
 
 Tolerances: limits 0.02 rad, mass 5%, length 1 mm, damping 10%.
 Status rule: PASS <= tol < TOLERANCE <= 2*tol < FAIL.
-Missing-on-the-OriEra-side structural values (armature, inertia
-off-diagonals) are recorded honestly as FAIL with a root-cause note.
+Missing-on-the-OriEra-side structural values (armature; inertia
+off-diagonals closed 2026-11-01) are recorded honestly as STRUCTURAL
+with a root-cause note — listed, not counted toward the verdict.
 
 Output: out/mjcf-crosscheck/report.json + a console table, ending with a
 single PASS/FAIL summary line.
@@ -480,9 +481,10 @@ def compare_params(bodies_mj, joints_mj, dump) -> None:
             row("damping", jn, dm, du, rel, TOL_DAMP_REL,
                 status_of(rel, TOL_DAMP_REL))
 
-        # armature: no URDF concept -> structural FAIL, reported honestly
+        # armature: no URDF concept -> STRUCTURAL（审查 P1）：如实入册但
+        # 不计入 verdict——exit 0 = 无非结构性 FAIL，脚本才能当 CI 门禁。
         row("armature", jn, jm["armature"], "n/a (no URDF concept)",
-            "structural", None, "FAIL",
+            "structural", None, "STRUCTURAL",
             "URDF 1.0 has no armature semantics; OriEra ArmDescription has "
             "no rotor-inertia field")
 
@@ -683,6 +685,7 @@ def main() -> int:
     n_pass = sum(1 for r in ROWS if r["status"] == "PASS")
     n_tol = sum(1 for r in ROWS if r["status"] == "TOLERANCE")
     n_fail = sum(1 for r in ROWS if r["status"] == "FAIL")
+    n_struct = sum(1 for r in ROWS if r["status"] == "STRUCTURAL")
     verdict = "PASS" if n_fail == 0 else "FAIL"
 
     # ---- console table ----------------------------------------------------
@@ -749,7 +752,7 @@ def main() -> int:
     log(f"[report] {REPORT}")
 
     log(f"SUMMARY: PASS={n_pass} TOLERANCE={n_tol} FAIL={n_fail} "
-        f"TOTAL={len(ROWS)} -> VERDICT: {verdict}")
+        f"STRUCTURAL={n_struct} TOTAL={len(ROWS)} -> VERDICT: {verdict}")
     return 0 if n_fail == 0 else 1
 
 

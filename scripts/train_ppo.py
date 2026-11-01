@@ -34,8 +34,12 @@ def make_env(args):
     )
 
 
-EVAL_SEED0 = 1000
-EVAL_EPISODES = 12  # 对齐批量 CLI 验收带 / LAB-GUIDE（1000-1011）
+# 评测 seed 带与训练序列**不相交**（审查 P1）：SB3 seed=7 → 训练 env 从
+# reset(seed=7) 起逐集 +1，~992 集后踩进 1000-1011——长跑下评测不再
+# held-out。改到千万位带；LAB-GUIDE 的 CLI 验收带（1000-1011）是采集
+# 用的，与 RL 评测带分开各表各用。
+EVAL_SEED0 = 10_000_000
+EVAL_EPISODES = 12
 
 
 def evaluate(model, args, n_episodes=EVAL_EPISODES) -> dict:
@@ -83,17 +87,20 @@ def main():
 
     for checkpoint in range(args.eval_every, args.steps + 1, args.eval_every):
         model.learn(total_timesteps=args.eval_every, reset_num_timesteps=False)
-        row = {"step": checkpoint, "wall_s": round(time.time() - t0, 1),
+        # PPO 每次 learn 向上取整到 n_steps(2048) 倍数——标签记真实时步
+        # 而非名义 checkpoint（审查 P1：旧标签低报 ~2.4%）。
+        row = {"step": model.num_timesteps, "wall_s": round(time.time() - t0, 1),
                **evaluate(model, args)}
         curve.append(row)
-        print(f"[{checkpoint:>7} steps] r̄={row['mean_return']:.1f} "
+        # 每 checkpoint 增量落盘（审查 P1：只在结尾写，中途崩=全丢）。
+        model.save(args.out / "ppo_model")
+        (args.out / "eval_curve.json").write_text(json.dumps(
+            {"task": args.task, "dr": args.dr,
+             "eval_seeds": f"{EVAL_SEED0}-{EVAL_SEED0 + EVAL_EPISODES - 1}",
+             "curve": curve}, indent=1))
+        print(f"[{model.num_timesteps:>7} steps] r̄={row['mean_return']:.1f} "
               f"succ={row['success_rate']:.0%} wall={row['wall_s']}s", flush=True)
 
-    model.save(args.out / "ppo_model")
-    (args.out / "eval_curve.json").write_text(
-        json.dumps({"task": args.task, "steps": args.steps, "dr": args.dr,
-                    "eval_seeds": f"{EVAL_SEED0}-{EVAL_SEED0 + EVAL_EPISODES - 1}",
-                    "curve": curve}, indent=1))
     env.close()
     print(f"done → {args.out} (wall {time.time() - t0:.0f}s)")
 
