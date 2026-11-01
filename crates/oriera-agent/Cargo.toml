@@ -49,7 +49,9 @@ python = ["dep:pyo3", "pyo3/abi3-py310", "rigid3d", "cam"]
 # SceneSpec（实验即文件）：serde 化场景描述 + JSON 加载。
 spec = ["rigid3d", "oriera-subsys/serde", "json"]
 # URDF 导入：机器人描述文件 → 关节链 → ArmDescription（M1 设计稿落地）。
-urdf = ["dep:roxmltree", "rigid3d"]
+# serde_json 仅供 meshres 的 GLB JSON chunk 探针（U3）——GLB 全量解码
+# 在 L4 oriera-asset，L9 不反向依赖，也不为此引新外部 crate。
+urdf = ["dep:roxmltree", "rigid3d", "dep:serde_json"]
 
 [dev-dependencies]
 oriera-render = { path = "../oriera-render" }

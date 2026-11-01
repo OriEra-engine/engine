@@ -13,9 +13,15 @@
 //! URDF conventions honored: SI units (metres, radians), `rpy`
 //! extrinsic XYZ, joint `origin` = parent-frame pose of the child
 //! frame, revolute axis in the joint/child frame.
+//!
+//! Meshes: URIs recorded since U2; U3 lets them 上岗 via
+//! [`crate::meshres`]（URI 解析 + STL 全量/GLB 探针），联检入口
+//! [`UrdfReport::validate_chain_with_meshes`]。
 
 use oriera_subsys::ArmDescription;
 use roxmltree::Document;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 /// One parsed link (kinematic frame + primitive geometry, if any).
 #[derive(Debug, Clone, Default)]
@@ -38,8 +44,9 @@ pub enum UrdfGeom {
     Sphere {
         radius: f32,
     },
-    /// `<mesh filename="package://...">` — URI recorded for L4 asset
-    /// pipeline (GLB/STL loading when the asset center lands).
+    /// `<mesh filename="package://...">` — URI 登记于 U2；U3 起可经
+    /// [`crate::meshres::load_urdf_mesh`] 按扩展名加载（STL 全量 /
+    /// GLB 探针）。
     Mesh {
         uri: String,
     },
@@ -302,6 +309,62 @@ impl UrdfReport {
         issues
     }
 
+    /// U3 mesh 联检：[`Self::validate_chain`] 之上，把每条 `<mesh>`
+    /// 资产的解析结果（三角形数/包围盒尺寸/primitives 数）并进报告。
+    /// 资产缺位同样是链的"断点"（可视化裸奔、惯性靠猜）——按人话入列，
+    /// 绝不 panic。`base_dir`/`packages` 语义见
+    /// [`crate::meshres::resolve_mesh_uri`]。
+    ///
+    /// 注意：追加的 mesh 行刻意避开「环/断链」字样——上层对链校验输出
+    /// 按关键词分诊（见 tests）。
+    pub fn validate_chain_with_meshes(
+        &self,
+        want: usize,
+        base_dir: &Path,
+        packages: &BTreeMap<String, PathBuf>,
+    ) -> Vec<String> {
+        let mut out = self.validate_chain(want);
+        for l in &self.links {
+            let Some(UrdfGeom::Mesh { uri }) = &l.geometry else {
+                continue;
+            };
+            match crate::meshres::load_urdf_mesh(uri, base_dir, packages) {
+                Ok(crate::meshres::UrdfMesh::Stl {
+                    mesh,
+                    source_bytes,
+                }) => {
+                    let [mn, mx] = mesh.bounds;
+                    out.push(format!(
+                        "mesh {}：{} → {} 三角形（{} 顶点）· 包围盒 {:.3}×{:.3}×{:.3} m · 源 {} KiB",
+                        l.name,
+                        uri,
+                        mesh.indices.len(),
+                        mesh.vertices.len(),
+                        mx[0] - mn[0],
+                        mx[1] - mn[1],
+                        mx[2] - mn[2],
+                        source_bytes.div_ceil(1024)
+                    ));
+                }
+                Ok(crate::meshres::UrdfMesh::Probed {
+                    info,
+                    source_bytes,
+                }) => {
+                    out.push(format!(
+                        "mesh {}：{} → GLB 探针 {} meshes / {} primitives（全量解码走 L4）· 源 {} KiB",
+                        l.name,
+                        uri,
+                        info.mesh_count,
+                        info.primitive_count,
+                        source_bytes.div_ceil(1024)
+                    ));
+                }
+                Err(e) => out.push(format!("mesh {}：{} → 不可用：{e}", l.name, uri)),
+            }
+        }
+        out
+    }
+
     /// Extract the FIRST linear chain of actuated revolute/continuous
     /// joints from the root (up to `want`; shorter chains are padded
     /// with defaults — an empty chain errors), and map it onto
@@ -470,5 +533,96 @@ mod tests {
     fn malformed_xml_is_an_error_not_a_panic() {
         assert!(UrdfReport::parse("<robot><link").is_err());
         assert!(UrdfReport::parse("<urdf/>").is_err());
+    }
+
+    /// mesh 联检 fixture：base 挂 STL、l1 挂裸 glTF（探针）。
+    const MESH_FIXTURE: &str = r#"<?xml version="1.0"?>
+    <robot name="mesh_arm">
+      <link name="base"><collision><geometry><mesh filename="package://oriera_arm/meshes/base.stl"/></geometry></collision></link>
+      <link name="l1"><collision><geometry><mesh filename="package://oriera_arm/meshes/l1.gltf"/></geometry></collision></link>
+      <joint name="j1" type="revolute">
+        <parent link="base"/><child link="l1"/>
+        <origin xyz="0 0 0.12"/><axis xyz="0 0 1"/>
+      </joint>
+    </robot>"#;
+
+    /// 唯一临时目录 + Drop 整树删除（与 meshres::tests 同款，自足）。
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let d = std::env::temp_dir().join(format!(
+                "oriera_urdf_{}_{}_{}",
+                std::process::id(),
+                tag,
+                SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&d).expect("创建临时目录");
+            Self(d)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 四面体二进制 STL（与 meshres::tests 同一 fixture 语义）。
+    fn tetra_stl_bytes() -> Vec<u8> {
+        let tris: [[[f32; 3]; 3]; 4] = [
+            [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        ];
+        let mut out = vec![0u8; 80];
+        out.extend_from_slice(&4u32.to_le_bytes());
+        for t in &tris {
+            for v in std::iter::once(&[0.0f32; 3]).chain(t.iter()) {
+                for c in v {
+                    out.extend_from_slice(&c.to_le_bytes());
+                }
+            }
+            out.extend_from_slice(&0u16.to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn mesh_assets_enter_the_chain_report() {
+        let t = TempDir::new("chain_mesh");
+        let packages = std::collections::BTreeMap::from([(
+            "oriera_arm".to_string(),
+            t.0.join("oriera_arm"),
+        )]);
+        std::fs::create_dir_all(t.0.join("oriera_arm/meshes")).unwrap();
+        let stl_path = t.0.join("oriera_arm/meshes/base.stl");
+        std::fs::write(&stl_path, tetra_stl_bytes()).unwrap();
+        std::fs::write(
+            t.0.join("oriera_arm/meshes/l1.gltf"),
+            r#"{"meshes":[{"name":"l1","primitives":[{},{}]}]}"#,
+        )
+        .unwrap();
+
+        let rep = UrdfReport::parse(MESH_FIXTURE).unwrap();
+        // 链本身无问题（轴 ±Z），两条 mesh 资产行各就各位
+        let issues = rep.validate_chain_with_meshes(1, &t.0, &packages);
+        assert_eq!(issues.len(), 2, "仅 mesh 行、无链问题：{issues:?}");
+        assert!(
+            issues[0].contains("base.stl") && issues[0].contains("4 三角形"),
+            "STL 行需带三角形计数：{issues:?}"
+        );
+        assert!(issues[0].contains("包围盒"), "STL 行需带包围盒尺寸：{issues:?}");
+        assert!(
+            issues[1].contains("l1.gltf") && issues[1].contains("primitives"),
+            "探针行需带 primitives 计数：{issues:?}"
+        );
+
+        // 资产缺位 → 人话报错，不 panic、不静默
+        std::fs::remove_file(&stl_path).unwrap();
+        let issues = rep.validate_chain_with_meshes(1, &t.0, &packages);
+        assert!(issues.iter().any(|i| i.contains("不可用")), "{issues:?}");
     }
 }

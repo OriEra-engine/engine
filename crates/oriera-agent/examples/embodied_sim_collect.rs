@@ -19,7 +19,12 @@
 //! Output: `<out>/lerobot-v21/` + `<out>/eval_report.json`
 
 use oriera_agent::embodied_env::{EmbodiedEnv, TableTopEnv, TaskKind};
-use oriera_agent::lerobot::{CameraTrack, LeRobotV21};
+use oriera_agent::lerobot::LeRobotV21;
+// CameraTrack 只被 cam 腿消费（set_camera 两个 cfg 块）——无 cam 特性下
+// 不引入，否则 `--features urdf,spec --all-targets` 的 clippy -D warnings
+// 以 unused-imports 红灯。
+#[cfg(feature = "cam")]
+use oriera_agent::lerobot::CameraTrack;
 use oriera_subsys::ArmDescription;
 
 const DT: f32 = 1.0 / 60.0;

@@ -34,6 +34,8 @@ pub mod goal;
 #[cfg(feature = "rigid3d")]
 pub mod lerobot;
 pub mod memory;
+#[cfg(feature = "urdf")]
+pub mod meshres;
 pub mod prefab;
 #[cfg(feature = "python")]
 pub mod python;
