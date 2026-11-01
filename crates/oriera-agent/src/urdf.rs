@@ -78,6 +78,11 @@ pub struct UrdfInertial {
     pub ixx: f32,
     pub iyy: f32,
     pub izz: f32,
+    /// 惯量张量非对角项（MJCF 交叉验证 2026-11-01 指出的表达力缺口：
+    /// menagerie Panda 连杆带 0.019 kg·m² 级非对角，此前被静默丢弃）。
+    pub ixy: f32,
+    pub ixz: f32,
+    pub iyz: f32,
     pub origin_xyz: [f32; 3],
 }
 
@@ -140,18 +145,15 @@ impl UrdfReport {
             iner_data.mass = m.attribute("value")?.parse().ok()?;
         }
         if let Some(i) = iner.children().find(|c| c.has_tag_name("inertia")) {
-            iner_data.ixx = i
-                .attribute("ixx")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
-            iner_data.iyy = i
-                .attribute("iyy")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
-            iner_data.izz = i
-                .attribute("izz")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
+            let attr = |name: &str| i.attribute(name).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            iner_data.ixx = attr("ixx");
+            iner_data.iyy = attr("iyy");
+            iner_data.izz = attr("izz");
+            // 非对角项（MJCF 交叉验证缺口闭环）：URDF 惯例可省略（对称
+            // 张量在关节轴对齐时合法），缺省 0 与语义一致。
+            iner_data.ixy = attr("ixy");
+            iner_data.ixz = attr("ixz");
+            iner_data.iyz = attr("iyz");
         }
         if let Some(o) = iner.children().find(|c| c.has_tag_name("origin")) {
             iner_data.origin_xyz = Self::vec3(o.attribute("xyz"));
@@ -533,6 +535,33 @@ mod tests {
     fn malformed_xml_is_an_error_not_a_panic() {
         assert!(UrdfReport::parse("<robot><link").is_err());
         assert!(UrdfReport::parse("<urdf/>").is_err());
+    }
+
+    #[test]
+    fn inertial_offdiagonals_parsed_not_dropped() {
+        // MJCF 交叉验证（2026-11-01）指出的表达力缺口：非对角惯量此前
+        // 被静默丢弃——menagerie Panda 连杆带 0.019 kg·m² 级 ixy/ixz/iyz。
+        let xml = r#"<?xml version="1.0"?>
+<robot name="offdiag">
+  <link name="l0">
+    <inertial>
+      <mass value="0.63"/>
+      <inertia ixx="0.00315" iyy="0.00388" izz="0.004285"
+               ixy="8.2904e-7" ixz="0.00015" iyz="8.2299e-6"/>
+    </inertial>
+  </link>
+</robot>"#;
+        let rep = UrdfReport::parse(xml).unwrap();
+        let l0 = rep.links.iter().find(|l| l.name == "l0").unwrap();
+        let i = l0.inertial.as_ref().unwrap();
+        assert_eq!(i.ixy, 8.2904e-7);
+        assert_eq!(i.ixz, 0.00015);
+        assert_eq!(i.iyz, 8.2299e-6);
+        // URDF 惯例允许省略非对角（对称张量在轴对齐时合法）→ 缺省 0。
+        let xml2 = xml.replace(" ixy=\"8.2904e-7\" ixz=\"0.00015\" iyz=\"8.2299e-6\"", "");
+        let rep2 = UrdfReport::parse(&xml2).unwrap();
+        let i2 = rep2.links[0].inertial.as_ref().unwrap();
+        assert_eq!((i2.ixy, i2.ixz, i2.iyz), (0.0, 0.0, 0.0));
     }
 
     /// mesh 联检 fixture：base 挂 STL、l1 挂裸 glTF（探针）。

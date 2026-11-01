@@ -547,16 +547,24 @@ def compare_params(bodies_mj, joints_mj, dump) -> None:
             row(f"inertia {comp}", name, im, iu, rel, TOL_INERTIA_REL,
                 status_of(rel, TOL_INERTIA_REL))
 
-    # -- inertia off-diagonals: parsed away by the import chain -------------
-    off = []
+    # -- inertia off-diagonals：U3 补齐后逐项真值对比（2026-11-01 前
+    #    "解析即丢"是硬 FAIL；UrdfInertial 现存 ixy/ixz/iyz）-------------
+    # 符号约定（实证对拍 link1）：R·diag·Rᵀ 张量非对角元与 MJCF
+    # fullinertia/URDF <inertia> 属性值同号直等，无需变号。
     for name in ["link1", "link2", "link3", "link4", "link5", "link6", "link7"]:
         f = bodies_mj[name]["inertia_full"]
-        off += [f[0, 1], f[0, 2], f[1, 2]]
-    off_max = float(np.max(np.abs(off)))
-    row("inertia offdiag", "link1..7 (ixy/ixz/iyz)", off_max,
-        "n/a (not parsed)", "structural", None, "FAIL",
-        "urdf.rs UrdfInertial keeps only ixx/iyy/izz; menagerie fullinertia "
-        "has nonzero ixy/ixz/iyz (max |.| = %.3e kg·m²)" % off_max)
+        lu = links_u.get(name)
+        in_u = lu.get("inertial") if lu else None
+        if in_u is None:
+            row("inertia offdiag", name, 0.0, "missing", "missing",
+                TOL_INERTIA_REL, "FAIL", "URDF <inertial> absent")
+            continue
+        for r, c, comp in ((0, 1, "ixy"), (0, 2, "ixz"), (1, 2, "iyz")):
+            im = float(f[r, c])
+            iu = float(in_u[comp])
+            rel = abs(im - iu) / abs(im) if im else abs(im - iu)
+            row(f"inertia {comp}", name, im, iu, rel, TOL_INERTIA_REL,
+                status_of(rel, TOL_INERTIA_REL))
 
 
 # ----------------------------------------------------------------- FK ----

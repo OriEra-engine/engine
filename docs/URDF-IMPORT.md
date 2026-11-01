@@ -150,8 +150,9 @@ python scripts/mjcf_crosscheck.py
 vendor 缺失时自动 sparse clone menagerie；Rust 侧 `cargo run --example
 urdf_chain_dump -p oriera-agent --features urdf`（构建锁冲突等 30s 重试）。
 产出 `out/mjcf-crosscheck/report.json` + 控制台表格，末行
-`SUMMARY: PASS=104 TOLERANCE=0 FAIL=8 TOTAL=112 -> VERDICT: FAIL`
-（exit code = verdict）。容差：限位 0.02 rad、质量 5%、长度 1 mm、
+`SUMMARY: PASS=125 TOLERANCE=0 FAIL=7 TOTAL=132 -> VERDICT: FAIL`
+（exit code = verdict；2026-11-01 首测 104/8——非对角入 U3 后复测 125/7，
+armature×7 为唯一余项）。容差：限位 0.02 rad、质量 5%、长度 1 mm、
 damping 10%；PASS ≤ tol < TOLERANCE ≤ 2·tol < FAIL；结构缺项如实记 FAIL。
 
 ### A.3 对比表（MuJoCo 编译值 vs OriEra 导入值）
@@ -177,7 +178,7 @@ damping 10%；PASS ≤ tol < TOLERANCE ≤ 2·tol < FAIL；结构缺项如实记
 | mass | 4.970684 / 0.646926 / 3.228604 / 3.587895 / 1.225946 / 1.666555 / 0.735522 kg | 4.8e−8 相对 | 7/7 PASS（attachment 双侧无质量） |
 | inertial com（body_ipos↔inertial origin） | 见 report.json | 2.6e−9 m | 7/7 PASS |
 | inertia 对角（ixx/iyy/izz） | 全 21 项 | 4.7e−8 相对 | 21/21 PASS |
-| inertia 非对角（ixy/ixz/iyz） | 最大 0.019169 kg·m²（link1 iyz） | **不可解析** | **FAIL（结构）** |
+| inertia 非对角（ixy/ixz/iyz） | 最大 0.019169 kg·m²（link1 iyz） | 2.4e−8 相对 | 21/21 PASS（U3 已补，符号同号直等） |
 
 FK 工作空间抽查：10 组随机关节角（seed 20261101，限位内均匀采样），
 MuJoCo `mj_forward` 读 `attachment_site` xpos，对 OriEra 导出链几何手算
@@ -188,15 +189,14 @@ extrinsic XYZ；Rust 无 FK 实现，按任务要求在脚本里手算并注明�
 
 ### A.4 偏差清单（FAIL / 超差项逐条根因）
 
-1. **armature ×7（结构缺项）**——MJCF class panda `armature="0.1"`（转子
-   惯性反射），URDF 1.0 规范无 armature 语义，`ArmDescription` 亦无对应
-   字段。根因：表达力缺口（规范层），非解析错误。影响：名义加速段偏
-   "轻"，实际由 PD kp/kd 与 forcerange 代偿。
-2. **惯量非对角项 ×1（结构缺项）**——menagerie `fullinertia` 的
-   ixy/ixz/iyz 非零（最大 0.019169 kg·m²，link1 iyz），`urdf.rs`
-   `UrdfInertial` 只解析 ixx/iyy/izz（U2 记账定位的刻意裁剪）。根因：
-   解析器字段裁剪；主轴不与体坐标重合的连杆被当对角阵，动力学耦合扭矩
-   丢失。修法：`UrdfInertial` 补三字段（与 meshres 无耦合，可独立做）。
+1. **armature ×7（结构缺项，唯一余项）**——MJCF class panda
+   `armature="0.1"`（转子惯性反射），URDF 1.0 规范无 armature 语义，
+   `ArmDescription` 亦无对应字段。根因：表达力缺口（规范层），非解析
+   错误。影响：名义加速段偏"轻"，实际由 PD kp/kd 与 forcerange 代偿。
+2. **惯量非对角项 ×21 —— 已闭环（2026-11-01）**：`UrdfInertial` 补
+   ixy/ixz/iyz 三字段 + 解析（URDF 惯例可省略，缺省 0）+ chain dump
+   出值 + crosscheck 逐项真值对比（符号实证：R·diag·Rᵀ 张量非对角与
+   属性值同号直等）。21/21 PASS（最大 2.4e−8 相对）。
 3. **结构性发现（非 FAIL 行，informational）**——`first_revolute_chain(4)`
    把 Panda 映到 ArmDescription：`links=[0.333, 0.01, 0.316]`——joint2
    origin ‖xyz‖=0 被 `max(0.01)` 钳位，平面 4 阶映射对真实 7DoF 臂退化
@@ -211,12 +211,11 @@ extrinsic XYZ；Rust 无 FK 实现，按任务要求在脚本里手算并注明�
 
 ### A.5 结论（参数保真度判定）
 
-- **可表达参数 104/104 全 PASS**：几何（axis/限位/body pos/rot）与动力学
-  （mass/惯量对角/damping/effort）对 MuJoCo 编译值一致到 f32 精度；
+- **可表达参数 125/125 全 PASS**：几何（axis/限位/body pos/rot）与动力学
+  （mass/惯量全张量/damping/effort）对 MuJoCo 编译值一致到 f32 精度；
   `validate_chain(7)` 零告警；FK 10/10 ≤5 mm（实测 4e−5 mm）。
-- **8 项 FAIL 全部是"参照系有、URDF/OriEra 无处安放"的表达力缺口**
-  （armature、惯量非对角），不是导入链解析错误——按纪律未改任何 OriEra
-  物理参数凑对，如实入册。
+- **7 项 FAIL 全部是"参照系有、URDF/OriEra 无处安放"的表达力缺口**
+  （armature——URDF 规范层就没有这个语义），不是导入链解析错误——
+  按纪律未改任何 OriEra 物理参数凑对，如实入册。
 - **判定：URDF 导入链对 URDF 可表达参数的保真度 PASS**；表达力缺口
-  （armature 字段、惯量全张量、7DoF→4DoF 平面化）进 backlog，其中惯量
-  非对角是下一个最小改动点。
+  （armature 字段、7DoF→4DoF 平面化）进 backlog。

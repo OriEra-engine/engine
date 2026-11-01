@@ -110,6 +110,9 @@ fn main() {
                 "ixx": i.ixx,
                 "iyy": i.iyy,
                 "izz": i.izz,
+                "ixy": i.ixy,
+                "ixz": i.ixz,
+                "iyz": i.iyz,
                 "origin_xyz": i.origin_xyz,
             })),
         }))
