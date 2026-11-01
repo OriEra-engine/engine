@@ -695,12 +695,11 @@ export async function boot(viewport) {
       const ee = [obs[9], obs[10], obs[11]];
       const obj = [ee[0] + obs[12], ee[1] + obs[13], ee[2] + obs[14]];
       const gol = [ee[0] + obs[15], ee[1] + obs[16], ee[2] + obs[17]];
-      // 收敛门控相位机（对齐 Rust embodied_env：误差 <0.12 rad + 最短
-      // 驻留 25 tick 才推进）。此前开环固定节拍：跟踪滞后下相位错位，
-      // 下探未到位就闭爪/提前松开——前台验证 12 集余差的根因。
-      // 逃逸阀 dwell>110：impulse 链在接触下（夹板碰桌/贴方块）误差
-      // 地面高于 0.12，无阀会活锁到截断（实测两集全败后加）。
-      // p.ticks 保留数组结构（parity 导出），运行时用统一驻留参数。
+      // 收敛门控相位机（机制对齐 Rust embodied_env：误差门 + 最短驻留
+      // 25 tick）。阈值按 JS 求解器校准：impulse 链接触下（夹板碰桌/
+      // 贴方块）误差地面 ~0.15-0.2 rad，Rust multibody 的 0.12 在此会
+      // 活锁——逃逸阀 dwell>80 兜底。此前开环固定节拍相位错位是 12 集
+      // 余差根因；p.ticks 保留数组结构（parity 导出），运行时用统一参数。
       const ph = K.phaseIdx < PHASES.length ? PHASES[K.phaseIdx] : null;
       action = ph ? [...ik(ph.target(obj, gol)), ph.grip] : [...ik(above(gol, 0.22)), 0];
       if (ph) {
@@ -708,7 +707,7 @@ export async function boot(viewport) {
         let err = 0;
         for (let i = 0; i < 4; i++) err = Math.max(err, Math.abs(angles[i] - action[i]));
         const dwell = K.policyStep;
-        if (dwell >= 25 && (err < 0.12 || dwell >= 110)) { K.phaseIdx++; K.policyStep = 0; }
+        if (dwell >= 25 && (err < 0.18 || dwell >= 80)) { K.phaseIdx++; K.policyStep = 0; }
         else K.policyStep++;
       } else K.policyStep++;
       for (let i = 0; i < 4; i++) sliders[i].input.value = action[i];
