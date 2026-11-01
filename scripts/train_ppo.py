@@ -34,11 +34,15 @@ def make_env(args):
     )
 
 
-def evaluate(model, args, n_episodes=12) -> dict:
-    """固定 seed 1000-1011 评测——与批量 CLI 验收带/LAB-GUIDE 对齐，可跨期对账。"""
+EVAL_SEED0 = 1000
+EVAL_EPISODES = 12  # 对齐批量 CLI 验收带 / LAB-GUIDE（1000-1011）
+
+
+def evaluate(model, args, n_episodes=EVAL_EPISODES) -> dict:
+    """固定 seed 带评测——与批量 CLI 验收带/LAB-GUIDE 对齐，可跨期对账。"""
     env = make_env(args)
     rows = []
-    for seed in range(1000, 1000 + n_episodes):
+    for seed in range(EVAL_SEED0, EVAL_SEED0 + n_episodes):
         obs, _ = env.reset(seed=seed)
         total, done = 0.0, False
         while not done:
@@ -88,7 +92,8 @@ def main():
     model.save(args.out / "ppo_model")
     (args.out / "eval_curve.json").write_text(
         json.dumps({"task": args.task, "steps": args.steps, "dr": args.dr,
-                    "eval_seeds": "1000-1009", "curve": curve}, indent=1))
+                    "eval_seeds": f"{EVAL_SEED0}-{EVAL_SEED0 + EVAL_EPISODES - 1}",
+                    "curve": curve}, indent=1))
     env.close()
     print(f"done → {args.out} (wall {time.time() - t0:.0f}s)")
 

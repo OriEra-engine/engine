@@ -82,6 +82,12 @@ pip install gymnasium numpy stable-baselines3 pyarrow imageio imageio-ffmpeg
   域随机化三旋钮（kp/mass/obs_noise）做对照实验。无 GPU 的学生做 RL
   路线（MlpPolicy 纯 CPU 即可），有 GPU 的做 IL 路线。
 
+  **实测预期（2026-11-01，别被 0% 吓住）**：reach 100k 即可逼近脚本
+  基线回报（-213→-46）；**pick_place 用 vanilla PPO 学不会**——
+  100k 回报冲到最优（≈-20，悬停行为）后 500k 一直在平台期震荡、
+  成功率 0%：抓取的奖励鸿沟靠密集塑形填不平，正道是 IL 路线（脚本
+  采集 91.7% 数据 → ACT/π0 微调）或 RL 加课程表/HER（进阶作业）。
+
 ## 6. 评测规范与思考题
 
 - **规范**：≥12 集 + Wilson 95% CI；引用引擎指纹回执证明可复现；
