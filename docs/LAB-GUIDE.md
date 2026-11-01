@@ -73,10 +73,14 @@ pip install gymnasium numpy stable-baselines3 pyarrow imageio imageio-ffmpeg
 - **模仿学习**：遥操作/脚本采集 → `python scripts/jsonl_to_lerobot_v21.py
   <目录>` → `lerobot-train --dataset.repo_id=<user>/<ds> --policy.type=act`
   （消费级 GPU 即可，如 RTX 3060）；
-- **强化学习**：SB3 PPO 挂 `OrieraPickPlaceEnv`（经 gymnasium 包装层），
-  固定评测 seed 1000-1011，域随机化三旋钮（kp/mass/obs_noise）做对照
-  实验。无 GPU 的学生做 RL 路线（MlpPolicy 纯 CPU 即可），有 GPU 的
-  做 IL 路线。
+- **强化学习**：SB3 PPO 挂 `OrieraPickPlaceEnv`（经 gymnasium 包装层）。
+  一键训练器已备好（固定评测 seed 1000-1011 + 曲线落盘）：
+  ```bash
+  python scripts/train_ppo.py --task reach --steps 100000 --dr
+  ```
+  产物在 `out/rl-training/`（eval_curve.json + ppo_model.zip）。
+  域随机化三旋钮（kp/mass/obs_noise）做对照实验。无 GPU 的学生做 RL
+  路线（MlpPolicy 纯 CPU 即可），有 GPU 的做 IL 路线。
 
 ## 6. 评测规范与思考题
 

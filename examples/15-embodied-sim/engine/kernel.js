@@ -433,8 +433,15 @@ export async function boot(viewport) {
   const pmrem = new THREE.PMREMGenerator(renderer);
   // HDRI 环境光（Poly Haven CC0 摄影棚）：真实感光的第一来源；
   // 加载失败回退 RoomEnvironment（离线兜底）。
+  // URL 坑（纹理 404 根修 2026-11-01）：Loader 的字符串路径相对
+  // **文档**（index.html 在 15-embodied-sim/）解析，不是相对本文件
+  // （engine/）——"../vendor/..." 会逃到 examples/vendor/ 404，
+  // 材质按有 map 编译、采样到空 → 桌面/地面纯黑。曾长期误诊为
+  // WebView2 宿主失焦 GPU 上传失败（fetch 复验 404 才破案）。
+  // 注意第 20 行的 import "../vendor/jsm/..." 无此问题：模块解析以
+  // 本文件为基准。
   new RGBELoader().load(
-    "../vendor/assets/env_1k.hdr?v=2",
+    "vendor/assets/env_1k.hdr?v=3",
     (hdr) => {
       const tex = pmrem.fromEquirectangular(hdr).texture;
       scene.environment = tex;
@@ -490,10 +497,12 @@ export async function boot(viewport) {
   // B3 纹理启用（restored 钩子保护 + 确定性重导出字节相同=幂等）：
   // Poly Haven CC0 木桌面 × 磨损混凝土地面——研究所质感的最大单变量。
   const texLoader = new THREE.TextureLoader();
-  const woodD = texLoader.load("../vendor/assets/wood_orig_diff.jpg?v=5");
-  const woodR = texLoader.load("../vendor/assets/wood_table_worn_rough_1k.jpg?v=3");
+  const woodD = texLoader.load("vendor/assets/wood_orig_diff.jpg?v=6");
+  // wood_table_worn_rough_1k.jpg 从不存在（资产清单实名 wood_rough.jpg）
+  // ——文件名与清单不同步的第二处 404。
+  const woodR = texLoader.load("vendor/assets/wood_rough.jpg?v=2");
   for (const t of [woodD, woodR]) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1.4, 1.4); t.colorSpace = THREE.SRGBColorSpace; }
-  const floorD = texLoader.load("../vendor/assets/floor_diff.jpg?v=2");
+  const floorD = texLoader.load("vendor/assets/floor_diff.jpg?v=3");
   for (const t of [floorD]) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(4, 3); t.colorSpace = THREE.SRGBColorSpace; }
 
   const ground = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.1, 3.0),
