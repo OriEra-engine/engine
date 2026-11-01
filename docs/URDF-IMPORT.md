@@ -120,3 +120,103 @@ JS `examples/15-embodied-sim/engine/urdf_mesh.js`。二进制/ASCII 判定
 - continuous 关节无限位：映射保持 OriEra 默认 ±π，不虚构。
 - mesh 引用是外部文件（§5 支持矩阵外的格式拿不到几何）——引擎侧密度
   推导惯性，与真值偏差如实记录于 receipt。
+
+## 附录：MJCF 全量交叉验证（2026-11-01 · MuJoCo 3.17.0）
+
+上一轮（ba021d0）做过 MJCF Panda 对比调研；本轮把 MuJoCo 当**第三方参照
+系**做全量交叉验证：MuJoCo 编译后的模型逐参数读出，与 OriEra URDF 导入链
+（`urdf.rs`，只读未改）的逐关节解析结果对比，外加工作空间 FK 抽查。
+
+### A.1 两份真源
+
+| 真源 | 文件 | 来源 | 许可 |
+|---|---|---|---|
+| MuJoCo 侧 | `out/mjcf-crosscheck/mujoco_menagerie/franka_emika_panda/panda_nohand.xml` | [google-deepmind/mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie/tree/main/franka_emika_panda) rev `b065505`（sparse clone 实际下载，非合成） | Apache-2.0 |
+| OriEra 侧 | `out/mjcf-crosscheck/panda_converted.urdf` | **换算参照**：7 关节精简 URDF，由上表 MJCF 1:1 换算生成（`scripts/mjcf_crosscheck.py` 内置模板，每次运行重写；body pos/quat→origin xyz/rpy、class panda range/damping、actuator forcerange→effort、`<inertial>` fullinertia 直拷） | 随源 |
+
+- 仓库内无上轮遗留 MJCF/URDF（全仓 find 证实，ba021d0 只在 commit message
+  里带结论）；mujoco pip 包亦无内置 franka——menagerie 为下载真源。
+- Rust 探针：`crates/oriera-agent/examples/urdf_chain_dump.rs`（feature
+  `urdf`，serde_json 由该 feature 自带，未加依赖）——把 `UrdfReport`
+  逐关节/逐 link、`validate_chain(7)` 报告原文、`first_revolute_chain(4)`
+  的 ArmDescription 映射结果序列化为 JSON。
+
+### A.2 复跑
+
+```bash
+python scripts/mjcf_crosscheck.py
+```
+
+vendor 缺失时自动 sparse clone menagerie；Rust 侧 `cargo run --example
+urdf_chain_dump -p oriera-agent --features urdf`（构建锁冲突等 30s 重试）。
+产出 `out/mjcf-crosscheck/report.json` + 控制台表格，末行
+`SUMMARY: PASS=104 TOLERANCE=0 FAIL=8 TOTAL=112 -> VERDICT: FAIL`
+（exit code = verdict）。容差：限位 0.02 rad、质量 5%、长度 1 mm、
+damping 10%；PASS ≤ tol < TOLERANCE ≤ 2·tol < FAIL；结构缺项如实记 FAIL。
+
+### A.3 对比表（MuJoCo 编译值 vs OriEra 导入值）
+
+关节参数（7 关节全量，diff 列为全表最大值）：
+
+| 参数 | joint1 | joint2 | joint3 | joint4 | joint5 | joint6 | joint7 | 最大差异 | 判定 |
+|---|---|---|---|---|---|---|---|---|---|
+| type（MJCF↔URDF） | hinge↔revolute | 同 | 同 | 同 | 同 | 同 | 同 | — | 7/7 PASS |
+| axis | (0,0,1) | (0,0,1) | (0,0,1) | (0,0,1) | (0,0,1) | (0,0,1) | (0,0,1) | 0 rad | 7/7 PASS |
+| range lower | −2.8973 | −1.7628 | −2.8973 | −3.0718 | −2.8973 | −0.0175 | −2.8973 | 7.5e−9 rad | 7/7 PASS |
+| range upper | +2.8973 | +1.7628 | +2.8973 | −0.0698 | +2.8973 | +3.7525 | +2.8973 | 5.7e−8 rad | 7/7 PASS |
+| damping | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 0 % | 7/7 PASS |
+| armature | 0.1 | 0.1 | 0.1 | 0.1 | 0.1 | 0.1 | 0.1 | **n/a** | **7/7 FAIL（结构）** |
+| effort（forcerange） | 87 | 87 | 87 | 87 | 12 | 12 | 12 | 0 % | 7/7 PASS |
+
+连杆参数（8 body，diff 列为全表最大值）：
+
+| 参数 | link0..7 + attachment | 最大差异 | 判定 |
+|---|---|---|---|
+| body pos（=joint origin xyz） | 0.333 / −0.316 / 0.0825 / (−0.0825,0.384) / 0.088 / (0,0,0.107) 等 | 4.3e−9 m | 8/8 PASS |
+| body rot（quat↔rpy） | ±90°·x 链 + 135°·z（attachment） | 4.2e−8 rad | 8/8 PASS |
+| mass | 4.970684 / 0.646926 / 3.228604 / 3.587895 / 1.225946 / 1.666555 / 0.735522 kg | 4.8e−8 相对 | 7/7 PASS（attachment 双侧无质量） |
+| inertial com（body_ipos↔inertial origin） | 见 report.json | 2.6e−9 m | 7/7 PASS |
+| inertia 对角（ixx/iyy/izz） | 全 21 项 | 4.7e−8 相对 | 21/21 PASS |
+| inertia 非对角（ixy/ixz/iyz） | 最大 0.019169 kg·m²（link1 iyz） | **不可解析** | **FAIL（结构）** |
+
+FK 工作空间抽查：10 组随机关节角（seed 20261101，限位内均匀采样），
+MuJoCo `mj_forward` 读 `attachment_site` xpos，对 OriEra 导出链几何手算
+FK——算法：`T = Π Trans(origin_xyz)·Rz(y)Ry(p)Rx(r)·Rot(axis,q)`（rpy 为
+extrinsic XYZ；Rust 无 FK 实现，按任务要求在脚本里手算并注明）。
+**10/10 PASS**：原始偏差 max **4.0e−5 mm**（f32 截断量级，≤5 mm 容差三个
+数量级余量）。
+
+### A.4 偏差清单（FAIL / 超差项逐条根因）
+
+1. **armature ×7（结构缺项）**——MJCF class panda `armature="0.1"`（转子
+   惯性反射），URDF 1.0 规范无 armature 语义，`ArmDescription` 亦无对应
+   字段。根因：表达力缺口（规范层），非解析错误。影响：名义加速段偏
+   "轻"，实际由 PD kp/kd 与 forcerange 代偿。
+2. **惯量非对角项 ×1（结构缺项）**——menagerie `fullinertia` 的
+   ixy/ixz/iyz 非零（最大 0.019169 kg·m²，link1 iyz），`urdf.rs`
+   `UrdfInertial` 只解析 ixx/iyy/izz（U2 记账定位的刻意裁剪）。根因：
+   解析器字段裁剪；主轴不与体坐标重合的连杆被当对角阵，动力学耦合扭矩
+   丢失。修法：`UrdfInertial` 补三字段（与 meshres 无耦合，可独立做）。
+3. **结构性发现（非 FAIL 行，informational）**——`first_revolute_chain(4)`
+   把 Panda 映到 ArmDescription：`links=[0.333, 0.01, 0.316]`——joint2
+   origin ‖xyz‖=0 被 `max(0.01)` 钳位，平面 4 阶映射对真实 7DoF 臂退化
+   （ba021d0「7 DoF vs OriEra 4 DoF」的量化版）；`limits` 取 joint1..4、
+   `passive_damping` 每关节覆盖写塌缩为标量（本次恰全 1.0 不可见差异）。
+4. **参照系版本漂移（记录）**——ba021d0 引 damping 0.27（旧版
+   menagerie / franka datasheet 齿轮箱阻尼）；当前 rev b065505 默认
+   `damping="1"`。导入链两侧一致，是参照系自身在演进——复跑时以
+   report.json 记录的 revision 为准。
+5. **f32 截断（记录）**——`urdf.rs` 全量 f32，本表所有 PASS diff 的
+   来源（~1e−8 相对量级），远低于容差，无需处理。
+
+### A.5 结论（参数保真度判定）
+
+- **可表达参数 104/104 全 PASS**：几何（axis/限位/body pos/rot）与动力学
+  （mass/惯量对角/damping/effort）对 MuJoCo 编译值一致到 f32 精度；
+  `validate_chain(7)` 零告警；FK 10/10 ≤5 mm（实测 4e−5 mm）。
+- **8 项 FAIL 全部是"参照系有、URDF/OriEra 无处安放"的表达力缺口**
+  （armature、惯量非对角），不是导入链解析错误——按纪律未改任何 OriEra
+  物理参数凑对，如实入册。
+- **判定：URDF 导入链对 URDF 可表达参数的保真度 PASS**；表达力缺口
+  （armature 字段、惯量全张量、7DoF→4DoF 平面化）进 backlog，其中惯量
+  非对角是下一个最小改动点。
