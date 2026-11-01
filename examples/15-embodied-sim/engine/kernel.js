@@ -21,6 +21,16 @@ import { RGBELoader } from "../vendor/jsm/loaders/RGBELoader.js";
 
 // ── 场景与机械臂常量（对照 ArmDescription / Scene3D / PickPlace3D）──
 const DT = 1 / 60;
+// 马达增益求解器代偿（前台验证 2026-11-01 实测定参）：wasm 0.21 的 JS
+// 绑定不暴露 multibody 马达（jointConfigureMotor* 只挂 ImpulseJointSet），
+// 只能用 impulse 链；其锁定自由度在重力负载下软化——kp=DESC.kp(60) 时
+// 肩部抬臂（重力反向）稳态塌到 -0.99 rad、命令 1.086 只到 0.79，臂
+// 永远够不到方块（12 集前台实测成功率 27% vs Rust 91.7% 的根因）。
+// motor_probe4/5 扫描定参：iters=100 + kp×16/kd30 → 误差 0.087 rad、
+// 振荡 0（kd 过大过阻尼反而劣化）。DESC 契约值不动，parity 守卫仍锚
+// Rust 侧 kp60/kd4；此处代偿只存在于 JS 马达配置层。
+const MOTOR_KP = 960; // DESC.kp × 16
+const MOTOR_KD = 30;
 const SUBSTEPS = 2;
 const DESC = {
   base: [0.02, 0.5, 0.0],
@@ -115,11 +125,16 @@ const K = {
 function makeWorld(seed) {
   const world = new RAPIER.World({ x: 0, y: -9.8, z: 0 });
   world.timestep = DT / SUBSTEPS;
-  const rug = (c) => c.setFriction(0.9);
+  // 碰撞组对齐 Rust rigid3d.rs（world_groups/arm_groups）：G1=世界
+  // （地面/桌面/方块，filter 含 G2），G2=臂+基座立柱+指板（filter 只含
+  // G1）。此前漏移植——home 姿态下 link1 与基座立柱互穿 2cm，接触
+  // 解算把肩部硬顶到 +限位（kp=10000 都拗不过），臂永远够不到方块。
+  const G_WORLD = 0x00010003; // (G1<<16)|(G1|G2)
+  const G_ARM = 0x00020001;   // (G2<<16)|(G1)
   // ground + table
   const slab = (c, h) => {
     const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(...c));
-    world.createCollider(RAPIER.ColliderDesc.cuboid(...h).setFriction(0.9), b);
+    world.createCollider(RAPIER.ColliderDesc.cuboid(...h).setFriction(0.9).setCollisionGroups(G_WORLD), b);
     return b;
   };
   slab([0, -0.05, 0], [2.0, 0.05, 1.5]);
@@ -132,13 +147,14 @@ function makeWorld(seed) {
   const base = world.createRigidBody(
     RAPIER.RigidBodyDesc.fixed().setTranslation(DESC.base[0], DESC.base[1] + DESC.shoulderHeight / 2, DESC.base[2]));
   world.createCollider(
-    RAPIER.ColliderDesc.cuboid(DESC.radius * 1.8, DESC.shoulderHeight / 2, DESC.radius * 1.8), base);
+    RAPIER.ColliderDesc.cuboid(DESC.radius * 1.8, DESC.shoulderHeight / 2, DESC.radius * 1.8).setCollisionGroups(G_ARM), base);
   const carrier = dyn([DESC.base[0], sh, DESC.base[2]]);
   const link1 = dyn([DESC.base[0], sh, DESC.base[2]]);
   const link2 = dyn([DESC.base[0] + DESC.links[0], sh, DESC.base[2]]);
   const wrist = dyn([DESC.base[0] + DESC.links[0] + DESC.links[1], sh, DESC.base[2]]);
   const linkCol = (b, half, off) => {
     const c = RAPIER.ColliderDesc.cuboid(...half).setDensity(1500).setFriction(0.7)
+      .setCollisionGroups(G_ARM)
       .setTranslation(...off);
     world.createCollider(c, b);
   };
@@ -146,7 +162,10 @@ function makeWorld(seed) {
   linkCol(link1, [DESC.links[0] / 2, DESC.radius, DESC.radius], [DESC.links[0] / 2, 0, 0]);
   linkCol(link2, [DESC.links[1] / 2, DESC.radius, DESC.radius], [DESC.links[1] / 2, 0, 0]);
   linkCol(wrist, [DESC.links[2] / 2, DESC.radius, DESC.radius], [DESC.links[2] / 2, 0, 0]);
-  // revolute 关节（impulse joint + ForceBased 位置马达，与 Rust 同参数）
+  // revolute 关节（impulse joint + ForceBased 位置马达）。Rust 侧是
+  // MultibodyJointSet articulated 精确解；JS 这代 wasm 无 multibody
+  // 马达可暴露（见 MOTOR_KP 注）——以高迭代数收紧脉冲链解算。
+  world.integrationParameters.numSolverIterations = 100;
   const anchor = { x: 0, y: DESC.shoulderHeight, z: 0 };
   const stages = [
     { p: base, c: carrier, a1: { x: 0, y: DESC.shoulderHeight / 2, z: 0 }, axis: { x: 0, y: 1, z: 0 }, lim: DESC.limits[0] },
@@ -161,7 +180,10 @@ function makeWorld(seed) {
     const j = world.createImpulseJoint(jd, p, c, true);
     j.setContactsEnabled(false);
     j.configureMotorModel(RAPIER.MotorModel.ForceBased);
-    j.configureMotorPosition(0, DESC.kp, DESC.kd);
+    // 力矩上限对齐 Rust MOTOR_MAX_FORCE=80：kp 代偿后若无上限，下探
+    // 与夹板挤压会输出无界力矩（前台实测方块被接触炮打到 9.7m 外）。
+    j.setMotorMaxForce(80);
+    j.configureMotorPosition(0, MOTOR_KP, MOTOR_KD);
     return j;
   });
   // cube
@@ -169,14 +191,14 @@ function makeWorld(seed) {
     RAPIER.RigidBodyDesc.dynamic().setLinearDamping(0.1).setAngularDamping(0.1)
       .setTranslation(...K.spawn));
   world.createCollider(
-    RAPIER.ColliderDesc.cuboid(PROP_HALF, PROP_HALF, PROP_HALF).setDensity(400).setFriction(0.8), cube);
+    RAPIER.ColliderDesc.cuboid(PROP_HALF, PROP_HALF, PROP_HALF).setDensity(400).setFriction(0.8).setCollisionGroups(G_WORLD), cube);
   // 夹板（运动学，随腕架位姿驱动）
   const mkFinger = () => {
     const b = world.createRigidBody(
       RAPIER.RigidBodyDesc.kinematicPositionBased()
         .setTranslation(0, 0, 0));
     world.createCollider(
-      RAPIER.ColliderDesc.cuboid(...FINGER_HALF).setFriction(FINGER_FRICTION), b);
+      RAPIER.ColliderDesc.cuboid(...FINGER_HALF).setFriction(FINGER_FRICTION).setCollisionGroups(G_ARM), b);
     return b;
   };
   const fingerL = mkFinger();
@@ -206,7 +228,10 @@ function eePose() {
   const b = K.bodies.wrist;
   const t = b.translation();
   const r = b.rotation();
-  const off = new THREE.Vector3(...DESC.links).applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w));
+  // TCP = 腕 + wrist 系 (links[2],0,0)——对齐 Rust rigid3d.rs tip_local
+  // （637 行）。此前误用整个 links 向量 (0.20,0.18,0.09)，ee 报点偏出
+  // 0.2 m 级，obs/holding/策略全链跟着错（前台验证根因 #3）。
+  const off = new THREE.Vector3(DESC.links[2], 0, 0).applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w));
   return [t.x + off.x, t.y + off.y, t.z + off.z];
 }
 
@@ -256,7 +281,7 @@ function stepOnce(action) {
   for (let i = 0; i < 4; i++) {
     const want = Math.min(Math.max(action[i], DESC.limits[i][0]), DESC.limits[i][1]);
     if (K.lastCmd[i] !== want) {
-      K.joints[i].configureMotorPosition(want, DESC.kp, DESC.kd);
+      K.joints[i].configureMotorPosition(want, MOTOR_KP, MOTOR_KD);
       K.lastCmd[i] = want;
     }
   }
@@ -337,6 +362,18 @@ function envReset(seed) {
   K.gapNow = FINGER_GAP_OPEN;
   K.wasHolding = false; K.steps = 0; K.tick = 0; K.policyMode = false; K.policyStep = 0;
   K.episode = null;
+  // 指板瞬移到家 TCP（前台验证实测）：settle 首拍 driveFingers 才经
+  // setNextKinematic 逐帧回家，上一集终点→家的扫掠路径会穿过重生
+  // 方块——运动学板 vs 动力学方块 = 接触炮（实测方块飞到 9.7, 4.9）。
+  // 先直接 setTranslation 就位，settle 期间无扫掠。
+  {
+    const ht = homes.wrist;
+    const side = FINGER_GAP_OPEN / 2;
+    K.fingerL.setTranslation({ x: ht[0] + FINGER_X, y: ht[1], z: ht[2] + side }, true);
+    K.fingerR.setTranslation({ x: ht[0] + FINGER_X, y: ht[1], z: ht[2] - side }, true);
+    K.fingerL.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+    K.fingerR.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+  }
   for (let i = 0; i < SETTLE_TICKS; i++) { stepOnce([0, 0, 0, 0, 0]); }
   syncVisuals();
   return observe();
@@ -746,7 +783,25 @@ export async function boot(viewport) {
         holding: K.holding,
         gripper: K.gripper,
         tick: K.tick,
+        // 关节角实况 + 马达目标（跟踪诊断：实况追不上目标 = 马达/轴约定问题）
+        angles: readAngles(),
+        targets: [...K.targets],
       };
+    },
+    // 成功率前台验证出口：CDP 轮询读，不干预仿真。
+    stats: () => ({
+      success: successCount,
+      episodes: episodesRun,
+      rewardAvg,
+      policyMode: K.policyMode,
+      holding: K.holding,
+      goal: [...K.goal],
+    }),
+    // 诊断出口（Studio cdp 传统）：马达/求解器对照实验用。
+    debug: {
+      get joints() { return K.joints; },
+      get world() { return K.world; },
+      get state() { return K; },
     },
   };
 }

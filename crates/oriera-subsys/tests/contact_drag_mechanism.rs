@@ -1,12 +1,13 @@
-//! TEMP probe (round 4): do kinematic plates drag a dynamic cube via
-//! friction in rapier 3D? Delete after the contact-grasp decision.
+//! 接触抓取机制守卫（round 4 定案，2026-11-01 转正）：运动学夹板以
+//! 2mm 挤压量 + 摩擦能否拖动动力学方块？这是 rigid3d 双指夹板抓取
+//! 的物理底座——夹板几何/摩擦系数变动时，此测试先于 12 集验收报警。
 
 use rapier3d::prelude::*;
 
 const DT: f32 = 1.0 / 60.0;
 
 #[test]
-fn probe_kinematic_friction_drag() {
+fn kinematic_plates_drag_cube_via_friction() {
     let mut pipeline = PhysicsPipeline::new();
     let mut islands = IslandManager::new();
     let mut bp = DefaultBroadPhase::new();
@@ -107,5 +108,9 @@ fn probe_kinematic_friction_drag() {
         }
     }
     let final_y = bodies.get(cube).unwrap().translation().y;
-    println!("VERDICT: cube rose {:.4} m", final_y - 0.5);
+    let rise = final_y - 0.5;
+    println!("VERDICT: cube rose {:.4} m", rise);
+    // 摩擦承载成立的最小证据：夹板 2s 走 0.16 m，方块必须被拖走大半程
+    //（实测 ≈0.160 m 全程贴合；闸门留足余量但远高于"没抓住"的 0）。
+    assert!(rise > 0.10, "friction drag failed: cube rose only {rise:.4} m");
 }
