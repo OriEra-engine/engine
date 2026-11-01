@@ -743,15 +743,26 @@ export async function boot(viewport) {
     // （此前 steps 超限后每帧都计一次 episode，HUD 集数虚高）。
     // 录制卫生：回合结束先切录音带（当前 episode 落列表），再重置。
     if (out.terminated || out.truncated) {
-      if (K.recording && K.episode?.rows?.length) K.episodes.push(K.episode);
-      K.episode = K.recording ? { task: TASK_PHRASE, rows: [], obs: observe() } : null;
-      episodesRun++;
-      if (out.terminated) {
-        successCount++; K.policyMode = false;
-        post({ type: "state", note: "success" });
+      // 退化重抽（对齐 embodied_sim_collect displaced seed band）：
+      // <5 步终局 = 生成即入区，不占成功率分母、不进数据集——前台
+      // 自跑 1006 集实测退化命中 14%（141/1006），旧 HUD 全计入，
+      // 「成功 N/M」虚高一个数量级的分母污染。
+      if (out.terminated && K.steps < 5) {
+        K.redraws = (K.redraws || 0) + 1;
+        envReset(((Math.random() * 1e9) | 0) + 65536 * K.redraws);
+        if (K.recording) K.episode = { task: TASK_PHRASE, rows: [], obs: observe() };
+        if (K.policyMode) { K.policyStep = 0; K.phaseIdx = 0; }
+      } else {
+        if (K.recording && K.episode && K.episode.rows.length >= 5) K.episodes.push(K.episode);
+        K.episode = K.recording ? { task: TASK_PHRASE, rows: [], obs: observe() } : null;
+        episodesRun++;
+        if (out.terminated) {
+          successCount++; K.policyMode = false;
+          post({ type: "state", note: "success" });
+        }
+        envReset((Math.random() * 1e9) | 0);
+        if (K.policyMode) { K.policyStep = 0; K.phaseIdx = 0; }
       }
-      envReset((Math.random() * 1e9) | 0);
-      if (K.policyMode) { K.policyStep = 0; K.phaseIdx = 0; }
     }
     syncVisuals();
     // 目标圈呼吸脉冲 + 光柱随目标 + EE 拖尾滚动
@@ -818,6 +829,7 @@ export async function boot(viewport) {
       goal: [...K.goal],
       phase: K.phaseIdx,
       step: K.policyStep,
+      redraws: K.redraws || 0,
     }),
     // 诊断出口（Studio cdp 传统）：马达/求解器对照实验用。
     debug: {
