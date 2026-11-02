@@ -549,8 +549,14 @@ export async function boot(viewport) {
       action = [...K.targets, K.gripper];
     }
     const out = K.sim.step(action);
-    K.obs = out.obs;
-    rewardAvg = rewardAvg * 0.98 + out.reward * 0.02;
+    // wasm-bindgen 返回对象的字段是跨边界 getter：**先全部读出再 free**，
+    // 否则 free 后再读 = "null pointer passed to rust"（集成实测：首个
+    // 回合结束即炸死渲染循环）。
+    const stepObs = out.obs, stepReward = out.reward;
+    const terminated = out.terminated, truncated = out.truncated;
+    out.free();
+    K.obs = stepObs;
+    rewardAvg = rewardAvg * 0.98 + stepReward * 0.02;
     // 抓取发光脉冲（UX review：抓住瞬间给视觉反馈）
     if (K.holding !== K._lastHolding) {
       const m = K.visuals.cube.material;
@@ -558,7 +564,7 @@ export async function boot(viewport) {
       K._lastHolding = K.holding;
     }
     if (K.recording && K.episode) {
-      K.episode.rows.push({ state: Array.from(out.obs), action });
+      K.episode.rows.push({ state: Array.from(stepObs), action });
       if (K.episode.rows.length % 30 === 0) {
         post({ type: "progress", rows: K.episode.rows.length, episodes: K.episodes.length + 1 });
       }
@@ -567,11 +573,10 @@ export async function boot(viewport) {
     }
     // 回合语义与 Rust env 循环对齐：终止/截断即回合结束——自动重置。
     // 录制卫生：回合结束先切录音带（当前 episode 落列表），再重置。
-    if (out.terminated || out.truncated) {
-      out.free();
+    if (terminated || truncated) {
       // 退化重抽（对齐 embodied_sim_collect displaced seed band）：
       // <5 步终局 = 生成即入区，不占成功率分母、不进数据集。
-      if (out.terminated && K.steps < 5) {
+      if (terminated && K.steps < 5) {
         K.redraws = (K.redraws || 0) + 1;
         // envReset 会清 policyMode（一次性演示语义）——重抽不是回合
         // 结束，策略要在新抽签上继续跑，否则演示被退化命中无声掐停。
@@ -582,7 +587,7 @@ export async function boot(viewport) {
       } else {
         if (K.recording && K.episode && K.episode.rows.length >= 5) K.episodes.push(K.episode);
         episodesRun++;
-        if (out.terminated) {
+        if (terminated) {
           successCount++; K.policyMode = false;
           post({ type: "state", note: "success" });
         }
@@ -591,8 +596,6 @@ export async function boot(viewport) {
         // K.episode=null，此前先建后重置 → 录制+自动重置下只采到第一集。
         K.episode = K.recording ? { task: K.sim.task_phrase(), rows: [], obs: Array.from(K.sim.obs()) } : null;
       }
-    } else {
-      out.free();
     }
     syncVisuals();
     // 目标圈呼吸脉冲 + EE 拖尾滚动
