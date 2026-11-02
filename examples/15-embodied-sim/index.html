@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>OriEra · 15 Embodied Sim</title>
+<title>具身仿真台 · 桌面抓放 — OriEra</title>
 <script type="importmap">
 {
   "imports": {
@@ -20,13 +20,16 @@
   header { padding:12px 18px; border-bottom:1px solid #222633;
            display:flex; justify-content:space-between; align-items:center; gap:12px;}
   header h1 { font-size:14px; margin:0; }
-  header .tag { font-size:11px; color:#8a90a6; }
+  header .sub { font-size:11px; color:#8a90a6; margin-top:3px; }
+  header .tag { font-size:10px; color:#5d6478; text-align:right; }
   #toolbar { padding:8px 14px; border-bottom:1px solid #222633; display:flex; gap:8px; flex-wrap:wrap; align-items:center;}
   button { background:#1f2a44; color:#cfe0ff; border:1px solid #2a3040;
            padding:7px 12px; border-radius:6px; font:inherit; font-size:12px; cursor:pointer;}
   button:hover { background:#2a3a5a; }
   button.primary { background:#5b8def; border-color:#5b8def; color:white; }
   button.rec { background:#7a2d3a; border-color:#a04050; color:#ffd9df; }
+  /* 独立打开（未嵌 Studio）时导出按钮置灰：kernel.js 设 aria-disabled + title（CLI 指引） */
+  button[aria-disabled="true"], button[aria-disabled="true"]:hover { background:#161a24; color:#5d6478; border-color:#232837; cursor:not-allowed; }
   #hud { margin-left:auto; font-size:11px; color:#8a90a6; text-align:right; line-height:1.5;}
   #main { flex:1; display:flex; min-height:0; }
   #viewport { flex:1; min-width:0; position:relative; }
@@ -47,8 +50,11 @@
 </head>
 <body>
 <header>
-  <h1>OriEra · L6 rigid3d — 具身仿真台（桌面抓放）</h1>
-  <span class="tag">example/15-embodied-sim · JS 镜像内核 ↔ Rust oriera_agent::embodied_env 契约</span>
+  <div>
+    <h1>具身仿真台 · 桌面抓放</h1>
+    <div class="sub">键盘或右侧滑条遥控机械臂，或点「▶ 脚本策略演示」看它自己把方块放进绿圈</div>
+  </div>
+  <span class="tag">工程信息：example/15-embodied-sim · JS 镜像内核 ↔ Rust oriera_agent::embodied_env 契约</span>
 </header>
 <div id="toolbar">
   <button class="primary" id="btn-reset">↺ 重置（随机种子）</button>

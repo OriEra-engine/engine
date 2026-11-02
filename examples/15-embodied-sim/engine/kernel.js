@@ -645,18 +645,26 @@ export async function boot(viewport) {
       log.textContent = `已停。共 ${K.episodes.length} 集 · ${K.episodes.reduce((a, x) => a + x.rows.length, 0)} 行`;
     }
   });
+  // G-8：独立打开（未嵌 Studio）时导出按钮置灰 + 悬停/日志区给 CLI 指引。
+  // 旧行为是下载演示内核的 JSON，学生会误当作业数据；作业证据一律走
+  // CLI（引擎基线口径，见 G-5 HUD 声明）。刻意不用 disabled 属性：
+  // 点击仍要在日志区回应（「点了没反应」正是 G-8 原诉）。Studio 内嵌
+  // （window.parent !== window）行为不变——Sim.vue 发 cmd:"export" 照常落盘。
+  const EMBEDDED = window.parent !== window;
+  const EXPORT_CLI_HINT =
+    "仅 Studio 内可用；独立采集用 CLI：cargo run -p oriera-agent --example embodied_sim_collect" +
+    " --features rigid3d,cam -- --task pick_place --episodes 12 --out out/my-run";
+  if (!EMBEDDED) {
+    const exportBtn = document.getElementById("btn-export");
+    exportBtn.setAttribute("aria-disabled", "true");
+    exportBtn.title = EXPORT_CLI_HINT;
+    log.textContent = `（尚未录制）\n提示：「导出」${EXPORT_CLI_HINT}（步骤见 docs/LAB-GUIDE.md 第 1 节）`;
+  }
   btn("btn-export", () => {
+    if (!EMBEDDED) { log.textContent = `「导出」${EXPORT_CLI_HINT}\n（浏览器页只用来看手感；交作业的数据与成功率以 CLI 的 eval_report.json 为准）`; return; }
     if (K.episode?.rows?.length) { K.episodes.push(K.episode); K.episode = null; }
     if (!K.episodes.length) { log.textContent = "没有可导出的 episode——先录一段。"; return; }
-    if (window.parent !== window) { post({ type: "episodes", episodes: K.episodes, obsNames: OBS_NAMES, actionNames: ACTION_NAMES, task: TASK_PHRASE, fps: 1 / DT }); K.episodes = []; log.textContent = "已交给 Studio 工作台。"; }
-    else {
-      const blob = new Blob([JSON.stringify({ task: TASK_PHRASE, fps: 1 / DT, obsNames: OBS_NAMES, actionNames: ACTION_NAMES, episodes: K.episodes }, null, 1)], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = "oriera-embodied-episodes.json";
-      a.click();
-      log.textContent = "已下载 JSON（在 Studio 内导出可一键落盘 LeRobot v2.1）。";
-    }
+    post({ type: "episodes", episodes: K.episodes, obsNames: OBS_NAMES, actionNames: ACTION_NAMES, task: TASK_PHRASE, fps: 1 / DT }); K.episodes = []; log.textContent = "已交给 Studio 工作台。";
   });
 
   function post(msg) {
@@ -786,7 +794,8 @@ export async function boot(viewport) {
     const ct = K.bodies.cube.translation();
     K.hudCb?.(
       `tick ${K.tick} · r̄ ${rewardAvg.toFixed(3)} · 距目标 ${Math.hypot(ct.x - K.goal[0], ct.z - K.goal[2]).toFixed(3)}m` +
-      `<br>成功 ${successCount}/${episodesRun} · ${K.holding ? "🤏 抓住" : "✋ 松开"} · obs 21 维 / act 5 维`);
+      `<br>成功 ${successCount}/${episodesRun} · ${K.holding ? "🤏 抓住" : "✋ 松开"} · obs 21 维 / act 5 维` +
+      `<br><small style="font-size:10px;color:#6f7690">演示内核与引擎基线口径不同，作业证据一律以 CLI eval_report 为准</small>`);
     K.visuals.composer.render();
     // PiP 顶视渲染（右上角小图：与 Rust camera.rs 的俯视映射一致）
     renderer.autoClear = false;

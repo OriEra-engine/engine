@@ -202,9 +202,11 @@ ORIERA_SMOKE_PROVIDER=zhipu cargo run -p oriera-infer --example provider_smoke  
 
 - [AtomGit](https://atomgit.com/OriEra-engine/engine)：在国内托管 OriEra 世界引擎，帮助中国大陆用户更快访问项目与下载 Release。
 
-## 协议
+## 许可与数据归属
 
-[Apache License 2.0](LICENSE) — 专利授权条款，云厂商友好。
+- **引擎**：[Apache License 2.0](LICENSE)（全文见仓库根 `LICENSE`）——含专利授权条款，云厂商友好。
+- **你的数据 100% 归你**：你导入的 URDF、采集的数据集、训练出的模型与评测产物都归你所有，引擎及其作者不主张任何权利（你导入的第三方 URDF 仍按其原许可证使用）。
+- **第三方资产仅 CC0**：具身仿真台内置的第三方美术资产（HDRI 环境光、PBR 贴图）全部是 CC0 公有领域素材，来源逐项登记在 [ASSETS-NOTICE.md](examples/15-embodied-sim/vendor/assets/ASSETS-NOTICE.md)；随附的第三方代码库（three.js 为 MIT、rapier 为 Apache-2.0）见 [THIRD-PARTY-NOTICES.md](examples/15-embodied-sim/vendor/THIRD-PARTY-NOTICES.md)。
 
 ---
 
