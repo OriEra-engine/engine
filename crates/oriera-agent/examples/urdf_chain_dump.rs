@@ -5,8 +5,12 @@
 //! 到 [`ArmDescription`] 的映射结果）序列化为 JSON 打到 stdout，供
 //! `scripts/mjcf_crosscheck.py` 与 MuJoCo MJCF 参照逐参数对比。
 //!
-//! 只读不改：不触碰 urdf.rs/meshres.rs 本体，不引新依赖（serde_json 由
-//! feature `urdf` 自带，见 Cargo.toml 的 `urdf = [... dep:serde_json]`）。
+//! U4（PLAN-embodied-general M0a 工作包 D）起追加 `robot_spec` 段：
+//! [`UrdfReport::to_robot_spec`] 的全链导入结果（N 轴 JointSpec/LinkSpec/
+//! GripperSpec + skipped 降级清单 + validate 结论）原样入 JSON——
+//! 既有各段（joints/links/arm_description/validate_chain/skipped）一字
+//! 不动，Python 侧不受影响。RobotSpec 未开 `oriera-subsys/serde`（spec
+//! 特性才有），故此处按字段手拼 JSON（同款理由：不为此引新依赖）。
 //!
 //! 用法：
 //! ```text
@@ -82,6 +86,7 @@ fn main() {
             "limit_upper": j.limit_upper,
             "damping": j.damping,
             "effort": j.effort,
+            "velocity": j.velocity,
         }))
         .collect::<Vec<_>>());
 
@@ -134,6 +139,80 @@ fn main() {
         })
     });
 
+    // U4：RobotSpec 全链导入段（默认 opts：Z-up→Y-up、60/4/0.02 增益、
+    // mount=原点；skipped 降级清单随 opts 带出）。
+    let robot_spec = {
+        let mut opts = oriera_agent::urdf::RobotSpecOpts::default();
+        let spec_json = match rep.to_robot_spec(&mut opts) {
+            Ok(spec) => serde_json::json!({
+                "name": spec.name,
+                "base": spec.base,
+                "dof": spec.dof(),
+                "links": spec.links.iter().map(|l| serde_json::json!({
+                    "name": l.name,
+                    "shape": match l.shape {
+                        oriera_subsys::LinkShape::Box { half } =>
+                            serde_json::json!({"kind": "box", "half": half}),
+                        oriera_subsys::LinkShape::Capsule { half_len, radius } =>
+                            serde_json::json!({"kind": "capsule", "half_len": half_len, "radius": radius}),
+                    },
+                    "origin": l.origin,
+                    "collider_offset": l.collider_offset,
+                    "density": l.density,
+                    "friction": l.friction,
+                    "added_mass": l.added_mass,
+                    "mesh_uri": l.mesh_uri,
+                })).collect::<Vec<_>>(),
+                "joints": spec.joints.iter().map(|j| serde_json::json!({
+                    "name": j.name,
+                    "parent_link": j.parent_link,
+                    "child_link": j.child_link,
+                    "anchor": j.anchor,
+                    "axis": j.axis,
+                    "limits": j.limits,
+                    "effort": j.effort,
+                    "velocity_limit": j.velocity_limit,
+                    "kp": j.kp,
+                    "kd": j.kd,
+                    "armature": j.armature,
+                    "damping": j.damping,
+                })).collect::<Vec<_>>(),
+                "gripper": spec.gripper.as_ref().map(|g| serde_json::json!({
+                    "attach_link": g.attach_link,
+                    "finger_x": g.finger_x,
+                    "tcp_offset": g.tcp_offset,
+                    "finger_half": g.finger_half,
+                    "gap_open": g.gap_open,
+                    "gap_closed": g.gap_closed,
+                    "friction": g.friction,
+                    "effort": g.effort,
+                    "gap_rate": g.gap_rate,
+                    "kind": "ParallelPlates",
+                })),
+                "home": spec.home,
+                "mass_scale": spec.mass_scale,
+                "action_scale": spec.action_scale,
+                "validate": match spec.validate() {
+                    Ok(()) => serde_json::Value::Null,
+                    Err(e) => serde_json::Value::String(e.to_string()),
+                },
+            }),
+            Err(e) => serde_json::json!({"error": e}),
+        };
+        serde_json::json!({
+            "spec": spec_json,
+            "opts": {
+                "default_kp": opts.default_kp,
+                "default_kd": opts.default_kd,
+                "default_armature": opts.default_armature,
+                "up_axis": format!("{:?}", opts.up_axis),
+                "mount": opts.mount,
+                "tick_hz": opts.tick_hz,
+            },
+            "skipped": opts.skipped,
+        })
+    };
+
     let out = serde_json::json!({
         "tool": "urdf_chain_dump",
         "urdf": path,
@@ -145,6 +224,7 @@ fn main() {
         "joints": joints,
         "links": links,
         "arm_description": arm_json,
+        "robot_spec": robot_spec,
     });
 
     println!(

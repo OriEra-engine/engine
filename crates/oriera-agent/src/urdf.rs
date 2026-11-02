@@ -17,8 +17,21 @@
 //! Meshes: URIs recorded since U2; U3 lets them 上岗 via
 //! [`crate::meshres`]（URI 解析 + STL 全量/GLB 探针），联检入口
 //! [`UrdfReport::validate_chain_with_meshes`]。
+//!
+//! **U4（PLAN-embodied-general M0a 工作包 D）**：URDF → [`RobotSpec`]
+//! 全链导入——不再把 N 轴投影到 4 轴 `ArmDescription`，而是从根 link
+//! 走串联链生成 N 个 [`JointSpec`]（fixed 透明吸收、rpy 把 `<axis>`
+//! 转到父系、`<limit>` 四元全接、`<dynamics damping>` 进被动阻尼）、
+//! 每个链体一个 [`LinkSpec`]（primitive 直映 / mesh **诚实降级**为链段
+//! 包络、`<inertial mass>` 反推密度使质量等价）、两指 prismatic（或
+//! `<mimic>` 对）→ [`GripperSpec`] 运动学双板近似。入口
+//! [`UrdfReport::to_robot_spec`] / [`UrdfReport::to_robot_spec_with_gripper`]；
+//! 既有 `first_revolute_chain`/`validate_chain` 一字不动。
 
-use oriera_subsys::ArmDescription;
+use oriera_subsys::{
+    ArmDescription, GripperKind, GripperSpec, JointSpec, LinkShape, LinkSpec, RobotSpec,
+};
+use std::f32::consts::PI;
 use roxmltree::Document;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,6 +44,11 @@ pub struct UrdfLink {
     pub geometry: Option<UrdfGeom>,
     /// `<inertial>` block (U2: parsed for bookkeeping).
     pub inertial: Option<UrdfInertial>,
+    /// `<collision><origin xyz rpy>`（U4）：碰撞体在 link 系内的位姿，
+    /// 缺省零（URDF 语义）。`to_robot_spec` 用它定 `collider_offset`
+    /// 与 primitive 的世界朝向。
+    pub collision_origin_xyz: [f32; 3],
+    pub collision_origin_rpy: [f32; 3],
 }
 
 /// Parsed geometry primitives (meshes are reported and skipped).
@@ -68,6 +86,32 @@ pub struct UrdfJoint {
     pub damping: Option<f32>,
     /// `<limit effort>` — maps to `MOTOR_MAX_FORCE` reference (U2).
     pub effort: Option<f32>,
+    /// `<limit velocity>`（U4）→ [`JointSpec::velocity_limit`]（rad/s，
+    /// prismatic 手指为 m/s）。此前被丢弃——工作包 D 补齐。
+    pub velocity: Option<f32>,
+    /// `<mimic joint multiplier offset>`（U4）：夹爪两指耦合。解析进字段
+    /// 的同时仍按既有行为登记一条 `skipped`（兼容既有输出面）。
+    pub mimic: Option<UrdfMimic>,
+}
+
+/// `<mimic>` 耦合：`q_this = multiplier · q_joint + offset`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct UrdfMimic {
+    pub joint: String,
+    /// URDF 缺省 1。
+    pub multiplier: f32,
+    /// URDF 缺省 0。
+    pub offset: f32,
+}
+
+impl Default for UrdfMimic {
+    fn default() -> Self {
+        Self {
+            joint: String::new(),
+            multiplier: 1.0,
+            offset: 0.0,
+        }
+    }
 }
 
 /// `<inertial>` block (U2: parsed for bookkeeping; physics still uses
@@ -89,6 +133,8 @@ pub struct UrdfInertial {
 /// Parse outcome: the tree plus an honest skip list.
 #[derive(Debug, Default)]
 pub struct UrdfReport {
+    /// `<robot name>`（U4；缺省空串）→ [`RobotSpec::name`]。
+    pub name: String,
     pub links: Vec<UrdfLink>,
     pub joints: Vec<UrdfJoint>,
     /// Root link (the link no joint references as child).
@@ -108,7 +154,10 @@ impl UrdfReport {
                 .find(|n| n.has_tag_name("robot"))
                 .ok_or("URDF 缺 <robot> 根元素")?
         };
-        let mut rep = UrdfReport::default();
+        let mut rep = UrdfReport {
+            name: robot.attribute("name").unwrap_or_default().to_string(),
+            ..UrdfReport::default()
+        };
         for n in robot.children() {
             if !n.is_element() {
                 continue;
@@ -129,9 +178,15 @@ impl UrdfReport {
             name: n.attribute("name").unwrap_or_default().to_string(),
             geometry: None,
             inertial: None,
+            collision_origin_xyz: [0.0; 3],
+            collision_origin_rpy: [0.0; 3],
         };
         if let Some(col) = n.children().find(|c| c.has_tag_name("collision")) {
             link.geometry = Self::parse_geometry(col);
+            if let Some(o) = col.children().find(|c| c.has_tag_name("origin")) {
+                link.collision_origin_xyz = Self::vec3(o.attribute("xyz"));
+                link.collision_origin_rpy = Self::vec3(o.attribute("rpy"));
+            }
         }
         if let Some(iner) = n.children().find(|c| c.has_tag_name("inertial")) {
             link.inertial = Self::parse_inertial(iner);
@@ -217,11 +272,26 @@ impl UrdfReport {
                     j.limit_lower = c.attribute("lower").and_then(|v| v.parse().ok());
                     j.limit_upper = c.attribute("upper").and_then(|v| v.parse().ok());
                     j.effort = c.attribute("effort").and_then(|v| v.parse().ok());
+                    j.velocity = c.attribute("velocity").and_then(|v| v.parse().ok());
                 }
                 "dynamics" => j.damping = c.attribute("damping").and_then(|v| v.parse().ok()),
-                "mimic" => self
-                    .skipped
-                    .push(format!("<mimic> 于关节 {}（U2 待办）", j.name)),
+                "mimic" => {
+                    // U4：解析进字段（夹爪两指耦合）；既有 skipped 行保留
+                    // ——下游（chain dump / crosscheck）读的是这条输出面。
+                    j.mimic = Some(UrdfMimic {
+                        joint: c.attribute("joint").unwrap_or_default().to_string(),
+                        multiplier: c
+                            .attribute("multiplier")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(1.0),
+                        offset: c
+                            .attribute("offset")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0.0),
+                    });
+                    self.skipped
+                        .push(format!("<mimic> 于关节 {}（U2 待办）", j.name));
+                }
                 _ => {}
             }
         }
@@ -431,6 +501,862 @@ impl UrdfReport {
             }
         }
         Ok((desc, skipped_names))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// U4：URDF → RobotSpec 全链（PLAN-embodied-general M0a 工作包 D）
+//
+// 坐标约定：RobotSpec 的每个 link 体系在 home 位姿**与世界对齐**
+// （robot.rs：`origin[child] == origin[parent] + anchor`，anchor/axis
+// 均在"父体局部 = 世界"系）。于是导入要做的事就是：在 URDF 世界里做
+// 一次 home 位姿 FK（T_child = T_parent · Trans(xyz) · Rz(y)Ry(p)Rx(r)），
+// 再把每个关节的位置差、旋转后的轴向量、碰撞体位姿统统表达成世界向量
+// ——与 `From<&ArmDescription>` 里逐段累加 origin 的写法同一思路，只是
+// 从 URDF 树走出来而非写死。
+// ─────────────────────────────────────────────────────────────────────
+
+type Mat3 = [[f32; 3]; 3];
+type V3 = [f32; 3];
+
+const MAT_IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+/// Rx(−90°)：URDF Z-up → OriEra Y-up，`(x, y, z) ↦ (x, z, −y)`。
+const MAT_Z_UP_TO_Y_UP: Mat3 = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+
+/// URDF 文件的"上"轴。URDF/REP-103 约定 Z-up；OriEra 3D 世界 Y-up
+/// （rigid3d 重力沿 −Y）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpAxis {
+    /// URDF 按 REP-103 Z-up 书写（真机描述文件的常态）→ 整体施加
+    /// Rx(−90°)：URDF +Z 变 OriEra +Y，URDF +Y 变 OriEra −Z。
+    #[default]
+    Z,
+    /// URDF 已按 Y-up 书写（如本 crate 内嵌 4 轴 fixture）→ 不旋转。
+    Y,
+}
+
+/// [`UrdfReport::to_robot_spec`] 的输入旋钮 + 输出清单。
+///
+/// URDF 1.0 没有 PD 增益 / armature 语义，这三项只能来自调用方（缺省即
+/// `ArmDescription` 预设同款 60 / 4 / 0.02）；`per_joint` 按关节名覆盖
+/// `(kp, kd)`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RobotSpecOpts {
+    /// ForceBased PD 刚度 / 阻尼缺省（N·m/rad, N·m·s/rad）。
+    pub default_kp: f32,
+    pub default_kd: f32,
+    /// 转子反射惯量缺省（kg·m²）。
+    pub default_armature: f32,
+    /// 按关节名覆盖 `(kp, kd)`。
+    pub per_joint: BTreeMap<String, (f32, f32)>,
+    /// URDF 根 link 系原点落在 OriEra 世界的位置（→ [`RobotSpec::base`]，
+    /// 全部 link `origin` 由此累加）。
+    pub mount: [f32; 3],
+    pub up_axis: UpAxis,
+    /// 引擎 tick 频率（Hz）：只用来把手指 `<limit velocity>`（m/s）换成
+    /// [`GripperSpec::gap_rate`]（m/tick）。
+    pub tick_hz: f32,
+    /// **输出**：每一次降级 / 缺省 / 未消费的人话记录（mesh 包络、
+    /// 分支关节、缺 `<collision>`、轴缺省……），只追加不清空。
+    pub skipped: Vec<String>,
+}
+
+impl Default for RobotSpecOpts {
+    fn default() -> Self {
+        Self {
+            default_kp: 60.0,
+            default_kd: 4.0,
+            default_armature: 0.02,
+            per_joint: BTreeMap::new(),
+            mount: [0.0; 3],
+            up_axis: UpAxis::Z,
+            tick_hz: 60.0,
+            skipped: Vec::new(),
+        }
+    }
+}
+
+fn mat_mul(a: &Mat3, b: &Mat3) -> Mat3 {
+    let cell = |i: usize, j: usize| a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+    [
+        [cell(0, 0), cell(0, 1), cell(0, 2)],
+        [cell(1, 0), cell(1, 1), cell(1, 2)],
+        [cell(2, 0), cell(2, 1), cell(2, 2)],
+    ]
+}
+
+fn mat_vec(m: &Mat3, v: V3) -> V3 {
+    let row = |i: usize| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2];
+    [row(0), row(1), row(2)]
+}
+
+/// URDF `rpy`（extrinsic XYZ）：R = Rz(yaw)·Ry(pitch)·Rx(roll)——与
+/// `scripts/mjcf_crosscheck.py` 的 FK 约定同源。
+fn rpy_to_mat(rpy: V3) -> Mat3 {
+    let (sr, cr) = rpy[0].sin_cos();
+    let (sp, cp) = rpy[1].sin_cos();
+    let (sy, cy) = rpy[2].sin_cos();
+    let rx = [[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]];
+    let ry = [[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]];
+    let rz = [[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]];
+    mat_mul(&rz, &mat_mul(&ry, &rx))
+}
+
+fn v_add(a: V3, b: V3) -> V3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn v_sub(a: V3, b: V3) -> V3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn v_scale(a: V3, s: f32) -> V3 {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+
+fn v_dot(a: V3, b: V3) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn v_len(a: V3) -> f32 {
+    v_dot(a, a).sqrt()
+}
+
+fn v_normalize(a: V3) -> V3 {
+    let l = v_len(a);
+    if l > 1e-12 {
+        v_scale(a, 1.0 / l)
+    } else {
+        a
+    }
+}
+
+/// |R|·half：旋转后盒体的轴对齐包围半尺寸（90° 整数倍旋转时精确，
+/// 其他角度保守）。
+fn aabb_half(r: &Mat3, half: V3) -> V3 {
+    let row = |i: usize| r[i][0].abs() * half[0] + r[i][1].abs() * half[1] + r[i][2].abs() * half[2];
+    [row(0), row(1), row(2)]
+}
+
+/// 轴向 `u`、半长 `half_len`、半径 `r` 的圆柱的轴对齐包围半尺寸。
+fn cylinder_aabb_half(u: V3, half_len: f32, r: f32) -> V3 {
+    let f = |c: f32| half_len * c.abs() + r * (1.0 - c * c).max(0.0).sqrt();
+    [f(u[0]), f(u[1]), f(u[2])]
+}
+
+fn box_volume(h: V3) -> f32 {
+    8.0 * h[0] * h[1] * h[2]
+}
+
+fn capsule_volume(half_len: f32, r: f32) -> f32 {
+    PI * r * r * (2.0 * half_len) + 4.0 / 3.0 * PI * r * r * r
+}
+
+/// 绝对值最大的分量下标（可排除一个下标；全零返回 None）。
+fn argmax_abs(v: V3, exclude: Option<usize>) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, c) in v.iter().enumerate() {
+        if Some(i) == exclude {
+            continue;
+        }
+        let a = c.abs();
+        if a > 1e-9 && best.is_none_or(|(_, b)| a > b) {
+            best = Some((i, a));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// URDF 世界里的一个刚体系（home 位姿）。
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    r: Mat3,
+    p: V3,
+}
+
+impl Frame {
+    const IDENTITY: Frame = Frame {
+        r: MAT_IDENTITY,
+        p: [0.0; 3],
+    };
+
+    /// `self · Trans(xyz) · R(rpy)`：子系在世界的位姿。
+    fn child(&self, xyz: V3, rpy: V3) -> Frame {
+        Frame {
+            r: mat_mul(&self.r, &rpy_to_mat(rpy)),
+            p: v_add(self.p, mat_vec(&self.r, xyz)),
+        }
+    }
+
+    fn compose(&self, other: &Frame) -> Frame {
+        Frame {
+            r: mat_mul(&self.r, &other.r),
+            p: v_add(self.p, mat_vec(&self.r, other.p)),
+        }
+    }
+}
+
+/// 链上的一个刚体 = 一个 URDF link 加上经 fixed 关节吸收进来的子 link。
+#[derive(Debug, Clone, Copy)]
+struct ChainBody {
+    /// 体的命名 link（`UrdfReport::links` 下标）。
+    link: usize,
+    /// 体系（= 命名 link 系）在 URDF 世界的 home 位姿。
+    frame: Frame,
+    /// 最深一个被吸收的 fixed 子 link 的系（无则 = `frame`）——工具法兰，
+    /// 外部夹爪的挂点。
+    tip: Frame,
+}
+
+struct ChainJoint<'a> {
+    parent: usize,
+    child: usize,
+    joint: &'a UrdfJoint,
+    child_frame: Frame,
+}
+
+/// 检测到的两指 prismatic 手指关节对。
+struct Fingers<'a> {
+    f1: &'a UrdfJoint,
+    f2: &'a UrdfJoint,
+}
+
+/// 夹爪挂点：手指父 link 所在的链体，以及该 link 系在（臂的）URDF 世界
+/// 中的位姿。
+struct GripperSite {
+    body: usize,
+    body_frame: Frame,
+    mount: Frame,
+}
+
+/// 链走查结果：链体、链关节（拓扑序）、手指挂点（若有）。
+struct ChainWalk<'a> {
+    bodies: Vec<ChainBody>,
+    joints: Vec<ChainJoint<'a>>,
+    site: Option<GripperSite>,
+}
+
+struct LinkCtx<'a> {
+    r_up: Mat3,
+    preset_root: &'a LinkSpec,
+    preset_dyn: &'a LinkSpec,
+    default_radius: f32,
+}
+
+fn axis_or_default(j: &UrdfJoint, skipped: &mut Vec<String>) -> V3 {
+    if v_len(j.axis) > 1e-6 {
+        j.axis
+    } else {
+        skipped.push(format!("关节 {} 缺 <axis> → URDF 缺省 (1,0,0)", j.name));
+        [1.0, 0.0, 0.0]
+    }
+}
+
+fn joint_limits(j: &UrdfJoint, skipped: &mut Vec<String>) -> (f32, f32) {
+    if j.kind == "continuous" {
+        return (-PI, PI);
+    }
+    match (j.limit_lower, j.limit_upper) {
+        (Some(lo), Some(hi)) if lo.is_finite() && hi.is_finite() => (lo.min(hi), lo.max(hi)),
+        _ => {
+            skipped.push(format!("关节 {} 缺 <limit lower/upper> → ±π", j.name));
+            (-PI, PI)
+        }
+    }
+}
+
+/// mesh / 缺 `<collision>` 的诚实降级：沿链段（本体原点 → 下一关节原点）
+/// 造包络。半径由 `<inertial mass>` 在引擎默认密度下反推
+/// （r = √(m / (π·ρ·L))），再按体积反推密度使质量**精确等价**；无质量
+/// 用预设杆径 + 默认密度。链段 ≈ ±X 用 Capsule（LinkShape 唯一有向
+/// primitive，沿局部 +X），否则 Box 轴对齐包络；点状体（链段 < 2 cm，
+/// 如 Panda link1——joint2 原点与 joint1 重合）→ 质量等价立方。
+fn envelope(seg: V3, mass: Option<f32>, rho: f32, default_radius: f32) -> (LinkShape, V3, f32) {
+    let len = v_len(seg);
+    if len < 0.02 {
+        let r = mass
+            .map_or(default_radius, |m| (m / rho).cbrt() * 0.5)
+            .clamp(0.015, 0.10);
+        let half = [r; 3];
+        return (LinkShape::Box { half }, [0.0; 3], box_volume(half));
+    }
+    let r = mass
+        .map_or(default_radius, |m| (m / (PI * rho * len)).sqrt())
+        .clamp(0.015, 0.10);
+    let u = v_scale(seg, 1.0 / len);
+    let off = v_scale(seg, 0.5);
+    if u[0].abs() > 0.99 {
+        (
+            LinkShape::Capsule {
+                half_len: len * 0.5,
+                radius: r,
+            },
+            off,
+            capsule_volume(len * 0.5, r),
+        )
+    } else {
+        let half = cylinder_aabb_half(u, len * 0.5, r);
+        (LinkShape::Box { half }, off, box_volume(half))
+    }
+}
+
+impl UrdfReport {
+    /// URDF → [`RobotSpec`]（U4 全链）：从根 link 走串联链，N 不限。
+    ///
+    /// - **关节**：fixed 透明吸收（link 前进、不生成关节）；revolute /
+    ///   continuous → [`JointSpec`]（continuous 限位 ±π）；`anchor` =
+    ///   子系原点相对父体原点的世界向量；`axis` = rpy 旋转到世界后的
+    ///   `<axis>`（非 ±单位轴也接受，归一化）；`<limit effort/velocity>`
+    ///   → `effort`/`velocity_limit`；`<dynamics damping>` → 被动阻尼
+    ///   （缺省引擎默认）；kp/kd/armature 来自 `opts`。**prismatic 链关节
+    ///   报错**（RobotSpec M0a 的 JointSpec 仅 revolute——缺字段，见
+    ///   docs/URDF-IMPORT.md）；floating/planar 断链报错。
+    /// - **link**：`<collision>` box → Box（旋转后取轴对齐包络）、
+    ///   cylinder → Capsule（世界轴 ≈ ±X 时）否则 Box 包络、sphere →
+    ///   Box 包络、**mesh → 链段包络降级**（`mesh_uri` 留 `None`，URI 进
+    ///   `opts.skipped`，M2 消费）；`<inertial mass>` 存在时按体积反推
+    ///   `density` 使质量等价且 `added_mass = 0`，否则引擎默认；`origin`
+    ///   = home 位姿 FK 累加。
+    /// - **夹爪**：`<mimic>` 关节对或同父两条 prismatic → [`GripperSpec`]
+    ///   运动学双板近似（见 [`Self::to_robot_spec_with_gripper`]）。无 →
+    ///   `None`。
+    /// - **上轴**：缺省把 URDF 的 Z-up 旋到 OriEra Y-up（[`UpAxis`]）。
+    ///
+    /// 返回的 spec **未**经 `validate()`——gripper-only 的 URDF（无臂关节）
+    /// 也能返回 Ok 以便把它的 GripperSpec 移植到别的臂上；要进
+    /// `MultibodySystem::from_robot` 的 spec 由 builder 校验。
+    pub fn to_robot_spec(&self, opts: &mut RobotSpecOpts) -> Result<RobotSpec, String> {
+        self.build(None, opts)
+    }
+
+    /// 臂 URDF + **外部**两指夹爪 URDF → 一份 [`RobotSpec`]：夹爪 URDF
+    /// 的根系挂到臂链末体的工具法兰（最深一个 fixed 吸收 link，如 Panda
+    /// 的 `attachment`；无则末体原点）。臂 URDF 自带的夹爪被覆盖（入
+    /// `skipped`）。
+    ///
+    /// GripperSpec 的推法（**运动学双板近似**——真夹爪力控 M2）：
+    /// - `gap_open/closed`：两指板中心沿开合轴（手指 1 的轴）的间距，在
+    ///   手指 1 限位两端各算一次，大者开、小者闭；手指 2 的位移按
+    ///   `<mimic multiplier/offset>` 耦合（无 mimic 按行程比例同步）。
+    /// - `finger_half`：手指 link 的 box 碰撞体半尺寸，按（接近轴, 其余,
+    ///   开合轴）排进 builder 的板系 `[X, Y, Z]`；缺 box 用引擎默认。
+    /// - `tcp_offset`：两指板中心中点（q=0），表达为挂载体系（世界对齐）
+    ///   的向量——几何正确；`finger_x` 取其沿接近轴的距离（builder 把板放
+    ///   在挂载 link 局部 +X 上——GripperSpec 无板系朝向字段，见文档）。
+    /// - `effort`：手指 1 `<limit effort>`（缺省引擎默认）；`gap_rate`：
+    ///   手指 `<limit velocity>` × (1+|multiplier|) / `tick_hz`（缺省引擎默认）；
+    ///   `friction` 引擎默认（URDF 无此语义）。
+    pub fn to_robot_spec_with_gripper(
+        &self,
+        gripper: &UrdfReport,
+        opts: &mut RobotSpecOpts,
+    ) -> Result<RobotSpec, String> {
+        self.build(Some(gripper), opts)
+    }
+
+    /// 两指夹爪手指关节名 `(finger_1, finger_2)`：`<mimic>` 配对的 prismatic
+    /// 对优先，其次同父两条 prismatic（文档序）。无 → `None`。
+    pub fn gripper_finger_joints(&self) -> Option<(String, String)> {
+        self.detect_fingers()
+            .map(|f| (f.f1.name.clone(), f.f2.name.clone()))
+    }
+
+    fn detect_fingers(&self) -> Option<Fingers<'_>> {
+        let prismatic = |j: &&UrdfJoint| j.kind == "prismatic";
+        for j2 in self.joints.iter().filter(prismatic) {
+            if let Some(m) = &j2.mimic {
+                if let Some(j1) = self
+                    .joints
+                    .iter()
+                    .find(|j| j.name == m.joint && j.kind == "prismatic")
+                {
+                    return Some(Fingers { f1: j1, f2: j2 });
+                }
+            }
+        }
+        for (i, j1) in self.joints.iter().enumerate() {
+            if j1.kind != "prismatic" {
+                continue;
+            }
+            if let Some(j2) = self
+                .joints
+                .iter()
+                .skip(i + 1)
+                .find(|j| j.kind == "prismatic" && j.parent == j1.parent)
+            {
+                return Some(Fingers { f1: j1, f2: j2 });
+            }
+        }
+        None
+    }
+
+    /// 根向下走串联链：fixed 吸收、revolute/continuous 成体、手指关节处
+    /// 记挂点并止步（手指不入链）、同父多关节取文档序首个其余入 skipped。
+    fn walk_chain<'a>(
+        &'a self,
+        fingers: Option<&Fingers<'a>>,
+        skipped: &mut Vec<String>,
+    ) -> Result<ChainWalk<'a>, String> {
+        let link_index = |name: &str| self.links.iter().position(|l| l.name == name);
+        let root_idx = link_index(&self.root)
+            .ok_or_else(|| format!("无法识别根 link（`{}`）：可能存在环或无 link", self.root))?;
+        let is_finger =
+            |j: &UrdfJoint| fingers.is_some_and(|f| j.name == f.f1.name || j.name == f.f2.name);
+        let mut bodies = vec![ChainBody {
+            link: root_idx,
+            frame: Frame::IDENTITY,
+            tip: Frame::IDENTITY,
+        }];
+        let mut joints = Vec::new();
+        let mut site = None;
+        let mut cur_link = self.root.as_str();
+        let mut cur_body = 0usize;
+        let mut cur_frame = Frame::IDENTITY;
+        let mut visited = std::collections::BTreeSet::new();
+        loop {
+            if !visited.insert(cur_link.to_string()) {
+                return Err(format!("检测到环：link {cur_link} 被访问两次"));
+            }
+            let cands: Vec<&UrdfJoint> = self.joints.iter().filter(|j| j.parent == cur_link).collect();
+            if site.is_none() && cands.iter().any(|j| is_finger(j)) {
+                site = Some(GripperSite {
+                    body: cur_body,
+                    body_frame: bodies[cur_body].frame,
+                    mount: cur_frame,
+                });
+            }
+            let mut rest = cands.iter().filter(|j| !is_finger(j));
+            let Some(j) = rest.next() else { break };
+            for other in rest {
+                skipped.push(format!(
+                    "分支关节 {}（父 {cur_link}）未消费——M0a 单串联链，分支树待 M0b",
+                    other.name
+                ));
+            }
+            let child_frame = cur_frame.child(j.origin_xyz, j.origin_rpy);
+            match j.kind.as_str() {
+                "fixed" => bodies[cur_body].tip = child_frame,
+                "revolute" | "continuous" => {
+                    let child_idx = link_index(&j.child).ok_or_else(|| {
+                        format!("关节 {} 的 child link `{}` 未定义", j.name, j.child)
+                    })?;
+                    bodies.push(ChainBody {
+                        link: child_idx,
+                        frame: child_frame,
+                        tip: child_frame,
+                    });
+                    let c = bodies.len() - 1;
+                    joints.push(ChainJoint {
+                        parent: cur_body,
+                        child: c,
+                        joint: j,
+                        child_frame,
+                    });
+                    cur_body = c;
+                }
+                "prismatic" => {
+                    return Err(format!(
+                        "关节 {} 为 prismatic 链关节：RobotSpec（M0a）的 JointSpec 仅 revolute——\
+                         prismatic 链关节待 M0b 增 kind 字段；两指 prismatic 手指须同父或 <mimic> \
+                         配对才会被 GripperSpec 检测消费",
+                        j.name
+                    ))
+                }
+                other => {
+                    return Err(format!(
+                        "关节 {} 类型 `{other}`：串联链在此断开（floating/planar 不在 M0a 范围）",
+                        j.name
+                    ))
+                }
+            }
+            cur_link = j.child.as_str();
+            cur_frame = child_frame;
+        }
+        Ok(ChainWalk {
+            bodies,
+            joints,
+            site,
+        })
+    }
+
+    fn link_spec(
+        &self,
+        body: &ChainBody,
+        next_p: Option<V3>,
+        is_root: bool,
+        ctx: &LinkCtx<'_>,
+        skipped: &mut Vec<String>,
+    ) -> LinkSpec {
+        let l = &self.links[body.link];
+        let mass = l
+            .inertial
+            .as_ref()
+            .map(|i| i.mass)
+            .filter(|m| m.is_finite() && *m > 0.0);
+        let rho = ctx.preset_dyn.density;
+        let r_body = mat_mul(&ctx.r_up, &body.frame.r);
+        // 链段（OriEra 世界）：到下一关节原点；末体退用最深吸收 fixed 子系；再无则零。
+        let seg_end = next_p.or_else(|| {
+            (v_len(v_sub(body.tip.p, body.frame.p)) > 1e-6).then_some(body.tip.p)
+        });
+        let seg = mat_vec(
+            &ctx.r_up,
+            seg_end.map_or([0.0; 3], |p| v_sub(p, body.frame.p)),
+        );
+        let col_off = mat_vec(&r_body, l.collision_origin_xyz);
+        let (shape, offset, volume) = match &l.geometry {
+            Some(UrdfGeom::Box(size)) => {
+                let rc = mat_mul(&r_body, &rpy_to_mat(l.collision_origin_rpy));
+                let half = aabb_half(&rc, v_scale(*size, 0.5));
+                (LinkShape::Box { half }, col_off, box_volume(half))
+            }
+            Some(UrdfGeom::Cylinder { radius, length }) => {
+                let rc = mat_mul(&r_body, &rpy_to_mat(l.collision_origin_rpy));
+                // URDF cylinder 沿 link-Z
+                let u = mat_vec(&rc, [0.0, 0.0, 1.0]);
+                if u[0].abs() > 0.99 {
+                    (
+                        LinkShape::Capsule {
+                            half_len: length * 0.5,
+                            radius: *radius,
+                        },
+                        col_off,
+                        capsule_volume(length * 0.5, *radius),
+                    )
+                } else {
+                    skipped.push(format!(
+                        "link {} cylinder 世界轴 ({:.2},{:.2},{:.2}) 非 ±X → Box 轴对齐包络（LinkShape 无旋转字段，M0b）",
+                        l.name, u[0], u[1], u[2]
+                    ));
+                    let half = cylinder_aabb_half(u, length * 0.5, *radius);
+                    (LinkShape::Box { half }, col_off, box_volume(half))
+                }
+            }
+            Some(UrdfGeom::Sphere { radius }) => {
+                let half = [*radius; 3];
+                (LinkShape::Box { half }, col_off, box_volume(half))
+            }
+            Some(UrdfGeom::Mesh { uri }) => {
+                skipped.push(format!(
+                    "link {} mesh {uri} → 链段包络降级（mesh_uri 置 None；网格碰撞 M2）",
+                    l.name
+                ));
+                envelope(seg, mass, rho, ctx.default_radius)
+            }
+            None => {
+                skipped.push(format!("link {} 无 <collision> → 链段包络", l.name));
+                envelope(seg, mass, rho, ctx.default_radius)
+            }
+        };
+        let density = mass
+            .map(|m| m / volume)
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .unwrap_or(rho);
+        LinkSpec {
+            name: l.name.clone(),
+            shape,
+            origin: [0.0; 3],
+            collider_offset: offset,
+            density,
+            friction: if is_root {
+                ctx.preset_root.friction
+            } else {
+                ctx.preset_dyn.friction
+            },
+            added_mass: if is_root || mass.is_some() {
+                0.0
+            } else {
+                ctx.preset_dyn.added_mass
+            },
+            mesh_uri: None,
+        }
+    }
+
+    /// 两指 prismatic 对 → GripperSpec（运动学双板近似）。`self` 是手指所在
+    /// 的 report（外部夹爪时即夹爪 report）。
+    fn build_gripper(
+        &self,
+        f: &Fingers<'_>,
+        site: &GripperSite,
+        r_up: &Mat3,
+        preset: &GripperSpec,
+        tick_hz: f32,
+        skipped: &mut Vec<String>,
+    ) -> GripperSpec {
+        let (f1, f2) = (f.f1, f.f2);
+        let r1 = rpy_to_mat(f1.origin_rpy);
+        let r2 = rpy_to_mat(f2.origin_rpy);
+        let a1 = mat_vec(&r1, axis_or_default(f1, skipped));
+        let a2 = mat_vec(&r2, axis_or_default(f2, skipped));
+        // 开合方向 = 手指 1 的轴（父系）
+        let u = v_normalize(a1);
+        // 指板中心（q=0，父系）= 关节原点 + 手指 link 碰撞体原点；box 半尺寸（父系包络）
+        let pad = |fj: &UrdfJoint, r: &Mat3| -> (V3, Option<V3>) {
+            let Some(link) = self.links.iter().find(|l| l.name == fj.child) else {
+                return (fj.origin_xyz, None);
+            };
+            let half = match &link.geometry {
+                Some(UrdfGeom::Box(size)) => {
+                    let rc = mat_mul(r, &rpy_to_mat(link.collision_origin_rpy));
+                    Some(aabb_half(&rc, v_scale(*size, 0.5)))
+                }
+                _ => None,
+            };
+            (
+                v_add(fj.origin_xyz, mat_vec(r, link.collision_origin_xyz)),
+                half,
+            )
+        };
+        let (p1, half1) = pad(f1, &r1);
+        let (p2, _) = pad(f2, &r2);
+        let lim = |fj: &UrdfJoint, fallback: (f32, f32)| match (fj.limit_lower, fj.limit_upper) {
+            (Some(lo), Some(hi)) if lo.is_finite() && hi.is_finite() => (lo.min(hi), lo.max(hi)),
+            _ => fallback,
+        };
+        let (lo1, hi1) = lim(f1, (0.0, 0.0));
+        let (lo2, hi2) = lim(f2, (lo1, hi1));
+        // 手指 2 的位移：mimic 耦合；无 mimic 按行程比例同步
+        let q2_of = |q1: f32| -> f32 {
+            if let Some(m) = f2.mimic.as_ref().filter(|m| m.joint == f1.name) {
+                m.multiplier * q1 + m.offset
+            } else if let Some(m) = f1.mimic.as_ref().filter(|m| m.joint == f2.name) {
+                if m.multiplier.abs() > 1e-9 {
+                    (q1 - m.offset) / m.multiplier
+                } else {
+                    q1
+                }
+            } else {
+                let t1 = hi1 - lo1;
+                if t1.abs() > 1e-9 {
+                    lo2 + (q1 - lo1) / t1 * (hi2 - lo2)
+                } else {
+                    lo2
+                }
+            }
+        };
+        let gap_at = |q1: f32| -> f32 {
+            let x1 = v_dot(p1, u) + q1 * v_dot(a1, u);
+            let x2 = v_dot(p2, u) + q2_of(q1) * v_dot(a2, u);
+            (x1 - x2).abs()
+        };
+        let (ga, gb) = (gap_at(lo1), gap_at(hi1));
+        let (mut gap_open, mut gap_closed) = (ga.max(gb), ga.min(gb));
+        if !(gap_open.is_finite() && gap_closed.is_finite()) {
+            skipped.push(format!(
+                "夹爪 {}/{} 间距不可计算 → 引擎默认 gap",
+                f1.name, f2.name
+            ));
+            gap_open = preset.gap_open;
+            gap_closed = preset.gap_closed;
+        }
+        // 接近轴 ≈ 手指原点相对父系的方向（Franka：+Z）
+        let approach = f1.origin_xyz;
+        let iu = argmax_abs(u, None).unwrap_or(2);
+        let ia = argmax_abs(approach, Some(iu)).unwrap_or((iu + 1) % 3);
+        let ir = 3 - iu - ia;
+        let finger_half = match half1 {
+            Some(h) => [h[ia], h[ir], h[iu]],
+            None => {
+                skipped.push(format!(
+                    "手指 link `{}` 无 box 碰撞体 → finger_half 用引擎默认",
+                    f1.child
+                ));
+                preset.finger_half
+            }
+        };
+        // TCP = 两指板中心中点（q=0），手指父系 → 挂载体系（世界对齐）
+        let tcp_local = v_scale(v_add(p1, p2), 0.5);
+        let tcp_world = v_add(
+            v_sub(site.mount.p, site.body_frame.p),
+            mat_vec(&site.mount.r, tcp_local),
+        );
+        let tcp_offset = mat_vec(r_up, tcp_world);
+        let finger_x = {
+            let d = v_dot(tcp_local, v_normalize(approach)).abs();
+            if d > 1e-6 {
+                d
+            } else {
+                v_len(tcp_local)
+            }
+        };
+        let effort = f1
+            .effort
+            .filter(|e| e.is_finite() && *e > 0.0)
+            .unwrap_or(preset.effort);
+        let gap_rate = match f1.velocity.filter(|v| v.is_finite() && *v > 0.0) {
+            Some(v) => {
+                let m = f2.mimic.as_ref().map_or(1.0, |m| m.multiplier.abs());
+                (v * (1.0 + m) / tick_hz.max(1.0)).max(1e-5)
+            }
+            None => preset.gap_rate,
+        };
+        GripperSpec {
+            attach_link: site.body,
+            finger_x,
+            tcp_offset,
+            finger_half,
+            gap_open,
+            gap_closed,
+            friction: preset.friction,
+            effort,
+            gap_rate,
+            kind: GripperKind::ParallelPlates,
+        }
+    }
+
+    fn build(
+        &self,
+        external: Option<&UrdfReport>,
+        opts: &mut RobotSpecOpts,
+    ) -> Result<RobotSpec, String> {
+        // 引擎默认值不从 rigid3d 的 pub(crate) 常量拿，而是读 4 轴预设投影
+        // ——robot.rs/rigid3d.rs 冻结，这条路零耦合且随预设同步。
+        let preset = RobotSpec::from(&ArmDescription::default());
+        let preset_grip = preset
+            .gripper
+            .as_ref()
+            .ok_or("预设 RobotSpec 缺 gripper（robot.rs 契约变化）")?;
+        let ctx = LinkCtx {
+            r_up: match opts.up_axis {
+                UpAxis::Z => MAT_Z_UP_TO_Y_UP,
+                UpAxis::Y => MAT_IDENTITY,
+            },
+            preset_root: &preset.links[0],
+            preset_dyn: &preset.links[1],
+            default_radius: ArmDescription::default().link_radius,
+        };
+        let mut skipped = Vec::new();
+
+        let fingers = self.detect_fingers();
+        if fingers.is_none() {
+            if let Some(j) = self.joints.iter().find(|j| j.mimic.is_some()) {
+                skipped.push(format!(
+                    "关节 {} 带 <mimic> 但非 prismatic 两指对（Robotiq 式 revolute 连杆夹爪待 M2）",
+                    j.name
+                ));
+            }
+        }
+        let ChainWalk {
+            bodies,
+            joints: chain,
+            site,
+        } = self.walk_chain(fingers.as_ref(), &mut skipped)?;
+        if chain.is_empty() && site.is_none() && external.is_none() {
+            return Err(format!(
+                "URDF 链提取失败：根 {} 下无可用的 revolute/continuous 关节，也未检测到两指夹爪",
+                self.root
+            ));
+        }
+
+        // links：形状 / 碰撞偏移 / 密度；origin 稍后沿链累加
+        let mut links: Vec<LinkSpec> = bodies
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let next_p = chain
+                    .iter()
+                    .find(|cj| cj.parent == i)
+                    .map(|cj| cj.child_frame.p);
+                self.link_spec(b, next_p, i == 0, &ctx, &mut skipped)
+            })
+            .collect();
+
+        // joints + origin FK（与 From<&ArmDescription> 同款：子 origin = 父 origin + anchor，
+        // 逐位满足 robot.rs 的链一致性约定）
+        links[0].origin = opts.mount;
+        let mut joints = Vec::with_capacity(chain.len());
+        for cj in &chain {
+            let j = cj.joint;
+            let anchor = mat_vec(
+                &ctx.r_up,
+                v_sub(cj.child_frame.p, bodies[cj.parent].frame.p),
+            );
+            let axis_urdf = axis_or_default(j, &mut skipped);
+            // <axis> 在关节/子系；经子系旋转到父系（= 世界）后归一化
+            let axis = v_normalize(mat_vec(&ctx.r_up, mat_vec(&cj.child_frame.r, axis_urdf)));
+            let limits = joint_limits(j, &mut skipped);
+            let (kp, kd) = opts
+                .per_joint
+                .get(&j.name)
+                .copied()
+                .unwrap_or((opts.default_kp, opts.default_kd));
+            links[cj.child].origin = v_add(links[cj.parent].origin, anchor);
+            joints.push(JointSpec {
+                name: j.name.clone(),
+                parent_link: cj.parent,
+                child_link: cj.child,
+                anchor,
+                axis,
+                limits,
+                effort: j.effort.filter(|e| e.is_finite() && *e > 0.0),
+                velocity_limit: j.velocity.filter(|v| v.is_finite() && *v > 0.0),
+                kp,
+                kd,
+                armature: opts.default_armature,
+                // <dynamics damping> 是被动黏性摩擦，不是 PD 的 kd（sim-engine review 语义）
+                damping: j.damping.map(f32::abs).unwrap_or(preset.joints[0].damping),
+            });
+        }
+
+        // gripper：外部夹爪挂末体法兰；否则自带手指对；否则 None
+        let gripper = if let Some(ext) = external {
+            let ef = ext.detect_fingers().ok_or(
+                "外部夹爪 URDF 未检测到两指 prismatic 对（需同父两条 prismatic 或 <mimic> 配对）",
+            )?;
+            let ext_walk = ext.walk_chain(Some(&ef), &mut skipped)?;
+            if !ext_walk.joints.is_empty() {
+                skipped.push(format!(
+                    "外部夹爪 URDF 含 {} 个 revolute 链关节——未并入臂链（仅取手指对）",
+                    ext_walk.joints.len()
+                ));
+            }
+            let es = ext_walk
+                .site
+                .ok_or("外部夹爪：手指父 link 不在其根链上")?;
+            if site.is_some() {
+                skipped.push("臂 URDF 自带夹爪被外部夹爪覆盖".into());
+            }
+            let last = bodies.len() - 1;
+            Some(ext.build_gripper(
+                &ef,
+                &GripperSite {
+                    body: last,
+                    body_frame: bodies[last].frame,
+                    mount: bodies[last].tip.compose(&es.mount),
+                },
+                &ctx.r_up,
+                preset_grip,
+                opts.tick_hz,
+                &mut skipped,
+            ))
+        } else if let (Some(f), Some(s)) = (fingers.as_ref(), site.as_ref()) {
+            Some(self.build_gripper(f, s, &ctx.r_up, preset_grip, opts.tick_hz, &mut skipped))
+        } else {
+            None
+        };
+
+        let n = joints.len();
+        // home：URDF 零位；限位不含零时（Panda joint4 ∈ [−3.07, −0.07]）钳到最近限位
+        let home = joints
+            .iter()
+            .map(|j| 0.0f32.clamp(j.limits.0, j.limits.1))
+            .collect();
+        opts.skipped.append(&mut skipped);
+        Ok(RobotSpec {
+            name: if self.name.is_empty() {
+                "urdf".into()
+            } else {
+                self.name.clone()
+            },
+            base: opts.mount,
+            links,
+            joints,
+            gripper,
+            home,
+            mass_scale: 1.0,
+            // 与 4 轴预设同款（rad / 单位动作）；包装层旋钮，物理不消费
+            action_scale: vec![2.0; n],
+        })
     }
 }
 
@@ -653,5 +1579,207 @@ mod tests {
         std::fs::remove_file(&stl_path).unwrap();
         let issues = rep.validate_chain_with_meshes(1, &t.0, &packages);
         assert!(issues.iter().any(|i| i.contains("不可用")), "{issues:?}");
+    }
+
+    // ── U4：velocity / mimic / collision origin 解析 + RobotSpec 全链 ──
+
+    #[test]
+    fn velocity_and_robot_name_are_parsed() {
+        let rep = UrdfReport::parse(FIXTURE).unwrap();
+        assert_eq!(rep.name, "oriera_test_arm");
+        let j1 = rep.joints.iter().find(|j| j.name == "j1").unwrap();
+        assert_eq!(j1.velocity, Some(2.0), "<limit velocity> 此前被丢弃——U4 补齐");
+        let j4 = rep.joints.iter().find(|j| j.name == "j4").unwrap();
+        assert_eq!(j4.velocity, None, "fixed 关节无 <limit>");
+    }
+
+    #[test]
+    fn mimic_is_parsed_and_still_reported() {
+        let xml = r#"<robot name="g">
+          <link name="hand"/><link name="f1"/><link name="f2"/>
+          <joint name="finger_1" type="prismatic"><parent link="hand"/><child link="f1"/>
+            <axis xyz="0 1 0"/><limit lower="0" upper="0.04" effort="20" velocity="0.2"/></joint>
+          <joint name="finger_2" type="prismatic"><parent link="hand"/><child link="f2"/>
+            <axis xyz="0 -1 0"/><limit lower="0" upper="0.04" effort="20" velocity="0.2"/>
+            <mimic joint="finger_1" multiplier="-1" offset="0.001"/></joint>
+        </robot>"#;
+        let rep = UrdfReport::parse(xml).unwrap();
+        let f2 = rep.joints.iter().find(|j| j.name == "finger_2").unwrap();
+        let m = f2.mimic.as_ref().expect("mimic parsed into the joint");
+        assert_eq!((m.joint.as_str(), m.multiplier, m.offset), ("finger_1", -1.0, 0.001));
+        // 既有输出面不变：skipped 仍登记一条 <mimic> 行
+        assert!(rep.skipped.iter().any(|s| s.contains("<mimic>") && s.contains("finger_2")));
+        assert_eq!(
+            rep.gripper_finger_joints(),
+            Some(("finger_1".into(), "finger_2".into()))
+        );
+        // multiplier 缺省 1、offset 缺省 0
+        let rep2 = UrdfReport::parse(&xml.replace(r#" multiplier="-1" offset="0.001""#, "")).unwrap();
+        let m2 = rep2.joints[1].mimic.as_ref().unwrap();
+        assert_eq!((m2.multiplier, m2.offset), (1.0, 0.0));
+    }
+
+    #[test]
+    fn collision_origin_is_parsed() {
+        let xml = r#"<robot name="c"><link name="l">
+          <collision><origin xyz="0.1 0.2 0.3" rpy="0 1.5707963 0"/>
+            <geometry><box size="0.2 0.4 0.6"/></geometry></collision>
+        </link></robot>"#;
+        let rep = UrdfReport::parse(xml).unwrap();
+        assert_eq!(rep.links[0].collision_origin_xyz, [0.1, 0.2, 0.3]);
+        assert!((rep.links[0].collision_origin_rpy[1] - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn opts_defaults_match_the_preset_gains() {
+        // 任务书钉死 60 / 4 / 0.02；与 ArmDescription 预设同源，漂移即红
+        let o = RobotSpecOpts::default();
+        let preset = RobotSpec::from(&ArmDescription::default());
+        assert_eq!((o.default_kp, o.default_kd), (preset.joints[0].kp, preset.joints[0].kd));
+        assert_eq!(o.default_armature, preset.joints[0].armature);
+        assert_eq!(o.up_axis, UpAxis::Z);
+    }
+
+    #[test]
+    fn rpy_matrix_follows_urdf_extrinsic_xyz() {
+        // Rx(−90°)·ez = +Y（Panda joint2 的轴进父系）
+        let r = rpy_to_mat([-PI / 2.0, 0.0, 0.0]);
+        let v = mat_vec(&r, [0.0, 0.0, 1.0]);
+        assert!((v[0]).abs() < 1e-6 && (v[1] - 1.0).abs() < 1e-6 && v[2].abs() < 1e-6, "{v:?}");
+        // Rz(90°)·ex = +Y
+        let r = rpy_to_mat([0.0, 0.0, PI / 2.0]);
+        let v = mat_vec(&r, [1.0, 0.0, 0.0]);
+        assert!(v[0].abs() < 1e-6 && (v[1] - 1.0).abs() < 1e-6, "{v:?}");
+        // 复合顺序 Rz·Ry·Rx：rpy=(90°, 0, 90°) 作用于 ey → Rz(90)·Rx(90)·ey = Rz(90)·ez = ez
+        let r = rpy_to_mat([PI / 2.0, 0.0, PI / 2.0]);
+        let v = mat_vec(&r, [0.0, 1.0, 0.0]);
+        assert!((v[2] - 1.0).abs() < 1e-6, "{v:?}");
+        // 上轴换算：URDF +Z → OriEra +Y
+        let v = mat_vec(&MAT_Z_UP_TO_Y_UP, [0.0, 0.0, 1.0]);
+        assert_eq!(v, [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn fixture_maps_to_a_three_joint_robot_spec_not_four() {
+        // 内嵌 fixture 实际 3 revolute + 1 fixed：全链导入按实得 3 轴，
+        // 不再像 first_revolute_chain 那样投影/补齐到 4 轴。
+        let rep = UrdfReport::parse(FIXTURE).unwrap();
+        let mut opts = RobotSpecOpts {
+            up_axis: UpAxis::Y,
+            mount: [0.0, 0.5, 0.0],
+            ..RobotSpecOpts::default()
+        };
+        let spec = rep.to_robot_spec(&mut opts).expect("fixture → RobotSpec");
+        assert_eq!(spec.name, "oriera_test_arm");
+        assert_eq!(spec.joints.len(), 3, "{:?}", spec.joint_names());
+        assert_eq!(spec.links.len(), 4, "base, l1, l2, l3（tool 被 fixed 吸收进 l3）");
+        assert!(spec.gripper.is_none());
+        spec.validate().expect("valid chain");
+        // j1：anchor = (0,0,0.12)（Y-up 不旋转）、轴 +Y、限位/effort/velocity/damping 全接
+        let j1 = &spec.joints[0];
+        assert_eq!(j1.anchor, [0.0, 0.0, 0.12]);
+        assert_eq!(j1.axis, [0.0, 1.0, 0.0]);
+        // 限位 = URDF 字面值回环（fixture 写的是 ±3.14，不是 π）
+        let u1 = rep.joints.iter().find(|j| j.name == "j1").unwrap();
+        assert_eq!(j1.limits, (u1.limit_lower.unwrap(), u1.limit_upper.unwrap()));
+        assert_eq!((j1.effort, j1.velocity_limit), (Some(80.0), Some(2.0)));
+        assert_eq!(j1.damping, 0.05);
+        assert_eq!((j1.kp, j1.kd, j1.armature), (60.0, 4.0, 0.02));
+        // j2 无 <dynamics> → 引擎默认阻尼（预设 0.05）
+        assert_eq!(spec.joints[1].damping, RobotSpec::from(&ArmDescription::default()).joints[0].damping);
+        // origin 沿链累加：base=mount，l1 = base + anchor
+        assert_eq!(spec.links[0].origin, [0.0, 0.5, 0.0]);
+        assert_eq!(spec.links[1].origin, [0.0, 0.5, 0.12]);
+        assert_eq!(spec.links[2].origin, [0.2, 0.5, 0.12]);
+        // 碰撞体：base box 直映（半尺寸）；l1 cylinder 沿 link-Z、非 ±X → Box 包络（登记）
+        assert_eq!(spec.links[0].shape, LinkShape::Box { half: [0.04, 0.06, 0.06] });
+        assert!(matches!(spec.links[1].shape, LinkShape::Box { .. }));
+        assert!(opts.skipped.iter().any(|s| s.contains("cylinder") && s.contains("l1")));
+        // 无 <inertial> → 引擎默认密度 / added_mass
+        let preset = RobotSpec::from(&ArmDescription::default());
+        assert_eq!(spec.links[1].density, preset.links[1].density);
+        assert_eq!(spec.links[1].added_mass, preset.links[1].added_mass);
+        assert_eq!(spec.links[0].added_mass, 0.0, "根不加质量");
+        // per_joint 覆盖
+        let mut opts2 = RobotSpecOpts::default();
+        opts2.per_joint.insert("j2".into(), (120.0, 9.0));
+        let spec2 = rep.to_robot_spec(&mut opts2).unwrap();
+        assert_eq!((spec2.joints[1].kp, spec2.joints[1].kd), (120.0, 9.0));
+        assert_eq!((spec2.joints[0].kp, spec2.joints[0].kd), (60.0, 4.0));
+    }
+
+    #[test]
+    fn z_up_conversion_rotates_anchor_and_axis() {
+        // j1 origin (0,0,0.12) 轴 +Y：Z-up→Y-up 后 anchor (0,0.12,0)、轴 (0,0,−1)
+        let rep = UrdfReport::parse(FIXTURE).unwrap();
+        let mut opts = RobotSpecOpts::default();
+        let spec = rep.to_robot_spec(&mut opts).unwrap();
+        let j1 = &spec.joints[0];
+        assert_eq!(j1.anchor, [0.0, 0.12, 0.0]);
+        assert_eq!(j1.axis, [0.0, 0.0, -1.0]);
+        assert_eq!(spec.joints[1].axis, [0.0, 1.0, 0.0], "URDF +Z 轴 → OriEra +Y");
+    }
+
+    #[test]
+    fn mesh_links_degrade_to_envelopes_with_mass_equivalence() {
+        let xml = r#"<robot name="m">
+          <link name="base"><collision><geometry><mesh filename="package://x/base.stl"/></geometry></collision></link>
+          <link name="l1">
+            <inertial><mass value="3.0"/><inertia ixx="1" iyy="1" izz="1"/></inertial>
+            <collision><geometry><mesh filename="package://x/l1.stl"/></geometry></collision>
+          </link>
+          <link name="l2"><inertial><mass value="1.5"/><inertia ixx="1" iyy="1" izz="1"/></inertial></link>
+          <joint name="j1" type="revolute"><parent link="base"/><child link="l1"/>
+            <origin xyz="0 0 0.1"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="10" velocity="1"/></joint>
+          <joint name="j2" type="revolute"><parent link="l1"/><child link="l2"/>
+            <origin xyz="0.3 0 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="10" velocity="1"/></joint>
+        </robot>"#;
+        let rep = UrdfReport::parse(xml).unwrap();
+        let mut opts = RobotSpecOpts::default();
+        let spec = rep.to_robot_spec(&mut opts).unwrap();
+        spec.validate().expect("mesh_uri stays None so validate passes");
+        assert!(spec.links.iter().all(|l| l.mesh_uri.is_none()));
+        let mesh_rows: Vec<_> = opts.skipped.iter().filter(|s| s.contains("mesh")).collect();
+        assert_eq!(mesh_rows.len(), 2, "{:?}", opts.skipped);
+        assert!(mesh_rows.iter().any(|s| s.contains("package://x/l1.stl")));
+        assert!(opts.skipped.iter().any(|s| s.contains("l2") && s.contains("无 <collision>")));
+        // l1：链段 (0.3,0,0) 沿 X → Capsule；质量 3 kg 由密度精确等价、added_mass=0
+        let l1 = &spec.links[1];
+        let LinkShape::Capsule { half_len, radius } = l1.shape else {
+            panic!("X 向链段应为 Capsule：{:?}", l1.shape)
+        };
+        assert!((half_len - 0.15).abs() < 1e-6);
+        let vol = capsule_volume(half_len, radius);
+        assert!((l1.density * vol - 3.0).abs() < 1e-4, "质量等价：{}", l1.density * vol);
+        assert_eq!(l1.added_mass, 0.0);
+        assert_eq!(l1.collider_offset, [0.15, 0.0, 0.0]);
+        // l2：末体、无链段 → 质量等价立方
+        let l2 = &spec.links[2];
+        let LinkShape::Box { half } = l2.shape else { panic!() };
+        assert!((l2.density * box_volume(half) - 1.5).abs() < 1e-4);
+        // j1：URDF +Z 轴 → OriEra +Y；j2：URDF +Y 轴 → OriEra −Z
+        assert_eq!(spec.joints[0].axis, [0.0, 1.0, 0.0]);
+        assert_eq!(spec.joints[1].axis, [0.0, 0.0, -1.0]);
+    }
+
+    #[test]
+    fn prismatic_chain_joint_and_broken_chain_are_errors() {
+        let xml = r#"<robot name="p">
+          <link name="a"/><link name="b"/><link name="c"/>
+          <joint name="slide" type="prismatic"><parent link="a"/><child link="b"/>
+            <axis xyz="1 0 0"/><limit lower="0" upper="0.1" effort="1" velocity="1"/></joint>
+          <joint name="j" type="revolute"><parent link="b"/><child link="c"/>
+            <axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>
+        </robot>"#;
+        let rep = UrdfReport::parse(xml).unwrap();
+        let err = rep.to_robot_spec(&mut RobotSpecOpts::default()).unwrap_err();
+        assert!(err.contains("prismatic") && err.contains("M0b"), "{err}");
+        let xml2 = xml.replace(r#"type="prismatic""#, r#"type="floating""#);
+        let rep2 = UrdfReport::parse(&xml2).unwrap();
+        let err2 = rep2.to_robot_spec(&mut RobotSpecOpts::default()).unwrap_err();
+        assert!(err2.contains("floating") && err2.contains("断开"), "{err2}");
+        // 无关节无夹爪 → 人话错
+        let rep3 = UrdfReport::parse(r#"<robot name="e"><link name="only"/></robot>"#).unwrap();
+        assert!(rep3.to_robot_spec(&mut RobotSpecOpts::default()).is_err());
     }
 }

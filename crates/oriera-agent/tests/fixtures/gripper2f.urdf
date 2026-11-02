@@ -1,0 +1,80 @@
+<?xml version="1.0"?>
+<!--
+  gripper2f.urdf — a generic external two-finger parallel gripper, hand-written
+  for the OriEra URDF to RobotSpec import tests (U4, PLAN-embodied-general M0a
+  工作包 D: "任意外部两指夹爪 URDF"). Own authoring, no copied content; the
+  dimensions are *inspired by* the Franka Hand (finger slide 0..0.04 m along
+  plus/minus Y at z = 0.0584, 17 x 8 x 17 mm fingertip pads) so the numbers are
+  physically plausible, but nothing here is a Franka asset.
+
+  Shape of the mechanism (what the importer must detect):
+
+    hand . finger_1 (prismatic, axis +Y, 0..0.04) . left_finger
+         . finger_2 (prismatic, frame Rz(180 deg) so its +Y is the hand's
+                     minus Y; mimic joint="finger_1" multiplier="1")
+                                                    . right_finger
+
+  Expected GripperSpec (tests/urdf_robot_spec.rs asserts these):
+    gap_closed = 2 x pad half-thickness           = 0.008 m   (pads touching at q = 0)
+    gap_open   = gap_closed + 0.04 x (1 + |mult|) = 0.088 m
+    finger_half = [0.0085, 0.0085, 0.004]  (approach Z -> plate X, gap axis Y -> plate Z)
+    TCP (hand frame) = (0, 0, 0.0584 + 0.0445) = (0, 0, 0.1029)
+    effort = 20 N (finger_1 limit effort), gap_rate = 0.2 x 2 / tick_hz
+-->
+<robot name="gripper2f">
+
+  <link name="hand">
+    <inertial>
+      <origin xyz="-0.01 0 0.03"/>
+      <mass value="0.73"/>
+      <inertia ixx="0.001" iyy="0.0025" izz="0.0017" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0.03"/>
+      <geometry><box size="0.06 0.20 0.08"/></geometry>
+    </collision>
+  </link>
+
+  <link name="left_finger">
+    <inertial>
+      <mass value="0.015"/>
+      <inertia ixx="2.375e-6" iyy="2.375e-6" izz="7.5e-7"/>
+    </inertial>
+    <collision>
+      <!-- pad centre 4 mm off the finger plane: inner face at y = 0 when q = 0 -->
+      <origin xyz="0 0.004 0.0445"/>
+      <geometry><box size="0.017 0.008 0.017"/></geometry>
+    </collision>
+  </link>
+
+  <link name="right_finger">
+    <inertial>
+      <mass value="0.015"/>
+      <inertia ixx="2.375e-6" iyy="2.375e-6" izz="7.5e-7"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0.004 0.0445"/>
+      <geometry><box size="0.017 0.008 0.017"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="finger_1" type="prismatic">
+    <parent link="hand"/> <child link="left_finger"/>
+    <origin xyz="0 0 0.0584" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="0.04" effort="20" velocity="0.2"/>
+    <dynamics damping="200"/>
+  </joint>
+
+  <joint name="finger_2" type="prismatic">
+    <parent link="hand"/> <child link="right_finger"/>
+    <!-- Rz(180°): the finger's +Y points along the hand's −Y, so the same
+         <axis xyz="0 1 0"/> opens outward on the other side -->
+    <origin xyz="0 0 0.0584" rpy="0 0 3.141592653589793"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="0.04" effort="20" velocity="0.2"/>
+    <dynamics damping="200"/>
+    <mimic joint="finger_1" multiplier="1" offset="0"/>
+  </joint>
+
+</robot>
