@@ -16,6 +16,14 @@
 //! serialization folded through splitmix64, written into every
 //! receipt and eval report.
 //!
+//! **M0b spec library (P-9)**: a top-level `"extends": "<name>"` makes
+//! the file an *overlay* on `specs/official/<name>.json` (see
+//! [`resolve_extends`] / [`merge_overlay`]); resolution happens at load,
+//! the resolved spec is what gets validated and hashed, and the key
+//! never reaches the typed struct. `specs/lab/` holds overlays;
+//! `scripts/gen_spec_index.py` writes `specs/INDEX.json` (name → hash,
+//! same-name-different-hash is an error).
+//!
 //! ```json
 //! { "schema": "oriera.scene/2", "meta": {"name": "..."},
 //!   "robot": {RobotSpec}, "scene": {SceneGraph},
@@ -262,8 +270,16 @@ impl SceneSpec {
     /// default map), drop `meta`, fold the canonical JSON bytes
     /// through splitmix64. Goes into `eval_report.json` and the
     /// LeRobot receipt: same spec_hash + same seeds ⇒ same episodes.
+    ///
+    /// Canonicalization (M0b): an explicitly written legacy plate axis
+    /// (`approach_axis: [1,0,0]` / `gap_axis: [0,0,1]`) hashes the same
+    /// as an omitted one — same gripper, same identity.
     pub fn spec_hash(&self) -> u64 {
-        let mut v = serde_json::to_value(self).expect("SceneSpec serializes");
+        let mut canon = self.clone();
+        if let Some(g) = canon.robot.gripper.as_mut() {
+            g.canonicalize_axes();
+        }
+        let mut v = serde_json::to_value(&canon).expect("SceneSpec serializes");
         v.as_object_mut()
             .expect("top level is a map")
             .remove("meta");
@@ -275,13 +291,20 @@ impl SceneSpec {
         format!("{:016x}", self.spec_hash())
     }
 
-    /// Parse a v2 spec from JSON text: schema gate, unknown-key audit
-    /// (also over the subsys-side structs that can't carry
-    /// `deny_unknown_fields`), then [`Self::validate`].
+    /// First 8 hex digits of the spec hash — the `runs/<hash8>/` directory key.
+    pub fn spec_hash8(&self) -> String {
+        self.spec_hash_hex()[..8].to_string()
+    }
+
+    /// Parse a v2 spec from JSON text: `extends` resolution (against
+    /// the official library), schema gate, unknown-key audit (also over
+    /// the subsys-side structs that can't carry `deny_unknown_fields`),
+    /// then [`Self::validate`].
     #[cfg(feature = "json")]
     pub fn from_json_v2(text: &str) -> Result<Self, String> {
         let v: serde_json::Value =
             serde_json::from_str(text).map_err(|e| format!("spec JSON 非法：{e}"))?;
+        let v = resolve_extends(v, 0, &mut Vec::new())?;
         Self::from_value(v)
     }
 
@@ -300,10 +323,13 @@ impl SceneSpec {
 
     /// Load v2 or auto-migrate v1 (the old `desc`/`scene`/`task`-enum
     /// drafts) — migration is lossless for the defaults by construction.
+    /// A top-level `extends` (M0b spec library) is resolved first: the
+    /// named official spec is the base, this file is an overlay.
     #[cfg(feature = "json")]
     pub fn load(text: &str) -> Result<LoadedSpec, String> {
         let v: serde_json::Value =
             serde_json::from_str(text).map_err(|e| format!("spec JSON 非法：{e}"))?;
+        let v = resolve_extends(v, 0, &mut Vec::new())?;
         let is_v1 = v.get("schema").is_none();
         if !is_v1 {
             return Ok(LoadedSpec {
@@ -536,9 +562,168 @@ fn unknown_key_report(input: &serde_json::Value, roundtrip: &serde_json::Value) 
     }
 }
 
+// ---------------------------------------------------------------------------
+// Spec library (M0b, PLAN §9.1 P-9): `extends` inheritance against the
+// governed `specs/official/` directory; lab specs are overlays.
+// ---------------------------------------------------------------------------
+
+/// Top-level key naming the official base spec (file stem under
+/// [`official_specs_dir`]); the key never survives resolution.
+pub const EXTENDS_KEY: &str = "extends";
+
+/// Maximum inheritance depth (a chain longer than this is a mistake,
+/// not a design).
+const EXTENDS_MAX_DEPTH: usize = 8;
+
+/// The governed spec library: `$ORIERA_SPECS_OFFICIAL` when set, else
+/// the engine's `crates/oriera-agent/specs/official/` (compile-time
+/// path — the library ships with the engine that resolves it).
+pub fn official_specs_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("ORIERA_SPECS_OFFICIAL") {
+        if !dir.trim().is_empty() {
+            return std::path::PathBuf::from(dir);
+        }
+    }
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("specs")
+        .join("official")
+}
+
+/// Resolve a top-level `extends` chain: load the named official spec
+/// (recursively resolved), overlay this value on it (objects merge per
+/// key, arrays merge index-wise with extra overlay items appended,
+/// scalars replace), drop the key. Cycles and over-deep chains are
+/// errors naming the chain; a missing base names the directory and the
+/// candidates in it.
+#[cfg(feature = "json")]
+pub fn resolve_extends(
+    v: serde_json::Value,
+    depth: usize,
+    chain: &mut Vec<String>,
+) -> Result<serde_json::Value, String> {
+    resolve_extends_in(&official_specs_dir(), v, depth, chain)
+}
+
+/// [`resolve_extends`] against an explicit library directory.
+#[cfg(feature = "json")]
+pub fn resolve_extends_in(
+    dir: &std::path::Path,
+    mut v: serde_json::Value,
+    depth: usize,
+    chain: &mut Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let Some(obj) = v.as_object_mut() else {
+        return Ok(v);
+    };
+    let Some(ext) = obj.remove(EXTENDS_KEY) else {
+        return Ok(v);
+    };
+    let name = ext
+        .as_str()
+        .ok_or_else(|| format!("spec.extends：须为字符串（官方 spec 名，如 \"tabletop-4dof-pick\"），当前 {ext}"))?
+        .trim()
+        .trim_start_matches("official/")
+        .trim_end_matches(".json")
+        .to_string();
+    if name.is_empty() {
+        return Err("spec.extends：名字为空".into());
+    }
+    if depth >= EXTENDS_MAX_DEPTH {
+        return Err(format!(
+            "spec.extends：继承链过深（> {EXTENDS_MAX_DEPTH}）：{} → {name}",
+            chain.join(" → ")
+        ));
+    }
+    if chain.iter().any(|c| c == &name) {
+        return Err(format!(
+            "spec.extends：循环继承：{} → {name}",
+            chain.join(" → ")
+        ));
+    }
+    let path = dir.join(format!("{name}.json"));
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        let mut have: Vec<String> = std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        let p = e.path();
+                        (p.extension().and_then(|s| s.to_str()) == Some("json"))
+                            .then(|| {
+                                p.file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("")
+                                    .to_string()
+                            })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        have.sort();
+        format!(
+            "spec.extends = {name:?}：官方库里没有（{}；可用：{}）：{e}",
+            dir.display(),
+            if have.is_empty() { "<空>".to_string() } else { have.join(", ") }
+        )
+    })?;
+    let base: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("spec.extends = {name:?}：基 spec JSON 非法：{e}"))?;
+    chain.push(name);
+    let mut base = resolve_extends_in(dir, base, depth + 1, chain)?;
+    merge_overlay(&mut base, v);
+    Ok(base)
+}
+
+/// Overlay semantics for `extends`: objects merge per key, arrays merge
+/// index-wise (extra overlay items appended), everything else replaces.
+/// Two tagged-enum rules keep shapes swappable: an object whose `kind`
+/// tag differs from the base's (`{"kind":"cylinder",…}` over
+/// `{"kind":"cuboid",…}`) replaces it outright, and so does a
+/// single-key externally tagged variant with a different key
+/// (`{"Capsule":{…}}` over `{"Box":{…}}`) — a per-key merge would leave
+/// the old variant's fields behind and trip `deny_unknown_fields`.
+#[cfg(feature = "json")]
+pub fn merge_overlay(base: &mut serde_json::Value, overlay: serde_json::Value) {
+    match (base, overlay) {
+        (serde_json::Value::Object(b), serde_json::Value::Object(o)) => {
+            let kind_changes = match (b.get("kind"), o.get("kind")) {
+                (Some(bk), Some(ok)) => bk != ok,
+                _ => false,
+            };
+            let variant_changes = b.len() == 1
+                && o.len() == 1
+                && b.keys().next() != o.keys().next()
+                && b.values().next().is_some_and(|v| v.is_object())
+                && o.values().next().is_some_and(|v| v.is_object());
+            if kind_changes || variant_changes {
+                *b = o;
+                return;
+            }
+            for (k, ov) in o {
+                match b.get_mut(&k) {
+                    Some(bv) => merge_overlay(bv, ov),
+                    None => {
+                        b.insert(k, ov);
+                    }
+                }
+            }
+        }
+        (serde_json::Value::Array(b), serde_json::Value::Array(o)) => {
+            for (i, ov) in o.into_iter().enumerate() {
+                if i < b.len() {
+                    merge_overlay(&mut b[i], ov);
+                } else {
+                    b.push(ov);
+                }
+            }
+        }
+        (b, o) => *b = o,
+    }
+}
+
 /// splitmix64 byte fold — the house hash (same rounds as
 /// `lerobot.rs::content_hash`); corruption detection, not crypto.
-fn fold_json(bytes: &[u8]) -> u64 {
+/// Shared with the eval protocol / manifest hashes (M0b).
+pub(crate) fn fold_json(bytes: &[u8]) -> u64 {
     fn mix(mut h: u64, x: u64) -> u64 {
         h ^= x;
         h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
@@ -554,6 +739,11 @@ fn fold_json(bytes: &[u8]) -> u64 {
         h = mix(h, u64::from_le_bytes(buf));
     }
     mix(h, bytes.len() as u64)
+}
+
+/// [`fold_json`] as 16 hex digits — the receipt/manifest form.
+pub(crate) fn fold_json_hex(bytes: &[u8]) -> String {
+    format!("{:016x}", fold_json(bytes))
 }
 
 /// The checked-in golden v2 spec (`specs/tabletop-4dof-pick.json`), as
@@ -761,5 +951,145 @@ mod tests {
     fn malformed_spec_is_an_error_not_a_panic() {
         assert!(SceneSpec::from_json_v2("{ nope").is_err());
         assert!(SceneSpec::load(GOLDEN_PICK_PLACE_SPEC_V1).is_ok());
+    }
+
+    // --- M0b: spec library (`extends`) + plate-axis canonical hash -----
+
+    /// The official copy of the golden IS the golden (byte-identical,
+    /// same hash) — two paths, one experiment identity.
+    #[cfg(feature = "json")]
+    #[test]
+    fn official_golden_is_the_checked_in_golden() {
+        let official = official_specs_dir().join("tabletop-4dof-pick.json");
+        let on_disk = std::fs::read_to_string(&official).expect("official golden exists");
+        assert_eq!(on_disk.trim_end(), GOLDEN_TABLETOP_4DOF_PICK_SPEC.trim_end());
+        let spec = SceneSpec::load_file(&official).expect("official loads").spec;
+        assert_eq!(spec.spec_hash_hex(), GOLDEN_SPEC_HASH_HEX);
+    }
+
+    /// A lab overlay resolves against the official base: everything not
+    /// written comes from the base, the overridden shape lands, the
+    /// resolved spec (not the overlay text) is what gets hashed, and
+    /// `extends` never survives into the typed spec.
+    #[cfg(feature = "json")]
+    #[test]
+    fn extends_resolves_against_official_and_hashes_the_result() {
+        let lab = concat!(env!("CARGO_MANIFEST_DIR"), "/specs/lab/example-cylinder.json");
+        let loaded = SceneSpec::load_file(std::path::Path::new(lab)).expect("lab spec resolves");
+        assert!(!loaded.migrated);
+        let s = &loaded.spec;
+        assert_eq!(s.meta.name, "lab-example-cylinder");
+        assert_eq!(s.scene.props[0].name, "cylinder");
+        assert!(
+            format!("{:?}", s.scene.props[0].shape).contains("Cylinder"),
+            "{:?}",
+            s.scene.props[0].shape
+        );
+        // inherited, not written in the overlay
+        assert_eq!(s.robot.dof(), 4);
+        assert_eq!(s.max_steps, golden().max_steps);
+        assert_eq!(s.scene.fixtures.len(), golden().scene.fixtures.len());
+        // identity moved (shape is identity), and equals the same change made by hand
+        assert_ne!(s.spec_hash_hex(), GOLDEN_SPEC_HASH_HEX);
+        let mut by_hand = golden();
+        by_hand
+            .apply_sets(&[
+                "scene.props.0.name=cylinder".into(),
+                format!(
+                    "scene.props.0.shape={}",
+                    r#"{"kind":"cylinder","half_h":0.03,"radius":0.025}"#
+                ),
+            ])
+            .unwrap();
+        assert_eq!(s.spec_hash(), by_hand.spec_hash(), "resolved overlay == hand-edited golden");
+        // the serialized resolved spec carries no `extends`
+        let v = serde_json::to_value(s).unwrap();
+        assert!(v.get(EXTENDS_KEY).is_none());
+    }
+
+    /// Chains resolve transitively; cycles, missing bases and over-deep
+    /// chains are named errors.
+    #[cfg(feature = "json")]
+    #[test]
+    fn extends_errors_name_the_chain_and_the_candidates() {
+        let err = SceneSpec::from_json_v2(r#"{"extends":"no-such-spec"}"#).unwrap_err();
+        assert!(err.contains("no-such-spec") && err.contains("tabletop-4dof-pick"), "{err}");
+        let err = SceneSpec::from_json_v2(r#"{"extends": 7}"#).unwrap_err();
+        assert!(err.contains("extends"), "{err}");
+        // a self-referencing chain through a temp library dir (explicit
+        // dir — no process-global env var, so parallel tests stay clean)
+        let dir = std::env::temp_dir().join(format!("oriera-spec-cycle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.json"), r#"{"extends":"b"}"#).unwrap();
+        std::fs::write(dir.join("b.json"), r#"{"extends":"a"}"#).unwrap();
+        let mut chain = Vec::new();
+        let a: serde_json::Value = serde_json::from_str(r#"{"extends":"a"}"#).unwrap();
+        let err = resolve_extends_in(&dir, a, 0, &mut chain).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.contains("循环"), "{err}");
+    }
+
+    /// Overlay rules: per-key object merge, index-wise arrays, tagged
+    /// shapes replace when the tag changes (no stale variant fields).
+    #[cfg(feature = "json")]
+    #[test]
+    fn merge_overlay_rules() {
+        let mut base = serde_json::json!({
+            "a": {"x": 1, "y": 2},
+            "arr": [{"n": 1, "shape": {"kind": "cuboid", "half": [1,1,1]}}, {"n": 2}],
+            "link": {"shape": {"Box": {"half": [1,2,3]}}},
+            "s": "old"
+        });
+        merge_overlay(
+            &mut base,
+            serde_json::json!({
+                "a": {"y": 20, "z": 30},
+                "arr": [
+                    {"shape": {"kind": "cylinder", "half_h": 0.1, "radius": 0.2}},
+                    {},
+                    {"n": 3}
+                ],
+                "link": {"shape": {"Capsule": {"half_len": 1.0, "radius": 0.1}}},
+                "s": "new"
+            }),
+        );
+        assert_eq!(base["a"], serde_json::json!({"x": 1, "y": 20, "z": 30}));
+        assert_eq!(base["arr"][0]["n"], 1, "untouched sibling key survives");
+        assert_eq!(
+            base["arr"][0]["shape"],
+            serde_json::json!({"kind": "cylinder", "half_h": 0.1, "radius": 0.2}),
+            "kind change replaces, no stale `half`"
+        );
+        assert_eq!(base["arr"][1], serde_json::json!({"n": 2}));
+        assert_eq!(base["arr"][2], serde_json::json!({"n": 3}), "extra items append");
+        assert_eq!(
+            base["link"]["shape"],
+            serde_json::json!({"Capsule": {"half_len": 1.0, "radius": 0.1}}),
+            "externally tagged variant replaces"
+        );
+        assert_eq!(base["s"], "new");
+    }
+
+    /// Plate-frame axes: omitted == explicit default for the hash (and
+    /// the explicit form passes the unknown-key audit), while a real
+    /// orientation is identity.
+    #[cfg(feature = "json")]
+    #[test]
+    fn gripper_axes_canonicalize_in_the_spec_hash() {
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["robot"]["gripper"]["approach_axis"] = serde_json::json!([1.0, 0.0, 0.0]);
+        v["robot"]["gripper"]["gap_axis"] = serde_json::json!([0.0, 0.0, 1.0]);
+        let explicit = SceneSpec::from_value(v).expect("explicit default axes parse");
+        assert_eq!(explicit.spec_hash_hex(), GOLDEN_SPEC_HASH_HEX, "explicit default == omitted");
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["robot"]["gripper"]["approach_axis"] = serde_json::json!([0.0, 0.0, -1.0]);
+        v["robot"]["gripper"]["gap_axis"] = serde_json::json!([0.0, 1.0, 0.0]);
+        let down = SceneSpec::from_value(v).expect("oriented axes parse");
+        assert_ne!(down.spec_hash_hex(), GOLDEN_SPEC_HASH_HEX, "orientation is identity");
+        // and a bad pair is a named validation error, not a panic
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["robot"]["gripper"]["gap_axis"] = serde_json::json!([1.0, 0.0, 0.0]);
+        let err = SceneSpec::from_value(v).unwrap_err();
+        assert!(err.contains("parallel"), "{err}");
     }
 }

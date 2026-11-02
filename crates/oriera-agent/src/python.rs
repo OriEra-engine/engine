@@ -17,6 +17,7 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 use crate::embodied_env::{EmbodiedEnv, TableTopEnv, TaskKind};
 use crate::spec::SceneSpec;
@@ -141,8 +142,24 @@ impl PickPlaceEnv {
     }
 }
 
+/// Compile-time build facts exposed to the Python side (M0b P-3):
+/// `oriera_sim.build_info()` → `{version, features, profile}`.
+/// `scripts/oriera_gym.py::check_build` compares this against a run's
+/// `run_manifest.json` and warns when an old `.pyd` would be silently
+/// loaded.
+#[pyfunction]
+fn build_info(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let bi = crate::manifest::build_info();
+    let d = PyDict::new(py);
+    d.set_item("version", bi.version)?;
+    d.set_item("features", bi.features)?;
+    d.set_item("profile", bi.profile)?;
+    Ok(d.into_any().unbind())
+}
+
 #[pymodule]
 fn oriera_sim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PickPlaceEnv>()?;
+    m.add_function(wrap_pyfunction!(build_info, m)?)?;
     Ok(())
 }

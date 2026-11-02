@@ -77,6 +77,33 @@ articulation，Rust 绑定青年期）。马达三坑（都踩过）：`motor_ax
 加速度（对公斤级臂太软，须 `ForceBased`）、角度读出须用
 `local_to_parent`（与马达同约定，体姿相除的几何读出符号反相）。
 
+### 6.1 实验层（M0b，PLAN-embodied-general §四 M0b）
+
+研究院主诉的一层：**版本化评测协议 × 出处 manifest × 批量入口 × 绝对指纹金标 × spec 库治理**。
+
+- **协议**（`oriera_agent::eval`）：`course@v1`（12 集 + 90% 硬闸 = 旧行为）/
+  `paper@v1`（≥100 集只记录）；三入口共用 `evaluate(protocol, run_episode)`，
+  种子带（`seed0 + i + 65536·redraws`）、退化重抽、集数预算都在这一处；
+  协议 id + 参数 hash 进 `eval_report.json` 与 `run_manifest.json`。
+- **manifest**（`oriera_agent::manifest`）：每次 collect 写 `run_manifest.json`
+  （resolved spec 全文、spec_hash、git SHA+dirty、Cargo.lock hash、rustc、rapier、
+  features、profile、OS/arch、命令行、协议）；`oriera_sim.build_info()` 暴露
+  `{version, features, profile}`，`scripts/oriera_gym.py::check_build()` 对照
+  manifest 告警旧 .pyd（设 `ORIERA_EXPECTED_MANIFEST=<manifest>` 即在 import 时自动核）。
+- **批量入口**：`--seed N`、`--gate hard|report`、`--verify-determinism full|sample|off`、
+  `--runs-root runs/` → `runs/<spec_hash8>/scripted-p<proto8>/<seed>/` 断点续跑；
+  `scripts/batch_joblib.py` / `scripts/batch_example.slurm` 是扫参模板。
+- **指纹 scheme v2**（`oriera_subsys::rigid3d`）：`fingerprint()`（v1：状态 ⊕ joints[0] kp/kd ⊕ mass_scale）
+  逐位保留供旧回执对账；`fingerprint_v2()` = 状态 ⊕ `robot_identity_hash`（N、逐关节
+  kp/kd/armature/damping/limits/axis/anchor、逐 link 几何与质量、夹爪摘要含板系朝向）⊕ spec_hash；
+  `state_hash_from_v1()` 把旧回执还原成纯状态哈希（mix 每轮是双射）。金标：
+  `contracts/golden/embodied_fingerprints.v2.json`（12 seed 三口径，`--fingerprints FILE` 生成）。
+- **GripperSpec 板系朝向**：`approach_axis` / `gap_axis`（挂载 link 系，缺省 = 旧 +X/+Z，
+  序列化省略 ⇒ 金标 spec_hash 不变）；外部朝下夹爪挂 7 轴臂的抓取过闸见
+  `crates/oriera-agent/tests/gripper_down_smoke.rs`。
+- **spec 库**：`specs/official/`（金标，改字段 = 新文件）+ `specs/lab/`（`extends` 覆盖层）+
+  `scripts/gen_spec_index.py` → `specs/INDEX.json`（同名异 hash 报错）。
+
 ## 5. 定位声明
 
 OriEra 提供的是「便宜、可复位、可回放」的**世界层**：确定性 tick（#66）、

@@ -12,6 +12,7 @@ members = [
     "crates/oriera-infer",   # L7
     "crates/oriera-genai",   # L8 (ADR 0003)
     "crates/oriera-agent",   # L9
+    "crates/oriera-wasm",    # L9→browser glue (PLAN-embodied-general M1)
     "platforms/pc",
     "platforms/web",
 ]

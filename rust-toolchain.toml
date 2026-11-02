@@ -1,0 +1,15 @@
+# M0b（PLAN-embodied-general §四 M0b / §9.1 P-3）：钉工具链，跨提交复现有凭据。
+#
+# `stable` = 跟随 stable 频道；需要跨提交/跨机器逐位复现（比如重跑
+# contracts/golden/embodied_fingerprints.v2.json）时把下面改成具体版本号，
+# 例如 channel = "1.91.0"，并在 run_manifest.json 的 build.rustc 字段核对。
+#
+# Windows 提示：若本机 rustup 的 default host 是 msvc 但只装了
+# stable-x86_64-pc-windows-gnu（`rustup show` 看得到），"stable" 会解析到
+# 未装全的 msvc 工具链而报 rustc 不可用；在仓库目录执行
+#   rustup override set stable-x86_64-pc-windows-gnu
+# 做目录级覆盖（优先级高于本文件，不进仓库），或 `rustup set default-host`。
+# 注意 gnu/msvc 的 libm（sin/cos/atan2）末位可能不同——跨工具链逐位对账是
+# M3 三平台矩阵的事，M0b 的金标在生成它的工具链上才逐位成立。
+[toolchain]
+channel = "stable"

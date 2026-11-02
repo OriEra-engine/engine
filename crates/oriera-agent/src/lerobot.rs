@@ -406,7 +406,10 @@ impl LeRobotV21 {
 
     /// `meta/oriera_receipt.json` — the reproducibility claim: what
     /// ran, with which backend/step, the spec's identity hash and
-    /// every episode's fingerprint.
+    /// every episode's fingerprint. `scheme`/`v2_hashes` carry the
+    /// M0b identity scheme（v1=身份三元组折叠；v2=state⊕identity⊕spec）；
+    /// v2 为空数组时省略该字段（v1 采集路径字节不变）。
+    #[allow(clippy::too_many_arguments)] // 回执字段平铺即文档；打包 struct 反而藏 shape
     pub fn write_receipt(
         root: &Path,
         engine: &str,
@@ -415,23 +418,33 @@ impl LeRobotV21 {
         spec_hash: &str,
         episode_hashes: &[u64],
         successes: u32,
+        scheme: &str,
+        v2_hashes: &[u64],
     ) -> std::io::Result<()> {
         let meta = root.join("meta");
         std::fs::create_dir_all(&meta)?;
         let mut f = std::fs::File::create(meta.join("oriera_receipt.json"))?;
         let hashes: Vec<String> = episode_hashes.iter().map(|h| h.to_string()).collect();
+        let v2s: Vec<String> = v2_hashes.iter().map(|h| h.to_string()).collect();
+        let v2_field = if v2_hashes.is_empty() {
+            String::new()
+        } else {
+            format!("\"fingerprint_scheme\":\"{}\",\"episode_fingerprints_v2\":[{}],", scheme, v2s.join(","))
+        };
         write!(
             f,
             concat!(
                 "{{\"codebase_version\":\"oriera-embodied-v2\",",
                 "\"engine\":\"{}\",\"backend\":\"{}\",\"dt\":{:.8},",
                 "\"spec_hash\":\"{}\",",
+                "{}",
                 "\"successes\":{},\"episode_state_hashes\":[{}]}}\n"
             ),
             engine,
             backend,
             dt,
             spec_hash,
+            v2_field,
             successes,
             hashes.join(",")
         )
@@ -980,7 +993,7 @@ mod tests {
         ] {
             assert!(root.join(rel).exists(), "missing {rel}");
         }
-        LeRobotV21::write_receipt(&root, "test/0.1", "rigid3d", 1.0 / 60.0, "abc123", &[0xbeef], 1)
+        LeRobotV21::write_receipt(&root, "test/0.1", "rigid3d", 1.0 / 60.0, "abc123", &[0xbeef], 1, "v1", &[])
             .expect("receipt");
         let receipt =
             std::fs::read_to_string(root.join("meta/oriera_receipt.json")).unwrap();

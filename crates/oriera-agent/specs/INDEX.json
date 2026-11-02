@@ -1,0 +1,35 @@
+{
+ "schema": "oriera.spec-index/1",
+ "root": "crates/oriera-agent/specs",
+ "rule": "name → spec_hash；同名异 hash 报错；同 hash 异名 = 别名（见 aliases）",
+ "specs": {
+  "lab-example-cylinder": {
+   "hash": "a0f523ed0cd0e3c4",
+   "files": [
+    "lab/example-cylinder.json"
+   ],
+   "tier": "lab"
+  },
+  "pick_place": {
+   "hash": "c90869dcf6a04875",
+   "files": [
+    "pick_place.json"
+   ],
+   "tier": "legacy"
+  },
+  "tabletop-4dof-pick": {
+   "hash": "c90869dcf6a04875",
+   "files": [
+    "official/tabletop-4dof-pick.json",
+    "tabletop-4dof-pick.json"
+   ],
+   "tier": "official"
+  }
+ },
+ "aliases": {
+  "c90869dcf6a04875": [
+   "pick_place",
+   "tabletop-4dof-pick"
+  ]
+ }
+}

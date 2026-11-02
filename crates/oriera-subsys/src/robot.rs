@@ -103,23 +103,44 @@ pub struct JointSpec {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GripperKind {
     /// Two kinematic plates straddling the TCP, driven along the
-    /// attach link's local Z; the prop stays dynamic and plate/prop
-    /// friction does the holding.
+    /// attach link's gap axis (legacy: local Z); the prop stays dynamic
+    /// and plate/prop friction does the holding.
     ParallelPlates,
 }
 
+/// Legacy plate approach direction (attach-link frame): the plate
+/// centre sits `finger_x` along this axis. `GripperSpec::approach_axis
+/// = None` means this.
+pub const GRIPPER_APPROACH_DEFAULT: [f32; 3] = [1.0, 0.0, 0.0];
+/// Legacy plate separation direction (attach-link frame): the two
+/// plates straddle the centre at `±gap/2` along this axis.
+/// `GripperSpec::gap_axis = None` means this.
+pub const GRIPPER_GAP_DEFAULT: [f32; 3] = [0.0, 0.0, 1.0];
+
 /// Gripper attached to one link of the chain.
+///
+/// **Plate frame (M0b)**: the two plates live in the attach link's
+/// frame. `approach_axis` is where the plates (and the TCP) point —
+/// the centre of the plate pair sits `finger_x` along it; `gap_axis`
+/// is the direction the plates separate along (`±gap/2`). Both are
+/// optional: `None` keeps the legacy `+X` / `+Z` placement, so every
+/// pre-M0b spec, the 4-DoF preset and its spec_hash are unchanged
+/// (the fields are omitted from the serialized form when `None`). An
+/// external gripper whose plates hang *down* from an unrotated flange
+/// writes e.g. `approach_axis: [0, 0, -1]` with the flange rolled so
+/// local −Z is world down — see the `gripper_down` tests.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GripperSpec {
     /// Link index the plates (and the TCP) ride on.
     pub attach_link: usize,
-    /// Plate-centre offset along the attach link's local +X (m).
+    /// Plate-centre offset along the approach axis (m) — legacy name
+    /// kept (`+X` was the only approach axis before M0b).
     pub finger_x: f32,
     /// Tool-centre-point offset in the attach link's local frame — the
     /// end-effector pose reported in telemetry.
     pub tcp_offset: [f32; 3],
-    /// Plate half extents (m).
+    /// Plate half extents (m), in the plate's (= attach link's) frame.
     pub finger_half: [f32; 3],
     /// Plate gap (m) at demand 0 / demand 1.
     pub gap_open: f32,
@@ -132,6 +153,44 @@ pub struct GripperSpec {
     /// Max gap change per engine tick (m/tick) — the plate ramp.
     pub gap_rate: f32,
     pub kind: GripperKind,
+    /// Plate approach direction in the attach link's frame (need not be
+    /// unit length; normalized at build). `None` ⇒
+    /// [`GRIPPER_APPROACH_DEFAULT`] (`+X`, the legacy placement).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub approach_axis: Option<[f32; 3]>,
+    /// Plate separation direction in the attach link's frame. `None` ⇒
+    /// [`GRIPPER_GAP_DEFAULT`] (`+Z`, the legacy placement).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub gap_axis: Option<[f32; 3]>,
+}
+
+impl GripperSpec {
+    /// The approach axis actually used (legacy `+X` when unset).
+    pub fn approach_axis_or_default(&self) -> [f32; 3] {
+        self.approach_axis.unwrap_or(GRIPPER_APPROACH_DEFAULT)
+    }
+
+    /// The gap axis actually used (legacy `+Z` when unset).
+    pub fn gap_axis_or_default(&self) -> [f32; 3] {
+        self.gap_axis.unwrap_or(GRIPPER_GAP_DEFAULT)
+    }
+
+    /// Canonical form for identity hashing: an explicitly written
+    /// default axis is the same gripper as an omitted one.
+    pub fn canonicalize_axes(&mut self) {
+        if self.approach_axis == Some(GRIPPER_APPROACH_DEFAULT) {
+            self.approach_axis = None;
+        }
+        if self.gap_axis == Some(GRIPPER_GAP_DEFAULT) {
+            self.gap_axis = None;
+        }
+    }
 }
 
 /// The robot: links, joints (in topological order — every joint's
@@ -368,6 +427,36 @@ impl RobotSpec {
             if !(g.friction.is_finite() && g.friction >= 0.0) {
                 return Err(RobotSpecError::BadGripper("friction must be >= 0".into()));
             }
+            // Plate frame axes: finite, non-degenerate and not parallel
+            // (the plates must be able to straddle the approach line).
+            let unit_ok = |a: [f32; 3]| {
+                let len2 = a.iter().map(|v| v * v).sum::<f32>();
+                len2.is_finite() && len2 > 1e-12
+            };
+            let ap = g.approach_axis_or_default();
+            let gp = g.gap_axis_or_default();
+            if !unit_ok(ap) {
+                return Err(RobotSpecError::BadGripper(
+                    "approach_axis must be a finite non-zero vector (omit it for +X)".into(),
+                ));
+            }
+            if !unit_ok(gp) {
+                return Err(RobotSpecError::BadGripper(
+                    "gap_axis must be a finite non-zero vector (omit it for +Z)".into(),
+                ));
+            }
+            let cross = [
+                ap[1] * gp[2] - ap[2] * gp[1],
+                ap[2] * gp[0] - ap[0] * gp[2],
+                ap[0] * gp[1] - ap[1] * gp[0],
+            ];
+            let cross2 = cross.iter().map(|v| v * v).sum::<f32>();
+            let n2 = ap.iter().map(|v| v * v).sum::<f32>() * gp.iter().map(|v| v * v).sum::<f32>();
+            if cross2 <= 1e-6 * n2 {
+                return Err(RobotSpecError::BadGripper(
+                    "approach_axis and gap_axis must not be parallel".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -470,6 +559,8 @@ impl From<&ArmDescription> for RobotSpec {
             effort: GRIPPER_EFFORT,
             gap_rate: FINGER_GAP_RATE,
             kind: GripperKind::ParallelPlates,
+            approach_axis: None,
+            gap_axis: None,
         });
         RobotSpec {
             name: "tabletop-4dof".into(),
@@ -517,6 +608,10 @@ mod tests {
         assert_eq!(g.finger_x, FINGER_X);
         assert_eq!(g.tcp_offset, [d.links[2], 0.0, 0.0]);
         assert_eq!((g.gap_open, g.gap_closed), (FINGER_GAP_OPEN, FINGER_GAP_CLOSED));
+        // M0b: the preset leaves the plate frame at the legacy +X/+Z.
+        assert_eq!((g.approach_axis, g.gap_axis), (None, None));
+        assert_eq!(g.approach_axis_or_default(), GRIPPER_APPROACH_DEFAULT);
+        assert_eq!(g.gap_axis_or_default(), GRIPPER_GAP_DEFAULT);
         assert_eq!(r.action_scale, vec![2.0; 4]);
         assert_eq!(r.home, d.home.to_vec());
         // passive_damping override flows into every joint.
@@ -565,5 +660,41 @@ mod tests {
         let err = mesh.validate().unwrap_err();
         assert!(matches!(err, RobotSpecError::MeshNotSupported { .. }));
         assert!(err.to_string().contains("M2"), "{err}");
+    }
+
+    /// M0b plate frame: zero / non-finite / parallel axes are refused
+    /// with a message naming the field; any non-parallel pair passes,
+    /// and an explicitly written default canonicalizes to `None` (so
+    /// the identity hash cannot fork on spelling).
+    #[test]
+    fn gripper_axes_are_validated_and_canonicalized() {
+        let ok = RobotSpec::from(&ArmDescription::default());
+        let with = |ap: Option<[f32; 3]>, gp: Option<[f32; 3]>| {
+            let mut r = ok.clone();
+            let g = r.gripper.as_mut().unwrap();
+            g.approach_axis = ap;
+            g.gap_axis = gp;
+            r
+        };
+        assert!(with(Some([0.0, 0.0, -1.0]), Some([0.0, 1.0, 0.0])).validate().is_ok());
+        assert!(with(Some([0.0, -2.0, 0.0]), None).validate().is_ok(), "non-unit is fine");
+        let err = with(Some([0.0; 3]), None).validate().unwrap_err().to_string();
+        assert!(err.contains("approach_axis"), "{err}");
+        let err = with(None, Some([f32::NAN, 0.0, 0.0])).validate().unwrap_err().to_string();
+        assert!(err.contains("gap_axis"), "{err}");
+        let err = with(Some([0.0, 0.0, 1.0]), None).validate().unwrap_err().to_string();
+        assert!(err.contains("parallel"), "{err}");
+        let err = with(Some([1.0, 0.0, 0.0]), Some([-3.0, 0.0, 0.0]))
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("parallel"), "{err}");
+
+        let mut explicit = with(Some(GRIPPER_APPROACH_DEFAULT), Some(GRIPPER_GAP_DEFAULT));
+        explicit.gripper.as_mut().unwrap().canonicalize_axes();
+        assert_eq!(explicit, ok, "explicit default axes canonicalize to None");
+        let mut custom = with(Some([0.0, 0.0, -1.0]), None);
+        custom.gripper.as_mut().unwrap().canonicalize_axes();
+        assert_eq!(custom.gripper.as_ref().unwrap().approach_axis, Some([0.0, 0.0, -1.0]));
     }
 }

@@ -54,6 +54,16 @@
 //! field by field, and [`MultibodySystem::new`] goes through it, so the
 //! default trajectory is bit-identical to the pre-M0a engine (the
 //! `golden_*` tests below pin the pre-change fold of two scripts).
+//!
+//! **M0b (PLAN-embodied-general §四 M0b)**: the gripper plates live in
+//! a spec-defined *plate frame* — `GripperSpec::{approach_axis,
+//! gap_axis}` in the attach link's frame, legacy `+X`/`+Z` when unset —
+//! so an external gripper hanging off a URDF flange is placed by data,
+//! not by the preset's convention. Receipts gain a complete-identity
+//! fingerprint ([`MultibodySystem::fingerprint_v2`], scheme `"v2"`)
+//! next to the legacy triple fold ([`MultibodySystem::fingerprint`],
+//! scheme `"v1"`, kept bit-for-bit); [`state_hash_from_v1`] bridges old
+//! anchors onto the pure state axis.
 
 use crate::robot::{LinkShape, RobotSpec, RobotSpecError};
 use crate::{Gravity, TimeScale};
@@ -433,6 +443,152 @@ pub fn sim_fingerprint(world: &World) -> u64 {
     h
 }
 
+/// Receipt tag of the legacy fingerprint fold ([`MultibodySystem::fingerprint`]).
+pub const FINGERPRINT_SCHEME_V1: &str = "v1";
+/// Receipt tag of the complete-identity fold ([`MultibodySystem::fingerprint_v2`]).
+pub const FINGERPRINT_SCHEME_V2: &str = "v2";
+
+/// Fold a 3-vector into the hash.
+fn bits3(mut h: u64, v: [f32; 3]) -> u64 {
+    for x in v {
+        h = bits(h, x);
+    }
+    h
+}
+
+/// Fold an optional float: `None` is a sentinel distinct from every
+/// finite bit pattern (NaN bits would alias; `u64::MAX` cannot).
+fn bits_opt(h: u64, v: Option<f32>) -> u64 {
+    mix(h, v.map_or(u64::MAX, |x| x.to_bits() as u64))
+}
+
+/// Complete robot identity (scheme v2): DoF count, link count, mass
+/// scale, every joint's `(parent, child, anchor, axis, limits, effort,
+/// velocity_limit, kp, kd, armature, damping)`, every link's `(shape,
+/// origin, collider_offset, density, friction, added_mass)` and the
+/// gripper summary `(attach_link, finger_x, tcp_offset, finger_half,
+/// gaps, friction, effort, gap_rate, kind, approach/gap axes)` — the
+/// axes folded in their *resolved* form, so an explicitly written
+/// default equals an omitted one (same canonicalization as
+/// `GripperSpec::canonicalize_axes`). Names and `mesh_uri` are not
+/// identity (a renamed link is the same physics; a mesh link does not
+/// build in M0a/M0b).
+pub fn robot_identity_hash(r: &RobotSpec) -> u64 {
+    let mut h = mix(0x0000_6f72_6965_7261, 0x0052_4f42_4f54); // "ROBOT"
+    h = mix(h, r.joints.len() as u64);
+    h = mix(h, r.links.len() as u64);
+    h = bits(h, r.mass_scale);
+    h = bits3(h, r.base);
+    for j in &r.joints {
+        h = mix(h, j.parent_link as u64);
+        h = mix(h, j.child_link as u64);
+        h = bits3(h, j.anchor);
+        h = bits3(h, j.axis);
+        h = bits(h, j.limits.0);
+        h = bits(h, j.limits.1);
+        h = bits_opt(h, j.effort);
+        h = bits_opt(h, j.velocity_limit);
+        h = bits(h, j.kp);
+        h = bits(h, j.kd);
+        h = bits(h, j.armature);
+        h = bits(h, j.damping);
+    }
+    for l in &r.links {
+        match l.shape {
+            LinkShape::Capsule { half_len, radius } => {
+                h = mix(h, 1);
+                h = bits(h, half_len);
+                h = bits(h, radius);
+            }
+            LinkShape::Box { half } => {
+                h = mix(h, 2);
+                h = bits3(h, half);
+            }
+        }
+        h = bits3(h, l.origin);
+        h = bits3(h, l.collider_offset);
+        h = bits(h, l.density);
+        h = bits(h, l.friction);
+        h = bits(h, l.added_mass);
+    }
+    match &r.gripper {
+        None => h = mix(h, u64::MAX),
+        Some(g) => {
+            h = mix(h, g.attach_link as u64);
+            h = bits(h, g.finger_x);
+            h = bits3(h, g.tcp_offset);
+            h = bits3(h, g.finger_half);
+            h = bits(h, g.gap_open);
+            h = bits(h, g.gap_closed);
+            h = bits(h, g.friction);
+            h = bits(h, g.effort);
+            h = bits(h, g.gap_rate);
+            h = mix(
+                h,
+                match g.kind {
+                    crate::robot::GripperKind::ParallelPlates => 1,
+                },
+            );
+            h = bits3(h, g.approach_axis_or_default());
+            h = bits3(h, g.gap_axis_or_default());
+        }
+    }
+    h
+}
+
+/// Scheme-v2 fold from its three parts — `state` is a
+/// [`sim_fingerprint`] value, `identity` a [`robot_identity_hash`],
+/// `spec_hash` the agent-side canonical spec hash when known.
+pub fn fingerprint_v2_from_parts(state: u64, identity: u64, spec_hash: Option<u64>) -> u64 {
+    let h = mix(state, 0x0000_0000_4650_5632); // "FPV2"
+    let h = mix(h, identity);
+    mix(h, spec_hash.unwrap_or(u64::MAX))
+}
+
+/// Inverse of one `mix` round for a *known* second operand: given
+/// `y = mix(h, x)` and `x`, return `h`. The round is `h ^ x` followed
+/// by a bijective finalizer (two odd multiplies — invertible mod 2⁶⁴ —
+/// and two xor-shifts), so this is exact.
+pub fn mix_inverse_h(y: u64, x: u64) -> u64 {
+    const C1: u64 = 0xff51_afd7_ed55_8ccd;
+    const C2: u64 = 0xc4ce_b9fe_1a85_ec53;
+    // Modular inverse of an odd constant by Newton iteration (6 rounds
+    // double the correct bits from 3 → 64+).
+    fn inv_odd(c: u64) -> u64 {
+        let mut inv = c;
+        for _ in 0..6 {
+            inv = inv.wrapping_mul(2u64.wrapping_sub(c.wrapping_mul(inv)));
+        }
+        inv
+    }
+    // Inverse of `t ^= t >> s`: each pass recovers the next `s` bits
+    // from the top; `ceil(64/s)` passes suffice.
+    fn unxorshift(y: u64, s: u32) -> u64 {
+        let mut t = y;
+        for _ in 0..64u32.div_ceil(s) {
+            t = y ^ (t >> s);
+        }
+        t
+    }
+    let t = unxorshift(y, 32);
+    let t = t.wrapping_mul(inv_odd(C2));
+    let t = unxorshift(t, 29);
+    let t = t.wrapping_mul(inv_odd(C1));
+    t ^ x
+}
+
+/// Recover the pure world-state hash ([`sim_fingerprint`]) folded into
+/// a scheme-v1 receipt value ([`MultibodySystem::fingerprint`]) when the
+/// identity triple it was folded with is known — `(joints[0].kp,
+/// joints[0].kd, mass_scale)` of the robot the episode ran with. This is
+/// how a pre-M0b `episode_state_hashes` anchor is compared on the state
+/// axis against a v2 receipt without re-deriving old binaries.
+pub fn state_hash_from_v1(fp_v1: u64, kp: f32, kd: f32, mass_scale: f32) -> u64 {
+    let h = mix_inverse_h(fp_v1, mass_scale.to_bits() as u64);
+    let h = mix_inverse_h(h, kd.to_bits() as u64);
+    mix_inverse_h(h, kp.to_bits() as u64)
+}
+
 fn quat_from(rot: [f32; 4]) -> Rotation {
     Rotation::from_xyzw(rot[0], rot[1], rot[2], rot[3])
 }
@@ -452,14 +608,11 @@ fn angle_about(q: Rotation, axis: Vec3) -> f32 {
 /// description and scene are construction-time constants, everything
 /// mutable lives in the body/joint sets).
 pub struct MultibodySystem {
-    /// The legacy 4-DoF description this system was built from through
-    /// [`MultibodySystem::new`]. Kept for API compatibility; `robot` is
-    /// the authoritative build source. Built via
-    /// [`MultibodySystem::from_robot`] it holds `ArmDescription::default()`
-    /// as a placeholder (M0b: fold into the spec hash and retire).
-    pub desc: ArmDescription,
     /// The spec this system was built from — limits, gains, gripper
-    /// geometry are read from here every tick.
+    /// geometry are read from here every tick. (M0b: the legacy
+    /// `desc: ArmDescription` placeholder is gone — the spec is the one
+    /// build source; `MultibodySystem::new(desc, …)` still accepts the
+    /// 4-DoF preset and projects it through `RobotSpec::from`.)
     pub robot: RobotSpec,
     /// Solver knobs (see [`PhysicsParams`]) — applied each tick,
     /// `None` fields keep rapier defaults.
@@ -484,6 +637,12 @@ pub struct MultibodySystem {
     ee_body: RigidBodyHandle,
     /// Tip offset in `ee_body`'s local frame.
     tip_local: Vec3,
+    /// Unit plate approach / separation axes in the attach link's frame
+    /// (M0b `GripperSpec::{approach_axis, gap_axis}`, legacy `+X`/`+Z`
+    /// when unset — normalizing those is exact, so the default path is
+    /// bit-identical).
+    approach_vec: Vec3,
+    gap_vec: Vec3,
     /// Entity ↔ body reconciliation for props.
     map: BTreeMap<EntKey, RigidBodyHandle>,
     /// Last pose we wrote back — the external-write detector (step 2).
@@ -509,10 +668,8 @@ impl MultibodySystem {
     /// buildable, so this cannot fail.
     pub fn new(desc: ArmDescription, scene: Scene3D) -> Self {
         let robot = RobotSpec::from(&desc);
-        let mut sys = Self::from_robot(robot, scene)
-            .expect("ArmDescription preset projects to a valid RobotSpec");
-        sys.desc = desc;
-        sys
+        Self::from_robot(robot, scene)
+            .expect("ArmDescription preset projects to a valid RobotSpec")
     }
 
     /// Build an arbitrary [`RobotSpec`] (validated first — a registered
@@ -522,8 +679,16 @@ impl MultibodySystem {
         robot.validate()?;
         let n = robot.joints.len();
         let gap0 = robot.gripper.as_ref().map_or(0.0, |g| g.gap_open);
+        let unit = |a: [f32; 3]| Vec3::new(a[0], a[1], a[2]).normalize();
+        let approach_vec = robot
+            .gripper
+            .as_ref()
+            .map_or(Vec3::X, |g| unit(g.approach_axis_or_default()));
+        let gap_vec = robot
+            .gripper
+            .as_ref()
+            .map_or(Vec3::Z, |g| unit(g.gap_axis_or_default()));
         let mut sys = Self {
-            desc: ArmDescription::default(),
             robot,
             physics: PhysicsParams::default(),
             pipeline: PhysicsPipeline::new(),
@@ -540,6 +705,8 @@ impl MultibodySystem {
             stages: Vec::new(),
             ee_body: RigidBodyHandle::from_raw_parts(u32::MAX, u32::MAX),
             tip_local: Vec3::ZERO,
+            approach_vec,
+            gap_vec,
             map: BTreeMap::new(),
             last_pose: BTreeMap::new(),
             prev_angles: vec![0.0; n],
@@ -625,26 +792,32 @@ impl MultibodySystem {
         }
 
         // 3. End-effector frame + gripper plates. Plates are kinematic
-        //    slabs straddling the TCP in the attach link's frame; the
-        //    prop stays Dynamic — plate/cube friction does the holding
+        //    slabs straddling the plate centre in the attach link's frame;
+        //    the prop stays Dynamic — plate/cube friction does the holding
         //    (minimal-probe-verified, tests/probe_friction.rs round 4).
+        //    They are born at their HOME pose (centre = finger_x along the
+        //    approach axis, ±gap_open/2 along the gap axis, identity link
+        //    rotation): a kinematic body that teleports on its first
+        //    drive sweeps through whatever sits between — an external
+        //    gripper with a prop already under its TCP would eject it.
+        //    (Pre-M0b both plates were born AT the tip; the preset's cube
+        //    spawns far from the plates so that tick-1 sweep never met a
+        //    body — the golden bit-tests below pin that nothing moved.)
         let ee_link = r
             .gripper
             .as_ref()
             .map_or_else(|| r.joints.last().map_or(root, |j| j.child_link), |g| g.attach_link);
         self.ee_body = self.chain[ee_link];
         self.tip_local = r.gripper.as_ref().map_or(Vec3::ZERO, |g| v3(g.tcp_offset));
+        let (approach_vec, gap_vec) = (self.approach_vec, self.gap_vec);
         self.fingers = r.gripper.as_ref().map(|g| {
-            let o = r.links[ee_link].origin;
-            let tip0 = Vec3::new(
-                o[0] + g.tcp_offset[0],
-                o[1] + g.tcp_offset[1],
-                o[2] + g.tcp_offset[2],
-            );
-            let mut mk_finger = || {
+            let o = v3(r.links[ee_link].origin);
+            let centre = o + approach_vec * g.finger_x;
+            let side = gap_vec * (g.gap_open * 0.5);
+            let mut mk_finger = |at: Vec3| {
                 let body = self.bodies.insert(
                     RigidBodyBuilder::kinematic_position_based()
-                        .translation(tip0)
+                        .translation(at)
                         .build(),
                 );
                 let c = ColliderBuilder::cuboid(g.finger_half[0], g.finger_half[1], g.finger_half[2])
@@ -654,8 +827,8 @@ impl MultibodySystem {
                 self.colliders.insert_with_parent(c, body, &mut self.bodies);
                 body
             };
-            let l = mk_finger();
-            let rgt = mk_finger();
+            let l = mk_finger(centre + side);
+            let rgt = mk_finger(centre - side);
             (l, rgt)
         });
 
@@ -782,8 +955,10 @@ impl MultibodySystem {
     }
 
     /// Drive the gripper plates (ramped) toward the demand — kinematic
-    /// slabs straddling the tip in the attach link's frame. No-op
-    /// without a gripper.
+    /// slabs straddling the plate centre in the attach link's frame:
+    /// centre = `finger_x` along the approach axis, plates at `±gap/2`
+    /// along the gap axis (M0b plate frame; legacy `+X`/`+Z` when the
+    /// spec leaves the axes unset). No-op without a gripper.
     fn drive_fingers(&mut self, gripper: f32) {
         let Some((fl, fr)) = self.fingers else { return };
         let Some(g) = self.robot.gripper.as_ref() else {
@@ -796,8 +971,8 @@ impl MultibodySystem {
             let b = self.bodies.get(self.ee_body).expect("attach body exists");
             (b.translation(), *b.rotation())
         };
-        let centre = wp + wr.mul_vec3(Vec3::new(finger_x, 0.0, 0.0));
-        let side = wr.mul_vec3(Vec3::new(0.0, 0.0, self.gap_now * 0.5));
+        let centre = wp + wr.mul_vec3(self.approach_vec * finger_x);
+        let side = wr.mul_vec3(self.gap_vec * (self.gap_now * 0.5));
         for (h, sign) in [(fl, 1.0), (fr, -1.0)] {
             if let Some(b) = self.bodies.get_mut(h) {
                 b.set_next_kinematic_rotation(wr);
@@ -821,17 +996,16 @@ impl MultibodySystem {
         };
     }
 
-    /// Complete experiment fingerprint: sim state + solver knobs +
-    /// prop physics + arm identity (kp/kd/mass_scale). Two runs with
-    /// different servo params that happen to converge to identical
-    /// states are NOT the same experiment (sim-engine review: identity
-    /// completeness).
-    ///
-    /// M0a keeps the legacy fold — `joints[0]`'s kp/kd (the preset's
-    /// uniform gains) and `mass_scale` — so the default receipt value
-    /// is unchanged. Per-joint gain differences, link geometry and the
-    /// joint count are NOT folded yet; the canonical spec hash that
-    /// covers them is the M0b `fingerprint_scheme` bump.
+    /// Legacy (scheme **v1**) experiment fingerprint: sim state + solver
+    /// knobs + prop physics + the arm identity *triple*
+    /// (`joints[0]` kp/kd, `mass_scale`). This is the value every
+    /// pre-M0b receipt (`episode_state_hashes`) and the WP-A golden
+    /// constants pin — it is kept bit-for-bit. Its identity coverage is
+    /// deliberately thin (per-joint gains, geometry, DoF count and the
+    /// gripper are not folded); the complete identity is
+    /// [`Self::fingerprint_v2`]. The pure world-state part is
+    /// recoverable with [`state_hash_from_v1`] — the fold is a bijection
+    /// per round, so old receipts can be compared on the state axis.
     pub fn fingerprint(&self, world: &World) -> u64 {
         let r = &self.robot;
         let (kp, kd) = r.joints.first().map_or((0.0, 0.0), |j| (j.kp, j.kd));
@@ -840,6 +1014,29 @@ impl MultibodySystem {
             mix(mix(h, kp.to_bits() as u64), kd.to_bits() as u64),
             r.mass_scale.to_bits() as u64,
         )
+    }
+
+    /// Scheme **v2** fingerprint (M0b, PLAN §9.1 P-10): the pure state
+    /// hash ([`sim_fingerprint`]) folded with the *complete* robot
+    /// identity ([`robot_identity_hash`]: N, every joint's gains /
+    /// armature / damping / limits / axis / anchor, every link's
+    /// geometry and mass, the gripper summary incl. the plate frame) and
+    /// the canonical spec hash when the caller has one (`None` folds a
+    /// sentinel, so "no spec" never collides with a real hash). Two
+    /// robots that converge to identical states with different
+    /// per-joint gains are different experiments here, where v1 could
+    /// not tell. Receipts carry `fingerprint_scheme = "v2"` next to it.
+    pub fn fingerprint_v2(&self, world: &World, spec_hash: Option<u64>) -> u64 {
+        fingerprint_v2_from_parts(
+            sim_fingerprint(world),
+            robot_identity_hash(&self.robot),
+            spec_hash,
+        )
+    }
+
+    /// The robot-identity part of [`Self::fingerprint_v2`].
+    pub fn identity_hash(&self) -> u64 {
+        robot_identity_hash(&self.robot)
     }
 
     /// Contact-inspection probe (temporary): plate world positions and
@@ -1687,6 +1884,8 @@ mod tests {
             effort: GRIPPER_EFFORT,
             gap_rate: FINGER_GAP_RATE,
             kind: GripperKind::ParallelPlates,
+            approach_axis: None,
+            gap_axis: None,
         };
         RobotSpec {
             name: "tabletop-6dof".into(),
@@ -1955,5 +2154,174 @@ mod tests {
         );
         let (plates, _) = sys.debug_contact_state();
         assert!(plates.iter().all(|p| p.iter().all(|v| v.is_nan())));
+    }
+
+    // --- M0b: plate frame + fingerprint scheme v2 -----------------------
+
+    /// `GripperSpec::{approach_axis, gap_axis}` place the plates: the
+    /// pair's centre sits `finger_x` along the approach axis and the
+    /// plates separate along the gap axis, both in the attach frame.
+    /// Explicitly written defaults land exactly where omitted ones do.
+    #[test]
+    fn oriented_plates_follow_the_spec_axes() {
+        let settle = |spec: RobotSpec| {
+            let mut world = World::new();
+            world.insert_resource(Gravity(9.8));
+            world.insert_resource(TimeScale(1.0));
+            let arm = world.spawn();
+            world.insert(
+                arm,
+                JointTargets {
+                    angles: vec![0.0; 4],
+                    gripper: 0.0,
+                },
+            );
+            world.insert(arm, JointTelemetry::default());
+            let mut sys = MultibodySystem::from_robot(spec, Scene3D::default()).expect("builds");
+            for i in 0..120u64 {
+                sys.run(&ctx(i), &mut world);
+            }
+            sys
+        };
+        // Rotated frame: approach along local +Y, gap along local +X.
+        let mut spec = RobotSpec::from(&ArmDescription::default());
+        {
+            let g = spec.gripper.as_mut().unwrap();
+            g.approach_axis = Some([0.0, 2.0, 0.0]); // non-unit on purpose
+            g.gap_axis = Some([1.0, 0.0, 0.0]);
+        }
+        let (finger_x, gap_open) = {
+            let g = spec.gripper.as_ref().unwrap();
+            (g.finger_x, g.gap_open)
+        };
+        let sys = settle(spec);
+        let (plates, _) = sys.debug_contact_state();
+        let b = sys.bodies.get(sys.ee_body).expect("attach body");
+        let (wp, wr) = (b.translation(), *b.rotation());
+        let centre = wp + wr.mul_vec3(Vec3::new(0.0, finger_x, 0.0));
+        let mid = Vec3::new(
+            (plates[0][0] + plates[1][0]) * 0.5,
+            (plates[0][1] + plates[1][1]) * 0.5,
+            (plates[0][2] + plates[1][2]) * 0.5,
+        );
+        assert!(
+            (mid - centre).length() < 2e-3,
+            "plate centre must follow the approach axis: {mid:?} vs {centre:?}"
+        );
+        let sep = Vec3::new(
+            plates[0][0] - plates[1][0],
+            plates[0][1] - plates[1][1],
+            plates[0][2] - plates[1][2],
+        );
+        let want = wr.mul_vec3(Vec3::new(gap_open, 0.0, 0.0));
+        assert!(
+            (sep - want).length() < 2e-3,
+            "plates must separate along the gap axis: {sep:?} vs {want:?}"
+        );
+
+        // Explicit legacy axes == omitted axes, to the bit.
+        let omitted = settle(RobotSpec::from(&ArmDescription::default()));
+        let mut explicit_spec = RobotSpec::from(&ArmDescription::default());
+        {
+            let g = explicit_spec.gripper.as_mut().unwrap();
+            g.approach_axis = Some([1.0, 0.0, 0.0]);
+            g.gap_axis = Some([0.0, 0.0, 1.0]);
+        }
+        let explicit = settle(explicit_spec);
+        assert_eq!(
+            omitted.debug_contact_state().0,
+            explicit.debug_contact_state().0,
+            "explicit +X/+Z must be the legacy placement bit for bit"
+        );
+    }
+
+    /// The v1 fold is invertible per round for a known operand: the
+    /// pure state hash comes back out of a v1 receipt, so pre-M0b
+    /// anchors compare on the state axis.
+    #[test]
+    fn v1_fingerprint_unfolds_to_the_state_hash() {
+        // Round-trip of the primitive on arbitrary operands.
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..64 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let h = seed;
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let x = seed;
+            assert_eq!(mix_inverse_h(mix(h, x), x), h);
+        }
+        // And on a real system after a scripted run.
+        let (mut world, mut sys, arm, _obj) = bench([0.30, 0.55, 0.0]);
+        if let Some(t) = world.get_mut::<JointTargets>(arm) {
+            t.angles = vec![0.2, 0.6, -0.7, 0.1];
+            t.gripper = 1.0;
+        }
+        for i in 0..90u64 {
+            sys.run(&ctx(i), &mut world);
+        }
+        let j0 = &sys.robot.joints[0];
+        let recovered = state_hash_from_v1(
+            sys.fingerprint(&world),
+            j0.kp,
+            j0.kd,
+            sys.robot.mass_scale,
+        );
+        assert_eq!(recovered, sim_fingerprint(&world));
+        // The v2 fold is a pure function of (state, identity, spec).
+        assert_eq!(
+            sys.fingerprint_v2(&world, Some(0xabc)),
+            fingerprint_v2_from_parts(sim_fingerprint(&world), sys.identity_hash(), Some(0xabc))
+        );
+        assert_ne!(sys.fingerprint_v2(&world, Some(0xabc)), sys.fingerprint_v2(&world, None));
+        assert_ne!(sys.fingerprint_v2(&world, None), sys.fingerprint(&world));
+    }
+
+    /// Scheme v2 sees what v1 is blind to: a per-joint gain on a joint
+    /// other than the first, a link's geometry, the DoF count and the
+    /// plate frame all move the identity; spelling a default axis out
+    /// does not.
+    #[test]
+    fn identity_hash_covers_joints_links_and_gripper() {
+        let base = RobotSpec::from(&ArmDescription::default());
+        let h0 = robot_identity_hash(&base);
+        assert_eq!(h0, robot_identity_hash(&base.clone()), "stable");
+
+        let mut kp1 = base.clone();
+        kp1.joints[1].kp += 1.0;
+        assert_ne!(robot_identity_hash(&kp1), h0, "joint[1] kp is identity");
+        // …while the v1 triple cannot tell (same joints[0], same mass_scale).
+        let w = World::new();
+        let s_base = MultibodySystem::from_robot(base.clone(), Scene3D::default()).unwrap();
+        let s_kp1 = MultibodySystem::from_robot(kp1, Scene3D::default()).unwrap();
+        assert_eq!(s_base.fingerprint(&w), s_kp1.fingerprint(&w), "v1 blind spot (documented)");
+        assert_ne!(s_base.fingerprint_v2(&w, None), s_kp1.fingerprint_v2(&w, None));
+
+        let mut geom = base.clone();
+        geom.links[2].collider_offset[0] += 0.001;
+        assert_ne!(robot_identity_hash(&geom), h0, "link geometry is identity");
+
+        let mut dof = base.clone();
+        dof.joints[3].armature += 0.01;
+        assert_ne!(robot_identity_hash(&dof), h0, "armature is identity");
+
+        let mut axes = base.clone();
+        axes.gripper.as_mut().unwrap().approach_axis = Some([0.0, -1.0, 0.0]);
+        assert_ne!(robot_identity_hash(&axes), h0, "plate frame is identity");
+
+        let mut explicit = base.clone();
+        {
+            let g = explicit.gripper.as_mut().unwrap();
+            g.approach_axis = Some([1.0, 0.0, 0.0]);
+            g.gap_axis = Some([0.0, 0.0, 1.0]);
+        }
+        assert_eq!(
+            robot_identity_hash(&explicit),
+            h0,
+            "explicit default axes are the same identity"
+        );
+
+        let mut renamed = base;
+        renamed.links[1].name = "carrier-renamed".into();
+        renamed.joints[0].name = "yaw".into();
+        assert_eq!(robot_identity_hash(&renamed), h0, "names are not physics");
     }
 }

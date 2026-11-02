@@ -132,6 +132,43 @@ VS Build Tools 里的 `link.exe`：
 | `runs[].seed` | 每集种子：同种子必复现同结局（作业可核验性） |
 | `runs[].rand` | 每集域随机化抽签（密度/摩擦/增益/质量——做消融实验用） |
 | `randomization` | 本批 DR 档位概要 |
+| `protocol.id` / `protocol.parameter_hash` | 用的哪份评测协议及其参数哈希（见 §2.1）——引用数字时连这两项一起贴 |
+| `gate` | `pass` / `fail` / `not-applied`（push 与 paper@v1 不设硬闸） |
+| `fingerprints.fingerprint_scheme` | 指纹口径（M0b 起 `"v2"`）；三组逐集数字：`episode_state_hashes`（纯世界状态）、`episode_fingerprints_v1`（旧回执口径，与 `meta/oriera_receipt.json` 里的 `episode_state_hashes` 逐位相同）、`episode_fingerprints_v2`（状态 ⊕ 机器人完整身份 ⊕ spec_hash） |
+| `throughput_steps_per_s` | 本机吞吐（单跑），写报告时带上机型 |
+
+### 2.1 评测协议（M0b：一个名字 = 一套口径）
+
+同一个成功率数字，CLI / Python / Studio 三个入口现在走同一个 `evaluate()`，
+并用**协议 id** 把口径钉死；报告、回执、`run_manifest.json` 里都写着它：
+
+| 协议 | 集数 | 退化集 | 闸 | 用途 |
+|---|---|---|---|---|
+| `course@v1`（默认，旧命令零改动） | 12（`--episodes` 可改，进 hash） | 重抽、不占预算 | **90% 硬闸**（reach/pick_place；push 只记录）——未过 = 人话 + 下一步，退出码 2 | 课程作业、助教核验 |
+| `paper@v1` | ≥100（少于 100 报错） | 重抽、不占预算 | **只记录**（`--gate=hard` 会被拒绝） | 实验室扫参、论文数字 |
+
+```bash
+# 课程口径（= 原命令）
+cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- --task pick_place --episodes 12
+# 论文口径：100 集只记录不拦，reach 任务最快
+cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- --task reach --protocol paper@v1 --episodes 100 --no-cam --verify-determinism sample
+```
+
+批量相关开关（P-5）：`--seed N` 覆盖起始种子；`--gate hard|report`；
+`--verify-determinism full|sample|off`（full = 双跑逐位，默认；sample = 抽首集复核；
+off = 单跑，扫参用）；`--runs-root runs/` 把产物写到
+`runs/<spec_hash8>/scripted-p<协议hash8>/<seed>/`，目录里已有 `eval_report.json`
+就跳过（断点续跑，`--force` 重跑）。每次运行都会在输出目录留一份
+`run_manifest.json`（resolved spec、spec_hash、引擎 git SHA+dirty、Cargo.lock hash、
+rustc/rapier 版本、features、OS/arch、命令行）——半年后复现就靠它。
+批量示例：`scripts/batch_joblib.py`（joblib 并行）、`scripts/batch_example.slurm`（array job）。
+
+spec 库（P-9）：官方金标在 `crates/oriera-agent/specs/official/`（改字段 = 新文件名），
+自己的实验放 `specs/lab/`，文件里写 `"extends": "tabletop-4dof-pick"` 只填差异；
+`python scripts/gen_spec_index.py` 生成 `specs/INDEX.json`（同名异 hash 会报错）。
+
+判据语义本身（pick 松爪+静止 / push 禁 holding）仍是 `success_criteria = "v1"`，
+修订版是 M2 的 `@v2`。
 
 ## 3. Python 接入（写你自己的策略）
 

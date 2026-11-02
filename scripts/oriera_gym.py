@@ -40,7 +40,56 @@ def _load_oriera_sim() -> "object":
         sys.path.insert(0, str(target))
     import oriera_sim  # the cdylib extension module
 
+    # M0b P-3（只加不改）：设了 ORIERA_EXPECTED_BUILD=<engine version> 或
+    # ORIERA_EXPECTED_MANIFEST=<run_manifest.json> 时核对 pyd 的 build_info，
+    # 老 .pyd 被悄悄加载会在这里被告警出来；不设则零行为变化。
+    import os
+    if os.environ.get("ORIERA_EXPECTED_BUILD") or os.environ.get("ORIERA_EXPECTED_MANIFEST"):
+        check_build(os.environ.get("ORIERA_EXPECTED_BUILD") or None,
+                    manifest=os.environ.get("ORIERA_EXPECTED_MANIFEST") or None,
+                    module=oriera_sim)
     return oriera_sim
+
+
+def check_build(expected_version: str | None = None, *, manifest: str | None = None,
+                module: "object | None" = None, warn: bool = True) -> dict:
+    """M0b（PLAN §9.1 P-3）：核对已加载 `oriera_sim` 的 `build_info()` 与期望构建。
+
+    期望来源二选一：`expected_version`（引擎版本字符串，如 "0.10.0"）或
+    `manifest`（某次运行的 run_manifest.json 路径，取其 python.engine_version_expected
+    与 build.features）。不符 ⇒ `warnings.warn`（warn=False 则只返回不告警）。
+    返回 {"loaded": build_info 或 None, "expected": {...}, "ok": bool, "problems": [...]}。
+    老于 M0b 的 .pyd 没有 build_info —— 本身就是「可能被悄悄加载的旧构建」，一并告警。
+    """
+    import json
+    import warnings
+
+    mod = module or _load_oriera_sim()
+    problems: list[str] = []
+    expected: dict = {}
+    if manifest:
+        with open(manifest, encoding="utf-8") as f:
+            m = json.load(f)
+        expected["version"] = (m.get("python") or {}).get("engine_version_expected") or (m.get("engine") or {}).get("version")
+        expected["features"] = (m.get("build") or {}).get("features")
+    if expected_version:
+        expected["version"] = expected_version
+    loaded = None
+    try:
+        loaded = mod.build_info()
+    except AttributeError:
+        problems.append("已加载的 oriera_sim 没有 build_info()（M0b 之前的旧 .pyd）——请重新 `cargo build --features python`，"
+                        f"当前加载自 {getattr(mod, '__file__', '?')}")
+    if loaded is not None:
+        if expected.get("version") and loaded.get("version") != expected["version"]:
+            problems.append(f"引擎版本不符：pyd {loaded.get('version')!r} ≠ 期望 {expected['version']!r}（{getattr(mod, '__file__', '?')}）")
+        exp_feat = expected.get("features")
+        if exp_feat and not set(exp_feat) <= set(loaded.get("features", [])):
+            problems.append(f"features 不符：pyd {loaded.get('features')} 缺 {sorted(set(exp_feat) - set(loaded.get('features', [])))}")
+    ok = not problems
+    if warn and not ok:
+        warnings.warn("[oriera_gym.check_build] " + "；".join(problems), RuntimeWarning, stacklevel=2)
+    return {"loaded": loaded, "expected": expected, "ok": ok, "problems": problems}
 
 
 class OrieraEnv(gym.Env):

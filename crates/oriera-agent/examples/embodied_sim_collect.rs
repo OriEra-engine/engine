@@ -4,18 +4,38 @@
 //! multibody backend) with analytic-IK scripted baselines across the
 //! task family, records every step into a **LeRobotDataset v2.1** tree
 //! (JSONL rows + camera PNG frames + full meta; `--lerobot-v3` adds the
-//! v3.0 tree) and pins the reproducibility claim: the whole collection
-//! runs TWICE and both runs must be bit-identical — dataset, rewards
-//! and the per-episode `sim_fingerprint` receipts (#66 + #67 at sim
+//! v3.0 tree) and pins the reproducibility claim: with
+//! `--verify-determinism=full` (the default) the whole collection runs
+//! TWICE and both runs must be bit-identical — dataset, rewards and the
+//! per-episode `sim_fingerprint` receipts (#66 + #67 at sim
 //! granularity).
 //!
 //! **M0a (PLAN-embodied-general)**: the experiment is a spec. `--spec`
-//! loads a `oriera.scene/2` JSON (v1 drafts auto-migrate), `--set
-//! a.b=v` overrides fields (they enter the hash), and the legacy
-//! `--task` path builds the exact same spec through
-//! `SceneSpec::preset` — both paths run the same code and the receipt
-//! carries `spec_hash`. The scripted IK baseline reads the arm geometry
-//! from the RobotSpec (4-DoF preset only — honest error otherwise).
+//! loads a `oriera.scene/2` JSON (v1 drafts auto-migrate, `extends`
+//! overlays resolve against `specs/official/`), `--set a.b=v` overrides
+//! fields (they enter the hash), and the legacy `--task` path builds
+//! the exact same spec through `SceneSpec::preset` — both paths run the
+//! same code and the receipt carries `spec_hash`. The scripted IK
+//! baseline reads the arm geometry from the RobotSpec (4-DoF preset
+//! only — honest error otherwise).
+//!
+//! **M0b (PLAN §四 M0b / §9.1 P-1/P-3/P-5/P-10)**:
+//! - versioned protocols: `--protocol course@v1` (default = the
+//!   classroom contract, 12 episodes + 90% hard gate) or
+//!   `paper@v1` (≥100 episodes, record-only) — one `evaluate()` entry,
+//!   protocol id + parameter hash in every report;
+//! - provenance: a `run_manifest.json` (resolved spec, spec_hash, git
+//!   SHA+dirty, Cargo.lock hash, rustc/rapier, features, OS/arch,
+//!   command line) lands next to every dataset;
+//! - batch flags: `--seed N` (overrides seed0), `--gate=hard|report`,
+//!   `--verify-determinism=full|sample|off`, `--runs-root runs/` →
+//!   `runs/<hash8>/<method-p<proto8>>/<seed>/` layout with
+//!   skip-if-done resume, `--fingerprints FILE` → the scheme-v2 golden
+//!   fingerprint file (`contracts/golden/embodied_fingerprints.v2.json`
+//!   is generated with exactly this flag);
+//! - `eval_report.json` carries the three fingerprint views
+//!   (`episode_state_hashes` pure-state, `_v1` legacy, `_v2`
+//!   identity-complete) plus the Wilson interval and gate verdict.
 //!
 //! An `eval_report.json` lands next to the dataset: per-episode
 //! outcome plus the success rate with a Wilson 95% interval — the
@@ -25,18 +45,27 @@
 //! `cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- --task pick_place --episodes 12 --cam`
 //! `… -- --spec crates/oriera-agent/specs/tabletop-4dof-pick.json --episodes 12`
 //! Args: `--task reach|pick_place|push` · `--spec FILE` · `--set a.b=v`
-//!       `--episodes N` · `--seed0 S` · `--cam` / `--no-cam` · `--out DIR`
-//!       `--lerobot-v3` · `--migrate FILE` · `--validate FILE` · `--urdf FILE`
-//! Output: `<out>/lerobot-v21/` [+ `<out>/lerobot-v30/`] + `<out>/eval_report.json`
+//!       `--episodes N` · `--seed0 S` / `--seed N` · `--cam` / `--no-cam`
+//!       `--out DIR` · `--runs-root DIR` · `--lerobot-v3` · `--migrate FILE`
+//!       `--validate FILE` · `--urdf FILE` · `--protocol ID`
+//!       `--gate hard|report` · `--verify-determinism full|sample|off`
+//!       `--fingerprints FILE` · `--force`
+//! Output: `<out>/lerobot-v21/` [+ `<out>/lerobot-v30/`] +
+//!         `<out>/eval_report.json` + `<out>/run_manifest.json`
 
 use oriera_agent::embodied_env::{EmbodiedEnv, ObsLayout, TableTopEnv, TaskKind};
+use oriera_agent::eval::{
+    self, EpisodeOutcome, EpisodeRow, EvalProtocol, EvalResult, Gate,
+};
 use oriera_agent::lerobot::LeRobotV21;
+use oriera_agent::manifest::{write_run_manifest, ManifestExtra};
 use oriera_agent::spec::SceneSpec;
 // CameraTrack 只被 cam 腿消费（set_camera 两个 cfg 块）——无 cam 特性下
 // 不引入，否则 `--features urdf,spec --all-targets` 的 clippy -D warnings
 // 以 unused-imports 红灯。
 #[cfg(feature = "cam")]
 use oriera_agent::lerobot::CameraTrack;
+use oriera_subsys::rigid3d::robot_identity_hash;
 use oriera_subsys::RobotSpec;
 
 /// One phase of a scripted baseline: an IK waypoint lifted from the
@@ -267,22 +296,15 @@ fn policy(obs: &[f32], idx: &ObsIdx, phases: &[Phase], step: u64, arm: &IkArm) -
     a.try_into().expect("5 action dims")
 }
 
-/// Wilson 95% score interval — the honest way to report a success rate
-/// from n episodes (never a bare point estimate).
-fn wilson95(k: usize, n: usize) -> (f64, f64) {
-    let z = 1.959_963_984_540_054_f64; // 0.975 quantile
-    if n == 0 {
-        return (0.0, 1.0);
-    }
-    let (k, n) = (k as f64, n as f64);
-    let p = k / n;
-    let denom = 1.0 + z * z / n;
-    let center = (p + z * z / (2.0 * n)) / denom;
-    let half = z * (p * (1.0 - p) / n + z * z / (4.0 * n * n)).sqrt() / denom;
-    (
-        (center - half).clamp(0.0, 1.0),
-        (center + half).clamp(0.0, 1.0),
-    )
+/// `--verify-determinism` modes: `full` = the whole collection runs
+/// twice and must be bit-identical (the pre-M0b behaviour, default);
+/// `sample` = single full pass + a bit-check re-run of the first kept
+/// episode; `off` = single pass, trust the seed (batch sweeps use this).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verify {
+    Full,
+    Sample,
+    Off,
 }
 
 struct Args {
@@ -292,7 +314,9 @@ struct Args {
     spec: Option<String>,
     /// `--set a.b=v` overrides (applied after load, enter the hash).
     sets: Vec<String>,
-    episodes: u32,
+    /// `--episodes N` (None ⇒ the protocol's default: course 12 / paper 100).
+    episodes: Option<u32>,
+    /// `--seed0 S` / `--seed N` (both set seed0; `--seed` wins).
     seed0: u64,
     cam: bool,
     out: String,
@@ -304,16 +328,31 @@ struct Args {
     migrate: Option<String>,
     /// `--validate FILE`: 只校验 + 打印 spec_hash（不采集）。
     validate: Option<String>,
+    /// `--protocol course@v1|paper@v1` (default course@v1).
+    protocol: Option<String>,
+    /// `--gate hard|report` (default: the protocol's own gate).
+    gate: Option<Gate>,
+    /// `--verify-determinism full|sample|off` (default full).
+    verify: Verify,
+    /// `--runs-root runs/`: write into `runs/<hash8>/<method>/<seed>/`
+    /// with skip-if-done resume instead of direct `--out` writes.
+    runs_root: Option<String>,
+    /// `--fingerprints FILE`: write the scheme-v2 golden fingerprint
+    /// file (the `contracts/golden/embodied_fingerprints.v2.json`
+    /// generator flag).
+    fingerprints: Option<String>,
+    /// `--force`: re-run even when the runs-layout directory is done.
+    force: bool,
 }
 
-const USAGE: &str = "--task/--phrase/--spec/--set/--episodes/--seed0/--cam/--no-cam/--out/--lerobot-v3/--migrate/--validate/--urdf";
+const USAGE: &str = "--task/--phrase/--spec/--set/--episodes/--seed0/--seed/--cam/--no-cam/--out/--runs-root/--lerobot-v3/--migrate/--validate/--urdf/--protocol/--gate/--verify-determinism/--fingerprints/--force";
 
 fn parse_args() -> Args {
     let mut a = Args {
         task: None,
         spec: None,
         sets: Vec::new(),
-        episodes: 8,
+        episodes: None,
         seed0: 1000,
         cam: true,
         out: "out/embodied-sim".into(),
@@ -321,6 +360,12 @@ fn parse_args() -> Args {
         urdf: None,
         migrate: None,
         validate: None,
+        protocol: None,
+        gate: None,
+        verify: Verify::Full,
+        runs_root: None,
+        fingerprints: None,
+        force: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -344,27 +389,58 @@ fn parse_args() -> Args {
             }
             "--episodes" => {
                 let v = it.next().expect("--episodes 需要一个值");
-                a.episodes = v.parse().expect("episodes: 数字");
+                a.episodes = Some(v.parse().expect("episodes: 数字"));
             }
-            "--seed0" => {
-                let v = it.next().expect("--seed0 需要一个值");
-                a.seed0 = v.parse().expect("seed0: 数字");
+            "--seed0" | "--seed" => {
+                let v = it
+                    .next()
+                    .unwrap_or_else(|| fail(&format!("{arg} 需要一个值")));
+                a.seed0 = v.parse().expect("seed: 数字");
             }
+            "--protocol" => {
+                // 校验在 main（paper@v1 的集数下限要等 --episodes 到齐）
+                a.protocol = Some(it.next().expect("--protocol 需要一个值"));
+            }
+            "--gate" => {
+                let v = it.next().expect("--gate 需要一个值");
+                a.gate = Some(match v.as_str() {
+                    "hard" => Gate::Hard90,
+                    "report" => Gate::Report,
+                    other => fail(&format!(
+                        "--gate {other:?}：须为 hard（90% 硬闸）或 report（只记录）"
+                    )),
+                });
+            }
+            "--verify-determinism" => {
+                let v = it.next().expect("--verify-determinism 需要一个值");
+                a.verify = match v.as_str() {
+                    "full" => Verify::Full,
+                    "sample" => Verify::Sample,
+                    "off" => Verify::Off,
+                    other => fail(&format!(
+                        "--verify-determinism {other:?}：须为 full（双跑逐位，默认）| sample（抽一集复核）| off（单跑）"
+                    )),
+                };
+            }
+            "--runs-root" => a.runs_root = Some(it.next().expect("--runs-root 需要一个目录")),
+            "--fingerprints" => a.fingerprints = Some(it.next().expect("--fingerprints 需要一个文件路径")),
+            "--force" => a.force = true,
             "--out" => a.out = it.next().expect("--out 需要一个值"),
             "--cam" => a.cam = true,
             "--no-cam" => a.cam = false,
             "--lerobot-v3" => a.lerobot_v3 = true,
             other => {
-                panic!("未知参数 {other}（可用 {USAGE}）")
+                fail(&format!("未知参数 {other}（可用 {USAGE}）"))
             }
         }
     }
     a
 }
 
-/// Resolve the experiment spec: `--spec` (v2, or v1 auto-migrated) +
-/// `--set` overrides, else the preset of `--task` (default pick_place).
-/// Both roads yield a validated [`SceneSpec`] — one code path.
+/// Resolve the experiment spec: `--spec` (v2, or v1 auto-migrated,
+/// `extends` overlays resolved against `specs/official/`) + `--set`
+/// overrides, else the preset of `--task` (default pick_place). Both
+/// roads yield a validated [`SceneSpec`] — one code path.
 fn resolve_spec(args: &Args) -> SceneSpec {
     let mut spec = match &args.spec {
         Some(path) => {
@@ -401,16 +477,104 @@ struct RunResult {
     hashes: Vec<u64>,
     /// Per-episode randomization receipts (draws differ per episode).
     rand_receipts: Vec<String>,
+    /// Total env steps taken (the throughput denominator).
+    total_steps: u64,
+    /// Total draws and degenerate re-draws (from `evaluate`).
+    draws: u64,
+    redraws: u64,
 }
 
-fn collect(args: &Args, spec: &SceneSpec) -> Result<RunResult, String> {
+fn make_env(spec: &SceneSpec, cam: bool) -> TableTopEnv {
     let mut env: TableTopEnv = spec.to_env();
-    let arm = IkArm::from_robot(&env.robot)?;
-    let idx = ObsIdx::from_layout(env.obs_layout());
     #[cfg(feature = "cam")]
-    if args.cam {
+    if cam {
         env.set_camera(Some(oriera_subsys::camera::CameraView::default()));
     }
+    env
+}
+
+/// One episode, exactly as the pre-M0b loop drove it: env.reset(seed),
+/// the phase script, dataset rows+frames, the degenerate check
+/// (spawn-in-goal ends on step ~1 → discard, redraw). When `ds` is
+/// `None` the episode runs "dry" (the `sample` determinism re-check).
+fn run_episode_once(
+    env: &mut TableTopEnv,
+    seed: u64,
+    phases: &[Phase],
+    arm: &IkArm,
+    idx: &ObsIdx,
+    mut ds: Option<&mut LeRobotV21>,
+) -> Result<EpisodeOutcome, String> {
+    let mut obs = env.reset(seed);
+    if let Some(ds) = ds.as_deref_mut() {
+        ds.start_episode(env.task.phrase());
+    }
+    let mut step = 0u64;
+    let mut terminated = false;
+    let mut reward_sum = 0.0f32;
+    let max_steps = env.spec().max_steps;
+    while step < max_steps && !terminated {
+        let action = policy(&obs, idx, phases, step, arm);
+        // env.step FIRST — it captures frame t for state_t — then
+        // row t = (state_t, action_t), then drain. Frame count ==
+        // row count by construction (off-by-one, round-2 review).
+        let out = env.step(&action);
+        if let Some(ds) = ds.as_deref_mut() {
+            ds.push_step(&obs, &action)?;
+            #[cfg(feature = "cam")]
+            for (_ft, png) in env.take_frames() {
+                ds.push_frame(png)?;
+            }
+        }
+        obs = out.obs;
+        reward_sum += out.reward;
+        terminated = out.terminated;
+        step += 1;
+    }
+    // Degenerate filter: a spawn landing in the goal zone ends on
+    // step ~1 and would enter the dataset as a 1-row/1-frame entry
+    // (round-2 finding) — discard and re-draw the seed.
+    if step < 5 {
+        if let Some(ds) = ds {
+            ds.drop_episode();
+        }
+        return Ok(EpisodeOutcome::Degenerate);
+    }
+    let fp = env.fingerprint();
+    let rand = env.randomization_receipt().to_string();
+    if std::env::var("ORIERA_SIM_DEBUG").is_ok() {
+        let c = env.cube_pos();
+        let g = env.goal();
+        eprintln!(
+            "seed {seed}: ok={terminated} hold={} cube=({:.3},{:.3},{:.3}) goal=({:.3},{:.3})",
+            env.holding(),
+            c[0],
+            c[1],
+            c[2],
+            g[0],
+            g[2]
+        );
+    }
+    if let Some(ds) = ds {
+        ds.finish_episode();
+    }
+    Ok(EpisodeOutcome::Done(EpisodeRow {
+        seed,
+        success: terminated,
+        steps: step,
+        reward_sum,
+        fingerprint_v1: fp,
+        rand,
+    }))
+}
+
+/// The whole protocol, through the ONE `evaluate()` entry (P-1):
+/// seed band, degenerate redraw policy and episode budget all live in
+/// `oriera_agent::eval`; this closure only knows how to run an episode.
+fn collect(args: &Args, spec: &SceneSpec, protocol: &EvalProtocol) -> Result<RunResult, String> {
+    let mut env = make_env(spec, args.cam);
+    let arm = IkArm::from_robot(&env.robot)?;
+    let idx = ObsIdx::from_layout(env.obs_layout());
     // Dataset metadata derives from the env's layouts (P-8): dim names
     // are joint names, modality groups are layout slices, robot_type is
     // the RobotSpec name.
@@ -429,81 +593,36 @@ fn collect(args: &Args, spec: &SceneSpec) -> Result<RunResult, String> {
             fps: (1.0 / env.dt).round(), // 与控制率同频（60Hz 双轨错位修复）
         });
     }
-
     let phases = match env.task {
         TaskKind::Reach => reach_phases(),
         TaskKind::PickPlace => pick_place_phases(),
         TaskKind::Push => push_phases(),
     };
-
-    let mut rows = Vec::new();
-    let mut hashes = Vec::new();
-    let mut rand_receipts: Vec<String> = Vec::new();
-    // 重抽语义：退化集不占 episodes 预算（Rust 架构师 review——原实现
-    // 是"少采"不是"重抽"，成功率分母失真）。displaced seed band 保证
-    // 同种子不再撞同一 in-zone 生成。
-    let mut kept: u32 = 0;
-    let mut redraws: u64 = 0;
-    let mut draws: u64 = 0;
-    while kept < args.episodes {
-        draws += 1;
-        let seed = args.seed0 + (draws - 1) + 65536 * redraws;
-        let mut obs = env.reset(seed);
-        // episode 语言标注 = 任务自然语言短语（SmolVLA/π0 语言条件）
-        ds.start_episode(env.task.phrase());
-        let mut step = 0u64;
-        let mut terminated = false;
-        let mut reward_sum = 0.0f32;
-        let max_steps = env.spec().max_steps;
-        while step < max_steps && !terminated {
-            let action = policy(&obs, &idx, &phases, step, &arm);
-            // env.step FIRST — it captures frame t for state_t — then
-            // row t = (state_t, action_t), then drain. Frame count ==
-            // row count by construction (off-by-one, round-2 review).
-            let out = env.step(&action);
-            ds.push_step(&obs, &action)?;
-            #[cfg(feature = "cam")]
-            for (_ft, png) in env.take_frames() {
-                ds.push_frame(png)?;
+    let mut total_steps = 0u64;
+    let result = eval::evaluate(protocol, |seed, draw| {
+        let out = run_episode_once(&mut env, seed, &phases, &arm, &idx, Some(&mut ds))?;
+        if let EpisodeOutcome::Done(row) = &out {
+            total_steps += row.steps;
+            if std::env::var("ORIERA_SIM_DEBUG").is_ok() {
+                println!("  · 抽签 {draw}（seed {seed}）保留");
             }
-            obs = out.obs;
-            reward_sum += out.reward;
-            terminated = out.terminated;
-            step += 1;
+        } else {
+            println!("  · 抽签 {draw}（seed {seed}）生成即入区，已剔除重抽");
         }
-        // Degenerate filter: a spawn landing in the goal zone ends on
-        // step ~1 and would enter the dataset as a 1-row/1-frame entry
-        // (round-2 finding) — discard and re-draw the seed.
-        if step < 5 {
-            ds.drop_episode();
-            redraws += 1;
-            println!("  · 抽签 {draws}（seed {seed}）生成即入区，已剔除重抽");
-            continue;
-        }
-        kept += 1;
-        hashes.push(env.fingerprint());
-        rand_receipts.push(env.randomization_receipt().to_string());
-        rows.push((seed, terminated, step, reward_sum));
-        if std::env::var("ORIERA_SIM_DEBUG").is_ok() {
-            let c = env.cube_pos();
-            let g = env.goal();
-            eprintln!(
-                "抽签 {draws}: ok={terminated} hold={} cube=({:.3},{:.3},{:.3}) goal=({:.3},{:.3})",
-                env.holding(),
-                c[0],
-                c[1],
-                c[2],
-                g[0],
-                g[2]
-            );
-        }
-        ds.finish_episode();
-    }
+        Ok(out)
+    })?;
     Ok(RunResult {
+        rows: result
+            .rows
+            .iter()
+            .map(|r| (r.seed, r.success, r.steps, r.reward_sum))
+            .collect(),
+        hashes: result.rows.iter().map(|r| r.fingerprint_v1).collect(),
+        rand_receipts: result.rows.iter().map(|r| r.rand.clone()).collect(),
         ds,
-        rows,
-        hashes,
-        rand_receipts,
+        total_steps,
+        draws: result.draws,
+        redraws: result.redraws,
     })
 }
 
@@ -580,6 +699,57 @@ fn main() {
     }
     let spec = resolve_spec(&args);
     let spec_hash = spec.spec_hash_hex();
+
+    // The named protocol (P-1): course@v1 is the default (= the legacy
+    // classroom contract), paper@v1 records and never gates. `--seed`
+    // overrides seed0; `--gate` overrides the protocol's own gate.
+    let protocol = EvalProtocol::parse(
+        args.protocol.as_deref().unwrap_or(eval::PROTOCOL_COURSE_V1),
+        args.episodes,
+        args.seed0,
+    )
+    .unwrap_or_else(|e| fail(&e))
+    .with_gate(args.gate)
+    .unwrap_or_else(|e| fail(&e));
+
+    // Runs layout (P-5): --runs-root runs/ → runs/<hash8>/<method>/<seed>/
+    // with skip-if-done resume; without it, --out direct writes (the
+    // legacy behaviour, byte-identical).
+    let out: std::path::PathBuf = match &args.runs_root {
+        Some(root) => {
+            let proto8 = protocol.protocol_hash8();
+            let method = format!("scripted-p{proto8}");
+            let dir = std::path::Path::new(root)
+                .join(spec.spec_hash8())
+                .join(&method)
+                .join(protocol.seed0.to_string());
+            let done = dir.join("eval_report.json");
+            if done.exists() && !args.force {
+                println!(
+                    "  ↷ 断点续跑：{} 已有 eval_report.json，跳过（--force 重跑）",
+                    dir.display()
+                );
+                return;
+            }
+            dir
+        }
+        None => std::path::Path::new(&args.out).to_path_buf(),
+    };
+    std::fs::create_dir_all(&out).unwrap();
+
+    // Provenance first (P-3): even a crashed run leaves its manifest.
+    write_run_manifest(
+        out.join("run_manifest.json"),
+        &spec,
+        &ManifestExtra {
+            protocol_id: protocol.id.clone(),
+            protocol_hash: protocol.protocol_hash_hex(),
+            method: "scripted".into(),
+            seed: Some(protocol.seed0),
+        },
+    )
+    .unwrap_or_else(|e| fail(&format!("run_manifest.json 写入失败：{e}")));
+
     let task = TaskKind::parse(&spec.task.id).expect("validated task id");
     let feat = if cfg!(feature = "cam") && args.cam {
         "rigid3d+cam"
@@ -590,70 +760,141 @@ fn main() {
     println!("║  OriEra rigid3d × LeRobot v2.1 · 具身批量采集与评测          ║");
     println!("╚════════════════════════════════════════════════════════════╝");
     println!(
-        "  任务 {} · {} 集 × ≤{} 步 · dt={:.4} · 种子 {}.. · 后端 {}",
+        "  任务 {} · 协议 {}（{} 集，闸 {:?}）× ≤{} 步 · dt={:.4} · 种子 {}.. · 后端 {}",
         task.phrase(),
-        args.episodes,
+        protocol.id,
+        protocol.episodes,
+        protocol.gate,
         spec.max_steps,
         spec.dt,
-        args.seed0,
+        protocol.seed0,
         feat
     );
     println!(
-        "  spec {} · robot {} ({} DoF) · prop[0] {} {:?} · spec_hash {}",
+        "  spec {} · robot {} ({} DoF) · prop[0] {} {:?} · spec_hash {} · protocol_hash {}",
         args.spec.as_deref().unwrap_or("<preset>"),
         spec.robot.name,
         spec.robot.dof(),
         spec.scene.props[0].name,
         spec.scene.props[0].shape,
-        spec_hash
+        spec_hash,
+        protocol.protocol_hash_hex()
     );
 
-    // The determinism receipt: collect twice, demand bit equality.
-    let r1 = collect(&args, &spec).unwrap_or_else(|e| fail(&format!("采集失败：{e}")));
-    let r2 = collect(&args, &spec).unwrap_or_else(|e| fail(&format!("采集失败：{e}")));
-    assert_eq!(
-        r1.hashes, r2.hashes,
-        "#66+#67: episode fingerprints must match"
-    );
-    assert_eq!(r1.rows, r2.rows, "episode outcomes must be bit-identical");
-    for (i, (e1, e2)) in r1.ds.episodes.iter().zip(r2.ds.episodes.iter()).enumerate() {
-        assert_eq!(e1.rows, e2.rows, "dataset rows must be bit-equal (ep {i})");
-        assert_eq!(
-            e1.frames, e2.frames,
-            "camera frames must be bit-equal (ep {i})"
-        );
-    }
-    let successes = r1.rows.iter().filter(|(_, ok, _, _)| *ok).count();
-    println!(
-        "  ✓ 双跑逐位一致：{} 集 · {} transitions · 成功 {} 集（{}%）",
-        args.episodes,
-        r1.ds.total_frames(),
-        successes,
-        successes * 100 / args.episodes.max(1) as usize
-    );
-
-    // Solvability gate: ≥90% 硬闸（两级渐降相位机 + 肘限位 -2.5 后
-    // 实测 pick 91.7% / reach 100%）；push 的接触基线允许不稳，如实
-    // 报告不拦流程。闸失败 = 人话 + 下一步（G-2），不是 backtrace。
-    if matches!(task, TaskKind::Reach | TaskKind::PickPlace) {
-        let rate = successes as f64 / args.episodes.max(1) as f64;
-        if rate < 0.9 {
-            eprintln!(
-                "\n【90% 闸未过】脚本基线只成功 {successes}/{} 集（{:.1}%），低于 90%，引擎拒绝出数据——这是引擎自检在工作，不是你弄坏了电脑。\n\
-                 请按顺序排查：① 确认命令与 LAB-GUIDE §1 第 4 条逐字一致（集数改少会放大偶然失败）；\n\
-                 ② `git status` 看是否改过引擎文件，有就 `git checkout -- .`；③ 确认没改参数/没改 spec（spec_hash {spec_hash}）后重跑；\n\
-                 三步后仍失败，带着整段输出找助教。",
-                args.episodes,
-                rate * 100.0
+    // The determinism receipt (P-5): full = collect twice, demand bit
+    // equality; sample = re-run the first kept episode; off = trust the seed.
+    let t0 = std::time::Instant::now();
+    let r1 = collect(&args, &spec, &protocol).unwrap_or_else(|e| fail(&format!("采集失败：{e}")));
+    match args.verify {
+        Verify::Full => {
+            let r2 = collect(&args, &spec, &protocol).unwrap_or_else(|e| fail(&format!("采集失败：{e}")));
+            assert_eq!(
+                r1.hashes, r2.hashes,
+                "#66+#67: episode fingerprints must match"
             );
-            std::process::exit(2);
+            assert_eq!(r1.rows, r2.rows, "episode outcomes must be bit-identical");
+            for (i, (e1, e2)) in r1.ds.episodes.iter().zip(r2.ds.episodes.iter()).enumerate() {
+                assert_eq!(e1.rows, e2.rows, "dataset rows must be bit-equal (ep {i})");
+                assert_eq!(
+                    e1.frames, e2.frames,
+                    "camera frames must be bit-equal (ep {i})"
+                );
+            }
+            println!("  ✓ 确定性复核（full）：双跑逐位一致");
+        }
+        Verify::Sample => {
+            let seed0 = r1.rows.first().expect("at least one episode").0;
+            let mut env = make_env(&spec, false);
+            let arm = IkArm::from_robot(&env.robot).unwrap_or_else(|e| fail(&e));
+            let idx = ObsIdx::from_layout(env.obs_layout());
+            let phases = match env.task {
+                TaskKind::Reach => reach_phases(),
+                TaskKind::PickPlace => pick_place_phases(),
+                TaskKind::Push => push_phases(),
+            };
+            let re = match run_episode_once(&mut env, seed0, &phases, &arm, &idx, None)
+                .unwrap_or_else(|e| fail(&format!("sample 复核失败：{e}")))
+            {
+                EpisodeOutcome::Done(row) => row,
+                EpisodeOutcome::Degenerate => panic!("sample 复核：首集不应是退化集"),
+            };
+            let orig = r1.rows.first().unwrap();
+            assert_eq!(
+                (re.seed, re.steps, re.success, re.reward_sum, re.fingerprint_v1),
+                (orig.0, orig.2, orig.1, orig.3, r1.hashes[0]),
+                "sample 复核：首集逐位不一致"
+            );
+            println!("  ✓ 确定性复核（sample）：首集 seed {seed0} 重跑逐位一致");
+        }
+        Verify::Off => {
+            println!("  · 确定性复核关闭（--verify-determinism=off，批量扫参用）");
         }
     }
+    let secs = t0.elapsed().as_secs_f64();
 
-    let root = std::path::Path::new(&args.out).join("lerobot-v21");
+    let successes = r1.rows.iter().filter(|(_, ok, _, _)| *ok).count();
+    let episodes = protocol.episodes as usize;
+    println!(
+        "  ✓ 采集 {} 集 · {} transitions · 成功 {} 集（{}%） · 吞吐 {:.0} steps/s（单跑 {:.1}s）",
+        episodes,
+        r1.ds.total_frames(),
+        successes,
+        successes * 100 / episodes.max(1),
+        r1.total_steps as f64 / secs.max(1e-9),
+        secs
+    );
+
+    // The unified eval result (one entry point, one number).
+    let result = EvalResult {
+        protocol: protocol.clone(),
+        rows: r1
+            .rows
+            .iter()
+            .zip(r1.hashes.iter().zip(r1.rand_receipts.iter()))
+            .map(|((seed, ok, steps, ret), (fp, rand))| EpisodeRow {
+                seed: *seed,
+                success: *ok,
+                steps: *steps,
+                reward_sum: *ret,
+                fingerprint_v1: *fp,
+                rand: rand.clone(),
+            })
+            .collect(),
+        draws: r1.draws,
+        redraws: r1.redraws,
+    };
+
+    // Solvability gate: course@v1's Hard90 refuses to publish below
+    // 90% (两级渐降相位机 + 肘限位 -2.5 后实测 pick 91.7% / reach
+    // 100%）；push 的接触基线允许不稳，如实报告不拦流程；paper@v1 永远
+    // 只记录。闸失败 = 人话 + 下一步（G-2），不是 backtrace。
+    let verdict = result.gate_verdict(spec.task.id.as_str());
+    if let eval::GateVerdict::Fail { threshold, rate } = verdict {
+        eprintln!(
+            "\n【90% 闸未过】脚本基线只成功 {successes}/{} 集（{:.1}%），低于 {:.0}%，引擎拒绝出数据——这是引擎自检在工作，不是你弄坏了电脑。\n\
+             请按顺序排查：① 确认命令与 LAB-GUIDE §1 第 4 条逐字一致（集数改少会放大偶然失败）；\n\
+             ② `git status` 看是否改过引擎文件，有就 `git checkout -- .`；③ 确认没改参数/没改 spec（spec_hash {spec_hash}）后重跑；\n\
+             三步后仍失败，带着整段输出找助教。只要记录不拦流程请改用 --protocol paper@v1 或 --gate=report。",
+            episodes,
+            rate * 100.0,
+            threshold * 100.0
+        );
+        std::process::exit(2);
+    }
+    if matches!(verdict, eval::GateVerdict::NotApplied) {
+        println!(
+            "  · 闸：本协议/任务不设硬闸（{} × {:?}），只记录",
+            protocol.id,
+            protocol.gate
+        );
+    }
+
+    let root = out.join("lerobot-v21");
     std::fs::create_dir_all(&root).unwrap();
     let n = r1.ds.write_dir(&root).unwrap();
     let engine = concat!("oriera-engine/", env!("CARGO_PKG_VERSION"));
+    // 三口径指纹集（state/v1/v2）在 receipt 之前算好——数据集自带完整身份。
+    let fps = eval::fingerprint_set(&spec.robot, spec.spec_hash(), &r1.hashes);
     LeRobotV21::write_receipt(
         &root,
         engine,
@@ -662,6 +903,8 @@ fn main() {
         &spec_hash,
         &r1.hashes,
         successes as u32,
+        &fps.fingerprint_scheme,
+        &fps.episode_fingerprints_v2,
     )
     .unwrap();
     LeRobotV21::write_card(&root, task.phrase()).unwrap();
@@ -673,7 +916,7 @@ fn main() {
     .unwrap();
 
     // LeRobot v3.0 tree (P-7): lerobot ≥ 0.4 reads only this layout.
-    let root_v3 = std::path::Path::new(&args.out).join("lerobot-v30");
+    let root_v3 = out.join("lerobot-v30");
     if args.lerobot_v3 {
         std::fs::create_dir_all(&root_v3).unwrap();
         r1.ds.write_dir_v3(&root_v3).unwrap();
@@ -685,6 +928,8 @@ fn main() {
             &spec_hash,
             &r1.hashes,
             successes as u32,
+            &fps.fingerprint_scheme,
+            &fps.episode_fingerprints_v2,
         )
         .unwrap();
         LeRobotV21::write_card_v3(&root_v3, task.phrase()).unwrap();
@@ -695,48 +940,81 @@ fn main() {
         .unwrap();
     }
 
-    // eval_report.json — the lab reporting format.
-    let (lo, hi) = wilson95(successes, args.episodes as usize);
-    let per_ep: Vec<String> = r1
+    // eval_report.json — the lab reporting format, now with protocol
+    // id + parameter hash and the three fingerprint views (P-1/P-10).
+
+    let (lo, hi) = result.wilson95();
+    let per_ep: Vec<serde_json::Value> = result
         .rows
         .iter()
-        .enumerate()
-        .map(|(i, (seed, ok, steps, ret))| {
-            let rand = r1.rand_receipts[i].replace('"', "'");
-            format!(
-                "{{\"seed\":{seed},\"success\":{ok},\"steps\":{steps},\"reward_sum\":{ret:.3},\"rand\":\"{rand}\"}}"
-            )
+        .map(|row| {
+            serde_json::json!({
+                "seed": row.seed,
+                "success": row.success,
+                "steps": row.steps,
+                "reward_sum": ((row.reward_sum as f64) * 1000.0).round() / 1000.0,
+                "rand": row.rand.replace('"', "'"),
+            })
         })
         .collect();
-    let report = format!(
-        "{{\"task\":\"{}\",\"task_id\":\"{}\",\"spec_hash\":\"{}\",\"engine\":\"oriera-engine/{}\",\"backend\":\"{}\",\"dt\":{},\"episodes\":{},\"successes\":{},\"success_rate\":{:.4},\"wilson95\":[{:.4},{:.4}],\"randomization\":\"{}\",\"runs\":[{}]}}\n",
-        task.phrase(),
-        spec.task.id,
-        spec_hash,
-        env!("CARGO_PKG_VERSION"),
-        feat,
-        spec.dt,
-        args.episodes,
-        successes,
-        successes as f64 / args.episodes.max(1) as f64,
-        lo,
-        hi,
-        r1.rand_receipts.first().map(|s| s.replace('"', "'")).unwrap_or_default(),
-        per_ep.join(",")
-    );
-    let report_path = std::path::Path::new(&args.out).join("eval_report.json");
-    std::fs::write(&report_path, &report).unwrap();
+    let report = serde_json::json!({
+        "task": task.phrase(),
+        "task_id": spec.task.id,
+        "protocol": {
+            "id": protocol.id,
+            "parameter_hash": protocol.protocol_hash_hex(),
+            "episodes": protocol.episodes,
+            "seed0": protocol.seed0,
+            "degenerate": protocol.degenerate,
+            "gate": protocol.gate,
+            "success_criteria": protocol.success_criteria,
+        },
+        "gate": match verdict {
+            eval::GateVerdict::Pass => "pass",
+            eval::GateVerdict::Fail { .. } => "fail",
+            eval::GateVerdict::NotApplied => "not-applied",
+        },
+        "spec_hash": spec_hash,
+        "engine": engine,
+        "backend": feat,
+        "dt": spec.dt,
+        "episodes": episodes,
+        "successes": successes,
+        "success_rate": successes as f64 / episodes.max(1) as f64,
+        "wilson95": [lo, hi],
+        "throughput_steps_per_s": r1.total_steps as f64 / secs.max(1e-9),
+        "verify_determinism": match args.verify { Verify::Full => "full", Verify::Sample => "sample", Verify::Off => "off" },
+        "randomization": r1.rand_receipts.first().map(|s| s.replace('"', "'")).unwrap_or_default(),
+        "runs": per_ep,
+    });
+    let mut report = report;
+    // fingerprint block rides as its own object (scheme + 3 views)
+    let fp_val = serde_json::to_value(&fps).expect("FingerprintSet serializes");
+    report
+        .as_object_mut()
+        .unwrap()
+        .insert("fingerprints".into(), fp_val);
+    let report_path = out.join("eval_report.json");
+    std::fs::write(
+        &report_path,
+        format!("{}\n", serde_json::to_string(&report).unwrap()),
+    )
+    .unwrap();
 
     println!(
-        "  ✓ 评测：成功率 {:.1}%（Wilson 95% CI [{:.1}%, {:.1}%]）",
-        successes as f64 / args.episodes.max(1) as f64 * 100.0,
+        "  ✓ 评测：成功率 {:.1}%（Wilson 95% CI [{:.1}%, {:.1}%]）· 协议 {}（{}）· 指纹 {}",
+        result.success_rate() * 100.0,
         lo * 100.0,
-        hi * 100.0
+        hi * 100.0,
+        protocol.id,
+        protocol.protocol_hash_hex(),
+        fps.fingerprint_scheme
     );
     println!(
-        "  ✓ 已写出 {}/（{n} 集）与 {}",
+        "  ✓ 已写出 {}/（{n} 集）与 {}（manifest {}）",
         root.display(),
-        report_path.display()
+        report_path.display(),
+        out.join("run_manifest.json").display()
     );
     if args.lerobot_v3 {
         println!(
@@ -745,8 +1023,48 @@ fn main() {
             root_v3.display()
         );
     }
+
+    // --fingerprints FILE: the absolute golden (P-10) — commit it under
+    // contracts/golden/ and any platform can compare receipts.
+    if let Some(path) = &args.fingerprints {
+        let golden = eval::FingerprintGolden {
+            scheme: "oriera-embodied-v2".into(),
+            purpose: format!(
+                "M0b 绝对指纹金标（scheme v2）：默认桌面实验 {} 集逐集「纯状态哈希 + v1 折叠 + v2 完整身份」三口径（同一 12 seed 重跑逐位一致；变动须 physics-behavior-change 标签 + scheme 递增）",
+                protocol.episodes
+            ),
+            engine_commit: oriera_agent::manifest::git_provenance().0,
+            features: feat.into(),
+            backend: feat.into(),
+            dt: spec.dt,
+            command: format!(
+                "cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- --task {} --episodes {} --seed {} --fingerprints <FILE>",
+                task_base(&spec.task.id),
+                protocol.episodes,
+                protocol.seed0
+            ),
+            spec_hash: spec_hash.clone(),
+            protocol_id: protocol.id.clone(),
+            protocol_parameter_hash: protocol.protocol_hash_hex(),
+            identity_hash: robot_identity_hash(&spec.robot),
+            seeds: result.rows.iter().map(|r| r.seed).collect(),
+            successes,
+            success_rate: result.success_rate(),
+            transitions: r1.ds.total_frames() as u64,
+            fingerprints: fps,
+        };
+        std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(&golden).unwrap()))
+            .unwrap_or_else(|e| fail(&format!("--fingerprints 写入失败：{e}")));
+        println!("  ✓ 指纹金标（scheme {}）已写出 {}", golden.fingerprints.fingerprint_scheme, path);
+    }
+
     println!(
         "  下一步：python scripts/jsonl_to_lerobot_v21.py {}/ → lerobot-train 直读",
         root.display()
     );
+}
+
+/// `pick_place@v1` → `pick_place` (the CLI task spelling).
+fn task_base(id: &str) -> String {
+    id.split('@').next().unwrap_or(id).to_string()
 }

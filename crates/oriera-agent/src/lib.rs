@@ -29,10 +29,19 @@ pub mod cognition;
 pub mod embodied;
 #[cfg(feature = "rigid3d")]
 pub mod embodied_env;
+/// Versioned evaluation protocols (M0b P-1): `course@v1` / `paper@v1`
+/// behind one `evaluate()` entry. Needs the experiment layer
+/// (`rigid3d` + `json`, i.e. the `spec` feature).
+#[cfg(feature = "spec")]
+pub mod eval;
 pub mod genai;
 pub mod goal;
 #[cfg(feature = "rigid3d")]
 pub mod lerobot;
+/// Run provenance manifests (M0b P-3): `run_manifest.json` writers and
+/// the compile-time `build_info()` the Python bridge mirrors.
+#[cfg(feature = "spec")]
+pub mod manifest;
 pub mod memory;
 #[cfg(feature = "urdf")]
 pub mod meshres;

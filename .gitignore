@@ -8,6 +8,8 @@ node_modules/
 dist/
 .pnpm-store/
 *.wasm
+# 例外：demo 渲染器吃我们自己的 oriera wasm（克隆即跑，见 WASM-RENDERER.md）
+!examples/15-embodied-sim/vendor/oriera/*.wasm
 oriera-wasm/pkg/
 
 # Python

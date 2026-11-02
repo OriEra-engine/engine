@@ -1201,6 +1201,13 @@ impl UrdfReport {
             effort,
             gap_rate,
             kind: GripperKind::ParallelPlates,
+            // M0b plate frame: `None` = the legacy +X/+Z placement — the
+            // exact behaviour this importer had before the fields
+            // existed (bit-identical output). Wiring the derived
+            // `u` (gap) / `approach` directions through `r_up` into these
+            // two fields is the WP-D follow-up (see M0b report patch).
+            approach_axis: None,
+            gap_axis: None,
         }
     }
 
