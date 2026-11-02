@@ -175,7 +175,11 @@ VS Build Tools 里的 `link.exe`：
   python scripts/jsonl_to_lerobot_v21.py out/my-run/lerobot-v21
   ```
   然后 `lerobot-train --dataset.repo_id=local/my-run --dataset.root=out/my-run/lerobot-v21 --policy.type=act`
-  （消费级 GPU 即可，如 RTX 3060）。lerobot 各版本参数有出入，报参数错误时以
+  （消费级 GPU 即可，如 RTX 3060）。采集时加 `--lerobot-v3` 会同时产出
+  `out\my-run\lerobot-v30\`（lerobot ≥ 0.4 只认 v3.0 格式），转换脚本自动识别
+  目录版本，命令同上（把路径换成 `lerobot-v30`）；结构自检：
+  `python scripts/lerobot_v3_selfcheck.py out\my-run\lerobot-v30`（注：自检只查
+  文件结构与元数据约定，未经 lerobot 实机加载验证）。lerobot 各版本参数有出入，报参数错误时以
   `lerobot-train --help` 为准；报数据集版本不兼容见排查表「数据集版本」一行；
 - **强化学习**：SB3 PPO 挂 `OrieraPickPlaceEnv`（经 gymnasium 包装层，先做完 §1
   第 5 条）。一键训练器已备好（固定评测 seed 1000-1011 + 曲线落盘；任意终端）：
@@ -242,7 +246,7 @@ VS Build Tools 里的 `link.exe`：
 | 症状 | 处置 |
 |---|---|
 | **改坏了**（编译报 `error[E…]`、或不记得改过什么）/ 想回到初始状态 | 在仓库根目录运行 `git checkout -- .`：仓库自带文件全部回到 clone 时的样子；你新建的文件（如 `my_policy.py`、`out\`）不受影响，不放心先用 `git status` 看看改了哪些。实在不行删掉文件夹重新 clone（下载 ZIP 的就重新解压一份）——**一切都可恢复**。 |
-| **90% 闸**：跑基线报 `scripted baseline must solve ≥90% of seeds (got 10/12)` | 这是**引擎自检在工作**，不是你把电脑弄坏了：`got 10/12` 就是你这次的实际成功集数/总集数，低于 90% 引擎拒绝出数据，免得你拿坏数据交作业。处置：① 确认命令与 §1 第 4 条逐字一致（集数改少会放大偶然失败，`--episodes 5` 错一集就只剩 80%）② `git status` 看有没有改过引擎文件，有就 `git checkout -- .` ③ 确认没改参后重跑。引擎是逐位确定的，同代码同参数结果必然相同，所以要先排除改动再重跑；三步后仍失败，带着整段输出找助教。 |
+| **90% 闸**：跑基线报 `【90% 闸未过】脚本基线只成功 10/12 集（83.3%），低于 90%…` | 这是**引擎自检在工作**，不是你把电脑弄坏了：`10/12` 就是你这次的实际成功集数/总集数，低于 90% 引擎拒绝出数据，免得你拿坏数据交作业。报错里已给了下一步：① 确认命令与 §1 第 4 条逐字一致（集数改少会放大偶然失败，`--episodes 5` 错一集就只剩 80%）② `git status` 看有没有改过引擎文件，有就 `git checkout -- .` ③ 确认没改参数/没改 spec（报错里的 `spec_hash` 就是本次实验身份的指纹）后重跑。引擎是逐位确定的，同代码同参数结果必然相同，所以要先排除改动再重跑；三步后仍失败，带着整段输出找助教。 |
 | 报 `#66+#67: episode fingerprints must match` 或 `... must be bit-identical` | 引擎每次把采集跑两遍逐位比对；不一致说明引擎代码被改出了随机性（随机数、计时、遍历顺序等）→ `git checkout -- .` 恢复后重跑。 |
 | `error: linker 'link.exe' not found` | 没装 VS Build Tools → 按 §1「MSVC 还是 MinGW」二选一。 |
 | `'cargo'`（或 `'python'`）`不是内部或外部命令` / `无法将“cargo”项识别为 cmdlet` / `command not found` | 新开一个终端再试（装完旧终端看不到新 PATH）；`python` 弹出微软商店或仍找不到，见 §1「Windows 三个常见坑」PATH 一条；`cargo` 仍找不到就重新运行 rustup 安装程序。 |
@@ -251,7 +255,7 @@ VS Build Tools 里的 `link.exe`：
 | 复制 pyd 报「另一个程序正在使用此文件」/ `being used by another process` | 旧的 `oriera_sim.pyd` 正被某个 Python 占用 → 先关掉正在运行的 Python（训练脚本、Jupyter 内核）再复制。 |
 | `未知参数 --xxx（可用 ...）` | 参数拼错了，括号里列了全部合法参数；照抄 §1 第 4 条。 |
 | import 找不到 `oriera_gym` / `oriera_sim` 等 | 见 §3「常见导入错误」表。 |
-| `lerobot-train` 报数据集版本不兼容（提到 v2.1 / v3.0 / codebase_version） | **数据集版本**：lerobot 0.4（2025-10）起只读 v3.0 格式，本仓转换脚本当前写 v2.1（引擎直接写 v3.0 正在做）。过渡期二选一：装 0.4 之前的 lerobot（`python -m pip install "lerobot<0.4"`，引号要带上），或用 lerobot 自带的 v2.1→v3.0 转换工具。 |
+| `lerobot-train` 报数据集版本不兼容（提到 v2.1 / v3.0 / codebase_version） | **数据集版本**：lerobot 0.4（2025-10）起只读 v3.0 格式。过渡期二选一：① 采集时加 `--lerobot-v3`（引擎直接写 v3.0 布局，`python scripts/jsonl_to_lerobot_v21.py out\my-run\lerobot-v30` 转成 parquet，见 §5；可用 `python scripts/lerobot_v3_selfcheck.py out\my-run\lerobot-v30` 先自检结构——自检未经 lerobot 实机加载验证，若 lerobot 仍报格式错请带输出发助教）；② 装 0.4 之前的 lerobot 继续用 v2.1 目录（`python -m pip install "lerobot<0.4"`，引号要带上）。 |
 | 相机视频打不开 / 转换脚本报「缺 imageio[ffmpeg]」 | `python -m pip install imageio imageio-ffmpeg`，然后在资源管理器里删掉 `out\my-run` 文件夹，重跑 §1 第 4 条采集和 §5 转换命令（采集是确定性的，重跑得到同样的数据；转换只能对刚采集的目录做一次）。 |
 | 转换脚本报 `no JSONL episodes under ...` | 这个目录已经转换过了（原始 JSONL 已挪进 `raw_jsonl\`），不用再转；想从头来就删掉 `out\my-run` 后重跑 §1 第 4 条和 §5 转换。 |
 | 网页显示 `Error code: 404`（File not found） | 起服务器时不在仓库根目录 → 先 `cd` 到有 `examples` 文件夹的那一层再运行 §0 的命令。 |

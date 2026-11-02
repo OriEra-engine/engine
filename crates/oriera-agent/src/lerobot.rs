@@ -52,7 +52,10 @@ pub struct CameraTrack {
 
 /// A dataset under construction. Features: `observation.state`
 /// (float32 vector) and `action` (float32 vector), plus the five
-/// v2.1 bookkeeping columns.
+/// v2.1 bookkeeping columns. M0a (P-8): the feature shapes/names, the
+/// modality.json groups and `robot_type` are all derived from the
+/// env's [`ObsLayout`]/RobotSpec via [`LeRobotV21::from_layout`] —
+/// nothing is hardcoded per-dimension any more.
 #[derive(Debug, Default)]
 pub struct LeRobotV21 {
     pub fps: f32,
@@ -64,6 +67,11 @@ pub struct LeRobotV21 {
     current: Option<Episode>,
     /// Camera track (feature `cam`); None ⇒ state-only dataset.
     pub camera: Option<CameraTrack>,
+    /// `(slice name, start, end)` runs over the state vector and the
+    /// action vector — the modality.json / v3-metadata source. Empty ⇒
+    /// the legacy fixed-layout fallback (byte-stable 21/5 output).
+    pub obs_slices: Vec<(String, usize, usize)>,
+    pub action_slices: Vec<(String, usize, usize)>,
     /// Global row counter (`index` column).
     next_index: u64,
 }
@@ -80,6 +88,33 @@ impl LeRobotV21 {
             robot_type: robot_type.to_string(),
             obs_names,
             action_names,
+            tasks: Vec::new(),
+            episodes: Vec::new(),
+            current: None,
+            camera: None,
+            obs_slices: Vec::new(),
+            action_slices: Vec::new(),
+            next_index: 0,
+        }
+    }
+
+    /// M0a constructor: everything derives from the env's layouts.
+    /// `robot_type` is the RobotSpec name; the obs/action dim names
+    /// come from [`crate::embodied_env::ObsLayout`]; the modality
+    /// slices from its slice offsets.
+    pub fn from_layout(
+        fps: f32,
+        robot_type: &str,
+        obs_layout: &crate::embodied_env::ObsLayout,
+        action_layout: &crate::embodied_env::ObsLayout,
+    ) -> Self {
+        Self {
+            fps,
+            robot_type: robot_type.to_string(),
+            obs_names: obs_layout.flat_names(),
+            action_names: action_layout.flat_names(),
+            obs_slices: obs_layout.slices_with_offsets(),
+            action_slices: action_layout.slices_with_offsets(),
             tasks: Vec::new(),
             episodes: Vec::new(),
             current: None,
@@ -178,16 +213,15 @@ impl LeRobotV21 {
         )
     }
 
-    /// `meta/info.json` — the v2.1 schema header. `data_path` already
-    /// points at the parquet layout the converter produces.
-    fn info_json(&self) -> String {
-        let n_eps = self.episodes.len();
+    /// The `features` block shared by the v2.1 and v3.0 info.json
+    /// (dtypes/shapes/names derive from the layouts — M0a P-8).
+    fn features_json(&self) -> String {
         let state_shape = self.obs_names.len().to_string();
         let action_shape = self.action_names.len().to_string();
         let obs_names = json_string_array(&self.obs_names);
         let action_names = json_string_array(&self.action_names);
-        // Camera feature (feature `cam`): a v2.1 video entry whose
-        // frames the converter assembles into mp4.
+        // Camera feature (feature `cam`): a video entry whose frames
+        // the converter assembles into mp4.
         let cam_feat = self
             .camera
             .as_ref()
@@ -201,6 +235,29 @@ impl LeRobotV21 {
                 )
             })
             .unwrap_or_default();
+        format!(
+            concat!(
+                "\"observation.state\":{{\"dtype\":\"float32\",\"shape\":[{sd}],\"names\":{{\"joints\":{on}}}}},",
+                "\"action\":{{\"dtype\":\"float32\",\"shape\":[{ad}],\"names\":{{\"joints\":{an}}}}},",
+                "\"timestamp\":{{\"dtype\":\"float32\",\"shape\":[1],\"names\":null}},",
+                "\"frame_index\":{{\"dtype\":\"int64\",\"shape\":[1],\"names\":null}},",
+                "\"episode_index\":{{\"dtype\":\"int64\",\"shape\":[1],\"names\":null}},",
+                "\"index\":{{\"dtype\":\"int64\",\"shape\":[1],\"names\":null}},",
+                "\"task_index\":{{\"dtype\":\"int64\",\"shape\":[1],\"names\":null}}",
+                "{cam_feat}"
+        ),
+            sd = state_shape,
+            ad = action_shape,
+            on = obs_names,
+            an = action_names,
+            cam_feat = cam_feat,
+        )
+    }
+
+    /// `meta/info.json` — the v2.1 schema header. `data_path` already
+    /// points at the parquet layout the converter produces.
+    fn info_json(&self) -> String {
+        let n_eps = self.episodes.len();
         let total_videos = self
             .camera
             .as_ref()
@@ -219,16 +276,7 @@ impl LeRobotV21 {
                 "\"chunks_size\":1000,\"fps\":{fps},\"splits\":{{\"train\":\"0:{eps}\"}},",
                 "\"data_path\":\"data/chunk-{{episode_chunk:03d}}/episode_{{episode_index:06d}}.parquet\",",
                 "\"video_path\":\"videos/chunk-{{episode_chunk:03d}}/{{video_key}}/episode_{{episode_index:06d}}.mp4\",",
-                "\"features\":{{",
-                "\"observation.state\":{{\"dtype\":\"float32\",\"shape\":[{sd}],\"names\":{{\"joints\":{on}}}}},",
-                "\"action\":{{\"dtype\":\"float32\",\"shape\":[{ad}],\"names\":{{\"joints\":{an}}}}},",
-                "\"timestamp\":{{\"dtype\":\"float32\",\"shape\":[1],\"names\":null}},",
-                "\"frame_index\":{{\"dtype\":\"int64\",\"shape\":[1],\"names\":null}},",
-                "\"episode_index\":{{\"dtype\":\"int64\",\"shape\":[1],\"names\":null}},",
-                "\"index\":{{\"dtype\":\"int64\",\"shape\":[1],\"names\":null}},",
-                "\"task_index\":{{\"dtype\":\"int64\",\"shape\":[1],\"names\":null}}",
-                "{cam_feat}",
-                "}}}}\n"
+                "\"features\":{{{features}}}}}\n"
         ),
             robot = self.robot_type,
             eps = n_eps,
@@ -236,11 +284,7 @@ impl LeRobotV21 {
             tasks = self.tasks.len(),
             videos = total_videos,
             fps = self.fps,
-            sd = state_shape,
-            ad = action_shape,
-            on = obs_names,
-            an = action_names,
-            cam_feat = cam_feat,
+            features = self.features_json(),
         )
     }
 
@@ -361,12 +405,14 @@ impl LeRobotV21 {
     }
 
     /// `meta/oriera_receipt.json` — the reproducibility claim: what
-    /// ran, with which backend/step, and every episode's fingerprint.
+    /// ran, with which backend/step, the spec's identity hash and
+    /// every episode's fingerprint.
     pub fn write_receipt(
         root: &Path,
         engine: &str,
         backend: &str,
         dt: f32,
+        spec_hash: &str,
         episode_hashes: &[u64],
         successes: u32,
     ) -> std::io::Result<()> {
@@ -379,11 +425,13 @@ impl LeRobotV21 {
             concat!(
                 "{{\"codebase_version\":\"oriera-embodied-v2\",",
                 "\"engine\":\"{}\",\"backend\":\"{}\",\"dt\":{:.8},",
+                "\"spec_hash\":\"{}\",",
                 "\"successes\":{},\"episode_state_hashes\":[{}]}}\n"
             ),
             engine,
             backend,
             dt,
+            spec_hash,
             successes,
             hashes.join(",")
         )
@@ -391,34 +439,49 @@ impl LeRobotV21 {
 
     /// `meta/modality.json` — the GR00T N1 "LeRobot v2 flavor"
     /// dimension slicing: which state/action dims belong to which
-    /// semantic group. The OriEra arm layout is fixed (see
-    /// `OBS_NAMES`/`ACTION_NAMES`); other layouts fall back to one
-    /// honest full-range group.
+    /// semantic group. M0a: derived from the [`ObsLayout`] slices
+    /// (P-8); without them the legacy fixed-layout fallback keeps the
+    /// byte-stable 21/5 output.
     pub fn write_modality(&self, root: &Path) -> std::io::Result<()> {
         let meta = root.join("meta");
         std::fs::create_dir_all(&meta)?;
-        let (obs_n, act_n) = (self.obs_names.len(), self.action_names.len());
-        let body = if obs_n == 21 && act_n == 5 {
-            concat!(
-                "{\"state\":{",
-                "\"arm\":{\"start\":0,\"end\":4},",
-                "\"arm_vel\":{\"start\":4,\"end\":8},",
-                "\"gripper\":{\"start\":8,\"end\":9},",
-                "\"ee_pose\":{\"start\":9,\"end\":12},",
-                "\"object_rel\":{\"start\":12,\"end\":15},",
-                "\"goal_rel\":{\"start\":15,\"end\":18},",
-                "\"flags\":{\"start\":18,\"end\":21}},",
-                "\"action\":{",
-                "\"arm\":{\"start\":0,\"end\":4},",
-                "\"gripper\":{\"start\":4,\"end\":5}}}",
-                "
-"
-            )
-            .to_string()
-        } else {
+        let body = if !self.obs_slices.is_empty() || !self.action_slices.is_empty() {
+            let group = |slices: &[(String, usize, usize)]| -> String {
+                slices
+                    .iter()
+                    .map(|(n, s, e)| format!("\"{n}\":{{\"start\":{s},\"end\":{e}}}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
             format!(
-                "{{\"state\":{{\"full\":{{\"start\":0,\"end\":{obs_n}}}}},\"action\":{{\"full\":{{\"start\":0,\"end\":{act_n}}}}}}}\n"
+                "{{\"state\":{{{}}},\"action\":{{{}}}}}\n",
+                group(&self.obs_slices),
+                group(&self.action_slices)
             )
+        } else {
+            let (obs_n, act_n) = (self.obs_names.len(), self.action_names.len());
+            if obs_n == 21 && act_n == 5 {
+                concat!(
+                    "{\"state\":{",
+                    "\"arm\":{\"start\":0,\"end\":4},",
+                    "\"arm_vel\":{\"start\":4,\"end\":8},",
+                    "\"gripper\":{\"start\":8,\"end\":9},",
+                    "\"ee_pose\":{\"start\":9,\"end\":12},",
+                    "\"object_rel\":{\"start\":12,\"end\":15},",
+                    "\"goal_rel\":{\"start\":15,\"end\":18},",
+                    "\"flags\":{\"start\":18,\"end\":21}},",
+                    "\"action\":{",
+                    "\"arm\":{\"start\":0,\"end\":4},",
+                    "\"gripper\":{\"start\":4,\"end\":5}}}",
+                    "
+"
+                )
+                .to_string()
+            } else {
+                format!(
+                    "{{\"state\":{{\"full\":{{\"start\":0,\"end\":{obs_n}}}}},\"action\":{{\"full\":{{\"start\":0,\"end\":{act_n}}}}}}}\n"
+                )
+            }
         };
         std::fs::write(meta.join("modality.json"), body)
     }
@@ -438,6 +501,261 @@ impl LeRobotV21 {
                 "## 转换为 parquet（LeRobotDataset 直读）\n\n",
                 "```bash\npython scripts/jsonl_to_lerobot_v21.py <本目录>```\n\n",
                 "## 训练（HuggingFace lerobot）\n\n",
+                "```bash\nlerobot-train --dataset.repo_id=<user>/<dataset> --policy.type=act\n",
+                "# 或 --policy.type=smolvla（消费级 GPU 友好）```\n"
+            ),
+            task = task
+        );
+        std::fs::write(root.join("README.md"), card)
+    }
+
+    // ===================== LeRobotDataset v3.0 export (P-7) =====================
+    //
+    // lerobot 0.4 (2025-10) reads v3.0 only — v2.1 exports are rejected.
+    // The v3.0 layout as documented publicly (docs + real datasets like
+    // lerobot/droid_1.0.1; NOT verified against a local lerobot install
+    // — see scripts/lerobot_v3_selfcheck.py for the structural audit):
+    //
+    //   meta/info.json            codebase_version "v3.0"; v3 adds
+    //                             data/video_files_size_in_mb, drops
+    //                             total_chunks/total_videos; data_path
+    //                             template becomes chunk/file based
+    //   meta/tasks.parquet        stand-in: meta/tasks.jsonl (converter → parquet)
+    //   meta/episodes/chunk-000/file-000.parquet
+    //                             stand-in: same-path .jsonl; one row per
+    //                             episode with dataset_from/to_index,
+    //                             data|videos|meta chunk/file pointers,
+    //                             from/to timestamps and per-episode stats
+    //   data/chunk-000/file-000.parquet
+    //                             stand-in: .jsonl; episodes CONSOLIDATED
+    //                             into shared files (v3 shards, "a filename
+    //                             is not an episode boundary")
+    //   videos/<video_key>/chunk-000/file-000.mp4
+    //                             stand-in: PNG frame dir; the converter
+    //                             concatenates episodes into one mp4 per
+    //                             file using the episodes' from/to timestamps
+    //
+    // Small datasets (≤1000 episodes, far below 100 MB) land in exactly
+    // one chunk and one file — the templates stay v3-correct.
+
+    /// v3.0 `meta/info.json`. Per the public format: chunk/file templates
+    /// + `data_files_size_in_mb`/`video_files_size_in_mb`; no
+    ///   total_chunks/total_videos; `video_path` null without a camera.
+    fn info_json_v3(&self) -> String {
+        let n_eps = self.episodes.len();
+        let video_path = self
+            .camera
+            .as_ref()
+            .map_or_else(
+                || "null".to_string(),
+                |_| {
+                    "\"videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4\""
+                        .to_string()
+                },
+            );
+        format!(
+            concat!(
+                "{{\"codebase_version\":\"v3.0\",\"robot_type\":\"{robot}\",\"license\":\"apache-2.0\",",
+                "\"total_episodes\":{eps},\"total_frames\":{frames},\"total_tasks\":{tasks},",
+                "\"chunks_size\":1000,\"data_files_size_in_mb\":100,\"video_files_size_in_mb\":500,",
+                "\"fps\":{fps},\"splits\":{{\"train\":\"0:{eps}\"}},",
+                "\"data_path\":\"data/chunk-{{chunk_index:03d}}/file-{{file_index:03d}}.parquet\",",
+                "\"video_path\":{video_path},",
+                "\"features\":{{{features}}}}}\n"
+        ),
+            robot = self.robot_type,
+            eps = n_eps,
+            frames = self.total_frames(),
+            tasks = self.tasks.len(),
+            fps = self.fps,
+            video_path = video_path,
+            features = self.features_json(),
+        )
+    }
+
+    /// One v3 `meta/episodes` row per episode: the episode boundary and
+    /// pointer metadata the v3 reader reconstructs episodes from, plus
+    /// this episode's per-feature stats (`stats/<col>/min|...`).
+    fn episode_row_v3(&self, ep_index: usize, ep: &Episode, from_index: u64) -> String {
+        let length = ep.rows.len();
+        let to_index = from_index + length as u64;
+        let mut rows: Vec<Vec<f32>> = Vec::new();
+        let mut acts: Vec<Vec<f32>> = Vec::new();
+        let mut stamps: Vec<f32> = Vec::new();
+        for (i, row) in ep.rows.iter().enumerate() {
+            rows.push(row.state.clone());
+            acts.push(row.action.clone());
+            stamps.push(i as f32 / self.fps);
+        }
+        let st = stats_of(&rows);
+        let ac = stats_of(&acts);
+        let ts = stats_of(&stamps.iter().map(|v| vec![*v]).collect::<Vec<_>>());
+        let video_meta = match self.camera.as_ref() {
+            Some(c) if !ep.frames.is_empty() => {
+                let from_t = from_index as f32 / self.fps;
+                let to_t = to_index as f32 / self.fps;
+                format!(
+                    ",\"videos/observation.images.{name}/chunk_index\":0,\
+                     \"videos/observation.images.{name}/file_index\":0,\
+                     \"videos/observation.images.{name}/from_timestamp\":{ft:.6},\
+                     \"videos/observation.images.{name}/to_timestamp\":{tt:.6}",
+                    name = c.name,
+                    ft = from_t,
+                    tt = to_t
+                )
+            }
+            _ => String::new(),
+        };
+        let task = json_escape(&self.tasks[ep.task_index as usize]);
+        format!(
+            concat!(
+                "{{\"episode_index\":{ep},\"tasks\":[\"{task}\"],\"length\":{len},",
+                "\"dataset_from_index\":{from},\"dataset_to_index\":{to},",
+                "\"data/chunk_index\":0,\"data/file_index\":0{video_meta},",
+                "\"meta/episodes/chunk_index\":0,\"meta/episodes/file_index\":0,",
+                "\"stats/observation.state/min\":{smin},\"stats/observation.state/max\":{smax},",
+                "\"stats/observation.state/mean\":{smean},\"stats/observation.state/std\":{sstd},",
+                "\"stats/observation.state/count\":{scount},",
+                "\"stats/action/min\":{amin},\"stats/action/max\":{amax},",
+                "\"stats/action/mean\":{amean},\"stats/action/std\":{astd},",
+                "\"stats/action/count\":{acount},",
+                "\"stats/timestamp/min\":{tmin},\"stats/timestamp/max\":{tmax},",
+                "\"stats/timestamp/mean\":{tmean},\"stats/timestamp/std\":{tstd},",
+                "\"stats/timestamp/count\":{tcount}}}\n"
+            ),
+            ep = ep_index,
+            task = task,
+            len = length,
+            from = from_index,
+            to = to_index,
+            video_meta = video_meta,
+            smin = fmt_f32s(&st.min),
+            smax = fmt_f32s(&st.max),
+            smean = fmt_f32s(&st.mean),
+            sstd = fmt_f32s(&st.std),
+            scount = st.count,
+            amin = fmt_f32s(&ac.min),
+            amax = fmt_f32s(&ac.max),
+            amean = fmt_f32s(&ac.mean),
+            astd = fmt_f32s(&ac.std),
+            acount = ac.count,
+            tmin = fmt_f32s(&ts.min),
+            tmax = fmt_f32s(&ts.max),
+            tmean = fmt_f32s(&ts.mean),
+            tstd = fmt_f32s(&ts.std),
+            tcount = ts.count,
+        )
+    }
+
+    /// Write the v3.0 tree under `root`. Same honesty as [`Self::write_dir`]:
+    /// rows land as JSONL stand-ins at the exact v3 paths (numeric-only,
+    /// zero dependencies); `scripts/jsonl_to_lerobot_v21.py` converts them
+    /// to parquet/mp4 in place. Returns the number of episodes.
+    pub fn write_dir_v3(&self, root: &Path) -> std::io::Result<u32> {
+        let meta = root.join("meta");
+        std::fs::create_dir_all(root.join("data/chunk-000"))?;
+        std::fs::create_dir_all(meta.join("episodes/chunk-000"))?;
+        let mut files: Vec<(String, u64)> = Vec::new();
+        let mut put = |rel: &str, content: &[u8]| -> std::io::Result<()> {
+            std::fs::write(root.join(rel), content)?;
+            files.push((rel.to_string(), content_hash(content)));
+            Ok(())
+        };
+        put("meta/info.json", self.info_json_v3().as_bytes())?;
+        put("meta/stats.json", self.stats_json().as_bytes())?;
+        // write_modality writes its own file — hash it too (re-read),
+        // mirroring the v2.1 write_dir bookkeeping.
+        self.write_modality(root)?;
+        let modality_rel = "meta/modality.json";
+        let modality_bytes = std::fs::read(root.join(modality_rel))?;
+        put(modality_rel, &modality_bytes)?;
+
+        // tasks: v3 parquet stand-in (index=task string, column task_index)
+        let mut tasks = String::new();
+        for (i, t) in self.tasks.iter().enumerate() {
+            tasks.push_str(&format!(
+                "{{\"task_index\":{},\"task\":\"{}\"}}\n",
+                i,
+                json_escape(t)
+            ));
+        }
+        put("meta/tasks.jsonl", tasks.as_bytes())?;
+
+        // episodes metadata: one row per episode (v3 shards by chunk/file;
+        // everything below 1000 episodes / 100 MB is chunk-000/file-000)
+        let mut ep_meta = String::new();
+        let mut from_index = 0u64;
+        for (i, ep) in self.episodes.iter().enumerate() {
+            ep_meta.push_str(&self.episode_row_v3(i, ep, from_index));
+            from_index += ep.rows.len() as u64;
+        }
+        put("meta/episodes/chunk-000/file-000.jsonl", ep_meta.as_bytes())?;
+
+        // data rows: ALL episodes consolidated into one shared file —
+        // in v3 a filename is not an episode boundary (the episodes
+        // metadata carries dataset_from/to_index).
+        let mut global = 0u64;
+        let mut body = String::new();
+        for (i, ep) in self.episodes.iter().enumerate() {
+            for (ri, _row) in ep.rows.iter().enumerate() {
+                body.push_str(&self.row_jsonl(i as u32, ep, ri, global));
+                global += 1;
+            }
+        }
+        put("data/chunk-000/file-000.jsonl", body.as_bytes())?;
+
+        // camera: one shared PNG frame dir per video file; the
+        // converter concatenates every episode's run into the single
+        // mp4 the episodes metadata points into.
+        if let Some(cam) = &self.camera {
+            let dir = root.join(format!(
+                "videos/observation.images.{}/chunk-000/file-000",
+                cam.name
+            ));
+            std::fs::create_dir_all(&dir)?;
+            let mut k = 0u64;
+            for ep in &self.episodes {
+                for png in &ep.frames {
+                    let rel = format!(
+                        "videos/observation.images.{}/chunk-000/file-000/frame_{k:06}.png",
+                        cam.name
+                    );
+                    put(&rel, png)?;
+                    k += 1;
+                }
+            }
+        }
+
+        // atomic commit, same as v2.1
+        let mut manifest = String::new();
+        for (rel, hash) in &files {
+            manifest.push_str(&format!("{{\"file\":\"{rel}\",\"hash\":\"{hash:016x}\"}}\n"));
+        }
+        let manifest_path = root.join("MANIFEST.jsonl");
+        let tmp = root.join("MANIFEST.jsonl.tmp");
+        std::fs::write(&tmp, manifest.as_bytes())?;
+        std::fs::rename(&tmp, &manifest_path)?;
+        Ok(self.episodes.len() as u32)
+    }
+
+    /// v3 dataset card.
+    pub fn write_card_v3(root: &Path, task: &str) -> std::io::Result<()> {
+        let card = format!(
+            concat!(
+                "---\n",
+                "task_categories: [robotics]\n",
+                "license: apache-2.0\n",
+                "tags: [oriera, embodied-ai, lerobot, simulation, lerobot-v3]\n",
+                "---\n\n",
+                "# OriEra 具身仿真数据集（LeRobotDataset v3.0）\n\n",
+                "由 OriEra 世界引擎的 rigid3d 具身仿真后端采集（确定性 tick + 每集世界指纹回执，见 meta/oriera_receipt.json）。\n\n",
+                "**任务**: {task}\n\n",
+                "## 转换为 parquet/mp4（LeRobotDataset v3.0 直读）\n\n",
+                "```bash\npython scripts/jsonl_to_lerobot_v21.py <本目录>```\n\n",
+                "（转换脚本自动识别 v2.1 / v3.0 目录。）\n\n",
+                "## 结构自检（未装 lerobot 时）\n\n",
+                "```bash\npython scripts/lerobot_v3_selfcheck.py <本目录>```\n\n",
+                "## 训练（HuggingFace lerobot ≥ 0.4）\n\n",
                 "```bash\nlerobot-train --dataset.repo_id=<user>/<dataset> --policy.type=act\n",
                 "# 或 --policy.type=smolvla（消费级 GPU 友好）```\n"
             ),
@@ -495,11 +813,26 @@ fn json_string_array(items: &[String]) -> String {
     format!("[{}]", inner.join(","))
 }
 
-/// Welford-free batch stats over ragged float vectors (columns padded
-/// by first-row width — features are fixed-width by construction).
-fn vec_stats(rows: &[Vec<f32>]) -> String {
+/// Per-column batch statistics (min/max/mean/std over ragged float
+/// rows, columns padded by first-row width — features are fixed-width
+/// by construction). Shared by stats.json and the v3 episodes metadata.
+struct Stats {
+    min: Vec<f32>,
+    max: Vec<f32>,
+    mean: Vec<f32>,
+    std: Vec<f32>,
+    count: usize,
+}
+
+fn stats_of(rows: &[Vec<f32>]) -> Stats {
     let Some(first) = rows.first() else {
-        return "{\"min\":[],\"max\":[],\"mean\":[],\"std\":[],\"count\":0}".to_string();
+        return Stats {
+            min: vec![],
+            max: vec![],
+            mean: vec![],
+            std: vec![],
+            count: 0,
+        };
     };
     let dim = first.len();
     let n = rows.len() as f32;
@@ -515,25 +848,44 @@ fn vec_stats(rows: &[Vec<f32>]) -> String {
             sum_sq[i] += (*v as f64) * (*v as f64);
         }
     }
-    let mean: Vec<String> = sum
-        .iter()
-        .map(|s| format!("{:.7}", (s / n as f64) as f32))
-        .collect();
-    let std: Vec<String> = sum_sq
+    let mean: Vec<f32> = sum.iter().map(|s| (s / n as f64) as f32).collect();
+    let std: Vec<f32> = sum_sq
         .iter()
         .zip(sum.iter())
         .map(|(sq, s)| {
             let var = (sq / n as f64) - (s / n as f64) * (s / n as f64);
-            format!("{:.7}", (var.max(0.0).sqrt()) as f32)
+            (var.max(0.0).sqrt()) as f32
         })
         .collect();
-    format!(
-        "{{\"min\":{:?},\"max\":{:?},\"mean\":[{}],\"std\":[{}],\"count\":{}}}",
+    Stats {
         min,
         max,
+        mean,
+        std,
+        count: rows.len(),
+    }
+}
+
+/// `{:?}` of a float vec (Rust's shortest round-trip form, same as the
+/// pre-M0a stats.json formatting).
+fn fmt_f32s(v: &[f32]) -> String {
+    format!("{:?}", v.to_vec())
+}
+
+fn vec_stats(rows: &[Vec<f32>]) -> String {
+    let st = stats_of(rows);
+    if st.count == 0 {
+        return "{\"min\":[],\"max\":[],\"mean\":[],\"std\":[],\"count\":0}".to_string();
+    }
+    let mean: Vec<String> = st.mean.iter().map(|v| format!("{v:.7}")).collect();
+    let std: Vec<String> = st.std.iter().map(|v| format!("{v:.7}")).collect();
+    format!(
+        "{{\"min\":{:?},\"max\":{:?},\"mean\":[{}],\"std\":[{}],\"count\":{}}}",
+        st.min,
+        st.max,
         mean.join(","),
         std.join(","),
-        rows.len()
+        st.count
     )
 }
 
@@ -628,8 +980,11 @@ mod tests {
         ] {
             assert!(root.join(rel).exists(), "missing {rel}");
         }
-        LeRobotV21::write_receipt(&root, "test/0.1", "rigid3d", 1.0 / 60.0, &[0xbeef], 1)
+        LeRobotV21::write_receipt(&root, "test/0.1", "rigid3d", 1.0 / 60.0, "abc123", &[0xbeef], 1)
             .expect("receipt");
+        let receipt =
+            std::fs::read_to_string(root.join("meta/oriera_receipt.json")).unwrap();
+        assert!(receipt.contains("\"spec_hash\":\"abc123\""), "{receipt}");
         assert!(root.join("meta/oriera_receipt.json").exists());
         LeRobotV21::write_card(&root, "pick up the cube").expect("card");
         assert!(root.join("README.md").exists());
@@ -645,5 +1000,125 @@ mod tests {
         ds.finish_episode();
         assert_eq!(ds.tasks.len(), 1, "tasks must dedupe");
         assert_eq!(ds.episodes.len(), 2);
+    }
+
+    // ----- M0a: layout-derived metadata (P-8) -----
+
+    /// The legacy 21/5 modality.json body — the derived output must be
+    /// byte-identical for the default layout.
+    const LEGACY_MODALITY_21_5: &str = concat!(
+        "{\"state\":{",
+        "\"arm\":{\"start\":0,\"end\":4},",
+        "\"arm_vel\":{\"start\":4,\"end\":8},",
+        "\"gripper\":{\"start\":8,\"end\":9},",
+        "\"ee_pose\":{\"start\":9,\"end\":12},",
+        "\"object_rel\":{\"start\":12,\"end\":15},",
+        "\"goal_rel\":{\"start\":15,\"end\":18},",
+        "\"flags\":{\"start\":18,\"end\":21}},",
+        "\"action\":{",
+        "\"arm\":{\"start\":0,\"end\":4},",
+        "\"gripper\":{\"start\":4,\"end\":5}}}\n"
+    );
+
+    #[test]
+    fn layout_derived_modality_is_byte_identical_for_the_default() {
+        let robot = oriera_subsys::RobotSpec::from(&oriera_subsys::ArmDescription::default());
+        let task = crate::embodied_env::make_task(
+            "pick_place@v1",
+            crate::embodied_env::TaskParams::default(),
+        )
+        .unwrap();
+        let obs = crate::embodied_env::ObsLayout::derive(&robot, task.as_ref());
+        let act = crate::embodied_env::action_layout(&robot);
+        let mut ds = LeRobotV21::from_layout(60.0, &robot.name, &obs, &act);
+        ds.start_episode("pick up the cube");
+        ds.push_step(&[0.0; 21], &[0.5; 5]).unwrap();
+        ds.finish_episode();
+        let root = std::env::temp_dir().join(format!("oriera-modality-{}", std::process::id()));
+        ds.write_modality(&root).expect("write_modality");
+        let body = std::fs::read_to_string(root.join("meta/modality.json")).unwrap();
+        assert_eq!(body, LEGACY_MODALITY_21_5, "derived modality must be byte-identical");
+        // info.json: names/shapes/robot_type all from the layout
+        let info = ds.info_json();
+        assert!(info.contains("\"robot_type\":\"tabletop-4dof\""), "{info}");
+        assert!(info.contains("\"shape\":[21]"), "{info}");
+        assert!(info.contains("\"base_yaw.pos\""), "{info}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_dir_v3_produces_the_v30_tree() {
+        let mut ds = LeRobotV21::new(60.0, "tabletop-4dof", vec!["s0".into()], vec!["a0".into()]);
+        ds.set_camera(CameraTrack {
+            name: "top".into(),
+            w: 4,
+            h: 4,
+            fps: 60.0,
+        });
+        ds.start_episode("pick up the cube");
+        ds.push_step(&[0.0], &[0.5]).unwrap();
+        ds.push_step(&[0.1], &[0.4]).unwrap();
+        ds.push_frame(vec![1, 2, 3]).unwrap();
+        ds.finish_episode();
+        ds.start_episode("pick up the cube");
+        ds.push_step(&[0.2], &[0.3]).unwrap();
+        ds.finish_episode();
+        let root =
+            std::env::temp_dir().join(format!("oriera-lerobot-v3-{}", std::process::id()));
+        let n = ds.write_dir_v3(&root).expect("write_dir_v3");
+        assert_eq!(n, 2);
+        for rel in [
+            "meta/info.json",
+            "meta/stats.json",
+            "meta/tasks.jsonl",
+            "meta/modality.json",
+            "meta/episodes/chunk-000/file-000.jsonl",
+            "data/chunk-000/file-000.jsonl",
+            "videos/observation.images.top/chunk-000/file-000/frame_000000.png",
+        ] {
+            assert!(root.join(rel).exists(), "missing {rel}");
+        }
+        let info = std::fs::read_to_string(root.join("meta/info.json")).unwrap();
+        for key in [
+            "\"codebase_version\":\"v3.0\"",
+            "\"chunks_size\":1000",
+            "\"data_files_size_in_mb\":100",
+            "\"video_files_size_in_mb\":500",
+            "\"data_path\":\"data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet\"",
+            "\"video_path\":\"videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4\"",
+            "\"total_episodes\":2",
+            "\"total_frames\":3",
+        ] {
+            assert!(info.contains(key), "missing {key} in {info}");
+        }
+        let ep0 = std::fs::read_to_string(root.join("meta/episodes/chunk-000/file-000.jsonl"))
+            .unwrap();
+        for col in [
+            "\"episode_index\":0",
+            "\"length\":2",
+            "\"dataset_from_index\":0",
+            "\"dataset_to_index\":2",
+            "\"data/chunk_index\":0",
+            "\"data/file_index\":0",
+            "\"videos/observation.images.top/from_timestamp\":0.000000",
+            "\"videos/observation.images.top/to_timestamp\":0.033333",
+            "\"meta/episodes/chunk_index\":0",
+            "\"meta/episodes/file_index\":0",
+            "\"stats/observation.state/min\":[0.0]",
+            "\"stats/timestamp/count\":2",
+        ] {
+            assert!(ep0.contains(col), "missing {col} in {ep0}");
+        }
+        // episode 2 continues the global index
+        let ep1_row = ep0.lines().nth(1).unwrap();
+        assert!(ep1_row.contains("\"dataset_from_index\":2"), "{ep1_row}");
+        assert!(ep1_row.contains("\"dataset_to_index\":3"), "{ep1_row}");
+        // consolidated data file holds every row
+        let data =
+            std::fs::read_to_string(root.join("data/chunk-000/file-000.jsonl")).unwrap();
+        assert_eq!(data.lines().count(), 3);
+        LeRobotV21::write_card_v3(&root, "pick up the cube").expect("card v3");
+        assert!(root.join("README.md").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

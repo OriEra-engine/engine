@@ -114,8 +114,11 @@ pub struct SimObject;
 
 /// Optional per-prop physics override (domain randomization knob):
 /// without it a prop spawns with the defaults (density 400, friction
-/// 0.8). Insert together with `Pose3` + `SimObject`.
+/// 0.8). Insert together with `Pose3` + `SimObject`. (serde derive:
+/// M0a puts the nominal prop physics into the scene spec.)
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct PropPhys {
     /// Collider density, kg/m³ (the 5 cm cube's mass follows).
     pub density: f32,
@@ -130,6 +133,68 @@ impl Default for PropPhys {
             friction: 0.8,
         }
     }
+}
+
+/// Collider primitive of a prop entity (PLAN-embodied-general M0a:
+/// props enter the scene spec). Optional component next to `Pose3 +
+/// SimObject`; absent ⇒ the legacy 5 cm cube
+/// (`Cuboid { half: [PROP_HALF; 3] }`), so every pre-M0a world builds
+/// bit-identically. Metres; `Cylinder` stands on its axis (local Y,
+/// the world up axis), `Sphere` is a ball.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)
+)]
+pub enum PropShape {
+    Cuboid { half: [f32; 3] },
+    Cylinder { half_h: f32, radius: f32 },
+    Sphere { r: f32 },
+}
+
+impl Default for PropShape {
+    fn default() -> Self {
+        Self::Cuboid {
+            half: [PROP_HALF; 3],
+        }
+    }
+}
+
+impl PropShape {
+    /// Top-down footprint half extents `(x, z)` (renderer hint).
+    pub fn footprint(&self) -> (f32, f32) {
+        match *self {
+            Self::Cuboid { half } => (half[0], half[2]),
+            Self::Cylinder { radius, .. } => (radius, radius),
+            Self::Sphere { r } => (r, r),
+        }
+    }
+
+    /// Every dimension finite and positive.
+    pub fn is_valid(&self) -> bool {
+        let ok = |v: f32| v.is_finite() && v > 0.0;
+        match *self {
+            Self::Cuboid { half } => half.iter().all(|v| ok(*v)),
+            Self::Cylinder { half_h, radius } => ok(half_h) && ok(radius),
+            Self::Sphere { r } => ok(r),
+        }
+    }
+}
+
+/// Dynamic prop collider from its shape + physics override. The
+/// default shape reproduces the legacy `ColliderBuilder::cuboid(
+/// PROP_HALF, PROP_HALF, PROP_HALF)` call exactly.
+fn prop_collider(shape: PropShape, pp: PropPhys) -> Collider {
+    let b = match shape {
+        PropShape::Cuboid { half } => ColliderBuilder::cuboid(half[0], half[1], half[2]),
+        PropShape::Cylinder { half_h, radius } => ColliderBuilder::cylinder(half_h, radius),
+        PropShape::Sphere { r } => ColliderBuilder::ball(r),
+    };
+    b.density(pp.density)
+        .friction(pp.friction)
+        .collision_groups(world_groups())
+        .build()
 }
 
 /// The driven joint names, in `JointTargets`/`JointTelemetry` order.
@@ -847,20 +912,23 @@ impl System<World> for MultibodySystem {
             .query::<PropPhys>()
             .map(|(e, pp)| (key(e), *pp))
             .collect();
+        // Optional per-prop collider shape (M0a: props from the spec);
+        // absent ⇒ the legacy 5 cm cube.
+        let shapes: BTreeMap<EntKey, PropShape> = world
+            .query::<PropShape>()
+            .map(|(e, s)| (key(e), *s))
+            .collect();
         for (k, p) in &live {
             if !self.map.contains_key(k) {
                 let pp = phys.get(k).copied().unwrap_or_default();
+                let shape = shapes.get(k).copied().unwrap_or_default();
                 let b = RigidBodyBuilder::dynamic()
                     .linear_damping(0.1)
                     .angular_damping(0.1)
                     .translation(Vec3::new(p.pos[0], p.pos[1], p.pos[2]))
                     .build();
                 let h = self.bodies.insert(b);
-                let c = ColliderBuilder::cuboid(PROP_HALF, PROP_HALF, PROP_HALF)
-                    .density(pp.density)
-                    .friction(pp.friction)
-                    .collision_groups(world_groups())
-                    .build();
+                let c = prop_collider(shape, pp);
                 self.colliders.insert_with_parent(c, h, &mut self.bodies);
                 self.map.insert(*k, h);
                 self.last_pose.insert(*k, (p.pos, p.rot));

@@ -45,7 +45,8 @@ rigid3d = ["oriera-subsys/rigid3d"]
 # Top-down camera track through the env (PNG frames).
 cam = ["oriera-subsys/cam"]
 # PyO3 gymnasium bridge (cdylib `oriera_sim`): online training loops.
-python = ["dep:pyo3", "pyo3/abi3-py310", "rigid3d", "cam"]
+# `spec` 挂上：python 侧 `from_spec` 走 SceneSpec 加载（schema v2 / v1 迁移）。
+python = ["dep:pyo3", "pyo3/abi3-py310", "rigid3d", "cam", "spec"]
 # SceneSpec（实验即文件）：serde 化场景描述 + JSON 加载。
 spec = ["rigid3d", "oriera-subsys/serde", "json"]
 # URDF 导入：机器人描述文件 → 关节链 → ArmDescription（M1 设计稿落地）。

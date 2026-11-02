@@ -19,8 +19,13 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::embodied_env::{EmbodiedEnv, TableTopEnv, TaskKind};
+use crate::spec::SceneSpec;
 
 /// A table-top manipulation environment (Gymnasium-style contract).
+///
+/// M0a: `from_spec` builds the env from a `oriera.scene/2` JSON file
+/// (v1 drafts migrate on the fly) — the file IS the experiment; the
+/// legacy `new(task, …)` constructor is untouched.
 #[pyclass(unsendable)]
 struct PickPlaceEnv {
     env: TableTopEnv,
@@ -52,6 +57,24 @@ impl PickPlaceEnv {
         Ok(Self { env })
     }
 
+    /// Build the env from a scene-spec JSON file (`oriera.scene/2`, or
+    /// a v1 draft — migrated automatically). Same seed ⇒ same episode
+    /// as the Rust CLI on the same spec.
+    #[staticmethod]
+    #[pyo3(signature = (path, seed = Some(1000)))]
+    fn from_spec(path: &str, seed: Option<u64>) -> PyResult<Self> {
+        let loaded = SceneSpec::load_file(std::path::Path::new(path)).map_err(|e| {
+            PyErr::new::<PyValueError, _>(format!("spec 加载失败（{path}）：{e}"))
+        })?;
+        loaded
+            .spec
+            .validate()
+            .map_err(|e| PyErr::new::<PyValueError, _>(format!("spec 校验失败：{e}")))?;
+        let mut env = loaded.spec.to_env();
+        env.reset(seed.unwrap_or(1000));
+        Ok(Self { env })
+    }
+
     /// Reset to a fresh episode; `seed` fully determines it.
     fn reset(&mut self, seed: u64) -> Vec<f32> {
         self.env.reset(seed)
@@ -68,6 +91,13 @@ impl PickPlaceEnv {
     /// reproducibility receipt.
     fn fingerprint(&self) -> u64 {
         self.env.fingerprint()
+    }
+
+    /// Per-joint action scale (rad per unit action) — the wrapper
+    /// layers must scale ±1 actions by this (was a hardcoded ×2.0).
+    #[getter]
+    fn action_scale(&self) -> Vec<f32> {
+        self.env.action_scale().to_vec()
     }
 
     /// Current cube position [x, y, z] (task introspection).
@@ -98,6 +128,11 @@ impl PickPlaceEnv {
     #[getter]
     fn task_phrase(&self) -> &'static str {
         self.env.task.phrase()
+    }
+
+    #[getter]
+    fn task_id(&self) -> &'static str {
+        self.env.task_id()
     }
 
     #[getter]
