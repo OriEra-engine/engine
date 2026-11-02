@@ -1,0 +1,40 @@
+{
+ "scheme": "oriera-embodied-v2",
+ "purpose": "M0a「不改行为」逐位对账锚：改动前 HEAD 的默认路径（ArmDescription::default + Scene3D::default，pick_place，收敛门控基线）12 集逐集状态哈希",
+ "engine_commit": "a29b199",
+ "features": "rigid3d,cam,spec,urdf",
+ "backend": "rigid3d+cam",
+ "dt": 0.01666667,
+ "command": "embodied_sim_collect --task pick_place --episodes 12 --out <dir>（seed0=1000，退化重抽 displaced band）",
+ "seeds": [
+  1000,
+  66538,
+  66539,
+  66540,
+  66541,
+  66542,
+  66543,
+  66544,
+  66545,
+  66546,
+  66547,
+  66548
+ ],
+ "successes": 11,
+ "success_rate": 0.9167,
+ "transitions": 4198,
+ "episode_state_hashes": [
+  6631184215019572306,
+  5533599539703196618,
+  13129814517549189829,
+  14888800642699488551,
+  6327874752455700387,
+  482561154290212886,
+  10742833878221257617,
+  14539724274769439098,
+  13846203592255011024,
+  13024421354837365277,
+  8486645476019072162,
+  16317553599418655058
+ ]
+}
