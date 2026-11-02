@@ -17,6 +17,14 @@ pub use rigid3d::{
     sim_fingerprint, ArmDescription, JointTargets, JointTelemetry, MultibodySystem, PhysicsParams,
     Pose3, PropPhys, Scene3D, SimObject, GRASP_RADIUS, JOINT_NAMES, PROP_HALF,
 };
+// PLAN-embodied-general M0a: the generic robot specification the 3D
+// backend builds from (`ArmDescription` is its 4-DoF preset).
+#[cfg(feature = "rigid3d")]
+pub mod robot;
+#[cfg(feature = "rigid3d")]
+pub use robot::{
+    GripperKind, GripperSpec, JointSpec, LinkShape, LinkSpec, RobotSpec, RobotSpecError,
+};
 
 #[cfg(feature = "cam")]
 pub mod camera;

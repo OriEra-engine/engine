@@ -40,12 +40,22 @@
 //! Friction/contact grasping is M1. Honest, deterministic, enough for
 //! pick-and-place data collection.
 //!
-//! **Honest simplification (M0)**: the chain actuates 4 distinct
+//! **Honest simplification (M0)**: the default chain actuates 4 distinct
 //! revolute stages — base yaw, shoulder, elbow, wrist pitch
 //! (`JOINT_NAMES[0..4]`). `JointTargets` still accepts 5 channels and
 //! the 5th (`wrist_roll`) is recorded in telemetry but does not
 //! actuate physics yet; a dedicated roll body is the M1 refinement.
+//!
+//! **Spec-driven build (M0a, PLAN-embodied-general §3.1)**: the system
+//! is built from a [`RobotSpec`] — N links, N revolute joints in
+//! topological order, per-joint gains/armature/damping/effort/velocity
+//! limit, an optional [`crate::robot::GripperSpec`]. [`ArmDescription`] is the 4-DoF
+//! preset: `RobotSpec::from(&desc)` reproduces the legacy construction
+//! field by field, and [`MultibodySystem::new`] goes through it, so the
+//! default trajectory is bit-identical to the pre-M0a engine (the
+//! `golden_*` tests below pin the pre-change fold of two scripts).
 
+use crate::robot::{LinkShape, RobotSpec, RobotSpecError};
 use crate::{Gravity, TimeScale};
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Entity, World};
@@ -222,13 +232,20 @@ impl Default for Scene3D {
 pub const GRASP_RADIUS: f32 = 0.06;
 /// Gripper plates: kinematic slabs straddling the TIP. The prop stays
 /// Dynamic; plate/cube friction (2 mm/side squeeze) does the holding.
+/// These are the [`crate::robot::GripperSpec`] defaults of the `ArmDescription`
+/// preset (`robot.rs`); the builder reads the spec, never these.
 // half_y=0.045（板长 9cm）：板顶恒不高于尖端——悬停/下探全程夹板
 // 不会铲过方块顶面（0.075 版会先铲顶把方块挤飞，浏览器实测定位）。
-const FINGER_HALF: [f32; 3] = [0.030, 0.045, 0.006];
-const FINGER_X: f32 = 0.135;
-const FINGER_GAP_OPEN: f32 = 0.075;
-const FINGER_GAP_CLOSED: f32 = 0.046;
-const FINGER_FRICTION: f32 = 1.4;
+pub(crate) const FINGER_HALF: [f32; 3] = [0.030, 0.045, 0.006];
+pub(crate) const FINGER_X: f32 = 0.135;
+pub(crate) const FINGER_GAP_OPEN: f32 = 0.075;
+pub(crate) const FINGER_GAP_CLOSED: f32 = 0.046;
+pub(crate) const FINGER_FRICTION: f32 = 1.4;
+/// Plate ramp: max gap change per engine tick (m/tick).
+pub(crate) const FINGER_GAP_RATE: f32 = 0.004;
+/// Nominal grip-force budget (N) registered on the preset gripper —
+/// the kinematic plates do not consume it (contact-force gripper: M2).
+pub(crate) const GRIPPER_EFFORT: f32 = 20.0;
 
 /// Prop half-extent (a 5 cm cube) — one size for M0; per-entity shapes
 /// arrive with per-entity asset binding (M1).
@@ -239,20 +256,22 @@ pub const PROP_HALF: f32 = 0.025;
 /// Two substeps of dt/2 keep the coupled chain's PD loop stable.
 const SUBSTEPS: u32 = 2;
 /// Rotor inertia added to every joint DoF — tames PD oscillation on
-/// light links (a standard motor model parameter, not a fudge).
-const ARMATURE: f32 = 0.02;
-/// Passive joint friction (viscous) per DoF.
-const JOINT_DAMPING: f32 = 0.05;
+/// light links (a standard motor model parameter, not a fudge). The
+/// preset's per-joint `JointSpec::armature`.
+pub(crate) const ARMATURE: f32 = 0.02;
+/// Passive joint friction (viscous) per DoF — the preset's per-joint
+/// `JointSpec::damping` when `ArmDescription::passive_damping` is None.
+pub(crate) const JOINT_DAMPING: f32 = 0.05;
 /// PD torque clamp per stage (N·m) — a stalled arm must not inject
-/// unbounded impulses.
-const MOTOR_MAX_FORCE: f32 = 80.0;
+/// unbounded impulses. `JointSpec::effort = None` means this.
+pub(crate) const MOTOR_MAX_FORCE: f32 = 80.0;
 /// Link collider density (kg/m³): default density 1.0 makes gram-level
 /// links that sit far outside the solver's tuned mass range (rapier's
 /// scale discipline: realistic sizes AND masses). ~0.6 kg per link.
-const LINK_DENSITY: f32 = 1500.0;
+pub(crate) const LINK_DENSITY: f32 = 1500.0;
 /// Added mass per chain body (kg): keeps even the tiny yaw-carrier
 /// stage inside the solver's healthy mass range.
-const LINK_ADDED_MASS: f32 = 0.2;
+pub(crate) const LINK_ADDED_MASS: f32 = 0.2;
 
 /// Collision groups: furniture and props live in WORLD, the arm lives
 /// in ARM and only collides with WORLD. Arm↔arm self-collision is OFF
@@ -272,13 +291,10 @@ fn arm_groups() -> InteractionGroups {
     InteractionGroups::new(Group::GROUP_2, Group::GROUP_1, InteractionTestMode::And)
 }
 
-/// Build-time spec of one stage: parent, child, anchor (parent-local),
-/// revolute axis (parent-local) and limits.
-type StageSpec = (RigidBodyHandle, RigidBodyHandle, Vec3, Vec3, (f32, f32));
-
 /// One actuated revolute stage: its multibody joint handle, the
 /// revolute axis in the parent's local frame (angle readout) and the
-/// generic-joint axis slot the motor drives.
+/// generic-joint axis slot the motor drives. Index `i` pairs with
+/// `RobotSpec::joints[i]` for limits/gains/velocity limit.
 #[derive(Clone, Copy)]
 struct Stage {
     handle: MultibodyJointHandle,
@@ -371,7 +387,15 @@ fn angle_about(q: Rotation, axis: Vec3) -> f32 {
 /// description and scene are construction-time constants, everything
 /// mutable lives in the body/joint sets).
 pub struct MultibodySystem {
+    /// The legacy 4-DoF description this system was built from through
+    /// [`MultibodySystem::new`]. Kept for API compatibility; `robot` is
+    /// the authoritative build source. Built via
+    /// [`MultibodySystem::from_robot`] it holds `ArmDescription::default()`
+    /// as a placeholder (M0b: fold into the spec hash and retire).
     pub desc: ArmDescription,
+    /// The spec this system was built from — limits, gains, gripper
+    /// geometry are read from here every tick.
+    pub robot: RobotSpec,
     /// Solver knobs (see [`PhysicsParams`]) — applied each tick,
     /// `None` fields keep rapier defaults.
     pub physics: PhysicsParams,
@@ -385,11 +409,15 @@ pub struct MultibodySystem {
     mbody_joints: MultibodyJointSet,
     soft_bodies: SoftBodySet,
     ccd: CCDSolver,
-    /// Actuated chain bodies: carrier (yaw stage), link1, link2, wrist.
+    /// One body per `RobotSpec::links` entry, in link order (the fixed
+    /// root included).
     chain: Vec<RigidBodyHandle>,
-    /// One stage per actuated revolute DoF (4).
+    /// One stage per actuated revolute DoF, in `RobotSpec::joints` order.
     stages: Vec<Stage>,
-    /// Tip offset in the wrist body's local frame.
+    /// Body the end-effector frame rides on (the gripper's attach link,
+    /// or the last joint's child without a gripper).
+    ee_body: RigidBodyHandle,
+    /// Tip offset in `ee_body`'s local frame.
     tip_local: Vec3,
     /// Entity ↔ body reconciliation for props.
     map: BTreeMap<EntKey, RigidBodyHandle>,
@@ -403,17 +431,35 @@ pub struct MultibodySystem {
     last_cmd: Vec<f32>,
     /// Reported hold state (gripper closed + prop in grip zone).
     holding: bool,
-    finger_l: RigidBodyHandle,
-    finger_r: RigidBodyHandle,
+    /// Gripper plate bodies `(left, right)`; `None` without a gripper.
+    fingers: Option<(RigidBodyHandle, RigidBodyHandle)>,
     gap_now: f32,
     /// End-effector pose after the last step.
     last_ee: ([f32; 3], [f32; 4]),
 }
 
 impl MultibodySystem {
+    /// Build the legacy 4-DoF tabletop arm. Goes through
+    /// `RobotSpec::from(&desc)` — the preset projection is always
+    /// buildable, so this cannot fail.
     pub fn new(desc: ArmDescription, scene: Scene3D) -> Self {
+        let robot = RobotSpec::from(&desc);
+        let mut sys = Self::from_robot(robot, scene)
+            .expect("ArmDescription preset projects to a valid RobotSpec");
+        sys.desc = desc;
+        sys
+    }
+
+    /// Build an arbitrary [`RobotSpec`] (validated first — a registered
+    /// `mesh_uri` is refused here with an M2 pointer, never silently
+    /// dropped).
+    pub fn from_robot(robot: RobotSpec, scene: Scene3D) -> Result<Self, RobotSpecError> {
+        robot.validate()?;
+        let n = robot.joints.len();
+        let gap0 = robot.gripper.as_ref().map_or(0.0, |g| g.gap_open);
         let mut sys = Self {
-            desc,
+            desc: ArmDescription::default(),
+            robot,
             physics: PhysicsParams::default(),
             pipeline: PhysicsPipeline::new(),
             islands: IslandManager::new(),
@@ -427,20 +473,20 @@ impl MultibodySystem {
             ccd: CCDSolver::new(),
             chain: Vec::new(),
             stages: Vec::new(),
+            ee_body: RigidBodyHandle::from_raw_parts(u32::MAX, u32::MAX),
             tip_local: Vec3::ZERO,
             map: BTreeMap::new(),
             last_pose: BTreeMap::new(),
-            prev_angles: vec![0.0; 4],
-            last_cmd: vec![f32::NAN; 4],
+            prev_angles: vec![0.0; n],
+            last_cmd: vec![f32::NAN; n],
             holding: false,
-            finger_l: RigidBodyHandle::from_raw_parts(u32::MAX, u32::MAX),
-            finger_r: RigidBodyHandle::from_raw_parts(u32::MAX, u32::MAX),
-            gap_now: FINGER_GAP_OPEN,
+            fingers: None,
+            gap_now: gap0,
             last_ee: ([0.0; 3], [0.0, 0.0, 0.0, 1.0]),
         };
         sys.build_scene(&scene);
         sys.build_arm();
-        sys
+        Ok(sys)
     }
 
     fn fixed_slab(&mut self, center: [f32; 3], half: [f32; 3], friction: f32) {
@@ -463,137 +509,99 @@ impl MultibodySystem {
         }
     }
 
+    /// Generic N-stage build from `self.robot` (validated). The
+    /// insertion sequence — every link body in link order, then every
+    /// link collider in link order, then the plates, then the joints in
+    /// order — is the legacy sequence for the preset, so body/collider
+    /// handles and solver ordering are unchanged (bit-exact receipt).
     fn build_arm(&mut self) {
-        let d = self.desc.clone();
-        let shoulder_y = d.base[1] + d.shoulder_height;
-        let r = d.link_radius;
-        let base_h = d.shoulder_height * 0.5;
+        let r = self.robot.clone();
+        let ms = r.mass_scale;
+        let root = r.root_link().expect("validated: exactly one root");
+        let v3 = |a: [f32; 3]| Vec3::new(a[0], a[1], a[2]);
 
-        // Fixed base column (a stub the chain stands on).
-        let base = self.bodies.insert(
-            RigidBodyBuilder::fixed()
-                .translation(Vec3::new(d.base[0], d.base[1] + base_h, d.base[2]))
-                .build(),
-        );
-        let col = ColliderBuilder::cuboid(r * 1.8, base_h, r * 1.8)
-            .collision_groups(arm_groups())
-            .build();
-        self.colliders
-            .insert_with_parent(col, base, &mut self.bodies);
-
-        // Chain bodies: initial pose = home (identity rotations, links
-        // stretched along +X from the shoulder anchor).
-        let at_shoulder = Vec3::new(d.base[0], shoulder_y, d.base[2]);
-        let mk_dynamic = |this: &mut Self, t: Vec3| {
-            this.bodies.insert(
+        // 1. Bodies: the root is a fixed stub the chain stands on; every
+        //    other link is dynamic at its home origin (identity
+        //    rotation; the multibody's own FK re-derives these from the
+        //    root pose + anchors on the first step).
+        self.chain.clear();
+        for (i, l) in r.links.iter().enumerate() {
+            let body = if i == root {
+                RigidBodyBuilder::fixed().translation(v3(l.origin)).build()
+            } else {
                 RigidBodyBuilder::dynamic()
                     .can_sleep(false)
-                    .additional_mass(LINK_ADDED_MASS * d.mass_scale)
-                    .translation(t)
-                    .build(),
-            )
-        };
-        let carrier = mk_dynamic(self, at_shoulder);
-        let link1 = mk_dynamic(self, at_shoulder);
-        let link2 = mk_dynamic(
-            self,
-            Vec3::new(d.base[0] + d.links[0], shoulder_y, d.base[2]),
-        );
-        let wrist = mk_dynamic(
-            self,
-            Vec3::new(d.base[0] + d.links[0] + d.links[1], shoulder_y, d.base[2]),
-        );
-        self.chain = vec![carrier, link1, link2, wrist];
+                    .additional_mass(l.added_mass * ms)
+                    .translation(v3(l.origin))
+                    .build()
+            };
+            self.chain.push(self.bodies.insert(body));
+        }
 
-        // Colliders: carrier cube; links as cuboids centred mid-link.
-        let collider = |this: &mut Self, body: RigidBodyHandle, half: [f32; 3], off: Vec3| {
-            let c = ColliderBuilder::cuboid(half[0], half[1], half[2])
-                .density(LINK_DENSITY * d.mass_scale)
-                .friction(0.7)
-                .translation(off)
+        // 2. Colliders: primitives in the body frame; dynamic links get
+        //    `density · mass_scale` (the fixed root's density is inert to
+        //    the solver and written as-is).
+        for (i, l) in r.links.iter().enumerate() {
+            let builder = match l.shape {
+                LinkShape::Box { half } => ColliderBuilder::cuboid(half[0], half[1], half[2]),
+                LinkShape::Capsule { half_len, radius } => {
+                    ColliderBuilder::capsule_x(half_len, radius)
+                }
+            };
+            let density = if i == root { l.density } else { l.density * ms };
+            let c = builder
+                .density(density)
+                .friction(l.friction)
+                .translation(v3(l.collider_offset))
                 .collision_groups(arm_groups())
                 .build();
-            this.colliders.insert_with_parent(c, body, &mut this.bodies);
-        };
-        collider(self, carrier, [0.015, 0.015, 0.015], Vec3::ZERO);
-        collider(
-            self,
-            link1,
-            [d.links[0] * 0.5, r, r],
-            Vec3::new(d.links[0] * 0.5, 0.0, 0.0),
-        );
-        collider(
-            self,
-            link2,
-            [d.links[1] * 0.5, r, r],
-            Vec3::new(d.links[1] * 0.5, 0.0, 0.0),
-        );
-        collider(
-            self,
-            wrist,
-            [d.links[2] * 0.5, r, r],
-            Vec3::new(d.links[2] * 0.5, 0.0, 0.0),
-        );
+            self.colliders
+                .insert_with_parent(c, self.chain[i], &mut self.bodies);
+        }
 
-        // Gripper plates: kinematic slabs straddling the TIP in the
-        // wrist frame. The prop stays Dynamic — plate/cube friction
-        // (2 mm/side squeeze) does the holding; minimal-probe-verified
-        // mechanism (tests/probe_friction.rs, round 4).
-        let mk_finger = |this: &mut Self| {
+        // 3. End-effector frame + gripper plates. Plates are kinematic
+        //    slabs straddling the TCP in the attach link's frame; the
+        //    prop stays Dynamic — plate/cube friction does the holding
+        //    (minimal-probe-verified, tests/probe_friction.rs round 4).
+        let ee_link = r
+            .gripper
+            .as_ref()
+            .map_or_else(|| r.joints.last().map_or(root, |j| j.child_link), |g| g.attach_link);
+        self.ee_body = self.chain[ee_link];
+        self.tip_local = r.gripper.as_ref().map_or(Vec3::ZERO, |g| v3(g.tcp_offset));
+        self.fingers = r.gripper.as_ref().map(|g| {
+            let o = r.links[ee_link].origin;
             let tip0 = Vec3::new(
-                d.base[0] + d.links[0] + d.links[1] + d.links[2],
-                d.base[1] + d.shoulder_height,
-                d.base[2],
+                o[0] + g.tcp_offset[0],
+                o[1] + g.tcp_offset[1],
+                o[2] + g.tcp_offset[2],
             );
-            let body = this.bodies.insert(
-                RigidBodyBuilder::kinematic_position_based()
-                    .translation(tip0)
-                    .build(),
-            );
-            let c = ColliderBuilder::cuboid(FINGER_HALF[0], FINGER_HALF[1], FINGER_HALF[2])
-                .friction(FINGER_FRICTION)
-                .collision_groups(arm_groups())
-                .build();
-            this.colliders.insert_with_parent(c, body, &mut this.bodies);
-            body
-        };
-        self.finger_l = mk_finger(self);
-        self.finger_r = mk_finger(self);
+            let mut mk_finger = || {
+                let body = self.bodies.insert(
+                    RigidBodyBuilder::kinematic_position_based()
+                        .translation(tip0)
+                        .build(),
+                );
+                let c = ColliderBuilder::cuboid(g.finger_half[0], g.finger_half[1], g.finger_half[2])
+                    .friction(g.friction)
+                    .collision_groups(arm_groups())
+                    .build();
+                self.colliders.insert_with_parent(c, body, &mut self.bodies);
+                body
+            };
+            let l = mk_finger();
+            let rgt = mk_finger();
+            (l, rgt)
+        });
 
-        // Multibody joints: yaw (base→carrier), shoulder (carrier→link1),
-        // elbow (link1→link2), wrist pitch (link2→wrist). Positive angle
-        // about local +Z lifts the chain toward +Y (right-hand rule).
+        // 4. Multibody joints in spec (topological) order. Positive
+        //    angle about the axis follows the right-hand rule.
         self.stages.clear();
-        let stages: [StageSpec; 4] = [
-            (
-                base,
-                carrier,
-                // base body centre sits shoulder_height/2 below the
-                // shoulder anchor — the anchor is LOCAL to the base body.
-                Vec3::new(0.0, d.shoulder_height - base_h, 0.0),
-                Vec3::Y,
-                d.limits[0],
-            ),
-            (carrier, link1, Vec3::ZERO, Vec3::Z, d.limits[1]),
-            (
-                link1,
-                link2,
-                Vec3::new(d.links[0], 0.0, 0.0),
-                Vec3::Z,
-                d.limits[2],
-            ),
-            (
-                link2,
-                wrist,
-                Vec3::new(d.links[1], 0.0, 0.0),
-                Vec3::Z,
-                d.limits[3],
-            ),
-        ];
-        for (parent, child, anchor, axis, limits) in stages {
+        for j in &r.joints {
+            let axis = v3(j.axis);
             let builder = RevoluteJointBuilder::new(axis)
-                .local_anchor1(anchor)
-                .limits([limits.0, limits.1])
+                .local_anchor1(v3(j.anchor))
+                .limits([j.limits.0, j.limits.1])
                 // Adjacent stages overlap at the anchors at build time —
                 // their mutual contact would fight the joint and inject
                 // energy. Joints constrain the pair; the contact between
@@ -601,7 +609,12 @@ impl MultibodySystem {
                 // anyway).
                 .contacts_enabled(false)
                 .build();
-            if let Some(h) = self.mbody_joints.insert(parent, child, builder, true) {
+            if let Some(h) = self.mbody_joints.insert(
+                self.chain[j.parent_link],
+                self.chain[j.child_link],
+                builder,
+                true,
+            ) {
                 self.stages.push(Stage {
                     handle: h,
                     axis_vec: axis,
@@ -610,32 +623,43 @@ impl MultibodySystem {
             }
         }
 
-        // Per-stage servo config: enable the position motor on the
-        // revolute DoF (rapier leaves `motor_axes` empty — motors are
-        // dead until the axis bit is set), ForceBased torque model and
-        // a force clamp; plus rotor inertia (armature) and viscous
-        // joint friction — the physical parts of a real servo.
-        for s in &self.stages {
+        // 5. Per-stage servo config: enable the position motor on the
+        //    revolute DoF (rapier leaves `motor_axes` empty — motors are
+        //    dead until the axis bit is set), ForceBased torque model and
+        //    the effort clamp; plus this joint's rotor inertia (armature)
+        //    and viscous friction on its own DoF slice. (At build time
+        //    the root still carries a 6-DoF free joint; rapier drops
+        //    those rows on the first step, so the slices below are the
+        //    only ones that survive — identical to the legacy fill-all.)
+        for (s, j) in self.stages.iter().zip(r.joints.iter()) {
             if let Some((mb, link_id)) = self.mbody_joints.get_mut(s.handle) {
+                let dofs = mb.link(link_id).map(|link| {
+                    let a = link.assembly_id();
+                    a..a + link.joint().ndofs()
+                });
                 if let Some(link) = mb.link_mut(link_id) {
                     link.joint.data.motor_axes.insert(JointAxesMask::ANG_X);
                     link.joint
                         .data
                         .set_motor_model(s.axis, MotorModel::ForceBased);
-                    link.joint.data.set_motor_max_force(s.axis, MOTOR_MAX_FORCE);
+                    link.joint
+                        .data
+                        .set_motor_max_force(s.axis, j.effort.unwrap_or(MOTOR_MAX_FORCE));
                 }
-                for v in mb.armature_mut().iter_mut() {
-                    *v = ARMATURE;
-                }
-                let pd = d.passive_damping.unwrap_or(JOINT_DAMPING);
-                for v in mb.damping_mut().iter_mut() {
-                    *v = pd;
+                if let Some(dofs) = dofs {
+                    for k in dofs {
+                        if let Some(v) = mb.armature_mut().get_mut(k) {
+                            *v = j.armature;
+                        }
+                        if let Some(v) = mb.damping_mut().get_mut(k) {
+                            *v = j.damping;
+                        }
+                    }
                 }
             }
         }
 
-        self.tip_local = Vec3::new(d.links[2], 0.0, 0.0);
-        self.prev_angles = vec![0.0; 4];
+        self.prev_angles = vec![0.0; r.joints.len()];
     }
 
     /// End-effector (tip) world pose after the last step.
@@ -664,10 +688,13 @@ impl MultibodySystem {
         self.holding
     }
 
-    /// World points of the actuated chain: `[shoulder, elbow, wrist,
-    /// tip]` — the skeleton the top-down camera draws. Body origins
-    /// sit exactly on their joint anchors by construction, so plain
-    /// translations are the joint positions.
+    /// World points of the actuated chain — the skeleton the top-down
+    /// camera draws: the origin of every joint's child link **except
+    /// the first joint's** (the base-yaw carrier is co-located with the
+    /// shoulder), then the tip. For the preset that is `[shoulder,
+    /// elbow, wrist, tip]`. Body origins sit exactly on their joint
+    /// anchors by construction, so plain translations are the joint
+    /// positions.
     pub fn chain_points(&self) -> Vec<[f32; 3]> {
         let origin = |h: RigidBodyHandle| -> [f32; 3] {
             self.bodies
@@ -678,28 +705,35 @@ impl MultibodySystem {
                 })
                 .unwrap_or([0.0; 3])
         };
-        vec![
-            origin(self.chain[1]), // shoulder (link1 origin)
-            origin(self.chain[2]), // elbow (link2 origin)
-            origin(self.chain[3]), // wrist (wrist origin)
-            self.last_ee.0,        // tip
-        ]
+        let mut pts: Vec<[f32; 3]> = self
+            .robot
+            .joints
+            .iter()
+            .skip(1)
+            .map(|j| origin(self.chain[j.child_link]))
+            .collect();
+        pts.push(self.last_ee.0);
+        pts
     }
 
     /// Drive the gripper plates (ramped) toward the demand — kinematic
-    /// slabs straddling the tip in the wrist's frame.
+    /// slabs straddling the tip in the attach link's frame. No-op
+    /// without a gripper.
     fn drive_fingers(&mut self, gripper: f32) {
-        let g_target =
-            FINGER_GAP_OPEN + (FINGER_GAP_CLOSED - FINGER_GAP_OPEN) * gripper.clamp(0.0, 1.0);
-        self.gap_now += (g_target - self.gap_now).clamp(-0.004, 0.004);
-        let wrist = self.chain[3];
+        let Some((fl, fr)) = self.fingers else { return };
+        let Some(g) = self.robot.gripper.as_ref() else {
+            return;
+        };
+        let (gap_open, gap_closed, rate, finger_x) = (g.gap_open, g.gap_closed, g.gap_rate, g.finger_x);
+        let g_target = gap_open + (gap_closed - gap_open) * gripper.clamp(0.0, 1.0);
+        self.gap_now += (g_target - self.gap_now).clamp(-rate, rate);
         let (wp, wr) = {
-            let b = self.bodies.get(wrist).expect("wrist body exists");
+            let b = self.bodies.get(self.ee_body).expect("attach body exists");
             (b.translation(), *b.rotation())
         };
-        let centre = wp + wr.mul_vec3(Vec3::new(FINGER_X, 0.0, 0.0));
+        let centre = wp + wr.mul_vec3(Vec3::new(finger_x, 0.0, 0.0));
         let side = wr.mul_vec3(Vec3::new(0.0, 0.0, self.gap_now * 0.5));
-        for (h, sign) in [(self.finger_l, 1.0), (self.finger_r, -1.0)] {
+        for (h, sign) in [(fl, 1.0), (fr, -1.0)] {
             if let Some(b) = self.bodies.get_mut(h) {
                 b.set_next_kinematic_rotation(wr);
                 b.set_next_kinematic_translation(centre + sign * side);
@@ -708,9 +742,10 @@ impl MultibodySystem {
     }
 
     /// Reporting heuristic: gripper closed + a prop centre inside the
-    /// grip zone; the contact solve does the actual holding.
+    /// grip zone; the contact solve does the actual holding. Always
+    /// false without a gripper.
     fn update_holding(&mut self, gripper: f32) {
-        self.holding = gripper > 0.5 && {
+        self.holding = self.fingers.is_some() && gripper > 0.5 && {
             let tip = self.last_ee.0;
             self.map.values().any(|h| {
                 self.bodies.get(*h).is_some_and(|b| {
@@ -726,21 +761,27 @@ impl MultibodySystem {
     /// different servo params that happen to converge to identical
     /// states are NOT the same experiment (sim-engine review: identity
     /// completeness).
+    ///
+    /// M0a keeps the legacy fold — `joints[0]`'s kp/kd (the preset's
+    /// uniform gains) and `mass_scale` — so the default receipt value
+    /// is unchanged. Per-joint gain differences, link geometry and the
+    /// joint count are NOT folded yet; the canonical spec hash that
+    /// covers them is the M0b `fingerprint_scheme` bump.
     pub fn fingerprint(&self, world: &World) -> u64 {
-        let d = &self.desc;
+        let r = &self.robot;
+        let (kp, kd) = r.joints.first().map_or((0.0, 0.0), |j| (j.kp, j.kd));
         let h = sim_fingerprint(world);
         mix(
-            mix(mix(h, d.kp.to_bits() as u64), d.kd.to_bits() as u64),
-            d.mass_scale.to_bits() as u64,
+            mix(mix(h, kp.to_bits() as u64), kd.to_bits() as u64),
+            r.mass_scale.to_bits() as u64,
         )
     }
 
     /// Contact-inspection probe (temporary): plate world positions and
-    /// per-prop contact-pair counts.
+    /// per-prop contact-pair counts. Plates read `NaN` without a gripper.
     pub fn debug_contact_state(&self) -> (Vec<[f32; 3]>, Vec<usize>) {
-        let plate = |h: RigidBodyHandle| {
-            self.bodies
-                .get(h)
+        let plate = |h: Option<RigidBodyHandle>| {
+            h.and_then(|h| self.bodies.get(h))
                 .map(|b| {
                     let t = b.translation();
                     [t.x, t.y, t.z]
@@ -757,7 +798,11 @@ impl MultibodySystem {
             }
             counts.push(n);
         }
-        (vec![plate(self.finger_l), plate(self.finger_r)], counts)
+        let (fl, fr) = match self.fingers {
+            Some((l, r)) => (Some(l), Some(r)),
+            None => (None, None),
+        };
+        (vec![plate(fl), plate(fr)], counts)
     }
 }
 
@@ -835,6 +880,9 @@ impl System<World> for MultibodySystem {
 
         // 3. Arm: adopt JointTargets into the joints' position motors
         // (ForceBased PD; unchanged targets skip the motor write).
+        // Limits/gains are per joint from the spec; a `velocity_limit`
+        // rate-clamps the commanded target by `v·dt` per tick from the
+        // previous command (first tick: from the measured angle).
         let mut arm: Option<(EntKey, Vec<f32>, f32)> = None;
         for (e, jt) in world.query::<JointTargets>() {
             arm = Some((key(e), jt.angles.clone(), jt.gripper));
@@ -844,17 +892,25 @@ impl System<World> for MultibodySystem {
             gripper = *g;
             for (i, s) in self.stages.iter().enumerate() {
                 let Some(&want) = angles.get(i) else { continue };
-                let (lo, hi) = self.desc.limits[i];
-                let want = want.clamp(lo, hi);
+                let j = &self.robot.joints[i];
+                let (lo, hi) = j.limits;
+                let mut want = want.clamp(lo, hi);
+                if let Some(v) = j.velocity_limit {
+                    let prev = self.last_cmd[i];
+                    let from = if prev.is_finite() {
+                        prev
+                    } else {
+                        self.prev_angles[i]
+                    };
+                    let step = v * dt;
+                    want = from + (want - from).clamp(-step, step);
+                }
                 if self.last_cmd.get(i).copied() != Some(want) {
                     if let Some((mb, link_id)) = self.mbody_joints.get_mut(s.handle) {
                         if let Some(link) = mb.link_mut(link_id) {
-                            link.joint.data.set_motor_position(
-                                s.axis,
-                                want,
-                                self.desc.kp,
-                                self.desc.kd,
-                            );
+                            link.joint
+                                .data
+                                .set_motor_position(s.axis, want, j.kp, j.kd);
                         }
                     }
                     self.last_cmd[i] = want;
@@ -903,10 +959,9 @@ impl System<World> for MultibodySystem {
             );
         }
 
-        // 5. End-effector pose from the wrist body + grasp bookkeeping.
-        let wrist = self.chain[3];
+        // 5. End-effector pose from the attach body + grasp bookkeeping.
         let (tip_pos, tip_rot) = {
-            let b = self.bodies.get(wrist).expect("wrist body exists");
+            let b = self.bodies.get(self.ee_body).expect("attach body exists");
             let q = *b.rotation();
             let off = q.mul_vec3(self.tip_local);
             let t = b.translation();
@@ -961,7 +1016,9 @@ impl System<World> for MultibodySystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::robot::{GripperKind, GripperSpec, JointSpec, LinkSpec};
     use oriera_common::{FrameIndex, Grants, Timestamp};
+    use std::f32::consts::PI;
 
     const DT: f32 = 1.0 / 60.0;
 
@@ -1209,5 +1266,626 @@ mod tests {
             sim_fingerprint(&w3),
             "one float ⇒ new hash"
         );
+    }
+
+    // --- M0a spec-driven generalization ---------------------------------
+
+    /// THE "no behaviour change" guard: the default path
+    /// (`ArmDescription::default()`) must reproduce the pre-M0a engine
+    /// bit for bit. The constants below were captured from the legacy
+    /// builder **before this rewrite** (a probe test folding the same
+    /// two scripts over every telemetry float, the prop pose and the
+    /// per-tick `sim_fingerprint`; PLAN-embodied-general M0a 工作包 A):
+    /// (A) 240-tick swing + gripper-toggle script through
+    ///     `MultibodySystem::new` — plus the same script through
+    ///     `from_robot(RobotSpec::from(&desc))` must match it exactly.
+    /// (B) 390-tick IK grasp → lift → release script — the contact-
+    ///     friction carry path, the most sensitive part of the sim.
+    #[test]
+    fn golden_default_path_is_bit_identical_to_pre_m0a() {
+        // Script A: swing + gripper toggle.
+        const A_FOLD: u64 = 0x72cf_b4ee_ecd9_8dd9;
+        const A_CPS: [u64; 4] = [
+            0xf169_cfc9_6935_32ed,
+            0x03de_e8cf_5e6e_c5f5,
+            0x9d84_5604_8e18_811b,
+            0xf837_a167_7ec9_b712,
+        ];
+        const A_SYSFP: u64 = 0x4438_f5c4_dcf1_1942;
+        const A_ANGLE_BITS: [u32; 4] = [0x3f57_0a37, 0x3fa6_6b99, 0xbfd5_3b21, 0x3e49_6398];
+        const A_EE_BITS: [u32; 3] = [0x3e68_8d8c, 0x3f3b_b395, 0xbe6c_9863];
+        // Script B: IK grasp/lift/release (per-phase checkpoint fps).
+        const B_FOLD: u64 = 0x5699_d804_97fb_9d3d;
+        const B_CPS: [u64; 5] = [
+            0xb9de_19f0_c174_f7b8,
+            0x007e_3aea_ac69_1beb,
+            0x8483_e4a8_c1e8_30b5,
+            0x413e_cbd7_36cf_7380,
+            0x31ce_ede3_6287_0ed8,
+        ];
+        const B_SYSFP: u64 = 0x1efb_5258_7556_7771;
+        const B_OBJ_BITS: [u32; 3] = [0x3ea3_c7ca, 0x3f06_191e, 0x3b7a_4eb0];
+
+        // (A) the 240-tick swing script through `new` …
+        let (mut world, mut sys, arm, _obj) = bench([0.30, 0.55, 0.0]);
+        let script_a = |i: u64, w: &mut World| {
+            if i.is_multiple_of(30) {
+                let a = (i as f32) * 0.004;
+                if let Some(tg) = w.get_mut::<JointTargets>(arm) {
+                    tg.angles = vec![a, 0.5 + a, -0.8 - a, 0.2];
+                    tg.gripper = if (i / 30) % 2 == 1 { 1.0 } else { 0.0 };
+                }
+            }
+        };
+        let (ha, cps_a) = fold_episode(&mut sys, &mut world, 240, &script_a);
+        assert_eq!(hex(ha), hex(A_FOLD), "script A fold diverged (new path)");
+        assert_eq!(
+            cps_a.iter().map(|c| hex(*c)).collect::<Vec<_>>(),
+            A_CPS.iter().map(|c| hex(*c)).collect::<Vec<_>>(),
+            "script A checkpoint fingerprints diverged"
+        );
+        assert_eq!(
+            hex(sys.fingerprint(&world)),
+            hex(A_SYSFP),
+            "script A system fingerprint diverged"
+        );
+        let tel = telemetry(&world, arm);
+        assert_eq!(
+            tel.angles.iter().map(|a| fbits(*a)).collect::<Vec<_>>(),
+            A_ANGLE_BITS.to_vec(),
+            "script A final angles diverged"
+        );
+        assert_eq!(
+            tel.ee_pos.iter().map(|a| fbits(*a)).collect::<Vec<_>>(),
+            A_EE_BITS.to_vec(),
+            "script A final EE diverged"
+        );
+
+        // (A′) … and through `from_robot` — the generic entry point must
+        // be trajectory-identical to `new` (the preset projection IS the
+        // legacy builder).
+        let (mut world2, mut sys2, arm2, _obj2) = bench_from_spec([0.30, 0.55, 0.0]);
+        let script_a2 = |i: u64, w: &mut World| {
+            if i.is_multiple_of(30) {
+                let a = (i as f32) * 0.004;
+                if let Some(tg) = w.get_mut::<JointTargets>(arm2) {
+                    tg.angles = vec![a, 0.5 + a, -0.8 - a, 0.2];
+                    tg.gripper = if (i / 30) % 2 == 1 { 1.0 } else { 0.0 };
+                }
+            }
+        };
+        let (ha2, cps_a2) = fold_episode(&mut sys2, &mut world2, 240, &script_a2);
+        assert_eq!(
+            (hex(ha2), hexs(&cps_a2)),
+            (hex(ha), hexs(&cps_a)),
+            "new ≠ from_robot(preset)"
+        );
+        assert_eq!(hex(sys2.fingerprint(&world2)), hex(A_SYSFP));
+
+        // (B) the 390-tick grasp/lift/release script, folded continuously
+        // exactly as captured (one seed-carrying fold across all five
+        // phases, checkpoint after each phase).
+        let cube = [0.30f32, 0.55, 0.0];
+        let cy = 0.525f32; // settled cube-centre height on the table
+        let phases: &[([f32; 3], u64, f32)] = &[
+            ([cube[0], cy + 0.10, cube[2]], 90, 0.0),
+            ([cube[0], cy + 0.025, cube[2]], 90, 0.0),
+            ([cube[0], cy + 0.025, cube[2]], 60, 1.0),
+            ([cube[0], cy + 0.145, cube[2]], 90, 1.0),
+            ([cube[0], cy + 0.025, cube[2]], 60, 0.0),
+        ];
+        let ik = ik_fn();
+        let (mut world, mut sys, arm, obj) = bench([0.30, 0.55, 0.0]);
+        // One fold step over the full state + receipt (the probe's fold).
+        let fold_step = |seed: u64, world: &World| -> u64 {
+            let t = world
+                .query::<JointTelemetry>()
+                .next()
+                .map(|(_, t)| t.clone())
+                .unwrap();
+            let o = world
+                .query2::<Pose3, SimObject>()
+                .next()
+                .map(|(_, p, _)| *p)
+                .unwrap();
+            let mut h = seed;
+            for a in t.angles.iter().chain(t.velocities.iter()) {
+                h = bits(h, *a);
+            }
+            for v in t.ee_pos.iter().chain(t.ee_rot.iter()) {
+                h = bits(h, *v);
+            }
+            h = mix(h, t.holding as u64);
+            for v in o.pos.iter().chain(o.rot.iter()) {
+                h = bits(h, *v);
+            }
+            mix(h, sim_fingerprint(world))
+        };
+        let mut h_b = 0u64;
+        let mut i_b = 0u64;
+        let mut phase = 0usize;
+        for (target, ticks, grip) in phases {
+            let angles = ik(*target);
+            for _ in 0..*ticks {
+                if let Some(t) = world.get_mut::<JointTargets>(arm) {
+                    t.angles = angles.to_vec();
+                    t.gripper = *grip;
+                }
+                sys.run(&ctx(i_b), &mut world);
+                i_b += 1;
+                h_b = fold_step(h_b, &world);
+            }
+            assert_eq!(
+                hex(sim_fingerprint(&world)),
+                hex(B_CPS[phase]),
+                "script B phase {phase} checkpoint diverged"
+            );
+            phase += 1;
+        }
+        assert_eq!(phase, 5);
+        assert_eq!(i_b, 390);
+        assert_eq!(hex(h_b), hex(B_FOLD), "script B fold diverged (new path)");
+        assert_eq!(
+            hex(sys.fingerprint(&world)),
+            hex(B_SYSFP),
+            "script B system fingerprint diverged"
+        );
+        let obj_now = pose(&world, obj);
+        assert_eq!(
+            obj_now.pos.iter().map(|a| fbits(*a)).collect::<Vec<_>>(),
+            B_OBJ_BITS.to_vec(),
+            "script B final cube pose diverged"
+        );
+    }
+
+    /// Rolling bit-fold of every telemetry/prop value plus the per-tick
+    /// `sim_fingerprint`, over a whole scripted episode; a checkpoint
+    /// `sim_fingerprint` is sampled every 60 ticks.
+    fn fold_episode(
+        sys: &mut MultibodySystem,
+        world: &mut World,
+        ticks: u64,
+        script: &dyn Fn(u64, &mut World),
+    ) -> (u64, Vec<u64>) {
+        let mut h = 0u64;
+        let mut cps = Vec::new();
+        for i in 0..ticks {
+            script(i, world);
+            sys.run(&ctx(i), world);
+            let tel = world
+                .query::<JointTelemetry>()
+                .next()
+                .map(|(_, t)| t.clone())
+                .unwrap();
+            let obj = world
+                .query2::<Pose3, SimObject>()
+                .next()
+                .map(|(_, p, _)| *p)
+                .unwrap();
+            for a in tel.angles.iter().chain(tel.velocities.iter()) {
+                h = bits(h, *a);
+            }
+            for v in tel.ee_pos.iter().chain(tel.ee_rot.iter()) {
+                h = bits(h, *v);
+            }
+            h = mix(h, tel.holding as u64);
+            for v in obj.pos.iter().chain(obj.rot.iter()) {
+                h = bits(h, *v);
+            }
+            h = mix(h, sim_fingerprint(world));
+            if (i + 1) % 60 == 0 {
+                cps.push(sim_fingerprint(world));
+            }
+        }
+        (h, cps)
+    }
+
+    fn hex(v: u64) -> String {
+        format!("0x{v:016x}")
+    }
+
+    fn hexs(v: &[u64]) -> Vec<String> {
+        v.iter().map(|x| hex(*x)).collect()
+    }
+
+    fn fbits(v: f32) -> u32 {
+        v.to_bits()
+    }
+
+    /// Benchmark fixture built through the generic entry point
+    /// (`from_robot` on the preset projection).
+    fn bench_from_spec(prop: [f32; 3]) -> (World, MultibodySystem, Entity, Entity) {
+        let mut world = World::new();
+        world.insert_resource(Gravity(9.8));
+        world.insert_resource(TimeScale(1.0));
+        let arm = world.spawn();
+        world.insert(
+            arm,
+            JointTargets {
+                angles: vec![0.0; 4],
+                gripper: 0.0,
+            },
+        );
+        world.insert(arm, JointTelemetry::default());
+        let obj = world.spawn();
+        world.insert(
+            obj,
+            Pose3 {
+                pos: prop,
+                ..Default::default()
+            },
+        );
+        world.insert(obj, SimObject);
+        let spec = RobotSpec::from(&ArmDescription::default());
+        let sys = MultibodySystem::from_robot(spec, Scene3D::default()).expect("preset builds");
+        (world, sys, arm, obj)
+    }
+
+    /// The legacy IK used by the grasp tests/golden (default arm).
+    fn ik_fn() -> impl Fn([f32; 3]) -> [f32; 4] {
+        |target: [f32; 3]| {
+            let d = ArmDescription::default();
+            let (l1, l2) = (d.links[0], d.links[1]);
+            let sh = d.base[1] + d.shoulder_height;
+            let dx = target[0] - d.base[0];
+            let dz = target[2] - d.base[2];
+            let yaw = f32::atan2(-dz, dx);
+            let r = (dx * dx + dz * dz).sqrt().clamp(0.06, l1 + l2 - 0.005);
+            let h = (target[1] + d.links[2] - sh).clamp(-0.38, 0.30);
+            let ce = ((r * r + h * h - l1 * l1 - l2 * l2) / (2.0 * l1 * l2)).clamp(-1.0, 1.0);
+            let el = -ce.acos();
+            let sh2 = f32::atan2(h, r) - f32::atan2(l2 * el.sin(), l1 + l2 * el.cos());
+            let wr = -std::f32::consts::FRAC_PI_2 - sh2 - el;
+            [
+                yaw.clamp(d.limits[0].0, d.limits[0].1),
+                sh2.clamp(d.limits[1].0, d.limits[1].1),
+                el.clamp(d.limits[2].0, d.limits[2].1),
+                wr.clamp(d.limits[3].0, d.limits[3].1),
+            ]
+        }
+    }
+
+    /// Synthetic 6-axis arm (base yaw Y + shoulder/elbow/pitch Z +
+    /// roll X + distal yaw Y), gripper on the flange. Every origin is
+    /// consistent at home (the chain stretches along +X at shoulder
+    /// height), anchors chain the links in sequence.
+    fn six_axis_spec() -> RobotSpec {
+        let sx = 0.02f32;
+        let sy = 0.62f32; // 0.5 base y + 0.12 shoulder height
+        let base_h = 0.06f32;
+        let r = 0.02f32;
+        let link = |name: &str, half: [f32; 3], origin: [f32; 3], off: [f32; 3]| LinkSpec {
+            name: name.into(),
+            shape: LinkShape::Box { half },
+            origin,
+            collider_offset: off,
+            density: LINK_DENSITY,
+            friction: 0.7,
+            added_mass: LINK_ADDED_MASS,
+            mesh_uri: None,
+        };
+        let links = vec![
+            LinkSpec {
+                name: "base".into(),
+                shape: LinkShape::Box {
+                    half: [0.04, base_h, 0.04],
+                },
+                origin: [sx, 0.5 + base_h, 0.0],
+                collider_offset: [0.0; 3],
+                density: 1.0,
+                friction: 0.5,
+                added_mass: 0.0,
+                mesh_uri: None,
+            },
+            link("carrier", [0.015; 3], [sx, sy, 0.0], [0.0; 3]),
+            link("upper_arm", [0.1, r, r], [sx, sy, 0.0], [0.1, 0.0, 0.0]),
+            link("forearm", [0.09, r, r], [sx + 0.2, sy, 0.0], [0.09, 0.0, 0.0]),
+            link("wrist", [0.03, r, r], [sx + 0.38, sy, 0.0], [0.03, 0.0, 0.0]),
+            link("roll", [0.02, r, r], [sx + 0.44, sy, 0.0], [0.02, 0.0, 0.0]),
+            link("flange", [0.015, r, r], [sx + 0.48, sy, 0.0], [0.015, 0.0, 0.0]),
+        ];
+        let j = |name: &str, p: usize, c: usize, anchor: [f32; 3], axis: [f32; 3], limits: (f32, f32), kp: f32, kd: f32| {
+            JointSpec {
+                name: name.into(),
+                parent_link: p,
+                child_link: c,
+                anchor,
+                axis,
+                limits,
+                effort: None,
+                velocity_limit: None,
+                kp,
+                kd,
+                armature: ARMATURE,
+                damping: JOINT_DAMPING,
+            }
+        };
+        let joints = vec![
+            j("base_yaw", 0, 1, [0.0, 0.12 - base_h, 0.0], [0.0, 1.0, 0.0], (-PI, PI), 60.0, 4.0),
+            j("shoulder", 1, 2, [0.0; 3], [0.0, 0.0, 1.0], (-0.35, 1.45), 60.0, 4.0),
+            j("elbow", 2, 3, [0.2, 0.0, 0.0], [0.0, 0.0, 1.0], (-2.5, 0.35), 50.0, 3.0),
+            j("wrist_pitch", 3, 4, [0.18, 0.0, 0.0], [0.0, 0.0, 1.0], (-2.0, 2.0), 30.0, 2.0),
+            j("wrist_roll", 4, 5, [0.06, 0.0, 0.0], [1.0, 0.0, 0.0], (-PI, PI), 25.0, 2.0),
+            j("wrist_yaw", 5, 6, [0.04, 0.0, 0.0], [0.0, 1.0, 0.0], (-2.0, 2.0), 25.0, 2.0),
+        ];
+        let gripper = GripperSpec {
+            attach_link: 6,
+            finger_x: 0.05,
+            tcp_offset: [0.03, 0.0, 0.0],
+            finger_half: [0.03, 0.045, 0.006],
+            gap_open: 0.075,
+            gap_closed: 0.046,
+            friction: 1.4,
+            effort: GRIPPER_EFFORT,
+            gap_rate: FINGER_GAP_RATE,
+            kind: GripperKind::ParallelPlates,
+        };
+        RobotSpec {
+            name: "tabletop-6dof".into(),
+            base: [sx, 0.5, 0.0],
+            links,
+            joints,
+            gripper: Some(gripper),
+            home: vec![0.0; 6],
+            mass_scale: 1.0,
+            action_scale: vec![2.0; 6],
+        }
+    }
+
+    /// N-level generalization: a 6-axis spec builds, settles, and its
+    /// motors track per-joint targets with bounded error; telemetry,
+    /// skeleton and receipt all scale with N.
+    #[test]
+    fn six_axis_spec_settles_and_tracks_targets() {
+        let spec = six_axis_spec();
+        spec.validate().expect("6-axis spec is valid");
+        let n = spec.dof();
+        let mut world = World::new();
+        world.insert_resource(Gravity(9.8));
+        world.insert_resource(TimeScale(1.0));
+        let arm = world.spawn();
+        world.insert(
+            arm,
+            JointTargets {
+                angles: vec![0.0; n],
+                gripper: 0.0,
+            },
+        );
+        world.insert(arm, JointTelemetry::default());
+        let mut sys = MultibodySystem::from_robot(spec, Scene3D::default()).expect("builds");
+
+        // Settle at home.
+        for i in 0..120u64 {
+            sys.run(&ctx(i), &mut world);
+        }
+        let tel = telemetry(&world, arm);
+        assert_eq!(tel.angles.len(), n, "telemetry scales with N");
+        assert_eq!(tel.velocities.len(), n);
+        let pts = sys.chain_points();
+        assert_eq!(pts.len(), n, "skeleton: (N-1) joint origins + tip");
+        assert!(pts.iter().all(|p| p.iter().all(|v| v.is_finite())));
+
+        // Track a full-pose target.
+        let target = [0.3f32, 0.6, -0.9, 0.4, 0.8, -0.5];
+        for i in 120..400u64 {
+            if let Some(t) = world.get_mut::<JointTargets>(arm) {
+                t.angles = target.to_vec();
+                t.gripper = 0.0;
+            }
+            sys.run(&ctx(i), &mut world);
+        }
+        let tel = telemetry(&world, arm);
+        for (k, (got, want)) in tel.angles.iter().zip(target).enumerate() {
+            assert!(
+                (got - want).abs() < 0.1,
+                "joint {k} must track its target: got {got}, want {want}"
+            );
+        }
+        assert!(tel.velocities.iter().all(|v| v.is_finite()));
+        assert!(tel.ee_pos.iter().all(|v| v.is_finite()));
+    }
+
+    /// `velocity_limit`: Some(v) rate-clamps the commanded target by
+    /// `v·dt` per tick; None (the default path) is unlimited.
+    #[test]
+    fn velocity_limit_rate_clamps_the_command() {
+        let mut spec = RobotSpec::from(&ArmDescription::default());
+        let v = 0.5f32; // rad/s
+        spec.joints[1].velocity_limit = Some(v);
+        let mut world = World::new();
+        world.insert_resource(Gravity(9.8));
+        world.insert_resource(TimeScale(1.0));
+        let arm = world.spawn();
+        world.insert(
+            arm,
+            JointTargets {
+                angles: vec![0.0; 4],
+                gripper: 0.0,
+            },
+        );
+        world.insert(arm, JointTelemetry::default());
+        let mut sys = MultibodySystem::from_robot(spec, Scene3D::default()).expect("builds");
+
+        // Command the shoulder to 1.0 rad; the clamp is v·dt per tick.
+        if let Some(t) = world.get_mut::<JointTargets>(arm) {
+            t.angles = vec![0.0, 1.0, 0.0, 0.0];
+        }
+        let mut measured = Vec::new();
+        for i in 0..30u64 {
+            sys.run(&ctx(i), &mut world);
+            measured.push(telemetry(&world, arm).angles[1]);
+        }
+        let cmd_after_30 = sys.last_cmd[1];
+        let bound = 30.0 * v * DT;
+        assert!(
+            cmd_after_30 <= bound + 1e-5,
+            "commanded target must be rate-clamped: {} > {bound}",
+            cmd_after_30
+        );
+        assert!(
+            (cmd_after_30 - bound).abs() < 2e-4,
+            "clamp must saturate: got {cmd_after_30}, bound {bound}"
+        );
+        assert!(
+            measured[29] < bound + 0.1,
+            "measured angle follows the clamped command: {}",
+            measured[29]
+        );
+
+        // And it converges once the tick budget adds up.
+        for i in 30..600u64 {
+            sys.run(&ctx(i), &mut world);
+        }
+        assert!(
+            (sys.last_cmd[1] - 1.0).abs() < 1e-4,
+            "rate-limited command converges to the target, got {}",
+            sys.last_cmd[1]
+        );
+        let tel = telemetry(&world, arm);
+        assert!(
+            (tel.angles[1] - 1.0).abs() < 0.1,
+            "rate-limited motor still reaches the target: {}",
+            tel.angles[1]
+        );
+
+        // The unlimited path (velocity_limit None, bit-pinned by the
+        // golden test) commands much faster: at tick 30 it is far beyond
+        // the clamped command.
+        let (mut w2, mut s2, arm2, _o) = bench([0.30, 0.55, 0.0]);
+        if let Some(t) = w2.get_mut::<JointTargets>(arm2) {
+            t.angles = vec![0.0, 1.0, 0.0, 0.0];
+        }
+        for i in 0..30u64 {
+            s2.run(&ctx(i), &mut w2);
+        }
+        assert!(
+            s2.last_cmd[1] > cmd_after_30 + 0.3,
+            "None must not clamp: {} vs {}",
+            s2.last_cmd[1],
+            cmd_after_30
+        );
+    }
+
+    /// GripperSpec geometry drives plate placement: non-default
+    /// `finger_x` / `gap_open` / `gap_closed` land the plates per the
+    /// spec, not the legacy constants.
+    #[test]
+    fn gripper_spec_places_the_plates() {
+        let mut spec = RobotSpec::from(&ArmDescription::default());
+        let finger_x = 0.09f32;
+        let gap_open = 0.10f32;
+        let gap_closed = 0.05f32;
+        {
+            let g = spec.gripper.as_mut().unwrap();
+            g.finger_x = finger_x;
+            g.gap_open = gap_open;
+            g.gap_closed = gap_closed;
+        }
+        let mut world = World::new();
+        world.insert_resource(Gravity(9.8));
+        world.insert_resource(TimeScale(1.0));
+        let arm = world.spawn();
+        world.insert(
+            arm,
+            JointTargets {
+                angles: vec![0.0; 4],
+                gripper: 0.0,
+            },
+        );
+        world.insert(arm, JointTelemetry::default());
+        let mut sys = MultibodySystem::from_robot(spec, Scene3D::default()).expect("builds");
+
+        for i in 0..120u64 {
+            sys.run(&ctx(i), &mut world);
+        }
+        // Settled at demand 0 ⇒ gap == gap_open; the plates hang at the
+        // one-tick-lagged wrist pose, so tolerances cover the sag.
+        let (plates, _counts) = sys.debug_contact_state();
+        let gap = (plates[0][2] - plates[1][2]).abs();
+        assert!(
+            (gap - gap_open).abs() < 1e-3,
+            "open gap must follow the spec: got {gap}, want {gap_open}"
+        );
+        let b = sys.bodies.get(sys.ee_body).expect("attach body");
+        let centre = b.translation() + b.rotation().mul_vec3(Vec3::new(finger_x, 0.0, 0.0));
+        let mid = Vec3::new(
+            (plates[0][0] + plates[1][0]) * 0.5,
+            (plates[0][1] + plates[1][1]) * 0.5,
+            (plates[0][2] + plates[1][2]) * 0.5,
+        );
+        assert!(
+            (mid - centre).length() < 2e-3,
+            "plate centre must sit at finger_x along the attach link: {mid:?} vs {centre:?}"
+        );
+
+        // Close: the ramp drives the gap to gap_closed.
+        for i in 120..240u64 {
+            if let Some(t) = world.get_mut::<JointTargets>(arm) {
+                t.gripper = 1.0;
+            }
+            sys.run(&ctx(i), &mut world);
+        }
+        let (plates, _) = sys.debug_contact_state();
+        let gap = (plates[0][2] - plates[1][2]).abs();
+        assert!(
+            (gap - gap_closed).abs() < 1e-3,
+            "closed gap must follow the spec: got {gap}, want {gap_closed}"
+        );
+    }
+
+    /// A registered `mesh_uri` is an honest build error pointing at M2,
+    /// never a silently dropped collider.
+    #[test]
+    fn mesh_uri_build_fails_with_m2_pointer() {
+        let mut spec = RobotSpec::from(&ArmDescription::default());
+        spec.links[2].mesh_uri = Some("file:///panda/link2.stl".into());
+        let err = match MultibodySystem::from_robot(spec, Scene3D::default()) {
+            Err(e) => e,
+            Ok(_) => panic!("mesh collider must be refused in M0a"),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("M2"), "error must point at M2: {msg}");
+        assert!(msg.contains("mesh"), "error must name the cause: {msg}");
+
+        // And an unchanged spec rebuilds fine.
+        let clean = RobotSpec::from(&ArmDescription::default());
+        assert!(MultibodySystem::from_robot(clean, Scene3D::default()).is_ok());
+    }
+
+    /// Gripper-less robot: builds, no plates, holding stays false, and
+    /// the EE frame rides the last joint's child at its origin.
+    #[test]
+    fn gripperless_spec_has_no_plates_and_tip_at_last_link() {
+        let mut spec = RobotSpec::from(&ArmDescription::default());
+        spec.gripper = None;
+        let mut world = World::new();
+        world.insert_resource(Gravity(9.8));
+        world.insert_resource(TimeScale(1.0));
+        let arm = world.spawn();
+        world.insert(
+            arm,
+            JointTargets {
+                angles: vec![0.0; 4],
+                gripper: 0.0,
+            },
+        );
+        world.insert(arm, JointTelemetry::default());
+        let mut sys = MultibodySystem::from_robot(spec, Scene3D::default()).expect("builds");
+        for i in 0..60u64 {
+            sys.run(&ctx(i), &mut world);
+        }
+        let tel = telemetry(&world, arm);
+        assert!(!tel.holding, "no gripper ⇒ never holding");
+        // EE = the attach body origin (tip_local zero).
+        let b = sys.bodies.get(sys.ee_body).expect("ee body");
+        let t = b.translation();
+        assert!(
+            (tel.ee_pos[0] - t.x).abs() < 1e-5
+                && (tel.ee_pos[1] - t.y).abs() < 1e-5
+                && (tel.ee_pos[2] - t.z).abs() < 1e-5,
+            "EE must be the attach body origin without a gripper"
+        );
+        let (plates, _) = sys.debug_contact_state();
+        assert!(plates.iter().all(|p| p.iter().all(|v| v.is_nan())));
     }
 }
