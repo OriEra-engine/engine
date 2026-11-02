@@ -1,0 +1,31 @@
+# baselines/pick_place/act-lerobot.yaml — ACT（LeRobot）模仿学习【占位】
+method: act-lerobot
+task_id: pick_place@v1
+status: placeholder               # M2 验收 ③：`lerobot-train` 1 step 冒烟待 CI 钉 lerobot 版本后转实测
+entry: >
+  cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf --
+  --task pick_place --episodes 12 --lerobot-v3 --out out/act-data &&
+  python scripts/jsonl_to_lerobot_v21.py out/act-data/lerobot-v30 &&
+  lerobot-train --dataset.repo_id=local/act-data --dataset.root=out/act-data/lerobot-v30 --policy.type=act
+presets:
+  - name: tabletop-4dof-pick
+    spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json
+    gate: null
+eval:
+  protocol: course@v1
+  episodes: 12
+  seed0: 10000000                 # held-out 带（与 ppo-sb3 对齐）
+  success_criteria: v1
+train:
+  seeds: [1000]                   # 数据集种子（采集带）；策略训练种子按 lerobot 配置
+  demos: 12                       # 采集 12 集（91.7% 成功）作为演示集；paper 口径应 ≥100
+hyperparams:
+  policy: act
+  lerobot_version: ">=0.4"        # v3.0 数据布局；具体版本由 CI 钉
+  chunk_size: 100
+  n_obs_steps: 1
+  steps: 20000
+reference: null                   # 还没实测——不写数字
+notes: >
+  占位条目：入口与数据流已通（采集 → v3.0 树 → lerobot-train），训练/评测数字待 CI 钉版本后补；
+  评测需 Python 侧回放策略进 OrieraPickPlaceEnv（scripts/oriera_gym.py）。

@@ -47,6 +47,10 @@ pub const PROTOCOL_PAPER_V1: &str = "paper@v1";
 /// Success-semantics revision tag (`pick 松爪+静止 / push 禁 holding`
 /// is `v2`, M2 — see module docs).
 pub const SUCCESS_CRITERIA_V1: &str = "v1";
+/// `@v2` success semantics (M2): pick = zone AND released AND resting;
+/// push = zone AND no holding frame; every episode dual-reports
+/// [`SuccessView`]. New ids only — v1 tasks are read-only (P-2).
+pub const SUCCESS_CRITERIA_V2: &str = "v2";
 /// `paper@v1` minimum episode count (a Wilson interval on <100 episodes
 /// is too wide to argue with a reviewer).
 pub const PAPER_MIN_EPISODES: u32 = 100;
@@ -162,13 +166,26 @@ impl EvalProtocol {
         if self.id != PROTOCOL_COURSE_V1 && self.id != PROTOCOL_PAPER_V1 {
             return Err(format!("protocol.id：未知协议 {:?}", self.id));
         }
-        if self.success_criteria != SUCCESS_CRITERIA_V1 {
+        if self.success_criteria != SUCCESS_CRITERIA_V1 && self.success_criteria != SUCCESS_CRITERIA_V2
+        {
             return Err(format!(
-                "protocol.success_criteria：{self:?} 只认 {:?}（判据修订是 @v2，M2）",
-                SUCCESS_CRITERIA_V1
+                "protocol.success_criteria：{self:?} 只认 {SUCCESS_CRITERIA_V1:?} / {SUCCESS_CRITERIA_V2:?}（判据修订是 @v2 新任务 id，不原地改）",
             ));
         }
         Ok(())
+    }
+
+    /// Set the success-semantics revision (`"v1"` / `"v2"`), validated.
+    /// The value folds into [`Self::protocol_hash`] — criteria are part
+    /// of the experiment identity.
+    pub fn with_success_criteria(mut self, criteria: &str) -> Result<Self, String> {
+        if criteria != SUCCESS_CRITERIA_V1 && criteria != SUCCESS_CRITERIA_V2 {
+            return Err(format!(
+                "success_criteria = {criteria:?}：只认 \"v1\"（区间判据）或 \"v2\"（松爪+静止 / 禁 holding）"
+            ));
+        }
+        self.success_criteria = criteria.into();
+        Ok(self)
     }
 
     /// The protocol's parameter hash: canonical JSON of every knob,
@@ -348,6 +365,90 @@ pub fn wilson95(k: usize, n: usize) -> (f64, f64) {
         (center - half).clamp(0.0, 1.0),
         (center + half).clamp(0.0, 1.0),
     )
+}
+
+/// Per-episode dual success view (M2, review P-2): `once` = the
+/// criterion held on ANY frame of the episode, `at_end` = on the FINAL
+/// frame. v1 tasks carry `SuccessView::legacy(success)` — once and
+/// at_end collapse into the old boolean because v1 terminates on first
+/// success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SuccessView {
+    pub once: bool,
+    pub at_end: bool,
+}
+
+impl SuccessView {
+    /// The pre-M2 collapsed view (v1 tasks keep the old semantics).
+    pub fn legacy(success: bool) -> Self {
+        Self {
+            once: success,
+            at_end: success,
+        }
+    }
+}
+
+/// Both success rates over one episode set, with Wilson intervals —
+/// the eval_report.json 双报 block.
+#[derive(Debug, Clone, Serialize)]
+pub struct DualSuccessSummary {
+    pub episodes: usize,
+    /// Episodes where the criterion held on some frame.
+    pub successes_once: usize,
+    /// Episodes where it still held on the final frame.
+    pub successes_at_end: usize,
+    pub success_once_rate: f64,
+    pub success_at_end_rate: f64,
+    pub once_wilson95: (f64, f64),
+    pub at_end_wilson95: (f64, f64),
+}
+
+/// Summarize the dual view over the kept episodes (draw order).
+pub fn summarize_success(views: &[SuccessView]) -> DualSuccessSummary {
+    let once = views.iter().filter(|v| v.once).count();
+    let at_end = views.iter().filter(|v| v.at_end).count();
+    let n = views.len();
+    DualSuccessSummary {
+        episodes: n,
+        successes_once: once,
+        successes_at_end: at_end,
+        success_once_rate: once as f64 / n.max(1) as f64,
+        success_at_end_rate: at_end as f64 / n.max(1) as f64,
+        once_wilson95: wilson95(once, n),
+        at_end_wilson95: wilson95(at_end, n),
+    }
+}
+
+/// The M2 per-preset honest baseline gate (PLAN §四 M2): the threshold
+/// a scripted/numeric baseline must clear on a preset, keyed by task id
+/// and robot name. New first-version tasks get honest floors (75% /
+/// 60%) rather than a one-size 90%; the golden tabletop preset keeps
+/// 90%.
+///
+/// `None` = no gate (record only).
+pub fn baseline_gate(task_id: &str, robot_name: &str) -> Option<(f64, &'static str)> {
+    let base = task_id.split('@').next().unwrap_or(task_id);
+    match base {
+        "reach" => Some((
+            0.90,
+            "reach 是课程起点，脚本/数值基线都应打满（course@v1 同款硬闸）",
+        )),
+        "pick_place" => {
+            if robot_name.contains("tabletop-4dof") {
+                Some((
+                    0.90,
+                    "金标桌面预设：91.7% 锚不许退（走原脚本或 DLS 均需过）",
+                ))
+            } else {
+                Some((0.75, "新臂首版诚实门槛（Panda 7-DoF 数值 IK 基线）"))
+            }
+        }
+        "stack" => Some((0.75, "stack 新任务首版诚实门槛")),
+        "bin_pick" => Some((0.60, "bin_pick 新任务首版诚实门槛（料箱 prop 近似）")),
+        "drawer" => Some((0.60, "drawer 新任务首版诚实门槛（可动盒体近似 prismatic）")),
+        "push" => None,
+        _ => None,
+    }
 }
 
 /// The three fingerprint views of one episode set (M0b receipt block):
@@ -558,6 +659,72 @@ mod tests {
             "{lo} {hi}"
         );
         assert_eq!(wilson95(0, 0), (0.0, 1.0));
+    }
+
+    // --- M2: success_criteria v2 + the dual success view -----
+
+    #[test]
+    fn success_criteria_v2_is_accepted_and_hashed() {
+        let p = EvalProtocol::course(None, 1000)
+            .with_success_criteria(SUCCESS_CRITERIA_V2)
+            .unwrap();
+        assert_eq!(p.success_criteria, "v2");
+        p.validate().expect("v2 validates");
+        let v1 = EvalProtocol::course(None, 1000);
+        assert_ne!(
+            p.protocol_hash(),
+            v1.protocol_hash(),
+            "criteria are identity"
+        );
+        let err = EvalProtocol::course(None, 1000)
+            .with_success_criteria("v3")
+            .unwrap_err();
+        assert!(err.contains("v1"), "{err}");
+    }
+
+    #[test]
+    fn dual_success_summary_reports_both_views() {
+        let views = [
+            SuccessView {
+                once: true,
+                at_end: true,
+            },
+            SuccessView {
+                once: true,
+                at_end: false,
+            },
+            SuccessView::default(),
+        ];
+        let s = summarize_success(&views);
+        assert_eq!((s.episodes, s.successes_once, s.successes_at_end), (3, 2, 1));
+        assert!((s.success_once_rate - 2.0 / 3.0).abs() < 1e-12);
+        assert!((s.success_at_end_rate - 1.0 / 3.0).abs() < 1e-12);
+        assert_eq!(s.once_wilson95.0, wilson95(2, 3).0);
+    }
+
+    #[test]
+    fn legacy_view_collapses_like_v1() {
+        let v = SuccessView::legacy(true);
+        assert!(v.once && v.at_end);
+        let v = SuccessView::legacy(false);
+        assert!(!v.once && !v.at_end);
+    }
+
+    #[test]
+    fn baseline_gates_are_per_preset_and_honest() {
+        // The golden tabletop preset keeps the 90% anchor…
+        let (t, _) = baseline_gate("pick_place@v1", "tabletop-4dof").expect("tabletop gate");
+        assert_eq!(t, 0.90);
+        // …other robots get the honest 75% first-version floor…
+        let (t, _) = baseline_gate("pick_place@v1", "panda7").expect("panda gate");
+        assert_eq!(t, 0.75);
+        // …and the new families their own floors; push stays ungated.
+        for (task, want) in [("stack@v1", 0.75), ("bin_pick@v1", 0.60), ("drawer@v1", 0.60)] {
+            let (t, _) = baseline_gate(task, "tabletop-4dof").expect(task);
+            assert_eq!(t, want, "{task}");
+        }
+        assert!(baseline_gate("push@v1", "tabletop-4dof").is_none());
+        assert!(baseline_gate("fly@v9", "tabletop-4dof").is_none());
     }
 
     #[test]

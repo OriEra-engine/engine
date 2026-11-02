@@ -1,0 +1,36 @@
+{
+  "extends": "tabletop-4dof-pick",
+  "meta": {
+    "name": "stack-4dof",
+    "author": "oriera-embodied-maintainers",
+    "notes": "stack@v1：把方块 A 叠到底座 B 上（B 固定在桌面静止高度 [0.30,0.525,0]，出生即落位——goal 由 B 的实时位置 + 两半高推得，出生在空中会让判据与基线差 2.5 cm；A 出生在 x 0.17–0.21 的可达带——4 轴臂从伸直 home 折回时夹板会扫到更近处的方块，把它推进工具朝下不可达的近区，抓偏 3 cm 就叠不上）。判据：A 相对 B 的 XZ 对齐 <0.03、中心高差 ≈ 两半高和 <0.02、已松爪（指令<0.5）、静止 10 步（速度<0.01 m/s）。PLAN 原名 push-stack 收敛为 stack-4dof（push 走 push@v1/v2 单任务）——基线闸 ≥75%（新任务首版诚实门槛）",
+    "difficulty": "进阶"
+  },
+  "scene": {
+    "props": [
+      {
+        "name": "block_a",
+        "placement": {
+          "range": {
+            "x": [0.17, 0.21],
+            "y": 0.55,
+            "z": [-0.05, 0.05]
+          }
+        }
+      },
+      {
+        "name": "block_b",
+        "shape": { "kind": "cuboid", "half": [0.025, 0.025, 0.025] },
+        "phys": { "density": 400.0, "friction": 0.8 },
+        "placement": { "fixed": [0.3, 0.525, 0.0] }
+      }
+    ]
+  },
+  "task": {
+    "id": "stack@v1",
+    "params": {
+      "min_separation": 0.08,
+      "goal": { "fixed": [0.3, 0.575, 0.0] }
+    }
+  }
+}

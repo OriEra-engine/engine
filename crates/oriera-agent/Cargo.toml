@@ -90,6 +90,14 @@ path = "examples/embodied_sim_collect.rs"
 # 缺列时凡开 rigid3d 的腿构建 examples 即 E0433（PR #165 三红腿根因）。
 required-features = ["rigid3d", "spec", "urdf"]
 
+# M2: DLS 数值 IK 基线（PLAN-embodied-general §四 M2 / §9.1 P-11）——
+# 五预设 × course@v1 × 任务专属闸；同款理由必列 required-features
+# （引用 oriera_agent::{spec, ik, urdf}）。
+[[example]]
+name = "embodied_sim_baseline"
+path = "examples/embodied_sim_baseline.rs"
+required-features = ["rigid3d", "spec", "urdf"]
+
 # MJCF 全量交叉验证（out/mjcf-crosscheck，scripts/mjcf_crosscheck.py）：
 # 把 UrdfReport 逐关节/逐 link + validate_chain 报告序列化为 JSON。
 # 同款理由必列 required-features——example 引用门控模块 oriera_agent::urdf。

@@ -1,0 +1,151 @@
+{
+  "backend": "rigid3d",
+  "baseline_gate": {
+    "threshold": 0.75,
+    "verdict": "pass",
+    "why": "stack 新任务首版诚实门槛"
+  },
+  "draws": 12,
+  "dt": 0.01666666753590107,
+  "engine": "oriera-engine/0.10.0",
+  "episodes": 12,
+  "identity_hash": "834494da02895592",
+  "method": "dls-ik",
+  "protocol": {
+    "degenerate": "redraw",
+    "episodes": 12,
+    "gate": "hard90",
+    "id": "course@v1",
+    "parameter_hash": "abfa767a29a372f7",
+    "seed0": 1000,
+    "success_criteria": "v2"
+  },
+  "redraws": 0,
+  "runs": [
+    {
+      "rand": "block_a_density=521kg/m3 block_a_friction=0.80 profile=default",
+      "reward_sum": 38.489,
+      "seed": 1000,
+      "steps": 453,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "block_a_density=504kg/m3 block_a_friction=0.81 profile=default",
+      "reward_sum": 37.544,
+      "seed": 1001,
+      "steps": 447,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "block_a_density=555kg/m3 block_a_friction=0.78 profile=default",
+      "reward_sum": 36.342,
+      "seed": 1002,
+      "steps": 459,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "block_a_density=538kg/m3 block_a_friction=0.79 profile=default",
+      "reward_sum": 38.765,
+      "seed": 1003,
+      "steps": 459,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "block_a_density=590kg/m3 block_a_friction=0.76 profile=default",
+      "reward_sum": 34.301,
+      "seed": 1004,
+      "steps": 478,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "block_a_density=572kg/m3 block_a_friction=0.77 profile=default",
+      "reward_sum": 35.029,
+      "seed": 1005,
+      "steps": 484,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "block_a_density=624kg/m3 block_a_friction=0.73 profile=default",
+      "reward_sum": 36.591,
+      "seed": 1006,
+      "steps": 456,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "block_a_density=607kg/m3 block_a_friction=0.74 profile=default",
+      "reward_sum": -8.749,
+      "seed": 1007,
+      "steps": 700,
+      "success": false,
+      "success_at_end": false,
+      "success_once": false
+    },
+    {
+      "rand": "block_a_density=258kg/m3 block_a_friction=0.71 profile=default",
+      "reward_sum": 36.35,
+      "seed": 1008,
+      "steps": 475,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "block_a_density=241kg/m3 block_a_friction=0.72 profile=default",
+      "reward_sum": 36.884,
+      "seed": 1009,
+      "steps": 456,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "block_a_density=293kg/m3 block_a_friction=0.69 profile=default",
+      "reward_sum": 39.083,
+      "seed": 1010,
+      "steps": 445,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "block_a_density=276kg/m3 block_a_friction=0.70 profile=default",
+      "reward_sum": 35.961,
+      "seed": 1011,
+      "steps": 476,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    }
+  ],
+  "spec_hash": "ffc96325c54141d2",
+  "success_at_end_rate": 0.9166666666666666,
+  "success_once_rate": 0.9166666666666666,
+  "success_rate": 0.9166666666666666,
+  "successes": 11,
+  "task": "stack block A on top of block B",
+  "task_id": "stack@v1",
+  "throughput_steps_per_s": 1145.9349551243122,
+  "verify_determinism": "full",
+  "wilson95_at_end": [
+    0.646120088858883,
+    0.9851349055950829
+  ],
+  "wilson95_once": [
+    0.646120088858883,
+    0.9851349055950829
+  ]
+}

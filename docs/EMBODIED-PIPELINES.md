@@ -104,6 +104,41 @@ articulation，Rust 绑定青年期）。马达三坑（都踩过）：`motor_ax
 - **spec 库**：`specs/official/`（金标，改字段 = 新文件）+ `specs/lab/`（`extends` 覆盖层）+
   `scripts/gen_spec_index.py` → `specs/INDEX.json`（同名异 hash 报错）。
 
+### 6.2 任务族 @v2 × 新任务 × DLS 基线（M2，PLAN-embodied-general §四 M2 / §9.1 P-2/P-6/P-11/G-7/G-10）
+
+判据修订**只走新 id**（P-2：`@v2` 新增，v1 条目只读保留——`--task pick_place` /
+`pick_place@v1` 的金标 12 集 state hash 一位不动），注册表按 id 取：
+
+| id | 判据 | 备注 |
+|---|---|---|
+| `reach@v1` / `pick_place@v1` / `push@v1` | 旧语义（区间 / 区间 / 区间+抓取奖励） | 冻结 |
+| `pick_place@v2` | 在区 **且已松爪（夹爪指令 < `release_below`）且静止 `rest_steps` 步（质心速度 < `rest_speed`）** | 奖励塑形与 v1 逐字相同 |
+| `push@v2` | 在区 **且全程 `holding == false`**（任一帧抓到即判败） | 奖励去掉抓取项、抓到扣分 |
+| `reach@v2` | 同 v1 | 只为记录 `success_criteria=v2` 与 `terminate_on_success` 协议参数位 |
+| `stack@v1` | A 相对 B 的 XZ < `stack_xz_tol`、中心高差 ≈ 两半高之和 ± `stack_y_tol`、松爪、静止 | 底座 B = `scene.props[1]`（fixed），判据读 B 的**实时**位置 |
+| `bin_pick@v1` | @v2 pick 判据 | 料箱 = 四面 6 cm 重墙 prop（6000 kg/m³）近似；真 fixture / 自碰撞开关待 M3 / WP-A（TODO 在 spec `notes`） |
+| `drawer@v1` | 沿 `pull_axis` 拉出 ≥ `pull_distance`（相对**出生位**）、松爪、静止 | 面板 = 可动盒体 prop；真 prismatic fixture 在 M3 |
+
+- **阈值全进 `TaskParams`**（`terminate_on_success` / `rest_steps` / `rest_speed` / `release_below` /
+  `stack_*` / `pull_*`）：写进 spec 即进 hash——**取默认值时由 `SceneSpec::spec_hash` 规范化掉**
+  （夹爪板系朝向同款先例），金标 `c90869dcf6a04875` 不动。
+- **双报**（`oriera_agent::eval::SuccessView`）：每集 `success_once`（任一帧满足）+ `success_at_end`
+  （末帧满足）；`terminate_on_success=false` 时两者才会分开；v1 任务 `success` = once 保持旧语义。
+  `eval_report.json` 带 `success_once_rate` / `success_at_end_rate` 与各自 Wilson 区间。
+- **env 适配不动三变量枚举**：`TableTopEnv::set_task_id(id)` 以注册表项覆盖（`task_entry`），
+  `TaskKind` 只做冻结调用方（python / wasm / collect）的别名层；obs 仍 21 维（每个任务的
+  `obs_extra` 同一 9 维特权块，`ObsLayout` 从任务派生）。
+- **DLS 数值 IK**（`oriera_agent::ik`）：对任意 N-DoF `RobotSpec` 做 FK + 阻尼最小二乘
+  （数值雅可比；3 行位置 + 3 行「工具朝下」约束——4 轴恰好复现解析解约束，7 轴留 1 维
+  零空间给阻尼消解；逐步夹限位）。`embodied_sim_baseline` 用它跑五预设（collect 的 4 轴解析
+  IK 金标路一行没动）。
+- **五预设 + 任务专属闸**（`eval::baseline_gate`）：金标桌面 ≥90%、Panda/叠块 ≥75%、料箱/抽屉
+  ≥60%（新任务首版诚实门槛）；`--reference-out` 写 `results/reference/<spec_hash8>/<protocol>.json`，
+  超参/种子钉死在 `baselines/<task>/<method>.yaml`（scripted-phases / dls-ik / ppo-sb3 / act-lerobot 占位）。
+- **出图**（P-6）：`scripts/oriera_results.py aggregate runs/` → `results.parquet`（无 pandas 降级 CSV）；
+  `scripts/plot_results.py` 画均值 + **分层 bootstrap 95% CI**（seed 层 × episode 层两级重抽）+ IQM。
+- 字段中文速查表（G-7）：`crates/oriera-agent/specs/official/README.md`。
+
 ## 5. 定位声明
 
 OriEra 提供的是「便宜、可复位、可回放」的**世界层**：确定性 tick（#66）、

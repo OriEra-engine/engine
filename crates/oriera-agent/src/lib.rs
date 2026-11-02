@@ -36,6 +36,10 @@ pub mod embodied_env;
 pub mod eval;
 pub mod genai;
 pub mod goal;
+/// DLS 数值 IK（M2）：任意 N-DoF RobotSpec 的末端位置 + 工具朝向——
+/// Panda 7 轴等非 4 轴构型的脚本/数值基线共用。纯浮点，无物理依赖。
+#[cfg(feature = "spec")]
+pub mod ik;
 #[cfg(feature = "rigid3d")]
 pub mod lerobot;
 /// Run provenance manifests (M0b P-3): `run_manifest.json` writers and

@@ -1,0 +1,15 @@
+# baselines/push/scripted-phases.yaml — push@v1 × 4 轴解析 IK 接触推（金标采集路，不设闸）
+method: scripted-phases
+task_id: push@v1
+entry: >
+  cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf --
+  --task push --episodes 12 --runs-root runs
+presets:
+  - { name: tabletop-4dof-pick, spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json, gate: null }
+eval: { protocol: course@v1, episodes: 12, seed0: 1000, success_criteria: v1, verify_determinism: full }
+train: { seeds: null }
+hyperparams: { ik: analytic-4dof, phases: push_phases, dwell_ticks: [70, 60, 180, 60] }
+reference: null                   # 接触基线允许不稳：只记录（course@v1 对 push 不设硬闸）
+notes: >
+  @v2（push@v2，全程 holding==false）的 DLS 基线尚未写相位机——push 的非抓取接触推需要
+  「贴着推」的轨迹设计，留作后续；v1 路如实记录。

@@ -48,6 +48,10 @@ pub struct SpecMeta {
     pub name: String,
     pub author: Option<String>,
     pub notes: Option<String>,
+    /// Preset card label (M2, G-10): "入门 / 进阶 / 挑战". Provenance
+    /// only — never part of the hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<String>,
 }
 
 /// Which task runs (`task_registry` id, e.g. `"pick_place@v1"`) and
@@ -153,6 +157,7 @@ impl SceneSpec {
                 name: "tabletop-4dof-pick".into(),
                 author: None,
                 notes: Some("引擎默认桌面实验的规格化等价物（M0a golden）".into()),
+                difficulty: None,
             },
             robot: RobotSpec::from(&ArmDescription::default()),
             scene: SceneGraph::default(),
@@ -176,10 +181,13 @@ impl SceneSpec {
             self.dt,
             self.max_steps,
         );
-        let base = self.task.id.split('@').next().unwrap_or(&self.task.id);
-        env.task = TaskKind::parse(base)
-            .unwrap_or_else(|| panic!("spec.task.id：无法解析 {base:?}（应已被 validate 拦下）"));
+        // M2: the registry override — any versioned id (`@v2` revisions
+        // and the new families) runs without the three-variant TaskKind
+        // enum; the closest legacy alias still lands in `env.task` for
+        // the frozen callers.
         env.task_params = self.task.params;
+        env.set_task_id(&self.task.id)
+            .unwrap_or_else(|e| panic!("spec.task.id：{e}（应已被 validate 拦下）"));
         env.randomize = self.randomization.enabled;
         env.kp_jitter = self.randomization.kp_jitter;
         env.mass_jitter = self.randomization.mass_jitter;
@@ -212,6 +220,20 @@ impl SceneSpec {
         params.validate().map_err(|e| format!("spec.task.{e}"))?;
         crate::embodied_env::make_task(&self.task.id, *params)
             .map_err(|e| format!("spec.{e}"))?;
+        let base = self.task.id.split('@').next().unwrap_or(&self.task.id);
+        if base == "stack" && self.scene.props.len() < 2 {
+            return Err(format!(
+                "spec.scene.props：stack 任务至少要 2 个 prop（props[0] = 被叠的方块 A，props[1] = 底座 B；当前 {} 个）",
+                self.scene.props.len()
+            ));
+        }
+        if base == "bin_pick" && self.scene.props.len() < 5 {
+            // 料箱近似 = 4 面重墙 prop + 任务物体（真 fixture 在 M3）
+            return Err(format!(
+                "spec.scene.props：bin_pick 任务至少要 5 个 prop（props[0] = 任务物体 + 4 面料箱壁；当前 {} 个）",
+                self.scene.props.len()
+            ));
+        }
         let dof = self.robot.joints.len();
         if let Some(scale) = &self.control.action_scale {
             if scale.len() != dof {
@@ -280,9 +302,15 @@ impl SceneSpec {
             g.canonicalize_axes();
         }
         let mut v = serde_json::to_value(&canon).expect("SceneSpec serializes");
-        v.as_object_mut()
-            .expect("top level is a map")
-            .remove("meta");
+        let top = v.as_object_mut().expect("top level is a map");
+        top.remove("meta");
+        // M2 canonicalization: `task.params` M2 keys at their defaults
+        // are stripped — a spec that never heard of `rest_steps` and a
+        // spec that writes the default are the same experiment (the
+        // gripper plate-axis precedent; keeps the golden hash pinned).
+        if let Some(params) = top.get_mut("task").and_then(|t| t.get_mut("params")) {
+            crate::embodied_env::TaskParams::canonicalize_json(params);
+        }
         fold_json(v.to_string().as_bytes())
     }
 
@@ -377,6 +405,7 @@ impl SceneSpec {
                 name: "migrated-from-v1".into(),
                 author: None,
                 notes: Some("由 v1（desc/scene/task 枚举）无损迁移".into()),
+                difficulty: None,
             },
             robot: RobotSpec::from(&old.desc),
             scene: SceneGraph::from_scene3d(&old.scene),
@@ -679,8 +708,10 @@ pub fn resolve_extends_in(
 /// tag differs from the base's (`{"kind":"cylinder",…}` over
 /// `{"kind":"cuboid",…}`) replaces it outright, and so does a
 /// single-key externally tagged variant with a different key
-/// (`{"Capsule":{…}}` over `{"Box":{…}}`) — a per-key merge would leave
-/// the old variant's fields behind and trip `deny_unknown_fields`.
+/// (`{"Capsule":{…}}` over `{"Box":{…}}`, `{"fixed":[…]}` over
+/// `{"range":{…}}` — the payload may be an object, an array or a
+/// scalar) — a per-key merge would leave the old variant's fields
+/// behind and trip `deny_unknown_fields` / "expected a single key".
 #[cfg(feature = "json")]
 pub fn merge_overlay(base: &mut serde_json::Value, overlay: serde_json::Value) {
     match (base, overlay) {
@@ -689,11 +720,11 @@ pub fn merge_overlay(base: &mut serde_json::Value, overlay: serde_json::Value) {
                 (Some(bk), Some(ok)) => bk != ok,
                 _ => false,
             };
-            let variant_changes = b.len() == 1
-                && o.len() == 1
-                && b.keys().next() != o.keys().next()
-                && b.values().next().is_some_and(|v| v.is_object())
-                && o.values().next().is_some_and(|v| v.is_object());
+            // One key on both sides with different names = an externally
+            // tagged enum switching variant (Placement::Fixed/Range,
+            // LinkShape::Box/Capsule): replace, whatever the payload.
+            let variant_changes =
+                b.len() == 1 && o.len() == 1 && b.keys().next() != o.keys().next();
             if kind_changes || variant_changes {
                 *b = o;
                 return;
@@ -1038,6 +1069,7 @@ mod tests {
             "a": {"x": 1, "y": 2},
             "arr": [{"n": 1, "shape": {"kind": "cuboid", "half": [1,1,1]}}, {"n": 2}],
             "link": {"shape": {"Box": {"half": [1,2,3]}}},
+            "goal": {"range": {"x": [0.2, 0.3], "y": 0.5, "z": [-0.1, 0.1]}},
             "s": "old"
         });
         merge_overlay(
@@ -1050,6 +1082,7 @@ mod tests {
                     {"n": 3}
                 ],
                 "link": {"shape": {"Capsule": {"half_len": 1.0, "radius": 0.1}}},
+                "goal": {"fixed": [0.3, 0.6, 0.0]},
                 "s": "new"
             }),
         );
@@ -1066,6 +1099,11 @@ mod tests {
             base["link"]["shape"],
             serde_json::json!({"Capsule": {"half_len": 1.0, "radius": 0.1}}),
             "externally tagged variant replaces"
+        );
+        assert_eq!(
+            base["goal"],
+            serde_json::json!({"fixed": [0.3, 0.6, 0.0]}),
+            "Placement::Fixed (array payload) over Range replaces — M2 presets"
         );
         assert_eq!(base["s"], "new");
     }
@@ -1091,5 +1129,59 @@ mod tests {
         v["robot"]["gripper"]["gap_axis"] = serde_json::json!([1.0, 0.0, 0.0]);
         let err = SceneSpec::from_value(v).unwrap_err();
         assert!(err.contains("parallel"), "{err}");
+    }
+
+    /// M2 canonicalization: `task.params` M2 keys at their defaults do
+    /// NOT move the experiment identity; a non-default value does.
+    #[cfg(feature = "json")]
+    #[test]
+    fn m2_task_params_canonicalize_in_the_spec_hash() {
+        // Writing every M2 key at its default keeps the golden hash.
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["task"]["params"]["rest_steps"] = serde_json::json!(10);
+        v["task"]["params"]["terminate_on_success"] = serde_json::json!(true);
+        let explicit_defaults = SceneSpec::from_value(v).expect("default M2 keys parse");
+        assert_eq!(
+            explicit_defaults.spec_hash_hex(),
+            GOLDEN_SPEC_HASH_HEX,
+            "default-valued M2 keys are identity-free"
+        );
+        // a real change moves it
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["task"]["params"]["rest_steps"] = serde_json::json!(5);
+        let stricter = SceneSpec::from_value(v).expect("non-default parses");
+        assert_ne!(stricter.spec_hash_hex(), GOLDEN_SPEC_HASH_HEX);
+        // …and it round-trips through --set
+        let mut spec = golden();
+        spec.apply_sets(&["task.params.rest_steps=5".into()]).unwrap();
+        assert_eq!(spec.spec_hash(), stricter.spec_hash(), "--set == hand edit");
+    }
+
+    /// The M2 task ids run end to end through the spec path (set_task_id
+    /// override) with byte-equal obs contract.
+    #[cfg(feature = "json")]
+    #[test]
+    fn spec_with_v2_task_builds_and_reports_its_id() {
+        let mut spec = golden();
+        spec.apply_sets(&["task.id=pick_place@v2".into()]).unwrap();
+        let mut env = spec.to_env();
+        env.randomize = false;
+        assert_eq!(env.task_id(), "pick_place@v2");
+        assert_eq!(env.task_phrase(), "pick up the cube and place it at the target");
+        assert_eq!(env.spec().name, "PickPlace3D-OrieraArm-v2");
+        let obs = env.reset(7);
+        assert_eq!(obs.len(), 21, "obs contract unchanged");
+    }
+
+    /// stack needs its two props; the validator names the requirement.
+    /// (`apply_sets` re-validates, so the error surfaces there.)
+    #[cfg(feature = "json")]
+    #[test]
+    fn stack_spec_requires_two_props() {
+        let mut spec = golden();
+        let err = spec
+            .apply_sets(&["task.id=stack@v1".into()])
+            .expect_err("single-prop stack must be refused");
+        assert!(err.contains("stack") && err.contains("2 个 prop"), "{err}");
     }
 }

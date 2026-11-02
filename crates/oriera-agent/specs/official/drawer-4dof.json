@@ -1,0 +1,30 @@
+{
+  "extends": "tabletop-4dof-pick",
+  "meta": {
+    "name": "drawer-4dof",
+    "author": "oriera-embodied-maintainers",
+    "notes": "drawer@v1：抓住抽屉把手块沿 -X 拉出 ≥0.08 m，松爪静止。现引擎 fixture 只有盒体（ground/table）——抽屉 = 可动盒体 prop 近似「抽屉把手」（5 cm 方块、1 kg/L 级密度带，矮重不易被拖翻；起点 x 0.27 → 拉到 0.19，终点留在 4 轴臂工具朝下的可达带内——0.17 正卡在肩限位边上，3/12 集差 1 mm 停住），真 prismatic fixture 在 M3（见 embodied_env.rs DrawerTask 注释）。基线闸 ≥60%（首版诚实门槛）",
+    "difficulty": "进阶"
+  },
+  "scene": {
+    "props": [
+      {
+        "name": "drawer_handle",
+        "shape": { "kind": "cuboid", "half": [0.025, 0.025, 0.025] },
+        "phys": { "density": 1000.0, "friction": 0.8 },
+        "placement": { "fixed": [0.27, 0.525, 0.0] }
+      }
+    ]
+  },
+  "task": {
+    "id": "drawer@v1",
+    "params": {
+      "pull_axis": [-1.0, 0.0, 0.0],
+      "pull_distance": 0.08,
+      "goal": { "fixed": [0.19, 0.525, 0.0] }
+    }
+  },
+  "randomization": {
+    "prop_density": [800.0, 1200.0]
+  }
+}

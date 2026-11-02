@@ -237,6 +237,30 @@ spec 库（P-9）：官方金标在 `crates/oriera-agent/specs/official/`（改�
   成功率 0%：抓取的奖励鸿沟靠密集塑形填不平，正道是 IL 路线（脚本
   采集 91.7% 数据 → ACT/π0 微调）或 RL 加课程表/HER（进阶作业）。
 
+- **作业基线（M2：五预设 × DLS 数值 IK）**：采集脚本之外还有一条
+  「评测专用」入口 `embodied_sim_baseline`——对官方五预设
+  （`crates/oriera-agent/specs/official/`：金标桌面抓放、Panda 7 轴
+  抓放、叠块、料箱抓取、抽屉拉出）各跑 12 集，DLS 数值 IK 相位机
+  （任意 N-DoF，Panda 靠它），输出 `success_once` / `success_at_end`
+  双报 + Wilson 95% CI，并按任务专属闸给 PASS/FAIL（金标桌面 ≥90%，
+  Panda/叠块 ≥75%，料箱/抽屉 ≥60%——新任务首版的诚实门槛，达不到
+  如实报数字）。字段含义见 `specs/official/README.md` 的字段中文速查表：
+
+  ```bash
+  cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf -- \
+    --spec crates/oriera-agent/specs/official/stack-4dof.json --protocol course@v1 \
+    --reference-out results/reference
+  ```
+
+  多组实验跑完后聚合出图（行 = spec_hash × method × seed）：
+
+  ```bash
+  python scripts/oriera_results.py aggregate runs/ --out out/results/results.parquet
+  python scripts/plot_results.py out/results/results.parquet --out-dir out/results/plots
+  ```
+
+  （没装 pandas/matplotlib 会自动降级 CSV——列名一致，先出数再补图。）
+
 ## 6. 评测规范与思考题
 
 - **规范**：≥12 集 + Wilson 95% CI；引用引擎指纹回执证明可复现；
