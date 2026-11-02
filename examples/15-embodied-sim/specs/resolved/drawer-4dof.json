@@ -1,0 +1,390 @@
+{
+  "schema": "oriera.scene/2",
+  "meta": {
+    "name": "drawer-4dof",
+    "author": "oriera-embodied-maintainers",
+    "notes": "drawer@v1：抓住抽屉把手块沿 -X 拉出 ≥0.08 m，松爪静止。现引擎 fixture 只有盒体（ground/table）——抽屉 = 可动盒体 prop 近似「抽屉把手」（5 cm 方块、1 kg/L 级密度带，矮重不易被拖翻；起点 x 0.27 → 拉到 0.19，终点留在 4 轴臂工具朝下的可达带内——0.17 正卡在肩限位边上，3/12 集差 1 mm 停住），真 prismatic fixture 在 M3（见 embodied_env.rs DrawerTask 注释）。基线闸 ≥60%（首版诚实门槛）",
+    "difficulty": "进阶"
+  },
+  "robot": {
+    "name": "tabletop-4dof",
+    "base": [
+      0.02,
+      0.5,
+      0
+    ],
+    "links": [
+      {
+        "name": "base",
+        "shape": {
+          "Box": {
+            "half": [
+              0.0396,
+              0.06,
+              0.0396
+            ]
+          }
+        },
+        "origin": [
+          0.02,
+          0.56,
+          0
+        ],
+        "collider_offset": [
+          0,
+          0,
+          0
+        ],
+        "density": 1,
+        "friction": 0.5,
+        "added_mass": 0,
+        "mesh_uri": null
+      },
+      {
+        "name": "yaw_carrier",
+        "shape": {
+          "Box": {
+            "half": [
+              0.015,
+              0.015,
+              0.015
+            ]
+          }
+        },
+        "origin": [
+          0.02,
+          0.62,
+          0
+        ],
+        "collider_offset": [
+          0,
+          0,
+          0
+        ],
+        "density": 1500,
+        "friction": 0.7,
+        "added_mass": 0.2,
+        "mesh_uri": null
+      },
+      {
+        "name": "upper_arm",
+        "shape": {
+          "Box": {
+            "half": [
+              0.1,
+              0.022,
+              0.022
+            ]
+          }
+        },
+        "origin": [
+          0.02,
+          0.62,
+          0
+        ],
+        "collider_offset": [
+          0.1,
+          0,
+          0
+        ],
+        "density": 1500,
+        "friction": 0.7,
+        "added_mass": 0.2,
+        "mesh_uri": null
+      },
+      {
+        "name": "forearm",
+        "shape": {
+          "Box": {
+            "half": [
+              0.09,
+              0.022,
+              0.022
+            ]
+          }
+        },
+        "origin": [
+          0.22,
+          0.62,
+          0
+        ],
+        "collider_offset": [
+          0.09,
+          0,
+          0
+        ],
+        "density": 1500,
+        "friction": 0.7,
+        "added_mass": 0.2,
+        "mesh_uri": null
+      },
+      {
+        "name": "wrist",
+        "shape": {
+          "Box": {
+            "half": [
+              0.045,
+              0.022,
+              0.022
+            ]
+          }
+        },
+        "origin": [
+          0.4,
+          0.62,
+          0
+        ],
+        "collider_offset": [
+          0.045,
+          0,
+          0
+        ],
+        "density": 1500,
+        "friction": 0.7,
+        "added_mass": 0.2,
+        "mesh_uri": null
+      }
+    ],
+    "joints": [
+      {
+        "name": "base_yaw",
+        "parent_link": 0,
+        "child_link": 1,
+        "anchor": [
+          0,
+          0.06,
+          0
+        ],
+        "axis": [
+          0,
+          1,
+          0
+        ],
+        "limits": [
+          -3.1415927,
+          3.1415927
+        ],
+        "effort": null,
+        "velocity_limit": null,
+        "kp": 60,
+        "kd": 4,
+        "armature": 0.02,
+        "damping": 0.05
+      },
+      {
+        "name": "shoulder",
+        "parent_link": 1,
+        "child_link": 2,
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "limits": [
+          -0.35,
+          1.45
+        ],
+        "effort": null,
+        "velocity_limit": null,
+        "kp": 60,
+        "kd": 4,
+        "armature": 0.02,
+        "damping": 0.05
+      },
+      {
+        "name": "elbow",
+        "parent_link": 2,
+        "child_link": 3,
+        "anchor": [
+          0.2,
+          0,
+          0
+        ],
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "limits": [
+          -2.5,
+          0.35
+        ],
+        "effort": null,
+        "velocity_limit": null,
+        "kp": 60,
+        "kd": 4,
+        "armature": 0.02,
+        "damping": 0.05
+      },
+      {
+        "name": "wrist_pitch",
+        "parent_link": 3,
+        "child_link": 4,
+        "anchor": [
+          0.18,
+          0,
+          0
+        ],
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "limits": [
+          -2,
+          2
+        ],
+        "effort": null,
+        "velocity_limit": null,
+        "kp": 60,
+        "kd": 4,
+        "armature": 0.02,
+        "damping": 0.05
+      }
+    ],
+    "gripper": {
+      "attach_link": 4,
+      "finger_x": 0.135,
+      "tcp_offset": [
+        0.09,
+        0,
+        0
+      ],
+      "finger_half": [
+        0.03,
+        0.045,
+        0.006
+      ],
+      "gap_open": 0.075,
+      "gap_closed": 0.046,
+      "friction": 1.4,
+      "effort": 20,
+      "gap_rate": 0.004,
+      "kind": "ParallelPlates"
+    },
+    "home": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "mass_scale": 1,
+    "action_scale": [
+      2,
+      2,
+      2,
+      2
+    ]
+  },
+  "scene": {
+    "fixtures": [
+      {
+        "name": "ground",
+        "center": [
+          0,
+          -0.05,
+          0
+        ],
+        "half": [
+          2,
+          0.05,
+          1.5
+        ],
+        "friction": 0.9
+      },
+      {
+        "name": "table",
+        "center": [
+          0.32,
+          0.25,
+          0
+        ],
+        "half": [
+          0.28,
+          0.25,
+          0.32
+        ],
+        "friction": 0.9
+      }
+    ],
+    "props": [
+      {
+        "name": "drawer_handle",
+        "shape": {
+          "kind": "cuboid",
+          "half": [
+            0.025,
+            0.025,
+            0.025
+          ]
+        },
+        "phys": {
+          "density": 1000,
+          "friction": 0.8
+        },
+        "placement": {
+          "fixed": [
+            0.27,
+            0.525,
+            0
+          ]
+        }
+      }
+    ]
+  },
+  "task": {
+    "id": "drawer@v1",
+    "params": {
+      "goal_xz_tol": 0.09,
+      "goal_y_min": 0.5,
+      "goal_y_max": 0.62,
+      "reach_radius": 0.055,
+      "min_separation": 0.12,
+      "max_redraws": 8,
+      "goal": {
+        "fixed": [
+          0.19,
+          0.525,
+          0
+        ]
+      },
+      "pull_axis": [
+        -1,
+        0,
+        0
+      ],
+      "pull_distance": 0.08
+    }
+  },
+  "control": {
+    "mode": "joint_pos",
+    "action_scale": null
+  },
+  "dt": 0.016666668,
+  "max_steps": 700,
+  "randomization": {
+    "enabled": true,
+    "kp_jitter": 0,
+    "mass_jitter": 0,
+    "obs_noise": 0,
+    "prop_density": [
+      800,
+      1200
+    ],
+    "prop_friction": [
+      0.5,
+      1.1
+    ]
+  },
+  "physics": {
+    "solver_iterations": null,
+    "substeps": null,
+    "contact_softness_hz": null,
+    "warmstart_coefficient": null
+  }
+}

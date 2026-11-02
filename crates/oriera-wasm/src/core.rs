@@ -469,15 +469,28 @@ impl SimCore {
                 "right": pose_json(&right),
             })
         });
-        let prop0 = self.env.scene.props.first().map(|p| {
-            serde_json::json!({
-                "name": p.name,
-                "pos": self.env.cube_pos(),
-                // HEAD API gap: Pose3.rot is not public — identity.
-                "rot": Pose::IDENTITY_ROT,
-                "rot_known": false,
+        // 全量 props（M2-WPC 集成：stack 的 B 块 / bin 四壁都要渲染）
+        let props: Vec<_> = self
+            .env
+            .scene
+            .props
+            .iter()
+            .enumerate()
+            .map(|(i, p)| match self.env.prop_pose(i) {
+                Some(pose) => serde_json::json!({
+                    "name": p.name,
+                    "pos": pose.pos,
+                    "rot": pose.rot,
+                    "rot_known": true,
+                }),
+                None => serde_json::json!({
+                    "name": p.name,
+                    "pos": [0.0, 0.0, 0.0],
+                    "rot": Pose::IDENTITY_ROT,
+                    "rot_known": false,
+                }),
             })
-        });
+            .collect();
         serde_json::json!({
             "tick": self.tick,
             "steps": self.steps,
@@ -486,7 +499,7 @@ impl SimCore {
             "ee": pose_json(&ee),
             "ee_telemetry": self.env.ee_pos(),
             "fingers": fingers,
-            "props": prop0.into_iter().collect::<Vec<_>>(),
+            "props": props,
             "goal": self.env.goal(),
             "holding": self.env.holding(),
             "gripper": self.gripper_cmd,

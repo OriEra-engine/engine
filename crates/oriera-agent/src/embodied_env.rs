@@ -1840,6 +1840,8 @@ pub struct TableTopEnv {
     obj: Entity,
     /// Second prop entity (`scene.props[1]` — the stack base).
     obj1: Option<Entity>,
+    /// All prop entities in `scene.props` order（M2 渲染全量 poses 用）。
+    prop_ents: Vec<Entity>,
     rng: Lcg,
     steps: u64,
     was_holding: bool,
@@ -1932,6 +1934,7 @@ impl TableTopEnv {
                 generation: 0,
             },
             obj1: None,
+            prop_ents: Vec::new(),
             rng: Lcg::new(1),
             steps: 0,
             was_holding: false,
@@ -2271,6 +2274,7 @@ impl EmbodiedEnv for TableTopEnv {
             },
         );
         self.world.insert(self.arm, JointTelemetry::default());
+        self.prop_ents.clear();
         for (i, prop) in self.scene.props.iter().enumerate() {
             let e = self.world.spawn();
             self.world.insert(
@@ -2296,6 +2300,7 @@ impl EmbodiedEnv for TableTopEnv {
             } else if i == 1 {
                 self.obj1 = Some(e);
             }
+            self.prop_ents.push(e);
         }
         self.world.insert_resource(self.physics);
         self.sys = MultibodySystem::from_robot(self.robot_working.clone(), self.scene.to_scene3d())
@@ -2470,6 +2475,16 @@ impl TableTopEnv {
             .and_then(|e| self.world.get::<Pose3>(e))
             .map(|p| p.pos)
             .unwrap_or([0.0; 3])
+    }
+
+    /// 姿态快照（M2 渲染全量 props 用；rot 自 WPA 起公开）。
+    pub fn prop_pose(&self, i: usize) -> Option<Pose3> {
+        self.prop_ents.get(i).and_then(|e| self.world.get::<Pose3>(*e)).copied()
+    }
+
+    /// 场景 prop 总数（含任务对象）。
+    pub fn prop_count(&self) -> usize {
+        self.prop_ents.len()
     }
 
     /// End-effector position (introspection for the reach baselines).

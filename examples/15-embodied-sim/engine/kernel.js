@@ -135,11 +135,17 @@ function syncVisuals() {
     K.visuals.plateR.position.fromArray(p.fingers.right.pos);
     K.visuals.plateR.quaternion.fromArray(p.fingers.right.rot);
   }
+  // 全量 props（M2-WPC 集成：rot 自 WPA 起公开，rot_known=true）
+  (K.visuals.props || []).forEach((mesh, i) => {
+    const pp = p.props[i];
+    if (!pp) return;
+    mesh.position.fromArray(pp.pos);
+    if (pp.rot_known) mesh.quaternion.fromArray(pp.rot);
+  });
   if (K.visuals.cube && p.props.length) {
-    // 已知缺口（见 docs/WASM-RENDERER.md）：HEAD 公开 API 不暴露
-    // prop 旋转（Pose3.rot 私有），方块姿态按恒等渲染——位置是精确的。
     K.visuals.cube.position.fromArray(p.props[0].pos);
-    K.visuals.cube.quaternion.set(0, 0, 0, 1);
+    if (p.props[0].rot_known) K.visuals.cube.quaternion.fromArray(p.props[0].rot);
+    else K.visuals.cube.quaternion.set(0, 0, 0, 1);
   }
   if (K.visuals.goal) K.visuals.goal.position.set(p.goal[0], 0.501, p.goal[2]);
   if (K.visuals.beam) K.visuals.beam.position.set(p.goal[0], 0.66, p.goal[2]);
@@ -160,6 +166,7 @@ function buildSceneFromSpec(scene) {
     }
   }
   K.links = [];
+  K.visuals.props = []; // 换装重建：prop mesh 数组随 robot 组一并退役
 
   // fixtures：ground（地板贴图）/ 其他（桌面/箱子——桌面走木纹理）
   const mat = (c, r = 0.8, m = 0.0) => {
@@ -274,6 +281,7 @@ function buildSceneFromSpec(scene) {
     const mesh = new THREE.Mesh(geo, mat(0xffd479));
     mesh.castShadow = mesh.receiveShadow = true;
     if (prop === K.spec.scene.props[0]) K.visuals.cube = mesh;
+    (K.visuals.props ||= []).push(mesh); // 与 spec.scene.props 同序（全量渲染）
     robot.add(mesh);
   }
   robot.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
@@ -443,7 +451,15 @@ export async function boot(viewport) {
   });
   const btn = (id, fn) => document.getElementById(id).addEventListener("click", fn);
   btn("btn-reset", () => { envReset((Math.random() * 1e9) | 0); log.textContent = "已重置（随机种子）"; post({ type: "state", note: "reset" }); });
-  btn("btn-policy", () => { K.policyMode = true; K.policyStep = 0; log.textContent = "脚本策略运行中…"; });
+  // JS 解析 ik 是 4 轴闭式解——非 4 轴臂（Panda 等）改用 CLI 基线
+  const canRunJsPolicy = () => {
+    if (K.dof !== 4) {
+      log.textContent = "脚本策略仅支持 4 轴臂；本预设请用 CLI 基线：cargo run -p oriera-agent --example embodied_sim_baseline -- --spec specs/official/<预设>.json";
+      return false;
+    }
+    return true;
+  };
+  btn("btn-policy", () => { if (!canRunJsPolicy()) return; K.policyMode = true; K.policyStep = 0; log.textContent = "脚本策略运行中…"; });
   btn("btn-rec", (e) => {
     K.recording = !K.recording;
     e.target.textContent = K.recording ? "■ 停止录制" : "● 开始录制";
@@ -495,7 +511,7 @@ export async function boot(viewport) {
     const m = e.data;
     if (!m || m.source !== "oriera-sim" || !m.cmd) return;
     if (m.cmd === "reset") envReset(m.seed ?? ((Math.random() * 1e9) | 0));
-    else if (m.cmd === "policy") { K.policyMode = true; K.policyStep = 0; if (m.source === "wasm") K.policySource = "wasm"; }
+    else if (m.cmd === "policy") { if (!canRunJsPolicy()) return; K.policyMode = true; K.policyStep = 0; if (m.source === "wasm") K.policySource = "wasm"; }
     else if (m.cmd === "grip") K.gripper = m.value;
     else if (m.cmd === "teleop") { K.policyMode = false; for (let i = 0; i < K.dof; i++) K.targets[i] = m.angles[i]; K.gripper = m.gripper ?? K.gripper; }
     else if (m.cmd === "record") document.getElementById("btn-rec").click();
