@@ -7,8 +7,7 @@
 <script type="importmap">
 {
   "imports": {
-    "three": "./vendor/three.module.js",
-    "rapier": "./vendor/rapier.mjs"
+    "three": "./vendor/three.module.js"
   }
 }
 </script>
@@ -54,7 +53,7 @@
     <h1>具身仿真台 · 桌面抓放</h1>
     <div class="sub">键盘或右侧滑条遥控机械臂，或点「▶ 脚本策略演示」看它自己把方块放进绿圈</div>
   </div>
-  <span class="tag">工程信息：example/15-embodied-sim · JS 镜像内核 ↔ Rust oriera_agent::embodied_env 契约</span>
+  <span class="tag">工程信息：example/15-embodied-sim · oriera-wasm（与 Rust CLI 同一份物理）↔ oriera_agent::embodied_env</span>
 </header>
 <div id="toolbar">
   <button class="primary" id="btn-reset">↺ 重置（随机种子）</button>
@@ -65,7 +64,7 @@
 </div>
 <div id="main">
   <div id="viewport">
-    <div id="load"><div class="msg">正在加载 rapier3d 物理内核（首次约 2 秒）…</div></div>
+    <div id="load"><div class="msg">正在加载 OriEra 物理内核（wasm，与 CLI 同一份物理；首次约 2 秒）…</div></div>
   </div>
   <div id="side">
     <h3>关节遥操作 <span class="kbd">Q/A W/S E/D R/F</span></h3>

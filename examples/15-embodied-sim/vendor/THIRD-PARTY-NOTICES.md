@@ -6,11 +6,12 @@ OriEra; versions pinned at vendoring time, 2026-10-29):
 | File | Project | Version | License | Source |
 |---|---|---|---|---|
 | `three.module.js` | three.js | r160 | MIT © 2010-2023 three.js authors | https://github.com/mrdoob/three.js (SPDX header in file) |
-| `rapier.mjs` | rapier3d-compat | 0.21.0 | Apache-2.0 © 2019-2024 Dimforge | https://github.com/dimforge/rapier (npm @dimforge/rapier3d-compat) |
-| `rapier_wasm3d_bg.wasm` | rapier3d (wasm-bindgen build) | 0.21.0 | Apache-2.0 © 2019-2024 Dimforge | same npm package |
+| `oriera/oriera_wasm_bg.wasm` | OriEra engine (`oriera-wasm`, compiles `oriera-subsys`/rapier3d 0.36) | 0.10.0 | Apache-2.0 © 2026 OriEra; rapier3d Apache-2.0 © 2019-2024 Dimforge | built from this repo — rebuild: `cargo build -p oriera-wasm --target wasm32-unknown-unknown --release` + glue (docs/WASM-RENDERER.md §2) |
 
-Re-vendor with: `npm pack @dimforge/rapier3d-compat@<ver>` (dist/rapier.mjs
-+ dist/rapier_wasm3d_bg.wasm) and the matching three.js module build.
+> 2026-11-02（M1）：rapier3d-compat 0.21 的 `rapier.mjs`/`rapier_wasm3d_bg.wasm`
+> 已退役删除——物理改由仓库自身编译的 `oriera_wasm_bg.wasm`（同一份
+> Rust multibody 代码，native 与浏览器同源）。Re-vendor three.js 用
+> `npm pack three@0.160` 取 module build；wasm 重建见上。
 
 ## Vendored examples/jsm modules (three.js r160)
 

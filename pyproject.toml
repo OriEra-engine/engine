@@ -10,8 +10,11 @@ license = "Apache-2.0"
 requires-python = ">=3.10"
 
 [tool.maturin]
+# feature 名以 crates/oriera-agent/Cargo.toml 的 [features] 为准（`python`，
+# 不是 "pyo3/python"——M1 wheel 实测勘误 2026-11-02）。
 module-name = "oriera_sim"
-features = ["pyo3/python"]
+features = ["python", "spec"]
 manifest-path = "crates/oriera-agent/Cargo.toml"
-python-source = "scripts"
+# maturin 要求 python-source 指向一个真实包目录（oriera_gym.py 是模块
+# 文件不是包）——改用 include 平铺进 wheel 根（venv 冒烟实测可行）。
 include = ["scripts/oriera_gym.py"]

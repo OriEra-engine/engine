@@ -1,17 +1,19 @@
-// OriEra 具身仿真台 · JS 镜像内核（example/15-embodied-sim）。
+// OriEra 具身仿真台 · 渲染器内核（example/15-embodied-sim）。
 //
-// 与 Rust 真源逐常量对照：crates/oriera-subsys/src/rigid3d.rs（场景/机械臂/
-// 马达/抓取）× crates/oriera-agent/src/embodied_env.rs（PickPlace3D 任务/
-// 观测/奖励）× examples/embodied_sim_collect.rs（IK 基线策略）。浏览器里
-// 跑 rapier3d（wasm）——同一物理家族；确定性回执的真源在 Rust 侧
-// （with_fixed_dt + sim_fingerprint），本内核是交互镜像，不承诺逐位一致。
+// M1（PLAN-embodied-general §3.2「一套物理，多个前端」）：本文件不再是
+// Rust 引擎的 JS 镜像——物理、奖励、任务判定、随机化、指纹全部来自
+// vendor/oriera/ 的 oriera-wasm（与 Rust CLI / Python wheel 同一份
+// TableTopEnv）。这里只剩：three.js 渲染、交互（键盘/滑条/相机）、
+// 录制与导出、CDP 钩子，以及一段「渲染层策略」（PHASES+ik，仅喂动作，
+// 不参与判定）。同 spec 同 seed ⇒ 浏览器与 CLI 指纹逐位一致
+// （tools/wasm_golden_check.mjs 逐集验收）。
 //
 // postMessage 桥（iframe 内嵌于 Studio Sim 工作台时）：
-//   父→子 {source:"oriera-sim", cmd:"reset"|"policy"|"grip"|"record"|"export", ...}
+//   父→子 {source:"oriera-sim", cmd:"reset"|"policy"|"grip"|"record"|"export"|"spec", ...}
 //   子→父 {source:"oriera-sim", type:"state"|"episodes", ...}
 
 import * as THREE from "three";
-import RAPIER from "rapier";
+import init, { OrieraSim } from "../vendor/oriera/oriera_wasm.js";
 import { EffectComposer } from "../vendor/jsm/post/EffectComposer.js";
 import { RenderPass } from "../vendor/jsm/post/RenderPass.js";
 import { UnrealBloomPass } from "../vendor/jsm/post/UnrealBloomPass.js";
@@ -19,387 +21,263 @@ import { OutputPass } from "../vendor/jsm/post/OutputPass.js";
 import { RoomEnvironment } from "../vendor/jsm/environments/RoomEnvironment.js";
 import { RGBELoader } from "../vendor/jsm/loaders/RGBELoader.js";
 
-// ── 场景与机械臂常量（对照 ArmDescription / Scene3D / PickPlace3D）──
-const DT = 1 / 60;
-// 马达增益求解器代偿（前台验证 2026-11-01 实测定参）：wasm 0.21 的 JS
-// 绑定不暴露 multibody 马达（jointConfigureMotor* 只挂 ImpulseJointSet），
-// 只能用 impulse 链；其锁定自由度在重力负载下软化——kp=DESC.kp(60) 时
-// 肩部抬臂（重力反向）稳态塌到 -0.99 rad、命令 1.086 只到 0.79，臂
-// 永远够不到方块（12 集前台实测成功率 27% vs Rust 91.7% 的根因）。
-// motor_probe4/5 扫描定参：iters=100 + kp×16/kd30 → 误差 0.087 rad、
-// 振荡 0（kd 过大过阻尼反而劣化）。DESC 契约值不动，parity 守卫仍锚
-// Rust 侧 kp60/kd4；此处代偿只存在于 JS 马达配置层。
-const MOTOR_KP = 960; // DESC.kp × 16
-const MOTOR_KD = 30;
-const SUBSTEPS = 2;
-const DESC = {
-  base: [0.02, 0.5, 0.0],
-  shoulderHeight: 0.12,
-  links: [0.20, 0.18, 0.09],
-  radius: 0.022,
-  limits: [
-    [-Math.PI, Math.PI],
-    [-0.35, 1.45],
-    [-2.10, 0.35],
-    [-2.00, 2.00],
-  ],
-  kp: 60,
-  kd: 4,
-  maxForce: 80,
-};
-const JOINT_NAMES = ["base_yaw", "shoulder", "elbow", "wrist_pitch", "wrist_roll"];
-const PROP_HALF = 0.025;
-// 接触抓取夹板（与 Rust rigid3d.rs round-4 同参数）：
-// 运动学薄板悬垂于工具中心点之外，摩擦承载，方块全程 Dynamic。
-const FINGER_HALF = [0.030, 0.045, 0.006]; // 板顶恒≤尖端，不铲方块顶
-const FINGER_X = 0.135; // 板心 = 腕 + 旋转*(0.135,0,0)：TCP 外 4.5cm
-const FINGER_GAP_OPEN = 0.075;
-const FINGER_GAP_CLOSED = 0.046;
-const FINGER_FRICTION = 1.4;
-const GRASP_RADIUS = 0.06;
-const TABLE = { center: [0.32, 0.25, 0.0], half: [0.28, 0.25, 0.32] };
-const OBJ_RANGE = { x: [0.14, 0.22], z: [-0.10, 0.10] };
-const GOAL_RANGE = { x: [0.24, 0.31], z: [-0.08, 0.08] };
-const ZONE_RADIUS = 0.09;
-const SETTLE_TICKS = 45;
-const MAX_STEPS = 700;
-const TASK_PHRASE = "pick up the cube and place it at the target";
-const OBS_NAMES = [
-  "j0_yaw","j1_shoulder","j2_elbow","j3_wrist","qd0","qd1","qd2","qd3","gripper",
-  "ee_x","ee_y","ee_z","obj_rel_x","obj_rel_y","obj_rel_z",
-  "goal_rel_x","goal_rel_y","goal_rel_z","holding","obj_height","dist_ee_obj",
-];
-const ACTION_NAMES = ["tgt_j0_yaw", "tgt_j1_shoulder", "tgt_j2_elbow", "tgt_j3_wrist", "gripper"];
-
-// ── 确定性 LCG（与 Rust Lcg 同常数）──
-function lcgNext(state, lo, hi) {
-  state.s = (BigInt.asUintN(64, state.s * 6364136223846793005n) + 1442695040888963407n) & 0xffffffffffffffffn;
-  const f = Number(state.s >> 33n) / 4294967295;
-  return lo + f * (hi - lo);
-}
-
-// ── IK 与阶段策略（对照 embodied_sim_collect.rs）──
-function ik(target) {
-  const [l1, l2] = [DESC.links[0], DESC.links[1]];
-  const shoulderY = DESC.base[1] + DESC.shoulderHeight;
-  const dx = target[0] - DESC.base[0];
-  const dz = target[2] - DESC.base[2];
-  const yaw = Math.atan2(-dz, dx);
-  const d = Math.min(Math.max(Math.hypot(dx, dz), 0.06), l1 + l2 - 0.005);
-  const h = Math.min(Math.max(target[1] + DESC.links[2] - shoulderY, -0.38), 0.30);
-  let cosE = (d * d + h * h - l1 * l1 - l2 * l2) / (2 * l1 * l2);
-  cosE = Math.min(Math.max(cosE, -1), 1);
-  const elbow = -Math.acos(cosE);
-  const shoulder = Math.atan2(h, d) - Math.atan2(l2 * Math.sin(elbow), l1 + l2 * Math.cos(elbow));
-  const wrist = -Math.PI / 2 - shoulder - elbow;
-  const cl = (v, i) => Math.min(Math.max(v, DESC.limits[i][0]), DESC.limits[i][1]);
-  return [cl(yaw, 0), cl(shoulder, 1), cl(elbow, 2), cl(wrist, 3)];
-}
+// ── 渲染层策略（对照 examples/embodied_sim_collect.rs round-4）──────
+// 这些只「喂目标角」，不参与奖励/判定——那在 wasm 里。D 为了紧贴
+// Rust f32 的 IK，逐运算 Math.fround（f64 双精度中间值舍回 f32）。
+const f32 = Math.fround;
 const above = (p, h) => [p[0], p[1] + h, p[2]];
-// PHASES 对齐 Rust round-4（embodied_sim_collect.rs）：下探 0.025 +
-// 两段提升 + 落回原位再松开——与 Rust 91.7% 同策略。
 const PHASES = [
   { grip: 0, ticks: 70, target: (o) => above(o, 0.12) },
-  { grip: 0, ticks: 60, target: (o) => above(o, 0.025) },
-  { grip: 1, ticks: 40, target: (o) => above(o, 0.025) },
-  { grip: 1, ticks: 50, target: (o) => above(o, 0.10) },
-  { grip: 1, ticks: 60, target: (o) => above(o, 0.20) },
+  { grip: 0, ticks: 60, target: (o) => above(o, 0.030) },
+  { grip: 1, ticks: 40, target: (o) => above(o, 0.030) },
+  { grip: 1, ticks: 70, target: (o) => above(o, 0.20) },
   { grip: 1, ticks: 95, target: (_o, g) => above(g, 0.20) },
   { grip: 1, ticks: 70, target: (_o, g) => above(g, 0.06) },
   { grip: 0, ticks: 35, target: (_o, g) => above(g, 0.06) },
   { grip: 0, ticks: 45, target: (_o, g) => above(g, 0.22) },
 ];
 
+// IK 臂参数从 spec 提取（与 Rust IkArm::from_robot 同口径）：底座、
+// 肩高（肩连杆 origin.y）、肩-肘/肘-腕锚距、TCP 偏移、关节限位。
+function ikArmFromSpec(spec) {
+  const j = spec.robot.joints;
+  if (j.length !== 4) return null;
+  const g = spec.robot.gripper;
+  if (!g) return null;
+  const shoulderLink = j[1].child_link;
+  return {
+    base: spec.robot.base,
+    shoulderY: spec.robot.links[shoulderLink].origin[1],
+    links: [j[2].anchor[0], j[3].anchor[0], g.tcp_offset[0]],
+    limits: j.map((x) => x.limits),
+  };
+}
+
+// 解析 IK（4 轴：底座回转 + 平面 2R + 腕俯仰朝下），f32 逐位仿 Rust。
+function ik(arm, target) {
+  const [l1, l2] = arm.links;
+  const shoulderY = arm.shoulderY;
+  const dx = f32(target[0] - arm.base[0]);
+  const dz = f32(target[2] - arm.base[2]);
+  const yaw = f32(Math.atan2(-dz, dx));
+  const d = f32(Math.min(Math.max(f32(Math.hypot(dx, dz)), 0.06), f32(l1 + l2 - 0.005)));
+  const h = f32(Math.min(Math.max(f32(target[1] + arm.links[2] - shoulderY), -0.38), 0.30));
+  let cosE = f32((f32(f32(f32(d * d) + f32(h * h)) - f32(f32(l1 * l1) + f32(l2 * l2))) / f32(2 * l1 * l2)));
+  cosE = Math.min(Math.max(cosE, -1), 1);
+  const elbow = f32(-Math.acos(cosE));
+  const shoulder = f32(Math.atan2(h, d) - Math.atan2(f32(l2 * Math.sin(elbow)), f32(l1 + f32(l2 * Math.cos(elbow)))));
+  const wrist = f32(f32(-Math.PI / 2 - shoulder) - elbow);
+  const cl = (v, i) => Math.min(Math.max(v, arm.limits[i][0]), arm.limits[i][1]);
+  return [cl(yaw, 0), cl(shoulder, 1), cl(elbow, 2), cl(wrist, 3)];
+}
+
+// 开环固定节拍相位机（与 Rust policy() 同形——step 计数器对累计
+// ticks 判段；收敛门控是旧 JS 物理的代偿，已随物理退役）。
+function policyTick(phases, step) {
+  let ticks = 0;
+  for (let i = 0; i < phases.length; i++) {
+    ticks += phases[i].ticks;
+    if (step < ticks) return i;
+  }
+  return -1;
+}
+
 // ── 内核状态 ─
 const K = {
-  world: null, joints: [], bodies: {}, visuals: {},
-  targets: [0, 0, 0, 0], gripper: 0, lastCmd: [NaN, NaN, NaN, NaN],
-  prevAngles: [0, 0, 0, 0], lastVel: [0, 0, 0, 0], lastEE: [0, 0, 0],
-  holding: false, _lastHolding: false,
-  fingerL: null, fingerR: null, gapNow: FINGER_GAP_OPEN,
-  goal: [0.28, 0.5, 0], rng: { s: 1n }, tick: 0, steps: 0, wasHolding: false,
-  recording: false, episode: null, episodes: [], policyMode: false, policyStep: 0, phaseIdx: 0,
-  redraws: 0, // 退化重抽累计（跨集不复位：seed 位移 + stats 可观测）
-  keys: new Set(), hudCb: null, logCb: null, recCb: null,
+  sim: null, spec: null, layout: null, dof: 0, arm: null,
+  visuals: {}, links: [], targets: [], gripper: 0, lastEE: [0, 0, 0],
+  holding: false, _lastHolding: false, goal: [0.28, 0.5, 0],
+  tick: 0, steps: 0, obs: null,
+  recording: false, episode: null, episodes: [],
+  policyMode: false, policyStep: 0, policySource: "js",
+  iEe: 9, iObj: 12, iGoal: 15,
+  redraws: 0, keys: new Set(), hudCb: null, logCb: null, recCb: null,
 };
 
-function makeWorld(seed) {
-  const world = new RAPIER.World({ x: 0, y: -9.8, z: 0 });
-  world.timestep = DT / SUBSTEPS;
-  // 碰撞组对齐 Rust rigid3d.rs（world_groups/arm_groups）：G1=世界
-  // （地面/桌面/方块，filter 含 G2），G2=臂+基座立柱+指板（filter 只含
-  // G1）。此前漏移植——home 姿态下 link1 与基座立柱互穿 2cm，接触
-  // 解算把肩部硬顶到 +限位（kp=10000 都拗不过），臂永远够不到方块。
-  const G_WORLD = 0x00010003; // (G1<<16)|(G1|G2)
-  const G_ARM = 0x00020001;   // (G2<<16)|(G1)
-  // ground + table
-  const slab = (c, h) => {
-    const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(...c));
-    world.createCollider(RAPIER.ColliderDesc.cuboid(...h).setFriction(0.9).setCollisionGroups(G_WORLD), b);
-    return b;
-  };
-  slab([0, -0.05, 0], [2.0, 0.05, 1.5]);
-  slab(TABLE.center, TABLE.half);
-  // arm chain bodies（初始 home：链沿 +X 平伸在肩高）
-  const sh = DESC.base[1] + DESC.shoulderHeight;
-  const dyn = (t) => world.createRigidBody(
-    RAPIER.RigidBodyDesc.dynamic().setCanSleep(false)
-      .setAdditionalMass(0.2).setTranslation(...t));
-  const base = world.createRigidBody(
-    RAPIER.RigidBodyDesc.fixed().setTranslation(DESC.base[0], DESC.base[1] + DESC.shoulderHeight / 2, DESC.base[2]));
-  world.createCollider(
-    RAPIER.ColliderDesc.cuboid(DESC.radius * 1.8, DESC.shoulderHeight / 2, DESC.radius * 1.8).setCollisionGroups(G_ARM), base);
-  const carrier = dyn([DESC.base[0], sh, DESC.base[2]]);
-  const link1 = dyn([DESC.base[0], sh, DESC.base[2]]);
-  const link2 = dyn([DESC.base[0] + DESC.links[0], sh, DESC.base[2]]);
-  const wrist = dyn([DESC.base[0] + DESC.links[0] + DESC.links[1], sh, DESC.base[2]]);
-  const linkCol = (b, half, off) => {
-    const c = RAPIER.ColliderDesc.cuboid(...half).setDensity(1500).setFriction(0.7)
-      .setCollisionGroups(G_ARM)
-      .setTranslation(...off);
-    world.createCollider(c, b);
-  };
-  linkCol(carrier, [0.015, 0.015, 0.015], [0, 0, 0]);
-  linkCol(link1, [DESC.links[0] / 2, DESC.radius, DESC.radius], [DESC.links[0] / 2, 0, 0]);
-  linkCol(link2, [DESC.links[1] / 2, DESC.radius, DESC.radius], [DESC.links[1] / 2, 0, 0]);
-  linkCol(wrist, [DESC.links[2] / 2, DESC.radius, DESC.radius], [DESC.links[2] / 2, 0, 0]);
-  // revolute 关节（impulse joint + ForceBased 位置马达）。Rust 侧是
-  // MultibodyJointSet articulated 精确解；JS 这代 wasm 无 multibody
-  // 马达可暴露（见 MOTOR_KP 注）——以高迭代数收紧脉冲链解算。
-  world.integrationParameters.numSolverIterations = 100;
-  const anchor = { x: 0, y: DESC.shoulderHeight, z: 0 };
-  const stages = [
-    { p: base, c: carrier, a1: { x: 0, y: DESC.shoulderHeight / 2, z: 0 }, axis: { x: 0, y: 1, z: 0 }, lim: DESC.limits[0] },
-    { p: carrier, c: link1, a1: { x: 0, y: 0, z: 0 }, axis: { x: 0, y: 0, z: 1 }, lim: DESC.limits[1] },
-    { p: link1, c: link2, a1: { x: DESC.links[0], y: 0, z: 0 }, axis: { x: 0, y: 0, z: 1 }, lim: DESC.limits[2] },
-    { p: link2, c: wrist, a1: { x: DESC.links[1], y: 0, z: 0 }, axis: { x: 0, y: 0, z: 1 }, lim: DESC.limits[3] },
-  ];
-  const joints = stages.map(({ p, c, a1, axis, lim }) => {
-    const jd = RAPIER.JointData.revolute(a1, { x: 0, y: 0, z: 0 }, axis);
-    jd.limitsEnabled = true;
-    jd.limits = lim;
-    const j = world.createImpulseJoint(jd, p, c, true);
-    j.setContactsEnabled(false);
-    j.configureMotorModel(RAPIER.MotorModel.ForceBased);
-    // 力矩上限对齐 Rust MOTOR_MAX_FORCE=80：kp 代偿后若无上限，下探
-    // 与夹板挤压会输出无界力矩（前台实测方块被接触炮打到 9.7m 外）。
-    j.setMotorMaxForce(80);
-    j.configureMotorPosition(0, MOTOR_KP, MOTOR_KD);
-    return j;
-  });
-  // cube
-  const cube = world.createRigidBody(
-    RAPIER.RigidBodyDesc.dynamic().setLinearDamping(0.1).setAngularDamping(0.1)
-      .setTranslation(...K.spawn));
-  world.createCollider(
-    RAPIER.ColliderDesc.cuboid(PROP_HALF, PROP_HALF, PROP_HALF).setDensity(400).setFriction(0.8).setCollisionGroups(G_WORLD), cube);
-  // 夹板（运动学，随腕架位姿驱动）
-  const mkFinger = () => {
-    const b = world.createRigidBody(
-      RAPIER.RigidBodyDesc.kinematicPositionBased()
-        .setTranslation(0, 0, 0));
-    world.createCollider(
-      RAPIER.ColliderDesc.cuboid(...FINGER_HALF).setFriction(FINGER_FRICTION).setCollisionGroups(G_ARM), b);
-    return b;
-  };
-  const fingerL = mkFinger();
-  const fingerR = mkFinger();
-  K.bodies = { base, carrier, link1, link2, wrist, cube };
-  K.fingerL = fingerL; K.fingerR = fingerR; K.gapNow = FINGER_GAP_OPEN;
-  K.joints = joints;
-  K.stages = stages.map(({ p, c, axis }) => ({ p: p.handle, c: c.handle, axis }));
-  return world;
+function applySpec(specText) {
+  const sim = OrieraSim.from_spec_json(specText); // 校验失败=可读 Error
+  K.sim = sim;
+  K.spec = JSON.parse(sim.spec_json());
+  K.layout = JSON.parse(sim.layout());
+  K.dof = K.spec.robot.joints.length;
+  K.arm = ikArmFromSpec(K.spec);
+  const names = K.layout.obs;
+  K.iEe = names.indexOf("ee.x");
+  K.iObj = names.indexOf("obj_rel.x");
+  K.iGoal = names.indexOf("goal_rel.x");
 }
 
-// 关节角读出：几何式 parent_rot⁻¹ ⊗ child_rot 绕轴角（impulse joint
-// 无 Rust 侧的 local_to_parent 读出，体姿相除同样精确）。
-function readAngles() {
-  const byHandle = new Map(Object.entries(K.bodies).map(([k, b]) => [b.handle, b]));
-  return K.stages.map(({ p, c, axis }) => {
-    const pb = byHandle.get(p), cb = byHandle.get(c);
-    const pr = pb.rotation(), cr = cb.rotation();
-    const rel = new THREE.Quaternion(pr.x, pr.y, pr.z, pr.w).invert()
-      .multiply(new THREE.Quaternion(cr.x, cr.y, cr.z, cr.w));
-    return 2 * Math.atan2(
-      rel.x * axis.x + rel.y * axis.y + rel.z * axis.z, rel.w);
-  });
-}
-
-function eePose() {
-  const b = K.bodies.wrist;
-  const t = b.translation();
-  const r = b.rotation();
-  // TCP = 腕 + wrist 系 (links[2],0,0)——对齐 Rust rigid3d.rs tip_local
-  // （637 行）。此前误用整个 links 向量 (0.20,0.18,0.09)，ee 报点偏出
-  // 0.2 m 级，obs/holding/策略全链跟着错（前台验证根因 #3）。
-  const off = new THREE.Vector3(DESC.links[2], 0, 0).applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w));
-  return [t.x + off.x, t.y + off.y, t.z + off.z];
-}
-
-function observe() {
-  const ee = K.lastEE;
-  const ct = K.bodies.cube.translation();
-  const rel = [ct.x - ee[0], ct.y - ee[1], ct.z - ee[2]];
-  const g = [K.goal[0] - ee[0], K.goal[1] - ee[1], K.goal[2] - ee[2]];
-  const dist = Math.hypot(...rel);
-  return [
-    ...readAngles(), ...K.lastVel, K.gripper,
-    ...ee, ...rel, ...g,
-    K.holding ? 1 : 0, ct.y, dist,
-  ];
-}
-
-function driveFingers() {
-  const gTarget = FINGER_GAP_OPEN + (FINGER_GAP_CLOSED - FINGER_GAP_OPEN) * Math.min(Math.max(K.gripper, 0), 1);
-  K.gapNow += Math.min(Math.max(gTarget - K.gapNow, -0.004), 0.004);
-  const wrist = K.bodies.wrist;
-  const t = wrist.translation();
-  const r = wrist.rotation();
-  const q = new THREE.Quaternion(r.x, r.y, r.z, r.w);
-  const centre = new THREE.Vector3(FINGER_X, 0, 0).applyQuaternion(q).add(new THREE.Vector3(t.x, t.y, t.z));
-  const side = new THREE.Vector3(0, 0, K.gapNow / 2).applyQuaternion(q);
-  for (const [body, sign, vis] of [[K.fingerL, 1, K.visuals.plateL], [K.fingerR, -1, K.visuals.plateR]]) {
-    const p = centre.clone().addScaledVector(side, sign);
-    body.setNextKinematicRotation(r);
-    body.setNextKinematicTranslation(p);
-    if (vis) {
-      vis.position.copy(p);
-      vis.quaternion.copy(r);
-    }
-  }
-}
-
-// 报告式握持：合爪 + 方块在握区（真正持取由摩擦接触求解完成）。
-function updateHolding() {
-  const tip = K.lastEE;
-  const ct = K.bodies.cube.translation();
-  K.holding = K.gripper > 0.5 &&
-    Math.hypot(ct.x - tip[0], ct.y - tip[1], ct.z - tip[2]) < GRASP_RADIUS;
-}
-
-function stepOnce(action) {
-  // 马达目标（沿用「变了才写」协议）
-  for (let i = 0; i < 4; i++) {
-    const want = Math.min(Math.max(action[i], DESC.limits[i][0]), DESC.limits[i][1]);
-    if (K.lastCmd[i] !== want) {
-      K.joints[i].configureMotorPosition(want, MOTOR_KP, MOTOR_KD);
-      K.lastCmd[i] = want;
-    }
-  }
-  K.gripper = Math.min(Math.max(action[4] ?? 0, 0), 1);
-  for (let s = 0; s < SUBSTEPS; s++) K.world.step();
-  K.lastEE = eePose();
-  driveFingers();
-  updateHolding();
-  const angles = readAngles();
-  K.lastVel = angles.map((a, i) => (a - K.prevAngles[i]) / DT);
-  K.prevAngles = angles.slice();
-  K.tick++;
-  return angles;
-}
-
-// 三维表现同步（boot 建好 visuals 之后才生效）
-function syncVisuals() {
-  if (!K.visuals.cube) return;
-  const set = (mesh, b) => {
-    const t = b.translation();
-    const r = b.rotation();
-    mesh.position.set(t.x, t.y, t.z);
-    mesh.quaternion.set(r.x, r.y, r.z, r.w);
-  };
-  set(K.visuals.baseCol, K.bodies.base);
-  set(K.visuals.carrier, K.bodies.carrier);
-  set(K.visuals.link1, K.bodies.link1);
-  set(K.visuals.link2, K.bodies.link2);
-  set(K.visuals.wrist, K.bodies.wrist);
-  set(K.visuals.cube, K.bodies.cube);
-  const place = (mesh, b) => {
-    const t = b.translation();
-    mesh.position.set(t.x, t.y, t.z);
-  };
-  place(K.visuals.hub1, K.bodies.link1);
-  place(K.visuals.hub2, K.bodies.link2);
-  K.visuals.goal.position.set(K.goal[0], 0.501, K.goal[2]);
-}
-
-// 任务回路：reset/step（对照 EmbodiedEnv）
 function envReset(seed) {
-  K.rng = { s: BigInt.asUintN(64, BigInt(seed ^ 0x5eed00c0ffee0001)) };
-  K.spawn = [
-    lcgNext(K.rng, OBJ_RANGE.x[0], OBJ_RANGE.x[1]), 0.55,
-    lcgNext(K.rng, OBJ_RANGE.z[0], OBJ_RANGE.z[1]),
-  ];
-  K.goal = [
-    lcgNext(K.rng, GOAL_RANGE.x[0], GOAL_RANGE.x[1]), 0.5,
-    lcgNext(K.rng, GOAL_RANGE.z[0], GOAL_RANGE.z[1]),
-  ];
-  // 原地重置（MJ resetData 式）：world 只建一次——free/重建每次
-  // 泄漏 wasm 内存，auto-reset 下 ~12s 撑爆一次（WebView2 反复重载
-  // 的根因）。复位方块、链位姿、速度与马达目标即可。
-  const first = !K.world;
-  if (first) { K.world = makeWorld(seed); }
-  const B = K.bodies;
-  B.cube.setTranslation({ x: K.spawn[0], y: K.spawn[1], z: K.spawn[2] }, true);
-  B.cube.setLinvel({ x: 0, y: 0, z: 0 }, true);
-  B.cube.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  B.cube.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
-  const sh = DESC.base[1] + DESC.shoulderHeight;
-  const homes = {
-    base: [DESC.base[0], DESC.base[1] + DESC.shoulderHeight / 2, DESC.base[2]],
-    carrier: [DESC.base[0], sh, DESC.base[2]],
-    link1: [DESC.base[0], sh, DESC.base[2]],
-    link2: [DESC.base[0] + DESC.links[0], sh, DESC.base[2]],
-    wrist: [DESC.base[0] + DESC.links[0] + DESC.links[1], sh, DESC.base[2]],
-  };
-  for (const [name, t] of Object.entries(homes)) {
-    const b = B[name];
-    b.setTranslation({ x: t[0], y: t[1], z: t[2] }, true);
-    b.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
-    b.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    b.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  }
-  K.targets = [0, 0, 0, 0]; K.gripper = 0; K.lastCmd = [NaN, NaN, NaN, NaN];
-  K.prevAngles = [0, 0, 0, 0]; K.lastVel = [0, 0, 0, 0]; K.holding = false;
-  K.gapNow = FINGER_GAP_OPEN;
-  K.wasHolding = false; K.steps = 0; K.tick = 0; K.policyMode = false; K.policyStep = 0; K.phaseIdx = 0;
+  K.obs = K.sim.reset(seed);
+  K.goal = Array.from(K.sim.goal());
+  K.tick = K.sim.tick();
+  K.steps = 0;
+  K.policyMode = false; K.policyStep = 0;
   K.episode = null;
-  // 指板瞬移到家 TCP（前台验证实测）：settle 首拍 driveFingers 才经
-  // setNextKinematic 逐帧回家，上一集终点→家的扫掠路径会穿过重生
-  // 方块——运动学板 vs 动力学方块 = 接触炮（实测方块飞到 9.7, 4.9）。
-  // 先直接 setTranslation 就位，settle 期间无扫掠。
-  {
-    const ht = homes.wrist;
-    const side = FINGER_GAP_OPEN / 2;
-    K.fingerL.setTranslation({ x: ht[0] + FINGER_X, y: ht[1], z: ht[2] + side }, true);
-    K.fingerR.setTranslation({ x: ht[0] + FINGER_X, y: ht[1], z: ht[2] - side }, true);
-    K.fingerL.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
-    K.fingerR.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
-  }
-  for (let i = 0; i < SETTLE_TICKS; i++) { stepOnce([0, 0, 0, 0, 0]); }
   syncVisuals();
-  return observe();
+  return K.obs;
 }
 
-function envStep(action) {
-  const angles = stepOnce(action);
-  K.steps++;
-  const tel = { angles, vel: K.lastVel, ee: K.lastEE, holding: K.holding };
-  const ct = K.bodies.cube.translation();
-  const ee = tel.ee;
-  const dObj = Math.hypot(ct.x - ee[0], ct.y - ee[1], ct.z - ee[2]);
-  const dGoal = Math.hypot(ct.x - K.goal[0], ct.y - K.goal[1], ct.z - K.goal[2]);
-  let reward = -0.002;
-  const graspEvent = tel.holding && !K.wasHolding;
-  reward += tel.holding
-    ? -1.2 * dGoal + 2 * Math.min(Math.max(ct.y - 0.5, 0), 0.2)
-    : -0.6 * dObj;
-  reward += graspEvent ? 2 : 0;
-  K.wasHolding = tel.holding;
-  const inZone = dGoal < ZONE_RADIUS && ct.y > 0.5 && ct.y < 0.62;
-  const terminated = inZone;
-  const truncated = !terminated && K.steps >= MAX_STEPS;
-  if (terminated) reward += 10;
-  return { obs: observe(), reward, terminated, truncated, success: terminated };
+// ── 三维表现同步：渲染器只搬 mesh，不推演任何物理 ─
+function syncVisuals() {
+  const p = JSON.parse(K.sim.poses());
+  K.tick = p.tick;
+  K.steps = p.steps;
+  K.holding = p.holding;
+  K.lastEE = p.ee.pos.slice();
+  K.links.forEach((g, i) => {
+    g.position.fromArray(p.links[i].pos);
+    g.quaternion.fromArray(p.links[i].rot);
+  });
+  if (K.visuals.plateL && p.fingers) {
+    K.visuals.plateL.position.fromArray(p.fingers.left.pos);
+    K.visuals.plateL.quaternion.fromArray(p.fingers.left.rot);
+    K.visuals.plateR.position.fromArray(p.fingers.right.pos);
+    K.visuals.plateR.quaternion.fromArray(p.fingers.right.rot);
+  }
+  if (K.visuals.cube && p.props.length) {
+    // 已知缺口（见 docs/WASM-RENDERER.md）：HEAD 公开 API 不暴露
+    // prop 旋转（Pose3.rot 私有），方块姿态按恒等渲染——位置是精确的。
+    K.visuals.cube.position.fromArray(p.props[0].pos);
+    K.visuals.cube.quaternion.set(0, 0, 0, 1);
+  }
+  if (K.visuals.goal) K.visuals.goal.position.set(p.goal[0], 0.501, p.goal[2]);
+  if (K.visuals.beam) K.visuals.beam.position.set(p.goal[0], 0.66, p.goal[2]);
+  K.goal = p.goal.slice();
+  return p;
+}
+
+// ── 从 spec 搭建 three.js 场景（fixtures / 机器人 / 夹爪 / 方块 / 目标圈）
+// ——形状全部来自 spec（改 JSON 换方块形状，浏览器页直接可见）。
+function buildSceneFromSpec(scene) {
+  // 旧节点退役
+  for (const key of ["world", "robot", "goal", "beam"]) {
+    const old = K.visuals[key];
+    if (old) {
+      old.traverse?.((o) => { o.geometry?.dispose?.(); });
+      scene.remove(old);
+      delete K.visuals[key];
+    }
+  }
+  K.links = [];
+
+  // fixtures：ground（地板贴图）/ 其他（桌面/箱子——桌面走木纹理）
+  const mat = (c, r = 0.8, m = 0.0) => {
+    const mt = new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
+    mt.envMapIntensity = 1.1;
+    return mt;
+  };
+  const texLoader = new THREE.TextureLoader();
+  const world = new THREE.Group();
+  K.visuals.world = world;
+  for (const fx of K.spec.scene.fixtures) {
+    const geo = new THREE.BoxGeometry(fx.half[0] * 2, fx.half[1] * 2, fx.half[2] * 2);
+    let m;
+    if (fx.name === "ground") {
+      const floorD = texLoader.load("vendor/assets/floor_diff.jpg?v=3");
+      floorD.wrapS = floorD.wrapT = THREE.RepeatWrapping;
+      floorD.repeat.set(4, 3);
+      floorD.colorSpace = THREE.SRGBColorSpace;
+      m = new THREE.MeshStandardMaterial({ map: floorD, roughness: 0.92, envMapIntensity: 1.1 });
+    } else {
+      const woodD = texLoader.load("vendor/assets/wood_orig_diff.jpg?v=6");
+      const woodR = texLoader.load("vendor/assets/wood_rough.jpg?v=2");
+      for (const t of [woodD, woodR]) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1.4, 1.4); t.colorSpace = THREE.SRGBColorSpace; }
+      m = new THREE.MeshStandardMaterial({ map: woodD, roughnessMap: woodR, roughness: 0.7, metalness: 0.02, color: 0xd8c8b0, envMapIntensity: 1.1 });
+    }
+    const mesh = new THREE.Mesh(geo, m);
+    mesh.position.set(...fx.center);
+    mesh.castShadow = mesh.receiveShadow = true;
+    world.add(mesh);
+  }
+  scene.add(world);
+
+  // 目标圈 + 光柱（半径=goal_xz_tol，来自 spec.task.params）
+  const zoneR = K.spec.task.params.goal_xz_tol;
+  const goal = new THREE.Mesh(
+    new THREE.RingGeometry(zoneR * 0.75, zoneR, 48),
+    new THREE.MeshBasicMaterial({ color: 0x7be0a0, side: THREE.DoubleSide, transparent: true, opacity: 0.85 }));
+  goal.rotation.x = -Math.PI / 2;
+  goal.position.set(0.28, 0.501, 0);
+  scene.add(goal);
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(zoneR, zoneR, 0.32, 48, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0x7be0a0, transparent: true, opacity: 0.055, side: THREE.DoubleSide, depthWrite: false }));
+  beam.position.set(0.28, 0.66, 0);
+  scene.add(beam);
+  K.visuals.goal = goal;
+  K.visuals.beam = beam;
+
+  // 机器人：每个 link 一个 Group（位姿由 poses() 每拍写回），
+  // 碰撞体形状映射为 mesh（Box→盒；细长盒→胶囊观感；Capsule→胶囊）。
+  const armMat = mat(0x5b8def);
+  const accent = mat(0x8fa8d8, 0.35, 0.6);
+  const robot = new THREE.Group();
+  K.visuals.robot = robot;
+  const mkShapeMesh = (link) => {
+    const s = link.shape;
+    let half, mesh;
+    if (s && s.Box) {
+      half = s.Box.half;
+      if (half[0] > half[1] * 2 && half[0] > 0.03) {
+        // 细长连杆 → 胶囊观感（对齐旧 look；碰撞仍是盒，渲染层不装懂物理）
+        const geo = new THREE.CapsuleGeometry(half[1], Math.max(half[0] * 2 - half[1] * 2, 0.02), 6, 20).rotateZ(-Math.PI / 2);
+        mesh = new THREE.Mesh(geo, link.density >= 1500 ? armMat : accent);
+      } else {
+        mesh = new THREE.Mesh(new THREE.BoxGeometry(half[0] * 2, half[1] * 2, half[2] * 2),
+          link.density >= 1500 ? armMat : mat(0x39415a));
+      }
+    } else if (s && s.Capsule) {
+      const geo = new THREE.CapsuleGeometry(s.Capsule.radius, Math.max(s.Capsule.half_len * 2 - s.Capsule.radius * 2, 0.02), 6, 20).rotateZ(-Math.PI / 2);
+      mesh = new THREE.Mesh(geo, armMat);
+    } else {
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.03), accent);
+    }
+    mesh.position.set(...link.collider_offset);
+    return mesh;
+  };
+  for (const link of K.spec.robot.links) {
+    const g = new THREE.Group();
+    g.add(mkShapeMesh(link));
+    K.links.push(g);
+    robot.add(g);
+  }
+  // 关节轮毂盘（k≥1 的关节，轴随关节轴；渲染信息层）
+  const Y = new THREE.Vector3(0, 1, 0);
+  K.spec.robot.joints.forEach((j, k) => {
+    if (k === 0) return;
+    const r = Math.max(0.02, Math.min(0.035, j.anchor[0] * 0.16 + 0.02));
+    const geo = new THREE.CylinderGeometry(r, r, 0.012, 24);
+    const mesh = new THREE.Mesh(geo, mat(0x8fa8d8, 0.35, 0.7));
+    mesh.quaternion.setFromUnitVectors(Y, new THREE.Vector3(...j.axis));
+    K.links[j.child_link]?.add(mesh);
+  });
+  // 夹爪指板
+  if (K.spec.robot.gripper) {
+    const gh = K.spec.robot.gripper.finger_half;
+    const plateGeo = new THREE.BoxGeometry(gh[0] * 2, gh[1] * 2, gh[2] * 2);
+    const plateMat = new THREE.MeshStandardMaterial({ color: 0x9fb6e8, roughness: 0.35, metalness: 0.7, transparent: true, opacity: 0.92 });
+    K.visuals.plateL = new THREE.Mesh(plateGeo, plateMat);
+    K.visuals.plateR = new THREE.Mesh(plateGeo, plateMat);
+    robot.add(K.visuals.plateL, K.visuals.plateR);
+  } else {
+    delete K.visuals.plateL;
+    delete K.visuals.plateR;
+  }
+  // 动态 prop（props[0] = 任务物；其余杂物同为渲染层）
+  for (const prop of K.spec.scene.props) {
+    let geo;
+    const s = prop.shape;
+    if (s && s.Cylinder) geo = new THREE.CylinderGeometry(s.Cylinder.radius, s.Cylinder.radius, s.Cylinder.half_h * 2, 32);
+    else if (s && s.Sphere) geo = new THREE.SphereGeometry(s.Sphere.r, 24, 16);
+    else { const h = (s && s.Cuboid) ? s.Cuboid.half : [0.025, 0.025, 0.025]; geo = new THREE.BoxGeometry(h[0] * 2, h[1] * 2, h[2] * 2); }
+    const mesh = new THREE.Mesh(geo, mat(0xffd479));
+    mesh.castShadow = mesh.receiveShadow = true;
+    if (prop === K.spec.scene.props[0]) K.visuals.cube = mesh;
+    robot.add(mesh);
+  }
+  robot.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  scene.add(robot);
 }
 
 export async function boot(viewport) {
@@ -430,17 +308,10 @@ export async function boot(viewport) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0d14);
   scene.fog = new THREE.Fog(0x0a0d14, 3.5, 8);
-  // 环境光：RoomEnvironment 经 PMREM——PBR 反射质感免费提升
+  // 环境光：HDRI（Poly Haven CC0）经 PMREM；加载失败回退 RoomEnvironment
+  //（离线兜底）。URL 相对**文档**（index.html）解析——曾因相对本文件
+  // 解析逃到 examples/vendor/ 404、材质全黑（纹理 404 坑 2026-11-01）。
   const pmrem = new THREE.PMREMGenerator(renderer);
-  // HDRI 环境光（Poly Haven CC0 摄影棚）：真实感光的第一来源；
-  // 加载失败回退 RoomEnvironment（离线兜底）。
-  // URL 坑（纹理 404 根修 2026-11-01）：Loader 的字符串路径相对
-  // **文档**（index.html 在 15-embodied-sim/）解析，不是相对本文件
-  // （engine/）——"../vendor/..." 会逃到 examples/vendor/ 404，
-  // 材质按有 map 编译、采样到空 → 桌面/地面纯黑。曾长期误诊为
-  // WebView2 宿主失焦 GPU 上传失败（fetch 复验 404 才破案）。
-  // 注意第 20 行的 import "../vendor/jsm/..." 无此问题：模块解析以
-  // 本文件为基准。
   new RGBELoader().load(
     "vendor/assets/env_1k.hdr?v=3",
     (hdr) => {
@@ -469,7 +340,7 @@ export async function boot(viewport) {
   composer.addPass(new OutputPass());
   K.visuals.composer = composer;
 
-  // 灯光：主光带软阴影 + 半球底光
+  // 灯光：主光带软阴影 + 半球底光 + 冷色 rim
   const dl = new THREE.DirectionalLight(0xfff2e0, 3.2);
   dl.position.set(1.4, 2.6, 0.9);
   dl.castShadow = true;
@@ -481,7 +352,6 @@ export async function boot(viewport) {
   dl.shadow.radius = 4;
   scene.add(dl);
   scene.add(new THREE.HemisphereLight(0x8899cc, 0x20242e, 0.9));
-  // 冷色 rim 逆光（从墙侧）——机械臂与背景轮廓分离
   const rim = new THREE.DirectionalLight(0x88bbff, 1.2);
   rim.position.set(-1.2, 1.8, -1.4);
   scene.add(rim);
@@ -489,44 +359,7 @@ export async function boot(viewport) {
   const grid = new THREE.GridHelper(2.5, 25, 0x1a2030, 0x1a2030);
   grid.position.set(0, 0.005, 0);
   scene.add(grid);
-  // 地面/桌面/目标圈
-  const mat = (c, r = 0.8, m = 0.0) => {
-    const mt = new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
-    mt.envMapIntensity = 1.1;
-    return mt;
-  };
-  // B3 纹理启用（restored 钩子保护 + 确定性重导出字节相同=幂等）：
-  // Poly Haven CC0 木桌面 × 磨损混凝土地面——研究所质感的最大单变量。
-  const texLoader = new THREE.TextureLoader();
-  const woodD = texLoader.load("vendor/assets/wood_orig_diff.jpg?v=6");
-  // wood_table_worn_rough_1k.jpg 从不存在（资产清单实名 wood_rough.jpg）
-  // ——文件名与清单不同步的第二处 404。
-  const woodR = texLoader.load("vendor/assets/wood_rough.jpg?v=2");
-  for (const t of [woodD, woodR]) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1.4, 1.4); t.colorSpace = THREE.SRGBColorSpace; }
-  const floorD = texLoader.load("vendor/assets/floor_diff.jpg?v=3");
-  for (const t of [floorD]) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(4, 3); t.colorSpace = THREE.SRGBColorSpace; }
 
-  const ground = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.1, 3.0),
-    new THREE.MeshStandardMaterial({ map: floorD, roughness: 0.92, envMapIntensity: 1.1 }));
-  ground.position.set(0, -0.05, 0);
-  ground.receiveShadow = true;
-  scene.add(ground);
-  const table = new THREE.Mesh(new THREE.BoxGeometry(...TABLE.half.map((v) => v * 2)),
-    new THREE.MeshStandardMaterial({ map: woodD, roughnessMap: woodR, roughness: 0.7, metalness: 0.02, color: 0xd8c8b0, envMapIntensity: 1.1 }));
-  table.position.set(...TABLE.center);
-  table.castShadow = true;
-  table.receiveShadow = true;
-  scene.add(table);
-  // 实验室墙角：两面墙收拢虚空感
-  const wallMat = mat(0x3a4150, 0.95);
-  const wallBack = new THREE.Mesh(new THREE.BoxGeometry(4.0, 2.2, 0.06), wallMat);
-  wallBack.position.set(0, 1.05, -1.55);
-  wallBack.receiveShadow = true;
-  scene.add(wallBack);
-  const wallSide = new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.2, 3.0), wallMat);
-  wallSide.position.set(-2.0, 1.05, 0);
-  wallSide.receiveShadow = true;
-  scene.add(wallSide);
   // 末端轨迹拖尾（信息层：最近 120 个 EE 位置）
   const TRAIL_N = 120;
   const trailPos = new Float32Array(TRAIL_N * 3);
@@ -535,46 +368,20 @@ export async function boot(viewport) {
   const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0x5b8def, transparent: true, opacity: 0.45 }));
   trail.frustumCulled = false;
   scene.add(trail);
-  const goal = new THREE.Mesh(
-    new THREE.RingGeometry(ZONE_RADIUS * 0.75, ZONE_RADIUS, 48),
-    new THREE.MeshBasicMaterial({ color: 0x7be0a0, side: THREE.DoubleSide, transparent: true, opacity: 0.85 }));
-  goal.rotation.x = -Math.PI / 2;
-  goal.position.set(0.28, 0.501, 0);
-  scene.add(goal);
-  const beam = new THREE.Mesh(
-    new THREE.CylinderGeometry(ZONE_RADIUS, ZONE_RADIUS, 0.32, 48, 1, true),
-    new THREE.MeshBasicMaterial({ color: 0x7be0a0, transparent: true, opacity: 0.055, side: THREE.DoubleSide, depthWrite: false }));
-  beam.position.set(0.28, 0.66, 0);
-  scene.add(beam);
-  K.visuals.goal = goal;
-  K.visuals.beam = beam;
-  // 机械臂与方块
-  const armMat = mat(0x5b8def);
-  const group = (parent) => { const g = new THREE.Group(); parent.add(g); return g; };
-  scene.add((K.visuals.root = group(scene)));
-  const mkBox = (hw, c) => new THREE.Mesh(new THREE.BoxGeometry(hw[0] * 2, hw[1] * 2, hw[2] * 2), mat(c));
-  K.visuals.baseCol = mkBox([DESC.radius * 1.8, DESC.shoulderHeight / 2, DESC.radius * 1.8], 0x39415a);
-  K.visuals.carrier = mkBox([0.015, 0.015, 0.015], 0x8fa8d8);
-  // 连杆：胶囊体（长轴 Y 烘转为 X），关节轮毂圆盘，全部投影
-  const linkGeo = (len) => new THREE.CapsuleGeometry(DESC.radius, Math.max(len - DESC.radius * 2, 0.02), 6, 20).rotateZ(-Math.PI / 2);
-  const hubGeo = (r) => new THREE.CylinderGeometry(r, r, 0.012, 24).rotateX(Math.PI / 2);
-  K.visuals.link1 = new THREE.Mesh(linkGeo(DESC.links[0]), armMat);
-  K.visuals.link2 = new THREE.Mesh(linkGeo(DESC.links[1]), armMat);
-  K.visuals.wrist = new THREE.Mesh(linkGeo(DESC.links[2]), mat(0x8fa8d8, 0.35, 0.6));
-  K.visuals.cube = mkBox([PROP_HALF, PROP_HALF, PROP_HALF], 0xffd479);
-  K.visuals.hub1 = new THREE.Mesh(hubGeo(0.032), mat(0x8fa8d8, 0.35, 0.7));
-  K.visuals.hub2 = new THREE.Mesh(hubGeo(0.030), mat(0x8fa8d8, 0.35, 0.7));
-  // 夹爪指板可视化：与物理夹板同尺寸同位姿（合爪看得见）
-  const plateGeo = new THREE.BoxGeometry(FINGER_HALF[0] * 2, FINGER_HALF[1] * 2, FINGER_HALF[2] * 2);
-  const plateMat = new THREE.MeshStandardMaterial({ color: 0x9fb6e8, roughness: 0.35, metalness: 0.7, transparent: true, opacity: 0.92 });
-  K.visuals.plateL = new THREE.Mesh(plateGeo, plateMat);
-  K.visuals.plateR = new THREE.Mesh(plateGeo, plateMat);
-  const g2 = new THREE.Group();
-  g2.add(K.visuals.link1, K.visuals.link2, K.visuals.wrist, K.visuals.cube,
-         K.visuals.baseCol, K.visuals.carrier, K.visuals.hub1, K.visuals.hub2,
-         K.visuals.plateL, K.visuals.plateR);
-  g2.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-  scene.add(g2);
+
+  // ── wasm 物理内核（与 CLI/Python 同一份 TableTopEnv）──
+  stage("wasm init");
+  await init(new URL("../vendor/oriera/oriera_wasm_bg.wasm", import.meta.url));
+  stage("spec");
+  const specUrl = new URLSearchParams(location.search).get("spec");
+  const specText = specUrl ? await (await fetch(specUrl)).text() : OrieraSim.preset_spec_json();
+  try { applySpec(specText); } catch (e) { stage("ERR: " + (e && e.message ? e.message : e)); throw e; }
+  K.policySource = new URLSearchParams(location.search).get("policy") === "wasm" ? "wasm" : "js";
+  buildSceneFromSpec(scene);
+  stage("world");
+  try { envReset(1000); } catch (e) { stage("ERR: " + (e && e.message ? e.message : e)); throw e; }
+  document.getElementById("load").remove();
+
   // 相机拖拽
   let drag = null;
   renderer.domElement.addEventListener("pointerdown", (e) => (drag = { x: e.clientX, y: e.clientY }));
@@ -591,7 +398,7 @@ export async function boot(viewport) {
     placeCam();
   }, { passive: true });
 
-  // 遥操作键盘
+  // 遥操作键盘（Q/A W/S E/D R/F=关节；空格=夹爪）
   const keyMap = {
     q: [0, +0.03], a: [0, -0.03], w: [1, +0.03], s: [1, -0.03],
     e: [2, +0.03], d: [2, -0.03], r: [3, +0.03], f: [3, -0.03],
@@ -609,33 +416,41 @@ export async function boot(viewport) {
   K.hudCb = (t) => (hud.innerHTML = t);
   K.logCb = (t) => (log.textContent = t);
   const jointsDiv = document.getElementById("joints");
-  const sliders = JOINT_NAMES.slice(0, 4).map((name, i) => {
-    const row = document.createElement("div");
-    row.className = "row";
-    row.innerHTML = `<label>${name}</label><input type="range" min="${DESC.limits[i][0]}" max="${DESC.limits[i][1]}" step="0.01" value="0"><span class="val">0.00</span>`;
-    jointsDiv.appendChild(row);
-    const input = row.querySelector("input");
-    input.addEventListener("input", () => {
-      K.targets[i] = parseFloat(input.value);
-      row.querySelector(".val").textContent = K.targets[i].toFixed(2);
+  // 滑条从 spec 的关节表生成（名字/限位随 spec；换 spec 可重建）
+  const sliders = [];
+  function buildSliders() {
+    jointsDiv.replaceChildren();
+    sliders.length = 0;
+    K.targets = K.spec.robot.joints.map(() => 0);
+    K.spec.robot.joints.forEach((j, i) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = `<label>${j.name}</label><input type="range" min="${j.limits[0]}" max="${j.limits[1]}" step="0.01" value="0"><span class="val">0.00</span>`;
+      jointsDiv.appendChild(row);
+      const input = row.querySelector("input");
+      input.addEventListener("input", () => {
+        K.targets[i] = parseFloat(input.value);
+        row.querySelector(".val").textContent = K.targets[i].toFixed(2);
+      });
+      sliders.push({ input, val: row.querySelector(".val") });
     });
-    return { input, val: row.querySelector(".val") };
-  });
+  }
+  buildSliders();
   const gripInput = document.getElementById("j-grip");
   gripInput.addEventListener("input", () => {
     K.gripper = parseFloat(gripInput.value);
     document.getElementById("v-grip").textContent = K.gripper > 0.5 ? "合" : "开";
   });
   const btn = (id, fn) => document.getElementById(id).addEventListener("click", fn);
-  btn("btn-reset", () => { const o = envReset((Math.random() * 1e9) | 0); log.textContent = "已重置（随机种子）"; post({ type: "state", note: "reset" }); return o; });
-  btn("btn-policy", () => { K.policyMode = true; K.policyStep = 0; K.phaseIdx = 0; log.textContent = "脚本策略运行中…"; });
+  btn("btn-reset", () => { envReset((Math.random() * 1e9) | 0); log.textContent = "已重置（随机种子）"; post({ type: "state", note: "reset" }); });
+  btn("btn-policy", () => { K.policyMode = true; K.policyStep = 0; log.textContent = "脚本策略运行中…"; });
   btn("btn-rec", (e) => {
     K.recording = !K.recording;
     e.target.textContent = K.recording ? "■ 停止录制" : "● 开始录制";
     e.target.classList.toggle("rec", K.recording);
     recBadge.style.display = K.recording ? "flex" : "none";
     if (K.recording) {
-      K.episode = { task: TASK_PHRASE, rows: [], obs: observe() };
+      K.episode = { task: K.sim.task_phrase(), rows: [], obs: Array.from(K.sim.obs()) };
       K.recCb?.(true);
       log.textContent = "录制中：动关节 / 跑策略，每 tick 记一行 (state, action)。";
     } else if (K.episode) {
@@ -664,7 +479,7 @@ export async function boot(viewport) {
     if (!EMBEDDED) { log.textContent = `「导出」${EXPORT_CLI_HINT}\n（浏览器页只用来看手感；交作业的数据与成功率以 CLI 的 eval_report.json 为准）`; return; }
     if (K.episode?.rows?.length) { K.episodes.push(K.episode); K.episode = null; }
     if (!K.episodes.length) { log.textContent = "没有可导出的 episode——先录一段。"; return; }
-    post({ type: "episodes", episodes: K.episodes, obsNames: OBS_NAMES, actionNames: ACTION_NAMES, task: TASK_PHRASE, fps: 1 / DT }); K.episodes = []; log.textContent = "已交给 Studio 工作台。";
+    post({ type: "episodes", episodes: K.episodes, obsNames: K.layout.obs, actionNames: K.layout.action, task: K.sim.task_phrase(), fps: Math.round(1 / K.sim.dt()) }); K.episodes = []; log.textContent = "已交给 Studio 工作台。";
   });
 
   function post(msg) {
@@ -680,59 +495,61 @@ export async function boot(viewport) {
     const m = e.data;
     if (!m || m.source !== "oriera-sim" || !m.cmd) return;
     if (m.cmd === "reset") envReset(m.seed ?? ((Math.random() * 1e9) | 0));
-    else if (m.cmd === "policy") { K.policyMode = true; K.policyStep = 0; K.phaseIdx = 0; }
+    else if (m.cmd === "policy") { K.policyMode = true; K.policyStep = 0; if (m.source === "wasm") K.policySource = "wasm"; }
     else if (m.cmd === "grip") K.gripper = m.value;
-    else if (m.cmd === "teleop") { K.policyMode = false; for (let i = 0; i < 4; i++) K.targets[i] = m.angles[i]; K.gripper = m.gripper ?? K.gripper; }
+    else if (m.cmd === "teleop") { K.policyMode = false; for (let i = 0; i < K.dof; i++) K.targets[i] = m.angles[i]; K.gripper = m.gripper ?? K.gripper; }
     else if (m.cmd === "record") document.getElementById("btn-rec").click();
     else if (m.cmd === "export") document.getElementById("btn-export").click();
+    else if (m.cmd === "spec" && m.json) {
+      // Studio 三库（M2）入口：整份 spec 换装（场景+机器人随建随换）。
+      try {
+        applySpec(m.json);
+        buildSceneFromSpec(scene);
+        buildSliders();
+        envReset(m.seed ?? 1000);
+        post({ type: "state", note: "spec-applied", specHash: K.sim.spec_hash() });
+      } catch (err) { log.textContent = "spec 换装失败：" + (err?.message ?? err); }
+    }
   });
 
-  stage("rapier init");
-  await RAPIER.init(new URL("../vendor/rapier_wasm3d_bg.wasm", import.meta.url));
-  stage("world");
-  try { envReset(1000); } catch (e) { stage("ERR: " + (e && e.message ? e.message : e)); throw e; }
-  document.getElementById("load").remove();
-
-  let rewardAvg = 0, successCount = 0, episodesRun = 0, lastTerminated = false;
+  let rewardAvg = 0, successCount = 0, episodesRun = 0;
   function loop() {
     let action = null;
     for (const k of K.keys) {
       const m = keyMap[k];
-      if (m) { K.targets[m[0]] = Math.min(Math.max(K.targets[m[0]] + m[1], DESC.limits[m[0]][0]), DESC.limits[m[0]][1]); }
+      if (m) { K.targets[m[0]] = Math.min(Math.max(K.targets[m[0]] + m[1], K.spec.robot.joints[m[0]].limits[0]), K.spec.robot.joints[m[0]].limits[1]); }
     }
     // 遥操作闭环：键盘改 K.targets 后回写滑条（UX review：按 Q/A 臂在
     // 动滑条纹丝不动）
     if (!K.policyMode) {
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < K.dof; i++) {
         sliders[i].input.value = K.targets[i];
         sliders[i].val.textContent = K.targets[i].toFixed(2);
       }
     }
     if (K.policyMode) {
-      const obs = observe();
-      const ee = [obs[9], obs[10], obs[11]];
-      const obj = [ee[0] + obs[12], ee[1] + obs[13], ee[2] + obs[14]];
-      const gol = [ee[0] + obs[15], ee[1] + obs[16], ee[2] + obs[17]];
-      // 收敛门控相位机（机制对齐 Rust embodied_env：误差门 + 最短驻留
-      // 25 tick）。阈值按 JS 求解器校准：impulse 链接触下（夹板碰桌/
-      // 贴方块）误差地面 ~0.15-0.2 rad，Rust multibody 的 0.12 在此会
-      // 活锁——逃逸阀 dwell>80 兜底。此前开环固定节拍相位错位是 12 集
-      // 余差根因；p.ticks 保留数组结构（parity 导出），运行时用统一参数。
-      const ph = K.phaseIdx < PHASES.length ? PHASES[K.phaseIdx] : null;
-      action = ph ? [...ik(ph.target(obj, gol)), ph.grip] : [...ik(above(gol, 0.22)), 0];
-      if (ph) {
-        const angles = readAngles();
-        let err = 0;
-        for (let i = 0; i < 4; i++) err = Math.max(err, Math.abs(angles[i] - action[i]));
-        const dwell = K.policyStep;
-        if (dwell >= 25 && (err < 0.18 || dwell >= 80)) { K.phaseIdx++; K.policyStep = 0; }
-        else K.policyStep++;
-      } else K.policyStep++;
-      for (let i = 0; i < 4; i++) sliders[i].input.value = action[i];
+      if (K.policySource === "wasm") {
+        // 同代码逐位口径（12 集验收对 91.7% 用这条）：
+        action = Array.from(K.sim.baseline_action(K.policyStep));
+        K.policyStep++;
+      } else {
+        // 渲染层策略（PHASES+ik 留在 JS，M1 工作包定案）：开环固定节拍，
+        // 与 Rust round-4 同形；观测由 wasm 出。
+        const obs = K.sim.obs();
+        const ee = [obs[K.iEe], obs[K.iEe + 1], obs[K.iEe + 2]];
+        const obj = [ee[0] + obs[K.iObj], ee[1] + obs[K.iObj + 1], ee[2] + obs[K.iObj + 2]];
+        const gol = [ee[0] + obs[K.iGoal], ee[1] + obs[K.iGoal + 1], ee[2] + obs[K.iGoal + 2]];
+        const ph = policyTick(PHASES, K.policyStep);
+        const phase = ph >= 0 ? PHASES[ph] : null;
+        action = phase ? [...ik(K.arm, phase.target(obj, gol)), phase.grip] : [...ik(K.arm, above(gol, 0.22)), 0];
+        K.policyStep++;
+      }
+      for (let i = 0; i < K.dof; i++) sliders[i].input.value = action[i];
     } else {
       action = [...K.targets, K.gripper];
     }
-    const out = envStep(action);
+    const out = K.sim.step(action);
+    K.obs = out.obs;
     rewardAvg = rewardAvg * 0.98 + out.reward * 0.02;
     // 抓取发光脉冲（UX review：抓住瞬间给视觉反馈）
     if (K.holding !== K._lastHolding) {
@@ -741,29 +558,27 @@ export async function boot(viewport) {
       K._lastHolding = K.holding;
     }
     if (K.recording && K.episode) {
-      K.episode.rows.push({ state: out.obs, action });
+      K.episode.rows.push({ state: Array.from(out.obs), action });
       if (K.episode.rows.length % 30 === 0) {
         post({ type: "progress", rows: K.episode.rows.length, episodes: K.episodes.length + 1 });
       }
-      sliders.forEach((s, i) => (s.val.textContent = K.prevAngles[i].toFixed(2)));
+      sliders.forEach((s, i) => (s.val.textContent = (K.sim.angles()[i] ?? 0).toFixed(2)));
       K.logCb?.(`录制中：${K.episode.rows.length} 行 · r̄=${rewardAvg.toFixed(3)}${K.holding ? " · 🤏已抓住" : ""}`);
     }
-    // 回合语义与 Rust env 循环对齐：终止/截断即回合结束——自动重置
-    // （此前 steps 超限后每帧都计一次 episode，HUD 集数虚高）。
+    // 回合语义与 Rust env 循环对齐：终止/截断即回合结束——自动重置。
     // 录制卫生：回合结束先切录音带（当前 episode 落列表），再重置。
     if (out.terminated || out.truncated) {
+      out.free();
       // 退化重抽（对齐 embodied_sim_collect displaced seed band）：
-      // <5 步终局 = 生成即入区，不占成功率分母、不进数据集——前台
-      // 自跑 1006 集实测退化命中 14%（141/1006），旧 HUD 全计入，
-      // 「成功 N/M」虚高一个数量级的分母污染。
+      // <5 步终局 = 生成即入区，不占成功率分母、不进数据集。
       if (out.terminated && K.steps < 5) {
         K.redraws = (K.redraws || 0) + 1;
         // envReset 会清 policyMode（一次性演示语义）——重抽不是回合
         // 结束，策略要在新抽签上继续跑，否则演示被退化命中无声掐停。
         const keepPolicy = K.policyMode;
         envReset(((Math.random() * 1e9) | 0) + 65536 * K.redraws);
-        if (K.recording) K.episode = { task: TASK_PHRASE, rows: [], obs: observe() };
-        if (keepPolicy) { K.policyMode = true; K.policyStep = 0; K.phaseIdx = 0; }
+        if (K.recording) K.episode = { task: K.sim.task_phrase(), rows: [], obs: Array.from(K.sim.obs()) };
+        if (keepPolicy) { K.policyMode = true; K.policyStep = 0; }
       } else {
         if (K.recording && K.episode && K.episode.rows.length >= 5) K.episodes.push(K.episode);
         episodesRun++;
@@ -773,17 +588,16 @@ export async function boot(viewport) {
         }
         envReset((Math.random() * 1e9) | 0);
         // 下一集录制对象必须在 envReset **之后**建：envReset 置
-        // K.episode=null，此前先建后重置 → 录制+自动重置下只采到第一集
-        //（审查 P1 实锤的数据管线静默缺口），且 obs 本该是新集初态。
-        // 截断/成功后策略按一次性演示语义停止（envReset 已清）。
-        K.episode = K.recording ? { task: TASK_PHRASE, rows: [], obs: observe() } : null;
+        // K.episode=null，此前先建后重置 → 录制+自动重置下只采到第一集。
+        K.episode = K.recording ? { task: K.sim.task_phrase(), rows: [], obs: Array.from(K.sim.obs()) } : null;
       }
+    } else {
+      out.free();
     }
     syncVisuals();
-    // 目标圈呼吸脉冲 + 光柱随目标 + EE 拖尾滚动
+    // 目标圈呼吸脉冲 + EE 拖尾滚动
     const pulse = 1 + 0.06 * Math.sin(performance.now() * 0.003);
     K.visuals.goal.scale.set(pulse, pulse, 1);
-    K.visuals.beam.position.set(K.goal[0], 0.66, K.goal[2]);
     {
       const attr = trail.geometry.getAttribute("position");
       const arr = attr.array;
@@ -791,10 +605,10 @@ export async function boot(viewport) {
       attr.setXYZ(TRAIL_N - 1, K.lastEE[0], K.lastEE[1], K.lastEE[2]);
       attr.needsUpdate = true;
     }
-    const ct = K.bodies.cube.translation();
+    const cp = K.visuals.cube.position;
     K.hudCb?.(
-      `tick ${K.tick} · r̄ ${rewardAvg.toFixed(3)} · 距目标 ${Math.hypot(ct.x - K.goal[0], ct.z - K.goal[2]).toFixed(3)}m` +
-      `<br>成功 ${successCount}/${episodesRun} · ${K.holding ? "🤏 抓住" : "✋ 松开"} · obs 21 维 / act 5 维` +
+      `tick ${K.tick} · r̄ ${rewardAvg.toFixed(3)} · 距目标 ${Math.hypot(cp.x - K.goal[0], cp.z - K.goal[2]).toFixed(3)}m` +
+      `<br>成功 ${successCount}/${episodesRun} · ${K.holding ? "🤏 抓住" : "✋ 松开"} · obs ${K.layout.obs_dim} 维 / act ${K.layout.action_dim} 维` +
       `<br><small style="font-size:10px;color:#6f7690">演示内核与引擎基线口径不同，作业证据一律以 CLI eval_report 为准</small>`);
     K.visuals.composer.render();
     // PiP 顶视渲染（右上角小图：与 Rust camera.rs 的俯视映射一致）
@@ -821,17 +635,18 @@ export async function boot(viewport) {
   post({ type: "state", note: "ready" });
 
   // CDP/测试钩子（Studio cdp_*.mjs 传统）：确定性地驱动与读态。
+  // 数据源已改 wasm（物理退役），键名语义与退役前一致。
   window.__orieraSim = {
     state: () => {
-      const ct = K.bodies.cube.translation();
+      const p = JSON.parse(K.sim.poses());
       return {
-        cube: [ct.x, ct.y, ct.z],
+        cube: p.props[0]?.pos ?? [0, 0, 0],
         ee: K.lastEE,
         holding: K.holding,
-        gripper: K.gripper,
+        gripper: K.sim.gripper(),
         tick: K.tick,
-        // 关节角实况 + 马达目标（跟踪诊断：实况追不上目标 = 马达/轴约定问题）
-        angles: readAngles(),
+        // 关节角实况 + 目标（跟踪诊断）
+        angles: p.angles,
         targets: [...K.targets],
       };
     },
@@ -842,25 +657,25 @@ export async function boot(viewport) {
       rewardAvg,
       policyMode: K.policyMode,
       holding: K.holding,
-      goal: [...K.goal],
-      phase: K.phaseIdx,
+      goal: [...K.sim.goal()],
+      phase: policyTick(PHASES, K.policyStep),
       step: K.policyStep,
       redraws: K.redraws || 0,
+      policySource: K.policySource,
+      specHash: K.sim.spec_hash(),
+      fingerprint: K.sim.fingerprint(),
     }),
-    // 诊断出口（Studio cdp 传统）：马达/求解器对照实验用。
+    // 诊断出口（Studio cdp 传统）。
     debug: {
-      get joints() { return K.joints; },
-      get world() { return K.world; },
+      get sim() { return K.sim; },
+      get spec() { return K.spec; },
       get state() { return K; },
     },
   };
 }
 
-// ── 测试导出（node:test + JS↔Rust parity 守卫）──────────────────
+// ── 测试导出（node:test + wasm 烟测）──────────────────────────
 export const CONSTANTS = Object.freeze({
-  DT, SUBSTEPS, PROP_HALF, GRASP_RADIUS, ZONE_RADIUS,
-  FINGER_HALF, FINGER_X, FINGER_GAP_OPEN, FINGER_GAP_CLOSED,
-  FINGER_FRICTION, OBJ_RANGE, GOAL_RANGE, SETTLE_TICKS,
-  MAX_STEPS, TASK_PHRASE, OBS_NAMES, ACTION_NAMES, DESC, TABLE,
+  PHASES, MAX_STEPS_FALLBACK: 700,
 });
-export { ik, above, lcgNext, PHASES };
+export { ik, above, policyTick, ikArmFromSpec };
