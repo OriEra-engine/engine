@@ -1,0 +1,18 @@
+[package]
+name = "wbg-driver"
+version = "0.1.0"
+edition = "2021"
+
+# 独立小工具（不在 workspace members 里）：wasm-bindgen CLI 在
+# windows-gnu 装不上（raw-dylib 链接死），cli-support 做库用没有
+# raw-dylib 依赖树——等价 `wasm-bindgen --target web --typescript`。
+# 用法：wbg-driver <input.wasm> <out-dir> [--out-name N]
+[dependencies]
+wasm-bindgen-cli-support = "=0.2.129"  # schema 必须与 workspace wasm-bindgen 同版
+anyhow = "1"
+
+[[bin]]
+name = "wbg-driver"
+path = "src/main.rs"
+
+[workspace]

@@ -38,6 +38,12 @@ export class OrieraSim {
      * engine's field-level message.
      */
     static from_spec_json(json: string): OrieraSim;
+    /**
+     * Current gripper plate gap (m) — the ramped value, bit-exact with
+     * the engine's `MultibodySystem::gap_now` (M1 leftover #2 closed;
+     * read-only).
+     */
+    gap(): number;
     goal(): Float32Array;
     gripper(): number;
     holding(): boolean;
@@ -133,6 +139,7 @@ export interface InitOutput {
     readonly orierasim_fingerprint: (a: number, b: number) => void;
     readonly orierasim_fingerprint_hex: (a: number, b: number) => void;
     readonly orierasim_from_spec_json: (a: number, b: number, c: number) => void;
+    readonly orierasim_gap: (a: number) => number;
     readonly orierasim_goal: (a: number, b: number) => void;
     readonly orierasim_gripper: (a: number) => number;
     readonly orierasim_holding: (a: number) => number;
@@ -183,4 +190,4 @@ export function initSync(module: { module: SyncInitInput } | SyncInitInput): Ini
  *
  * @returns {Promise<InitOutput>}
  */
-export default function __wbg_init (module_or_path: { module_or_path: InitInput | Promise<InitInput> } | InitInput | Promise<InitInput>): Promise<InitOutput>;
+export default function __wbg_init (module_or_path?: { module_or_path: InitInput | Promise<InitInput> } | InitInput | Promise<InitInput>): Promise<InitOutput>;

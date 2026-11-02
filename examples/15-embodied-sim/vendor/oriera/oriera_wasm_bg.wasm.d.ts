@@ -13,6 +13,7 @@ export const orierasim_ee_pos: (a: number, b: number) => void;
 export const orierasim_fingerprint: (a: number, b: number) => void;
 export const orierasim_fingerprint_hex: (a: number, b: number) => void;
 export const orierasim_from_spec_json: (a: number, b: number, c: number) => void;
+export const orierasim_gap: (a: number) => number;
 export const orierasim_goal: (a: number, b: number) => void;
 export const orierasim_gripper: (a: number) => number;
 export const orierasim_holding: (a: number) => number;

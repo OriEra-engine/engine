@@ -170,6 +170,16 @@ export class OrieraSim {
         }
     }
     /**
+     * Current gripper plate gap (m) — the ramped value, bit-exact with
+     * the engine's `MultibodySystem::gap_now` (M1 leftover #2 closed;
+     * read-only).
+     * @returns {number}
+     */
+    gap() {
+        const ret = wasm.orierasim_gap(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * @returns {Float32Array}
      */
     goal() {
@@ -760,7 +770,9 @@ async function __wbg_init(module_or_path) {
         }
     }
 
-
+    if (module_or_path === undefined) {
+        module_or_path = new URL('oriera_wasm_bg.wasm', import.meta.url);
+    }
     const imports = __wbg_get_imports();
 
     if (typeof module_or_path === 'string' || (typeof Request === 'function' && module_or_path instanceof Request) || (typeof URL === 'function' && module_or_path instanceof URL)) {
