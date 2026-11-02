@@ -220,6 +220,13 @@ impl OrieraSim {
         self.core.gripper()
     }
 
+    /// Current gripper plate gap (m) — the ramped value, bit-exact with
+    /// the engine's `MultibodySystem::gap_now` (M1 leftover #2 closed;
+    /// read-only).
+    pub fn gap(&self) -> f32 {
+        self.core.gap()
+    }
+
     /// Measured joint angles (rad).
     pub fn angles(&self) -> Vec<f32> {
         self.core.angles()

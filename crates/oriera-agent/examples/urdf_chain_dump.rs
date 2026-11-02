@@ -150,11 +150,17 @@ fn main() {
                 "dof": spec.dof(),
                 "links": spec.links.iter().map(|l| serde_json::json!({
                     "name": l.name,
-                    "shape": match l.shape {
+                    "shape": match &l.shape {
                         oriera_subsys::LinkShape::Box { half } =>
                             serde_json::json!({"kind": "box", "half": half}),
                         oriera_subsys::LinkShape::Capsule { half_len, radius } =>
                             serde_json::json!({"kind": "capsule", "half_len": half_len, "radius": radius}),
+                        // M2-A: resolved mesh-derived colliders (点集为体轴
+                        // 坐标，provenance 见 mesh_uri)
+                        oriera_subsys::LinkShape::ConvexHull { points } =>
+                            serde_json::json!({"kind": "convex_hull", "points": points}),
+                        oriera_subsys::LinkShape::Mesh { vertices, indices } =>
+                            serde_json::json!({"kind": "mesh", "vertices": vertices, "indices": indices}),
                     },
                     "origin": l.origin,
                     "collider_offset": l.collider_offset,

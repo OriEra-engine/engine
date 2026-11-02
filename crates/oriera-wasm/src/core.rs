@@ -18,12 +18,18 @@
 //!   golden check to compare native vs wasm fingerprints with the
 //!   *same Rust code* on both sides (§五 risk: libm/FMA bit drift).
 //!
-//! What this wrapper can NOT read through the HEAD 35e3dad public API
-//! (reported, not patched — oriera-agent is out of scope for M1):
-//! the prop's rotation (`Pose3.rot`; only `cube_pos()` is public), the
-//! plates' true positions (mirrored here by replaying the gap ramp),
-//! clutter props beyond `props[0]`, and a noise-free joint-angle read
-//! when `obs_noise > 0` (FK uses the observation channel).
+//! What this wrapper can NOT read through the public `TableTopEnv` API
+//! (reported, not patched — `embodied_env.rs` is another work package's
+//! file): the prop's live rotation (`Pose3.rot` sits behind the env's
+//! private `world`; only `cube_pos()` is public — the payload flags
+//! this with `"rot_known": false`; the 3-line fix is a
+//! `TableTopEnv::prop_pose()` forwarder), clutter props beyond
+//! `props[0]`, and a noise-free joint-angle read when `obs_noise > 0`
+//! (FK uses the observation channel). The plate gap is no longer in
+//! that list: the ramp mirror is bit-exact (same f32 recurrence) and
+//! `gap()` exposes it (M2-A closes the M1 leftover; the engine-side
+//! `MultibodySystem::gap()` read-only view exists for when the env
+//! forwards it).
 
 use oriera_agent::embodied_env::{EmbodiedEnv, StepOutcome, TableTopEnv, TaskKind};
 use oriera_agent::spec::SceneSpec;
@@ -372,6 +378,17 @@ impl SimCore {
         }
     }
 
+    /// Current gripper plate gap (m). The mirror is bit-exact by
+    /// construction: the engine's ramp (`MultibodySystem::gap_now`) is
+    /// the same f32 recurrence over the same demand history and the
+    /// same spec constants — this is the M1-leftover read-only view so
+    /// renderers stop re-deriving it (U-遗 M1 #2; the engine-side
+    /// `MultibodySystem::gap()` exists since M2-A, behind the env's
+    /// private `sys` until `TableTopEnv` grows a forwarder).
+    pub fn gap(&self) -> f32 {
+        self.gap_now
+    }
+
     /// Forward kinematics over the spec chain from `angles`: one world
     /// pose per link, in link order.
     pub fn link_poses(&self, angles: &[f32]) -> Vec<Pose> {
@@ -425,8 +442,18 @@ impl SimCore {
             rot: ee_frame.rot,
         };
         let fingers = r.gripper.as_ref().map(|g| {
-            let centre = add(ee_frame.pos, quat_rotate(ee_frame.rot, [g.finger_x, 0.0, 0.0]));
-            let side = quat_rotate(ee_frame.rot, [0.0, 0.0, self.gap_now * 0.5]);
+            // M0b plate frame: place the plates along the spec's
+            // approach/gap axes (legacy +X/+Z when unset — those
+            // normalize to the exact unit vectors, so the default
+            // placement is bit-identical to the pre-M2 mirror).
+            let ap = g.approach_axis_or_default();
+            let gp = g.gap_axis_or_default();
+            let centre = add(
+                ee_frame.pos,
+                quat_rotate(ee_frame.rot, [ap[0] * g.finger_x, ap[1] * g.finger_x, ap[2] * g.finger_x]),
+            );
+            let half = self.gap_now * 0.5;
+            let side = quat_rotate(ee_frame.rot, [gp[0] * half, gp[1] * half, gp[2] * half]);
             let left = Pose {
                 pos: add(centre, side),
                 rot: ee_frame.rot,
@@ -436,7 +463,7 @@ impl SimCore {
                 rot: ee_frame.rot,
             };
             serde_json::json!({
-                "gap": self.gap_now,
+                "gap": self.gap(),
                 "half": g.finger_half,
                 "left": pose_json(&left),
                 "right": pose_json(&right),

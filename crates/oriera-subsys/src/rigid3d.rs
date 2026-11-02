@@ -64,8 +64,30 @@
 //! next to the legacy triple fold ([`MultibodySystem::fingerprint`],
 //! scheme `"v1"`, kept bit-for-bit); [`state_hash_from_v1`] bridges old
 //! anchors onto the pure state axis.
+//!
+//! **M2 物理保真 (PLAN §四 M2 / §9.1 U-1/U-3/U-6/U-9)** — every item an
+//! opt-in spec field, defaults reproducing the legacy build bit for
+//! bit:
+//! - **U-1 real inertia**: `LinkSpec::inertial` (Some) hands the full
+//!   tensor to rapier `MassProperties::with_inertia_matrix` on the
+//!   body, with the collider contributing zero mass; `None` keeps the
+//!   density/`added_mass` derivation. Armature has fed the multibody
+//!   DoFs since M0a (per-joint, step 5 of [`MultibodySystem::build_arm`]).
+//! - **U-3 mesh collision**: `LinkShape::ConvexHull` builds a rapier
+//!   convex hull (the *chain-body* policy — stable manifold contacts),
+//!   `LinkShape::Mesh` a trimesh (gripper contact faces via
+//!   `GripperSpec::contact_mesh`); [`collision_report`] prints the
+//!   human-readable collider volume/AABB summary.
+//! - **U-9 self collision**: `RobotSpec::self_collision =
+//!   AdjacentExempt` switches the chain to per-link collision-group
+//!   bits — non-adjacent links may touch, joint-joined pairs stay
+//!   exempt; `Off` (default) keeps the legacy groups untouched.
+//! - **U-6 contact-level grasp**: `GripperSpec::holding_criterion =
+//!   Contact { min_normal_force, max_slip }` decides `holding` from
+//!   the solver's per-tick plate→prop normal impulses and relative
+//!   speed instead of the `GRASP_RADIUS` tip heuristic.
 
-use crate::robot::{LinkShape, RobotSpec, RobotSpecError};
+use crate::robot::{HoldingCriterion, Inertial, LinkShape, RobotSpec, RobotSpecError, SelfCollision};
 use crate::{Gravity, TimeScale};
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Entity, World};
@@ -195,7 +217,7 @@ impl PropShape {
 /// Dynamic prop collider from its shape + physics override. The
 /// default shape reproduces the legacy `ColliderBuilder::cuboid(
 /// PROP_HALF, PROP_HALF, PROP_HALF)` call exactly.
-fn prop_collider(shape: PropShape, pp: PropPhys) -> Collider {
+fn prop_collider(shape: PropShape, pp: PropPhys, groups: InteractionGroups) -> Collider {
     let b = match shape {
         PropShape::Cuboid { half } => ColliderBuilder::cuboid(half[0], half[1], half[2]),
         PropShape::Cylinder { half_h, radius } => ColliderBuilder::cylinder(half_h, radius),
@@ -203,7 +225,7 @@ fn prop_collider(shape: PropShape, pp: PropPhys) -> Collider {
     };
     b.density(pp.density)
         .friction(pp.friction)
-        .collision_groups(world_groups())
+        .collision_groups(groups)
         .build()
 }
 
@@ -352,8 +374,9 @@ pub(crate) const LINK_ADDED_MASS: f32 = 0.2;
 /// in ARM and only collides with WORLD. Arm↔arm self-collision is OFF
 /// by construction — the chain's colliders overlap at their joints at
 /// build time, and contact-driven separation against light links
-/// injects explosive energy (the classic robot-arm pitfall). Real
-/// self-collision meshes are M1.
+/// injects explosive energy (the classic robot-arm pitfall). Opt-in
+/// per-link self collision: [`SelfCollision::AdjacentExempt`] (U-9) —
+/// see [`exempt_link_groups`].
 fn world_groups() -> InteractionGroups {
     InteractionGroups::new(
         Group::GROUP_1,
@@ -364,6 +387,211 @@ fn world_groups() -> InteractionGroups {
 
 fn arm_groups() -> InteractionGroups {
     InteractionGroups::new(Group::GROUP_2, Group::GROUP_1, InteractionTestMode::And)
+}
+
+/// Identity bit of chain link `i` under `AdjacentExempt`: bits 2..31
+/// (0/1 are the world/plate families); chains longer than 30 links
+/// share the last bit and lose mutual contacts there (documented
+/// limitation, `docs/PHYSICS-FIDELITY.md`).
+fn link_group_bit(i: usize) -> Group {
+    Group::from_bits_retain(1u32 << (i + 2).min(31))
+}
+
+/// The joint-joined link pairs (each joint's parent/child, unordered).
+fn adjacency(spec: &RobotSpec) -> BTreeSet<(usize, usize)> {
+    spec.joints
+        .iter()
+        .map(|j| {
+            (
+                j.parent_link.min(j.child_link),
+                j.parent_link.max(j.child_link),
+            )
+        })
+        .collect()
+}
+
+/// Collision groups of chain link `i` under [`SelfCollision::AdjacentExempt`]
+/// (U-9): membership is the link's own identity bit; the filter is the
+/// world family plus every *non-adjacent* link's bit — so link↔link
+/// contacts exist exactly for pairs no joint joins (the per-joint
+/// `contacts_enabled(false)` stays as the adjacent-pair backstop).
+/// Plates (GROUP_2, filter GROUP_1) never meet links in this scheme,
+/// same as the legacy mode.
+fn exempt_link_groups(i: usize, spec: &RobotSpec, adj: &BTreeSet<(usize, usize)>) -> InteractionGroups {
+    let mut filter = Group::GROUP_1;
+    for j in 0..spec.links.len() {
+        let pair = (i.min(j), i.max(j));
+        if j != i && !adj.contains(&pair) {
+            filter |= link_group_bit(j);
+        }
+    }
+    InteractionGroups::new(link_group_bit(i), filter, InteractionTestMode::And)
+}
+
+/// World-side (furniture + prop) groups under `AdjacentExempt`: meet
+/// the world family, the plates, and every link identity bit (a link's
+/// membership is only its own bit, so the filter must name it).
+fn exempt_world_groups(spec: &RobotSpec) -> InteractionGroups {
+    let mut filter = Group::GROUP_1 | Group::GROUP_2;
+    for j in 0..spec.links.len() {
+        filter |= link_group_bit(j);
+    }
+    InteractionGroups::new(Group::GROUP_1, filter, InteractionTestMode::And)
+}
+
+/// Solver-side mass properties of one chain body, read back from the
+/// multibody (U-1 acceptance: `body.mass_properties()` vs the URDF
+/// table). `principal_inertia` are the eigenvalues of the body-frame
+/// tensor (sorted descending by rapier's symmetric eigen), and
+/// `principal_frame` is the rotation from body axes into the principal
+/// frame — reconstruct with `R · diag(λ) · Rᵀ` to compare against a
+/// URDF tensor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinkMassReadback {
+    pub mass: f32,
+    /// Centre of mass in the link body's local frame.
+    pub com: [f32; 3],
+    /// Principal angular inertias (kg·m²).
+    pub principal_inertia: [f32; 3],
+    /// Body→principal-frame rotation quaternion `[x, y, z, w]`.
+    pub principal_frame: [f32; 4],
+}
+
+/// The 8 corners + 12 triangles of an axis-aligned box (the
+/// `contact_mesh` plate collider). Wound consistently outward.
+fn box_trimesh(half: [f32; 3]) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+    let [hx, hy, hz] = half;
+    let verts = vec![
+        Vec3::new(-hx, -hy, -hz),
+        Vec3::new(hx, -hy, -hz),
+        Vec3::new(hx, hy, -hz),
+        Vec3::new(-hx, hy, -hz),
+        Vec3::new(-hx, -hy, hz),
+        Vec3::new(hx, -hy, hz),
+        Vec3::new(hx, hy, hz),
+        Vec3::new(-hx, hy, hz),
+    ];
+    let idx = [
+        [0, 2, 1],
+        [0, 3, 2], // -z
+        [4, 5, 6],
+        [4, 6, 7], // +z
+        [0, 1, 5],
+        [0, 5, 4], // -y
+        [3, 6, 2],
+        [3, 7, 6], // +y
+        [1, 2, 6],
+        [1, 6, 5], // +x
+        [0, 4, 7],
+        [0, 7, 3], // -x
+    ];
+    (verts, idx.to_vec())
+}
+
+/// Spec inertial tensor → rapier `MassProperties` (U-1): mass and
+/// tensor scaled by `mass_scale` (inertia ∝ mass at fixed geometry),
+/// principal-axis decomposition via the symmetric eigen. A zero
+/// (degenerate) tensor is left as-is — rapier treats infinite inverse
+/// inertia components conservatively and the multibody joint
+/// constraints keep the DoF sane.
+fn inertial_mass_properties(i: &Inertial, ms: f32) -> MassProperties {
+    let m = i.mass * ms;
+    // Symmetric: row- vs column-major is the same matrix.
+    let inertia = Mat3::from_cols_array_2d(&[
+        [i.ixx * ms, i.ixy * ms, i.ixz * ms],
+        [i.ixy * ms, i.iyy * ms, i.iyz * ms],
+        [i.ixz * ms, i.iyz * ms, i.izz * ms],
+    ]);
+    MassProperties::with_inertia_matrix(Vec3::new(i.com[0], i.com[1], i.com[2]), m, inertia)
+}
+
+/// Human-readable collider summary of a spec (U-3 acceptance: 外部 STL
+/// 臂碰撞体积/AABB 人话报告): per link one line — shape, collider
+/// volume (analytic for the primitives, hull-derived for a
+/// ConvexHull, "—" for an open Mesh) and the AABB half extents of the
+/// shape around its own origin.
+pub fn collision_report(r: &RobotSpec) -> String {
+    let mut lines = vec![format!(
+        "collision report — {} ({} links, self_collision={:?})",
+        r.name,
+        r.links.len(),
+        r.self_collision
+    )];
+    for l in &r.links {
+        let shape = match &l.shape {
+            LinkShape::Box { half } => format!("box half {half:?}"),
+            LinkShape::Capsule { half_len, radius } => {
+                format!("capsule half_len {half_len} radius {radius}")
+            }
+            LinkShape::ConvexHull { points } => format!("convex_hull {} points", points.len()),
+            LinkShape::Mesh { vertices, indices } => {
+                format!("mesh {} verts / {} tris", vertices.len(), indices.len())
+            }
+        };
+        // Volume: analytic for the primitives; a hull at unit density
+        // weighs its own volume; a triangle mesh has no well-defined
+        // closed volume here.
+        let volume = match &l.shape {
+            LinkShape::Box { half } => 8.0 * half[0] * half[1] * half[2],
+            LinkShape::Capsule { half_len, radius } => {
+                std::f32::consts::PI * radius * radius * (2.0 * half_len)
+                    + 4.0 / 3.0 * std::f32::consts::PI * radius.powi(3)
+            }
+            LinkShape::ConvexHull { points } => {
+                let pts: Vec<Vec3> = points.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect();
+                ColliderBuilder::convex_hull(&pts).map_or(f32::NAN, |b| {
+                    b.density(1.0).build().mass_properties().mass()
+                })
+            }
+            LinkShape::Mesh { .. } => f32::NAN,
+        };
+        let vol_s = if volume.is_finite() {
+            format!("{volume:.3e} m^3")
+        } else {
+            "-".into()
+        };
+        let aabb = shape_aabb_half(&l.shape);
+        lines.push(format!(
+            "  {:<14} {:<38} volume {:<12} aabb_half [{:.4}, {:.4}, {:.4}]",
+            l.name, shape, vol_s, aabb[0], aabb[1], aabb[2]
+        ));
+    }
+    lines.join("\n")
+}
+
+/// AABB half extents of a shape around its own origin (link frame).
+fn shape_aabb_half(s: &LinkShape) -> [f32; 3] {
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    let mut acc = |p: [f32; 3]| {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    };
+    match s {
+        LinkShape::Box { half } => {
+            for x in [-half[0], half[0]] {
+                for y in [-half[1], half[1]] {
+                    for z in [-half[2], half[2]] {
+                        acc([x, y, z]);
+                    }
+                }
+            }
+        }
+        LinkShape::Capsule { half_len, radius } => {
+            for sx in [-1.0, 1.0] {
+                acc([sx * (half_len + radius), *radius, *radius]);
+                acc([sx * (half_len + radius), -*radius, -*radius]);
+            }
+        }
+        LinkShape::ConvexHull { points } | LinkShape::Mesh { vertices: points, .. } => {
+            for p in points {
+                acc(*p);
+            }
+        }
+    }
+    [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]].map(|v| v * 0.5)
 }
 
 /// One actuated revolute stage: its multibody joint handle, the
@@ -471,8 +699,11 @@ fn bits_opt(h: u64, v: Option<f32>) -> u64 {
 /// axes folded in their *resolved* form, so an explicitly written
 /// default equals an omitted one (same canonicalization as
 /// `GripperSpec::canonicalize_axes`). Names and `mesh_uri` are not
-/// identity (a renamed link is the same physics; a mesh link does not
-/// build in M0a/M0b).
+/// identity (a renamed link is the same physics; the uri is collider
+/// provenance since M2). **M2 fields fold only when non-default**
+/// (`inertial` Some, `ConvexHull`/`Mesh` shapes, `contact_mesh`,
+/// `Contact` criterion, `AdjacentExempt`), so every pre-M2 identity
+/// hash — and the pinned goldens — are bit-stable.
 pub fn robot_identity_hash(r: &RobotSpec) -> u64 {
     let mut h = mix(0x0000_6f72_6965_7261, 0x0052_4f42_4f54); // "ROBOT"
     h = mix(h, r.joints.len() as u64);
@@ -494,15 +725,38 @@ pub fn robot_identity_hash(r: &RobotSpec) -> u64 {
         h = bits(h, j.damping);
     }
     for l in &r.links {
-        match l.shape {
+        match &l.shape {
             LinkShape::Capsule { half_len, radius } => {
                 h = mix(h, 1);
-                h = bits(h, half_len);
-                h = bits(h, radius);
+                h = bits(h, *half_len);
+                h = bits(h, *radius);
             }
             LinkShape::Box { half } => {
                 h = mix(h, 2);
-                h = bits3(h, half);
+                h = bits3(h, *half);
+            }
+            // M2 shapes: the resolved geometry IS identity (folded
+            // wholesale — these variants never existed pre-M2, so no
+            // back-compat concern).
+            LinkShape::ConvexHull { points } => {
+                h = mix(h, 3);
+                h = mix(h, points.len() as u64);
+                for p in points {
+                    h = bits3(h, *p);
+                }
+            }
+            LinkShape::Mesh { vertices, indices } => {
+                h = mix(h, 4);
+                h = mix(h, vertices.len() as u64);
+                h = mix(h, indices.len() as u64);
+                for p in vertices {
+                    h = bits3(h, *p);
+                }
+                for t in indices {
+                    for k in t {
+                        h = mix(h, *k as u64);
+                    }
+                }
             }
         }
         h = bits3(h, l.origin);
@@ -510,6 +764,17 @@ pub fn robot_identity_hash(r: &RobotSpec) -> u64 {
         h = bits(h, l.density);
         h = bits(h, l.friction);
         h = bits(h, l.added_mass);
+        // M2 fidelity fields fold ONLY when non-default, so every
+        // pre-M2 spec's v2 identity (and the pinned goldens) is
+        // bit-stable.
+        if let Some(i) = &l.inertial {
+            h = mix(h, 0x1143_A1A1); // "INERTIAL" tag
+            h = bits(h, i.mass);
+            h = bits3(h, i.com);
+            for v in [i.ixx, i.iyy, i.izz, i.ixy, i.ixz, i.iyz] {
+                h = bits(h, v);
+            }
+        }
     }
     match &r.gripper {
         None => h = mix(h, u64::MAX),
@@ -531,7 +796,25 @@ pub fn robot_identity_hash(r: &RobotSpec) -> u64 {
             );
             h = bits3(h, g.approach_axis_or_default());
             h = bits3(h, g.gap_axis_or_default());
+            // M2 gripper fidelity: same default-omission discipline as
+            // the link fields above.
+            if g.contact_mesh {
+                h = mix(h, 0xC011_7A7E); // "CONTACT-MESH" tag
+            }
+            if let HoldingCriterion::Contact {
+                min_normal_force,
+                max_slip,
+            } = g.holding_criterion
+            {
+                h = mix(h, 0x10C1_D200); // "HOLDING-CONTACT" tag
+                h = bits(h, min_normal_force);
+                h = bits(h, max_slip);
+            }
         }
+    }
+    // M2 self collision: folded only when on (Off is the legacy world).
+    if r.self_collision == SelfCollision::AdjacentExempt {
+        h = mix(h, 0x5E1F_C011); // "SELF-COLL" tag
     }
     h
 }
@@ -658,6 +941,18 @@ pub struct MultibodySystem {
     /// Gripper plate bodies `(left, right)`; `None` without a gripper.
     fingers: Option<(RigidBodyHandle, RigidBodyHandle)>,
     gap_now: f32,
+    /// Plate-pair centre the previous tick — the finite-difference
+    /// plate velocity for the Contact holding criterion (kinematic
+    /// bodies driven by `set_next_kinematic_translation` do not carry a
+    /// usable solver linvel).
+    plate_prev_centre: Option<Vec3>,
+    /// Per-tick plate-centre velocity (finite difference), updated by
+    /// [`Self::drive_fingers`].
+    plate_vel: Vec3,
+    /// Physics substep dt of the last `run` — converts the solver's
+    /// normal impulses into per-tick forces for
+    /// [`HoldingCriterion::Contact`].
+    last_substep_dt: f32,
     /// End-effector pose after the last step.
     last_ee: ([f32; 3], [f32; 4]),
 }
@@ -672,9 +967,10 @@ impl MultibodySystem {
             .expect("ArmDescription preset projects to a valid RobotSpec")
     }
 
-    /// Build an arbitrary [`RobotSpec`] (validated first — a registered
-    /// `mesh_uri` is refused here with an M2 pointer, never silently
-    /// dropped).
+    /// Build an arbitrary [`RobotSpec`] (validated first — an
+    /// unbuildable collider shape is a named [`RobotSpecError::BadShape`],
+    /// never a silently dropped collider; a `mesh_uri` is provenance
+    /// metadata and never an error since M2).
     pub fn from_robot(robot: RobotSpec, scene: Scene3D) -> Result<Self, RobotSpecError> {
         robot.validate()?;
         let n = robot.joints.len();
@@ -714,30 +1010,37 @@ impl MultibodySystem {
             holding: false,
             fingers: None,
             gap_now: gap0,
+            plate_prev_centre: None,
+            plate_vel: Vec3::ZERO,
+            last_substep_dt: (1.0 / 60.0) / SUBSTEPS as f32,
             last_ee: ([0.0; 3], [0.0, 0.0, 0.0, 1.0]),
         };
         sys.build_scene(&scene);
-        sys.build_arm();
+        sys.build_arm()?;
         Ok(sys)
     }
 
-    fn fixed_slab(&mut self, center: [f32; 3], half: [f32; 3], friction: f32) {
+    fn fixed_slab(&mut self, center: [f32; 3], half: [f32; 3], friction: f32, groups: InteractionGroups) {
         let body = RigidBodyBuilder::fixed()
             .translation(Vec3::new(center[0], center[1], center[2]))
             .build();
         let h = self.bodies.insert(body);
         let col = ColliderBuilder::cuboid(half[0], half[1], half[2])
             .friction(friction)
-            .collision_groups(world_groups())
+            .collision_groups(groups)
             .build();
         self.colliders.insert_with_parent(col, h, &mut self.bodies);
     }
 
     fn build_scene(&mut self, scene: &Scene3D) {
+        let world = match self.robot.self_collision {
+            SelfCollision::Off => world_groups(),
+            SelfCollision::AdjacentExempt => exempt_world_groups(&self.robot),
+        };
         let (c, half) = scene.ground;
-        self.fixed_slab(c, half, 0.9);
+        self.fixed_slab(c, half, 0.9, world);
         if let Some((c, half)) = scene.table {
-            self.fixed_slab(c, half, 0.9);
+            self.fixed_slab(c, half, 0.9, world);
         }
     }
 
@@ -746,46 +1049,95 @@ impl MultibodySystem {
     /// link collider in link order, then the plates, then the joints in
     /// order — is the legacy sequence for the preset, so body/collider
     /// handles and solver ordering are unchanged (bit-exact receipt).
-    fn build_arm(&mut self) {
+    fn build_arm(&mut self) -> Result<(), RobotSpecError> {
         let r = self.robot.clone();
         let ms = r.mass_scale;
         let root = r.root_link().expect("validated: exactly one root");
         let v3 = |a: [f32; 3]| Vec3::new(a[0], a[1], a[2]);
+        let adj = adjacency(&r);
 
         // 1. Bodies: the root is a fixed stub the chain stands on; every
         //    other link is dynamic at its home origin (identity
         //    rotation; the multibody's own FK re-derives these from the
-        //    root pose + anchors on the first step).
+        //    root pose + anchors on the first step). U-1: a link with
+        //    `inertial` gets the real (mass-scaled) tensor via
+        //    `additional_mass_properties` — its collider then
+        //    contributes zero mass (step 2), so the body total is
+        //    exactly the spec values; the default path keeps the legacy
+        //    `added_mass` write bit for bit.
         self.chain.clear();
         for (i, l) in r.links.iter().enumerate() {
             let body = if i == root {
                 RigidBodyBuilder::fixed().translation(v3(l.origin)).build()
             } else {
-                RigidBodyBuilder::dynamic()
-                    .can_sleep(false)
-                    .additional_mass(l.added_mass * ms)
-                    .translation(v3(l.origin))
-                    .build()
+                let mut b = RigidBodyBuilder::dynamic().can_sleep(false);
+                b = match l.inertial {
+                    Some(iner) => {
+                        b.additional_mass_properties(inertial_mass_properties(&iner, ms))
+                    }
+                    None => b.additional_mass(l.added_mass * ms),
+                };
+                b.translation(v3(l.origin)).build()
             };
             self.chain.push(self.bodies.insert(body));
         }
 
-        // 2. Colliders: primitives in the body frame; dynamic links get
-        //    `density · mass_scale` (the fixed root's density is inert to
-        //    the solver and written as-is).
+        // 2. Colliders: shape per spec (U-3: analytic primitives, or a
+        //    resolved convex hull / triangle mesh), dynamic links get
+        //    `density · mass_scale` unless the real inertial replaced
+        //    the mass model (the collider then contributes zero —
+        //    rapier's zero `MassProperties` short-circuits the combine,
+        //    so the body keeps exactly the tensor set in step 1).
+        //    Self-collision (U-9): `Off` keeps the legacy arm groups;
+        //    `AdjacentExempt` gives every link its own group bit.
         for (i, l) in r.links.iter().enumerate() {
-            let builder = match l.shape {
+            let shape_err = |reason: String| RobotSpecError::BadShape {
+                link: l.name.clone(),
+                reason,
+            };
+            let builder = match &l.shape {
                 LinkShape::Box { half } => ColliderBuilder::cuboid(half[0], half[1], half[2]),
                 LinkShape::Capsule { half_len, radius } => {
-                    ColliderBuilder::capsule_x(half_len, radius)
+                    ColliderBuilder::capsule_x(*half_len, *radius)
+                }
+                LinkShape::ConvexHull { points } => {
+                    let pts: Vec<Vec3> = points.iter().map(|p| v3(*p)).collect();
+                    let hull = ColliderBuilder::convex_hull(&pts).ok_or_else(|| {
+                        shape_err("convex hull is degenerate (coplanar/degenerate point cloud)".into())
+                    })?;
+                    // rapier tolerates coplanar clouds by returning a
+                    // zero-volume sliver — refuse it here so a broken
+                    // STL never becomes an invisible collider.
+                    let vol = hull.density(1.0).build().mass_properties().mass();
+                    if !(vol.is_finite() && vol > 1e-12) {
+                        return Err(shape_err(format!(
+                            "convex hull has degenerate volume {vol} m³ (coplanar points?)"
+                        )));
+                    }
+                    ColliderBuilder::convex_hull(&pts).ok_or_else(|| {
+                        shape_err("convex hull is degenerate (coplanar/degenerate point cloud)".into())
+                    })?
+                }
+                LinkShape::Mesh { vertices, indices } => {
+                    let verts: Vec<Vec3> = vertices.iter().map(|p| v3(*p)).collect();
+                    ColliderBuilder::trimesh(verts, indices.clone()).map_err(|e| {
+                        shape_err(format!("trimesh rejected: {e}"))
+                    })?
                 }
             };
             let density = if i == root { l.density } else { l.density * ms };
-            let c = builder
-                .density(density)
+            let c = match l.inertial {
+                Some(_) => builder.mass_properties(MassProperties::default()),
+                None => builder.density(density),
+            };
+            let groups = match r.self_collision {
+                SelfCollision::Off => arm_groups(),
+                SelfCollision::AdjacentExempt => exempt_link_groups(i, &r, &adj),
+            };
+            let c = c
                 .friction(l.friction)
                 .translation(v3(l.collider_offset))
-                .collision_groups(arm_groups())
+                .collision_groups(groups)
                 .build();
             self.colliders
                 .insert_with_parent(c, self.chain[i], &mut self.bodies);
@@ -814,23 +1166,41 @@ impl MultibodySystem {
             let o = v3(r.links[ee_link].origin);
             let centre = o + approach_vec * g.finger_x;
             let side = gap_vec * (g.gap_open * 0.5);
-            let mut mk_finger = |at: Vec3| {
+            // U-3 opt-in: the plate as a triangle mesh (the same box,
+            // tessellated) instead of the analytic cuboid collider.
+            let plate_collider = |g: &crate::robot::GripperSpec| -> Result<Collider, RobotSpecError> {
+                let base = if g.contact_mesh {
+                    let (verts, idx) = box_trimesh(g.finger_half);
+                    ColliderBuilder::trimesh(verts, idx)
+                        .map_err(|e| {
+                            RobotSpecError::BadShape {
+                                link: "gripper-plate(contact_mesh)".to_string(),
+                                reason: format!("trimesh rejected: {e}"),
+                            }
+                        })?
+                } else {
+                    ColliderBuilder::cuboid(g.finger_half[0], g.finger_half[1], g.finger_half[2])
+                };
+                Ok(base
+                    .friction(g.friction)
+                    .collision_groups(arm_groups())
+                    .build())
+            };
+            let mut mk_finger = |at: Vec3| -> Result<RigidBodyHandle, RobotSpecError> {
                 let body = self.bodies.insert(
                     RigidBodyBuilder::kinematic_position_based()
                         .translation(at)
                         .build(),
                 );
-                let c = ColliderBuilder::cuboid(g.finger_half[0], g.finger_half[1], g.finger_half[2])
-                    .friction(g.friction)
-                    .collision_groups(arm_groups())
-                    .build();
+                let c = plate_collider(g)?;
                 self.colliders.insert_with_parent(c, body, &mut self.bodies);
-                body
+                Ok(body)
             };
-            let l = mk_finger(centre + side);
-            let rgt = mk_finger(centre - side);
-            (l, rgt)
-        });
+            let l = mk_finger(centre + side)?;
+            let rgt = mk_finger(centre - side)?;
+            Ok((l, rgt))
+        }).transpose()?;
+        self.plate_prev_centre = None;
 
         // 4. Multibody joints in spec (topological) order. Positive
         //    angle about the axis follows the right-hand rule.
@@ -898,6 +1268,15 @@ impl MultibodySystem {
         }
 
         self.prev_angles = vec![0.0; r.joints.len()];
+        Ok(())
+    }
+
+    /// Per-tick plate-pair velocity (finite difference of the plate
+    /// centre) — 0 before the first drive. Written by
+    /// [`Self::drive_fingers`]; consumed by the Contact holding
+    /// criterion.
+    fn plate_velocity(&self) -> Vec3 {
+        self.plate_vel
     }
 
     /// End-effector (tip) world pose after the last step.
@@ -958,8 +1337,10 @@ impl MultibodySystem {
     /// slabs straddling the plate centre in the attach link's frame:
     /// centre = `finger_x` along the approach axis, plates at `±gap/2`
     /// along the gap axis (M0b plate frame; legacy `+X`/`+Z` when the
-    /// spec leaves the axes unset). No-op without a gripper.
-    fn drive_fingers(&mut self, gripper: f32) {
+    /// spec leaves the axes unset). Also refreshes the finite-difference
+    /// plate velocity (Contact holding criterion). No-op without a
+    /// gripper.
+    fn drive_fingers(&mut self, gripper: f32, dt: f32) {
         let Some((fl, fr)) = self.fingers else { return };
         let Some(g) = self.robot.gripper.as_ref() else {
             return;
@@ -972,6 +1353,11 @@ impl MultibodySystem {
             (b.translation(), *b.rotation())
         };
         let centre = wp + wr.mul_vec3(self.approach_vec * finger_x);
+        self.plate_vel = match self.plate_prev_centre {
+            Some(prev) if dt > 0.0 => (centre - prev) / dt,
+            _ => Vec3::ZERO,
+        };
+        self.plate_prev_centre = Some(centre);
         let side = wr.mul_vec3(self.gap_vec * (self.gap_now * 0.5));
         for (h, sign) in [(fl, 1.0), (fr, -1.0)] {
             if let Some(b) = self.bodies.get_mut(h) {
@@ -981,19 +1367,111 @@ impl MultibodySystem {
         }
     }
 
-    /// Reporting heuristic: gripper closed + a prop centre inside the
-    /// grip zone; the contact solve does the actual holding. Always
-    /// false without a gripper.
+    /// Decide `holding` per the spec's criterion (U-6). Always false
+    /// without a gripper.
+    ///
+    /// - [`HoldingCriterion::TipRadius`] (default, v1): gripper closed +
+    ///   a prop centre inside the grip zone; the contact solve does the
+    ///   actual holding.
+    /// - [`HoldingCriterion::Contact`]: both plates touch the *same*
+    ///   prop, each with per-tick normal force ≥ `min_normal_force` and
+    ///   plate↔prop relative speed ≤ `max_slip`.
     fn update_holding(&mut self, gripper: f32) {
-        self.holding = self.fingers.is_some() && gripper > 0.5 && {
-            let tip = self.last_ee.0;
-            self.map.values().any(|h| {
-                self.bodies.get(*h).is_some_and(|b| {
-                    let t = b.translation();
-                    Vec3::new(t.x - tip[0], t.y - tip[1], t.z - tip[2]).length() < GRASP_RADIUS
-                })
-            })
+        let Some(g) = self.robot.gripper.as_ref() else {
+            self.holding = false;
+            return;
         };
+        self.holding = gripper > 0.5
+            && match g.holding_criterion {
+                HoldingCriterion::TipRadius => {
+                    let tip = self.last_ee.0;
+                    self.map.values().any(|h| {
+                        self.bodies.get(*h).is_some_and(|b| {
+                            let t = b.translation();
+                            Vec3::new(t.x - tip[0], t.y - tip[1], t.z - tip[2]).length()
+                                < GRASP_RADIUS
+                        })
+                    })
+                }
+                HoldingCriterion::Contact {
+                    min_normal_force,
+                    max_slip,
+                } => self.contact_hold(min_normal_force, max_slip),
+            };
+    }
+
+    /// Per-tick normal force (N) a plate collider applies to each prop
+    /// body, from the solver's contact impulses: the sum of the pair's
+    /// manifold point impulses (signed so positive = pushing the prop)
+    /// divided by the physics substep dt. Mixed normals within one
+    /// plate-prop pair are near-identical under a squeeze, so the
+    /// absolute value after summing is the squeeze force.
+    fn plate_prop_forces(&self) -> BTreeMap<EntKey, [f32; 2]> {
+        let mut out: BTreeMap<EntKey, [f32; 2]> = BTreeMap::new();
+        let Some((fl, fr)) = self.fingers else {
+            return out;
+        };
+        let dt = self.last_substep_dt.max(1e-9);
+        let prop_of = |h: RigidBodyHandle| -> Option<EntKey> {
+            self.map
+                .iter()
+                .find(|(_, body)| **body == h)
+                .map(|(k, _)| *k)
+        };
+        for (plate_idx, plate_body) in [fl, fr].into_iter().enumerate() {
+            let Some(pb) = self.bodies.get(plate_body) else {
+                continue;
+            };
+            for ch in pb.colliders() {
+                for pair in self.narrow_phase.contact_pairs_with(*ch) {
+                    let other = if pair.collider1 == *ch {
+                        pair.collider2
+                    } else {
+                        pair.collider1
+                    };
+                    let Some(other_parent) = self.colliders.get(other).and_then(|c| c.parent())
+                    else {
+                        continue;
+                    };
+                    let Some(prop_key) = prop_of(other_parent) else {
+                        continue;
+                    };
+                    let Some(rigid) = pair.rigid() else {
+                        continue;
+                    };
+                    // `impulse` acts on collider1's body along its normal;
+                    // the prop feels the opposite when the plate is first.
+                    let sign: f32 = if pair.collider1 == *ch { -1.0 } else { 1.0 };
+                    let mut sum = 0.0f32;
+                    for m in rigid.manifolds.iter() {
+                        for p in m.points.iter() {
+                            sum += sign * p.data.impulse;
+                        }
+                    }
+                    out.entry(prop_key).or_insert([0.0; 2])[plate_idx] += sum.abs() / dt;
+                }
+            }
+        }
+        out
+    }
+
+    /// The Contact criterion body: same prop squeezed by both plates
+    /// (each ≥ `min_normal_force`) and slow relative to them.
+    fn contact_hold(&self, min_normal_force: f32, max_slip: f32) -> bool {
+        let pv = self.plate_velocity();
+        self.plate_prop_forces().into_iter().any(|(k, forces)| {
+            let both_pressed = forces.iter().all(|f| *f >= min_normal_force);
+            if !both_pressed {
+                return false;
+            }
+            self.map
+                .get(&k)
+                .and_then(|h| self.bodies.get(*h))
+                .is_some_and(|b| {
+                    let v = b.linvel() - pv;
+                    v.length() <= max_slip
+                })
+        })
     }
 
     /// Legacy (scheme **v1**) experiment fingerprint: sim state + solver
@@ -1066,6 +1544,75 @@ impl MultibodySystem {
         };
         (vec![plate(fl), plate(fr)], counts)
     }
+
+    /// Current plate gap (m) — the ramped `gap_now` (M1 leftover: a
+    /// read-only view so renderers stop mirroring the ramp).
+    pub fn gap(&self) -> f32 {
+        self.gap_now
+    }
+
+    /// World positions of the gripper plates `(left, right)`, or `None`
+    /// without a gripper.
+    pub fn plate_positions(&self) -> Option<[[f32; 3]; 2]> {
+        let (fl, fr) = self.fingers?;
+        let at = |h: RigidBodyHandle| {
+            self.bodies.get(h).map(|b| {
+                let t = b.translation();
+                [t.x, t.y, t.z]
+            })
+        };
+        Some([at(fl)?, at(fr)?])
+    }
+
+    /// Solver-side mass properties of chain link `link` (U-1
+    /// acceptance readback); `None` for an out-of-range index.
+    pub fn link_mass_properties(&self, link: usize) -> Option<LinkMassReadback> {
+        let h = *self.chain.get(link)?;
+        let b = self.bodies.get(h)?;
+        let mp = &b.mass_properties().local_mprops;
+        let pi = mp.principal_inertia();
+        let rf = mp.principal_inertia_local_frame;
+        Some(LinkMassReadback {
+            mass: mp.mass(),
+            com: [mp.local_com.x, mp.local_com.y, mp.local_com.z],
+            principal_inertia: [pi.x, pi.y, pi.z],
+            principal_frame: [rf.x, rf.y, rf.z, rf.w],
+        })
+    }
+
+    /// The multibody's live armature (reflected rotor inertia) of joint
+    /// `i` — proof the per-joint value really entered the solver.
+    pub fn joint_armature(&self, i: usize) -> f32 {
+        self.stages
+            .get(i)
+            .and_then(|s| self.mbody_joints.get(s.handle))
+            .and_then(|(mb, link_id)| {
+                let a = mb.link(link_id).map(|l| l.assembly_id())?;
+                Some(mb.armature()[a])
+            })
+            .unwrap_or(f32::NAN)
+    }
+
+    /// Number of link↔link contact pairs currently touching (both
+    /// colliders on chain bodies, at least one contact point) — the
+    /// self-collision acceptance readout (`AdjacentExempt` must show
+    /// non-adjacent contacts; `Off` must show none).
+    pub fn self_contact_pairs(&self) -> usize {
+        let chain: Vec<RigidBodyHandle> = self.chain.clone();
+        self.narrow_phase
+            .contact_pairs()
+            .filter(|pair| {
+                let p1 = self.colliders.get(pair.collider1).and_then(|c| c.parent());
+                let p2 = self.colliders.get(pair.collider2).and_then(|c| c.parent());
+                let both_on_chain = p1.is_some_and(|h| chain.contains(&h))
+                    && p2.is_some_and(|h| chain.contains(&h));
+                both_on_chain
+                    && pair
+                        .rigid()
+                        .is_some_and(|r| r.manifolds.iter().any(|m| !m.points.is_empty()))
+            })
+            .count()
+    }
 }
 
 impl System<World> for MultibodySystem {
@@ -1119,13 +1666,17 @@ impl System<World> for MultibodySystem {
             if !self.map.contains_key(k) {
                 let pp = phys.get(k).copied().unwrap_or_default();
                 let shape = shapes.get(k).copied().unwrap_or_default();
+                let groups = match self.robot.self_collision {
+                    SelfCollision::Off => world_groups(),
+                    SelfCollision::AdjacentExempt => exempt_world_groups(&self.robot),
+                };
                 let b = RigidBodyBuilder::dynamic()
                     .linear_damping(0.1)
                     .angular_damping(0.1)
                     .translation(Vec3::new(p.pos[0], p.pos[1], p.pos[2]))
                     .build();
                 let h = self.bodies.insert(b);
-                let c = prop_collider(shape, pp);
+                let c = prop_collider(shape, pp, groups);
                 self.colliders.insert_with_parent(c, h, &mut self.bodies);
                 self.map.insert(*k, h);
                 self.last_pose.insert(*k, (p.pos, p.rot));
@@ -1184,7 +1735,7 @@ impl System<World> for MultibodySystem {
         }
 
         // 3.5 Drive gripper plates (kinematic) for THIS tick's step.
-        self.drive_fingers(gripper);
+        self.drive_fingers(gripper, dt);
 
         // 4. Step the pipeline — internal physics substeps per engine
         // tick (decimation; 3D worlds are y-up). The substep count is a
@@ -1196,6 +1747,7 @@ impl System<World> for MultibodySystem {
             dt: dt / substeps as f32,
             ..IntegrationParameters::default()
         };
+        self.last_substep_dt = params.dt;
         let p = self.physics;
         if let Some(v) = p.solver_iterations {
             params.num_solver_iterations = v;
@@ -1827,6 +2379,7 @@ mod tests {
             density: LINK_DENSITY,
             friction: 0.7,
             added_mass: LINK_ADDED_MASS,
+            inertial: None,
             mesh_uri: None,
         };
         let links = vec![
@@ -1840,6 +2393,7 @@ mod tests {
                 density: 1.0,
                 friction: 0.5,
                 added_mass: 0.0,
+                inertial: None,
                 mesh_uri: None,
             },
             link("carrier", [0.015; 3], [sx, sy, 0.0], [0.0; 3]),
@@ -1886,6 +2440,8 @@ mod tests {
             kind: GripperKind::ParallelPlates,
             approach_axis: None,
             gap_axis: None,
+            contact_mesh: false,
+            holding_criterion: HoldingCriterion::default(),
         };
         RobotSpec {
             name: "tabletop-6dof".into(),
@@ -1896,6 +2452,7 @@ mod tests {
             home: vec![0.0; 6],
             mass_scale: 1.0,
             action_scale: vec![2.0; 6],
+            self_collision: SelfCollision::Off,
         }
     }
 
@@ -2100,23 +2657,251 @@ mod tests {
         );
     }
 
-    /// A registered `mesh_uri` is an honest build error pointing at M2,
-    /// never a silently dropped collider.
+    /// M2 mesh semantics: a `mesh_uri` is provenance metadata (builds
+    /// fine next to a primitive), a resolved `ConvexHull` builds a real
+    /// hull collider, and `collision_report` speaks human.
     #[test]
-    fn mesh_uri_build_fails_with_m2_pointer() {
+    fn mesh_uri_is_metadata_and_hull_shapes_build() {
+        // A box link with a leftover mesh reference builds the box.
         let mut spec = RobotSpec::from(&ArmDescription::default());
         spec.links[2].mesh_uri = Some("file:///panda/link2.stl".into());
-        let err = match MultibodySystem::from_robot(spec, Scene3D::default()) {
+        let mut world = World::new();
+        world.insert_resource(Gravity(9.8));
+        world.insert_resource(TimeScale(1.0));
+        let arm = world.spawn();
+        world.insert(
+            arm,
+            JointTargets {
+                angles: vec![0.0; 4],
+                gripper: 0.0,
+            },
+        );
+        world.insert(arm, JointTelemetry::default());
+        let mut sys = MultibodySystem::from_robot(spec, Scene3D::default()).expect("uri is metadata");
+        for i in 0..60u64 {
+            sys.run(&ctx(i), &mut world);
+        }
+        assert!(telemetry(&world, arm).ee_pos.iter().all(|v| v.is_finite()));
+
+        // An 8-vertex cube as ConvexHull: builds, keeps the arm
+        // tracking, and the hull volume lands in the report.
+        let s = 0.05f32;
+        let mut pts = Vec::new();
+        for x in [-s, s] {
+            for y in [-s, s] {
+                for z in [-s, s] {
+                    pts.push([0.1 + x, y, z]);
+                }
+            }
+        }
+        let mut hull = RobotSpec::from(&ArmDescription::default());
+        hull.links[3].shape = LinkShape::ConvexHull { points: pts };
+        let report = collision_report(&hull);
+        assert!(
+            report.contains("convex_hull 8 points"),
+            "report must name the hull: {report}"
+        );
+        assert!(report.contains("upper_arm"), "report names links: {report}");
+        let sys2 = MultibodySystem::from_robot(hull, Scene3D::default()).expect("hull builds");
+        let vol = collision_report(&RobotSpec::from(&ArmDescription::default()));
+        assert!(vol.contains("box"), "primitive path reports too: {vol}");
+        let _ = sys2;
+
+        // A degenerate hull (coplanar) is a named build error.
+        let mut flat = RobotSpec::from(&ArmDescription::default());
+        flat.links[3].shape = LinkShape::ConvexHull {
+            points: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+        };
+        let err = match MultibodySystem::from_robot(flat, Scene3D::default()) {
             Err(e) => e,
-            Ok(_) => panic!("mesh collider must be refused in M0a"),
+            Ok(_) => panic!("coplanar hull must be refused"),
         };
         let msg = err.to_string();
-        assert!(msg.contains("M2"), "error must point at M2: {msg}");
-        assert!(msg.contains("mesh"), "error must name the cause: {msg}");
+        assert!(msg.contains("forearm") && msg.contains("degenerate"), "{msg}");
+    }
 
-        // And an unchanged spec rebuilds fine.
-        let clean = RobotSpec::from(&ArmDescription::default());
-        assert!(MultibodySystem::from_robot(clean, Scene3D::default()).is_ok());
+    /// U-1: a spec `inertial` replaces the whole mass model — the body
+    /// readback carries exactly the (mass-scaled) spec mass/CoM, and
+    /// the armature readback mirrors the per-joint spec values.
+    #[test]
+    fn spec_inertial_reaches_the_rigid_body() {
+        let mut spec = RobotSpec::from(&ArmDescription::default());
+        let links = [2usize, 3, 4];
+        for (k, i) in links.iter().enumerate() {
+            spec.links[*i].inertial = Some(Inertial {
+                mass: 1.0 + k as f32 * 0.5,
+                com: [0.01 * (k as f32 + 1.0), 0.0, 0.002],
+                ixx: 0.01 + k as f32 * 0.01,
+                iyy: 0.02 + k as f32 * 0.01,
+                izz: 0.03 + k as f32 * 0.01,
+                ixy: 0.001,
+                ixz: 0.0,
+                iyz: 0.0,
+            });
+        }
+        spec.joints[2].armature = 0.077;
+        let mut sys = MultibodySystem::from_robot(spec.clone(), Scene3D::default()).expect("builds");
+        // rapier defers the mass-properties recompute to the first
+        // pipeline step (user-changes flush) — settle briefly first.
+        let mut world = World::new();
+        world.insert_resource(Gravity(9.8));
+        world.insert_resource(TimeScale(1.0));
+        let arm = world.spawn();
+        world.insert(
+            arm,
+            JointTargets {
+                angles: vec![0.0; 4],
+                gripper: 0.0,
+            },
+        );
+        world.insert(arm, JointTelemetry::default());
+        for i in 0..5u64 {
+            sys.run(&ctx(i), &mut world);
+        }
+        for (k, i) in links.iter().enumerate() {
+            let mp = sys.link_mass_properties(*i).expect("readback");
+            let want_m = (1.0 + k as f32 * 0.5) * spec.mass_scale;
+            assert!(
+                (mp.mass - want_m).abs() / want_m < 1e-5,
+                "link {} mass {} != spec {}",
+                spec.links[*i].name,
+                mp.mass,
+                want_m
+            );
+            // The collider contributed zero: total mass == spec mass.
+            let com_want = [0.01 * (k as f32 + 1.0), 0.0, 0.002];
+            assert!(
+                mp.com
+                    .iter()
+                    .zip(com_want)
+                    .all(|(a, b)| (a - b).abs() < 1e-5),
+                "link {} com {:?} != spec {com_want:?}",
+                spec.links[*i].name,
+                mp.com
+            );
+            // Reconstruct the body-frame tensor from the principal
+            // readback and compare against the spec tensor.
+            let t = reconstruct_tensor(mp.principal_inertia, mp.principal_frame);
+            let want = |ixx: f32, iyy: f32, izz: f32, ixy: f32, ixz: f32, iyz: f32| {
+                [
+                    [ixx, ixy, ixz],
+                    [ixy, iyy, iyz],
+                    [ixz, iyz, izz],
+                ]
+            };
+            let w = want(
+                0.01 + k as f32 * 0.01,
+                0.02 + k as f32 * 0.01,
+                0.03 + k as f32 * 0.01,
+                0.001,
+                0.0,
+                0.0,
+            );
+            for r in 0..3 {
+                for c in 0..3 {
+                    let scale = w[r][c].abs().max(1e-3);
+                    assert!(
+                        (t[r][c] - w[r][c]).abs() <= 1e-4 * scale.max(0.1),
+                        "link {} tensor[{}][{}] {} != {}",
+                        spec.links[*i].name,
+                        r,
+                        c,
+                        t[r][c],
+                        w[r][c]
+                    );
+                }
+            }
+        }
+        // Untouched link keeps the density-derived model (≈0.6 kg + 0.2).
+        let mp = sys.link_mass_properties(1).expect("readback");
+        assert!((mp.mass - (LINK_DENSITY * 2.7e-5 + LINK_ADDED_MASS)).abs() < 1e-3);
+        // Armature: per-joint spec value live in the multibody.
+        assert!((sys.joint_armature(2) - 0.077).abs() < 1e-6);
+        assert!((sys.joint_armature(1) - spec.joints[1].armature).abs() < 1e-6);
+    }
+
+    fn reconstruct_tensor(principal: [f32; 3], frame: [f32; 4]) -> [[f32; 3]; 3] {
+        use rapier3d::utils::RotationOps;
+        let r = Rotation::from_xyzw(frame[0], frame[1], frame[2], frame[3]);
+        let m = r.to_mat();
+        // The stored frame maps body axes → principal axes (parry:
+        // "rotation from local coordinates to principal inertia
+        // axes"), so the body-frame tensor is Rᵀ · diag(λ) · R. Using
+        // the same accessor for both factors and writing the transposed
+        // cell handles the convention.
+        let mut t = [[0.0f32; 3]; 3];
+        let rows = [m.row(0), m.row(1), m.row(2)];
+        for (a, row_a) in rows.iter().enumerate() {
+            for (b, row_b) in rows.iter().enumerate() {
+                let mut s = 0.0;
+                for k in 0..3 {
+                    s += row_a[k] * principal[k] * row_b[k];
+                }
+                t[a][b] = s;
+            }
+        }
+        t
+    }
+
+    /// U-9 self collision: with `AdjacentExempt`, folding the elbow
+    /// fully back puts the forearm onto the base column — a
+    /// NON-adjacent pair — and the solver reports contacts; the same
+    /// posture under `Off` reports none.
+    #[test]
+    fn adjacent_exempt_enables_non_adjacent_self_contacts() {
+        let base = RobotSpec::from(&ArmDescription::default());
+        let build = |mode: SelfCollision| {
+            let mut spec = base.clone();
+            spec.self_collision = mode;
+            MultibodySystem::from_robot(spec, Scene3D::default()).expect("builds")
+        };
+        // Elbow folded hard against the base column (limits −2.5).
+        let posture = [0.0f32, 1.0, -2.5, 1.2];
+        let run = |sys: &mut MultibodySystem| {
+            let mut world = World::new();
+            world.insert_resource(Gravity(9.8));
+            world.insert_resource(TimeScale(1.0));
+            let arm = world.spawn();
+            world.insert(
+                arm,
+                JointTargets {
+                    angles: posture.to_vec(),
+                    gripper: 0.0,
+                },
+            );
+            world.insert(arm, JointTelemetry::default());
+            for i in 0..120u64 {
+                sys.run(&ctx(i), &mut world);
+            }
+            let tel = world.query::<JointTelemetry>().next().map(|(_, t)| t.clone());
+            (tel, sys.self_contact_pairs())
+        };
+        let mut off = build(SelfCollision::Off);
+        let mut exempt = build(SelfCollision::AdjacentExempt);
+        let (tel_off, off_pairs) = run(&mut off);
+        let (tel_ex, exempt_pairs) = run(&mut exempt);
+        eprintln!(
+            "self-collision probe: Off pairs={off_pairs}, AdjacentExempt pairs={exempt_pairs}"
+        );
+        assert_eq!(off_pairs, 0, "Off must keep arm↔arm contacts disabled");
+        assert!(
+            exempt_pairs > 0,
+            "AdjacentExempt must surface non-adjacent contacts (elbow folded onto base)"
+        );
+        // The telemetry stays finite under the new contacts.
+        assert!(tel_off.is_some() && tel_ex.is_some());
+        // Identity: the mode is v2 identity, folded only when on.
+        let h_off = robot_identity_hash(&base);
+        assert_eq!(h_off, robot_identity_hash(&{
+            let mut s = base.clone();
+            s.self_collision = SelfCollision::Off;
+            s
+        }));
+        assert_ne!(h_off, robot_identity_hash(&{
+            let mut s = base.clone();
+            s.self_collision = SelfCollision::AdjacentExempt;
+            s
+        }));
     }
 
     /// Gripper-less robot: builds, no plates, holding stays false, and

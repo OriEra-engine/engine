@@ -29,7 +29,7 @@
 //! 既有 `first_revolute_chain`/`validate_chain` 一字不动。
 
 use oriera_subsys::{
-    ArmDescription, GripperKind, GripperSpec, JointSpec, LinkShape, LinkSpec, RobotSpec,
+    ArmDescription, GripperKind, GripperSpec, Inertial, JointSpec, LinkShape, LinkSpec, RobotSpec,
 };
 use std::f32::consts::PI;
 use roxmltree::Document;
@@ -559,6 +559,13 @@ pub struct RobotSpecOpts {
     /// **输出**：每一次降级 / 缺省 / 未消费的人话记录（mesh 包络、
     /// 分支关节、缺 `<collision>`、轴缺省……），只追加不清空。
     pub skipped: Vec<String>,
+    /// STL mesh 解析根目录（M2 U-3）：`Some` 时 `<collision><mesh>` 的
+    /// STL 经 `meshres` 全量解析，顶点旋到 OriEra 体轴后填进
+    /// [`LinkShape::ConvexHull`]（凸包——链体碰撞策略，接触稳定）；
+    /// `None` / GLB / 解析失败 → 沿用链段包络降级并记 `skipped`。
+    pub mesh_base_dir: Option<PathBuf>,
+    /// `package://<pkg>/...` 的包根表（同 `meshres::resolve_mesh_uri`）。
+    pub mesh_packages: BTreeMap<String, PathBuf>,
 }
 
 impl Default for RobotSpecOpts {
@@ -572,6 +579,8 @@ impl Default for RobotSpecOpts {
             up_axis: UpAxis::Z,
             tick_hz: 60.0,
             skipped: Vec::new(),
+            mesh_base_dir: None,
+            mesh_packages: BTreeMap::new(),
         }
     }
 }
@@ -638,6 +647,32 @@ fn aabb_half(r: &Mat3, half: V3) -> V3 {
     [row(0), row(1), row(2)]
 }
 
+/// 惯量张量的坐标架旋转（M2 U-1）：URDF 张量在 link 系，OriEra 体轴
+/// 是世界对齐的——I_body = R·I_link·Rᵀ（R 把 link 轴旋到体轴）。
+/// 返回 `(ixx, iyy, izz, ixy, ixz, iyz)`。
+#[allow(clippy::too_many_arguments)]
+fn rotate_inertia(
+    r: &Mat3,
+    ixx: f32,
+    iyy: f32,
+    izz: f32,
+    ixy: f32,
+    ixz: f32,
+    iyz: f32,
+) -> (f32, f32, f32, f32, f32, f32) {
+    let m = [[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]];
+    let ri = |a: usize, b: usize| (0..3).map(|k| r[a][k] * m[k][b]).sum::<f32>(); // (R·I)[a][b]
+    let out = |a: usize, b: usize| (0..3).map(|k| ri(a, k) * r[b][k]).sum::<f32>(); // (R·I·Rᵀ)[a][b]
+    (
+        out(0, 0),
+        out(1, 1),
+        out(2, 2),
+        out(0, 1),
+        out(0, 2),
+        out(1, 2),
+    )
+}
+
 /// 轴向 `u`、半长 `half_len`、半径 `r` 的圆柱的轴对齐包围半尺寸。
 fn cylinder_aabb_half(u: V3, half_len: f32, r: f32) -> V3 {
     let f = |c: f32| half_len * c.abs() + r * (1.0 - c * c).max(0.0).sqrt();
@@ -650,21 +685,6 @@ fn box_volume(h: V3) -> f32 {
 
 fn capsule_volume(half_len: f32, r: f32) -> f32 {
     PI * r * r * (2.0 * half_len) + 4.0 / 3.0 * PI * r * r * r
-}
-
-/// 绝对值最大的分量下标（可排除一个下标；全零返回 None）。
-fn argmax_abs(v: V3, exclude: Option<usize>) -> Option<usize> {
-    let mut best: Option<(usize, f32)> = None;
-    for (i, c) in v.iter().enumerate() {
-        if Some(i) == exclude {
-            continue;
-        }
-        let a = c.abs();
-        if a > 1e-9 && best.is_none_or(|(_, b)| a > b) {
-            best = Some((i, a));
-        }
-    }
-    best.map(|(i, _)| i)
 }
 
 /// URDF 世界里的一个刚体系（home 位姿）。
@@ -741,6 +761,8 @@ struct LinkCtx<'a> {
     preset_root: &'a LinkSpec,
     preset_dyn: &'a LinkSpec,
     default_radius: f32,
+    mesh_base_dir: Option<PathBuf>,
+    mesh_packages: &'a BTreeMap<String, PathBuf>,
 }
 
 fn axis_or_default(j: &UrdfJoint, skipped: &mut Vec<String>) -> V3 {
@@ -813,10 +835,14 @@ impl UrdfReport {
     ///   docs/URDF-IMPORT.md）；floating/planar 断链报错。
     /// - **link**：`<collision>` box → Box（旋转后取轴对齐包络）、
     ///   cylinder → Capsule（世界轴 ≈ ±X 时）否则 Box 包络、sphere →
-    ///   Box 包络、**mesh → 链段包络降级**（`mesh_uri` 留 `None`，URI 进
-    ///   `opts.skipped`，M2 消费）；`<inertial mass>` 存在时按体积反推
-    ///   `density` 使质量等价且 `added_mass = 0`，否则引擎默认；`origin`
-    ///   = home 位姿 FK 累加。
+    ///   Box 包络、**mesh → STL 且给了 `opts.mesh_base_dir` 时经
+    ///   `meshres` 全量解析为 [`LinkShape::ConvexHull`]（顶点旋到体轴，
+    ///   `mesh_uri` 留原文作 provenance）；GLB/缺失/未给根目录 → 链段
+    ///   包络降级（URI 进 `opts.skipped`）**；`<inertial>` 全张量直进
+    ///   [`LinkSpec::inertial`]（M2 U-1：质量/质心/惯量旋到体轴，构建
+    ///   端显式 MassProperties），无 inertial 才按体积反推 `density`
+    ///   使质量等价；`added_mass` 有质量即 0；`origin` = home 位姿 FK
+    ///   累加。
     /// - **夹爪**：`<mimic>` 关节对或同父两条 prismatic → [`GripperSpec`]
     ///   运动学双板近似（见 [`Self::to_robot_spec_with_gripper`]）。无 →
     ///   `None`。
@@ -1004,11 +1030,11 @@ impl UrdfReport {
             seg_end.map_or([0.0; 3], |p| v_sub(p, body.frame.p)),
         );
         let col_off = mat_vec(&r_body, l.collision_origin_xyz);
-        let (shape, offset, volume) = match &l.geometry {
+        let (shape, offset, volume, mesh_uri) = match &l.geometry {
             Some(UrdfGeom::Box(size)) => {
                 let rc = mat_mul(&r_body, &rpy_to_mat(l.collision_origin_rpy));
                 let half = aabb_half(&rc, v_scale(*size, 0.5));
-                (LinkShape::Box { half }, col_off, box_volume(half))
+                (LinkShape::Box { half }, col_off, box_volume(half), None)
             }
             Some(UrdfGeom::Cylinder { radius, length }) => {
                 let rc = mat_mul(&r_body, &rpy_to_mat(l.collision_origin_rpy));
@@ -1022,6 +1048,7 @@ impl UrdfReport {
                         },
                         col_off,
                         capsule_volume(length * 0.5, *radius),
+                        None,
                     )
                 } else {
                     skipped.push(format!(
@@ -1029,29 +1056,78 @@ impl UrdfReport {
                         l.name, u[0], u[1], u[2]
                     ));
                     let half = cylinder_aabb_half(u, length * 0.5, *radius);
-                    (LinkShape::Box { half }, col_off, box_volume(half))
+                    (LinkShape::Box { half }, col_off, box_volume(half), None)
                 }
             }
             Some(UrdfGeom::Sphere { radius }) => {
                 let half = [*radius; 3];
-                (LinkShape::Box { half }, col_off, box_volume(half))
+                (LinkShape::Box { half }, col_off, box_volume(half), None)
             }
-            Some(UrdfGeom::Mesh { uri }) => {
-                skipped.push(format!(
-                    "link {} mesh {uri} → 链段包络降级（mesh_uri 置 None；网格碰撞 M2）",
-                    l.name
-                ));
-                envelope(seg, mass, rho, ctx.default_radius)
-            }
+            Some(UrdfGeom::Mesh { uri }) => match self.resolve_mesh_hull(uri, &r_body, col_off, ctx)
+            {
+                Some(points) => {
+                    let (_, _, vol) = envelope(seg, mass, rho, ctx.default_radius);
+                    skipped.push(format!(
+                        "link {} mesh {uri} → ConvexHull（{} 点，STL 顶点旋到体轴；凸包≈网格的保守近似）",
+                        l.name,
+                        points.len()
+                    ));
+                    (LinkShape::ConvexHull { points }, col_off, vol, Some(uri.clone()))
+                }
+                None => {
+                    skipped.push(format!(
+                        "link {} mesh {uri} → 链段包络降级（GLB→探针仅 M3 全量解码 / 文件缺失或格式不支持 / 未给 opts.mesh_base_dir）",
+                        l.name
+                    ));
+                    let (s, o, v) = envelope(seg, mass, rho, ctx.default_radius);
+                    (s, o, v, None)
+                }
+            },
             None => {
                 skipped.push(format!("link {} 无 <collision> → 链段包络", l.name));
-                envelope(seg, mass, rho, ctx.default_radius)
+                let (s, o, v) = envelope(seg, mass, rho, ctx.default_radius);
+                (s, o, v, None)
             }
         };
-        let density = mass
-            .map(|m| m / volume)
-            .filter(|d| d.is_finite() && *d > 0.0)
-            .unwrap_or(rho);
+        // M2 U-1：`<inertial>` 全张量直进 [`LinkSpec::inertial`]（质量/
+        // 质心/惯量在 URDF link 系，旋到 OriEra 体轴），构建端显式设置
+        // MassProperties——**有 inertial 就直给，没有才走体积反推**。
+        let inertial = l.inertial.as_ref().and_then(|i| {
+            let ok = |v: f32| v.is_finite();
+            if !(ok(i.mass)
+                && i.mass > 0.0
+                && ok(i.ixx)
+                && ok(i.iyy)
+                && ok(i.izz)
+                && ok(i.ixy)
+                && ok(i.ixz)
+                && ok(i.iyz))
+            {
+                return None;
+            }
+            let (ixx, iyy, izz, ixy, ixz, iyz) = rotate_inertia(
+                &r_body, i.ixx, i.iyy, i.izz, i.ixy, i.ixz, i.iyz,
+            );
+            Some(Inertial {
+                mass: i.mass,
+                com: mat_vec(&r_body, i.origin_xyz),
+                ixx,
+                iyy,
+                izz,
+                ixy,
+                ixz,
+                iyz,
+            })
+        });
+        // 密度是 inertial=None 路径的质量载体；inertial 直给时它退为
+        // 簿记缺省（构建端忽略），不再反推。
+        let density = if inertial.is_some() {
+            rho
+        } else {
+            mass.map(|m| m / volume)
+                .filter(|d| d.is_finite() && *d > 0.0)
+                .unwrap_or(rho)
+        };
         LinkSpec {
             name: l.name.clone(),
             shape,
@@ -1068,7 +1144,36 @@ impl UrdfReport {
             } else {
                 ctx.preset_dyn.added_mass
             },
-            mesh_uri: None,
+            inertial,
+            mesh_uri,
+        }
+    }
+
+    /// STL mesh → [`LinkShape::ConvexHull`] 点集（M2 U-3）。URI 解析 +
+    /// `meshres::parse_stl` 全量，顶点从 URDF link 系旋到 OriEra 体轴
+    /// （`r_body = r_up ∘ body.frame.r`），再减碰撞体偏移（点集相对
+    /// collider origin）。GLB（探针→M3 全量解码）/文件缺失/格式不支持/
+    /// 未给 `opts.mesh_base_dir` → `None`（调用方沿用包络降级）。
+    fn resolve_mesh_hull(
+        &self,
+        uri: &str,
+        r_body: &Mat3,
+        col_off: V3,
+        ctx: &LinkCtx<'_>,
+    ) -> Option<Vec<[f32; 3]>> {
+        let base = ctx.mesh_base_dir.as_ref()?;
+        match crate::meshres::load_urdf_mesh(uri, base, ctx.mesh_packages) {
+            Ok(crate::meshres::UrdfMesh::Stl { mesh, .. }) => Some(
+                mesh.vertices
+                    .iter()
+                    .map(|v| {
+                        let b = mat_vec(r_body, *v);
+                        [b[0] - col_off[0], b[1] - col_off[1], b[2] - col_off[2]]
+                    })
+                    .collect(),
+            ),
+            Ok(crate::meshres::UrdfMesh::Probed { .. }) => None,
+            Err(_) => None,
         }
     }
 
@@ -1151,11 +1256,18 @@ impl UrdfReport {
         }
         // 接近轴 ≈ 手指原点相对父系的方向（Franka：+Z）
         let approach = f1.origin_xyz;
-        let iu = argmax_abs(u, None).unwrap_or(2);
-        let ia = argmax_abs(approach, Some(iu)).unwrap_or((iu + 1) % 3);
-        let ir = 3 - iu - ia;
+        // M2 工作包 A（M0b 板系朝向字段接线）：接近/开合方向从手指父系
+        // （= 挂载系）经 `r_up ∘ site.mount.r` 旋到 OriEra 挂载体系——
+        // builder 的双板按这两个数据向量摆放，不再是恒 +X/+Z 约定。
+        let r_mount = mat_mul(r_up, &site.mount.r);
+        let approach_axis = v_normalize(mat_vec(&r_mount, approach));
+        let gap_axis = v_normalize(mat_vec(&r_mount, u));
+        // finger_half：手指 box 半尺寸（挂载系 AABB）旋成挂载体系 AABB
+        // ——板系朝向已由 approach/gap_axis 数据给出，半尺寸跟随体轴，
+        // 不再做 [接近,其余,开合] 的轴重排（90° 整数倍旋转精确，任意
+        // 角度保守包络，与链体碰撞体同一纪律）。
         let finger_half = match half1 {
-            Some(h) => [h[ia], h[ir], h[iu]],
+            Some(h) => aabb_half(&r_mount, h),
             None => {
                 skipped.push(format!(
                     "手指 link `{}` 无 box 碰撞体 → finger_half 用引擎默认",
@@ -1201,13 +1313,16 @@ impl UrdfReport {
             effort,
             gap_rate,
             kind: GripperKind::ParallelPlates,
-            // M0b plate frame: `None` = the legacy +X/+Z placement — the
-            // exact behaviour this importer had before the fields
-            // existed (bit-identical output). Wiring the derived
-            // `u` (gap) / `approach` directions through `r_up` into these
-            // two fields is the WP-D follow-up (see M0b report patch).
-            approach_axis: None,
-            gap_axis: None,
+            // M0b 板系朝向字段（M2 工作包 A 接线完毕）：接近/开合方向
+            // 经 `r_up ∘ site.mount.r` 旋到挂载体系——外部夹爪（Panda
+            // 法兰朝下构型）的板与 TCP 在同一坐标系内全对齐。
+            approach_axis: Some(approach_axis),
+            gap_axis: Some(gap_axis),
+            // M2 物理保真旋钮：导入器不擅自开启——夹爪接触面网格
+            // （contact_mesh）与接触级抓取判据（Contact）由调用方在
+            // spec 上按需 opt-in。
+            contact_mesh: false,
+            holding_criterion: preset.holding_criterion,
         }
     }
 
@@ -1231,6 +1346,8 @@ impl UrdfReport {
             preset_root: &preset.links[0],
             preset_dyn: &preset.links[1],
             default_radius: ArmDescription::default().link_radius,
+            mesh_base_dir: opts.mesh_base_dir.clone(),
+            mesh_packages: &opts.mesh_packages,
         };
         let mut skipped = Vec::new();
 
@@ -1363,6 +1480,9 @@ impl UrdfReport {
             mass_scale: 1.0,
             // 与 4 轴预设同款（rad / 单位动作）；包装层旋钮，物理不消费
             action_scale: vec![2.0; n],
+            // 自碰撞默认关（legacy 行为）；bin_pick 类任务由 spec 显式
+            // opt-in AdjacentExempt（M2 U-9）
+            self_collision: oriera_subsys::SelfCollision::Off,
         })
     }
 }
@@ -1728,11 +1848,11 @@ mod tests {
     }
 
     #[test]
-    fn mesh_links_degrade_to_envelopes_with_mass_equivalence() {
+    fn mesh_links_degrade_to_envelopes_and_inertial_flows_through() {
         let xml = r#"<robot name="m">
           <link name="base"><collision><geometry><mesh filename="package://x/base.stl"/></geometry></collision></link>
           <link name="l1">
-            <inertial><mass value="3.0"/><inertia ixx="1" iyy="1" izz="1"/></inertial>
+            <inertial><mass value="3.0"/><inertia ixx="1" iyy="2" izz="3" ixy="0.1"/></inertial>
             <collision><geometry><mesh filename="package://x/l1.stl"/></geometry></collision>
           </link>
           <link name="l2"><inertial><mass value="1.5"/><inertia ixx="1" iyy="1" izz="1"/></inertial></link>
@@ -1750,23 +1870,149 @@ mod tests {
         assert_eq!(mesh_rows.len(), 2, "{:?}", opts.skipped);
         assert!(mesh_rows.iter().any(|s| s.contains("package://x/l1.stl")));
         assert!(opts.skipped.iter().any(|s| s.contains("l2") && s.contains("无 <collision>")));
-        // l1：链段 (0.3,0,0) 沿 X → Capsule；质量 3 kg 由密度精确等价、added_mass=0
+        // l1：链段 (0.3,0,0) 沿 X → Capsule；`<inertial>` 全张量直进
+        // LinkSpec.inertial（M2 U-1），density 退为簿记缺省、added_mass=0
         let l1 = &spec.links[1];
-        let LinkShape::Capsule { half_len, radius } = l1.shape else {
+        let LinkShape::Capsule { half_len, radius: _ } = l1.shape else {
             panic!("X 向链段应为 Capsule：{:?}", l1.shape)
         };
         assert!((half_len - 0.15).abs() < 1e-6);
-        let vol = capsule_volume(half_len, radius);
-        assert!((l1.density * vol - 3.0).abs() < 1e-4, "质量等价：{}", l1.density * vol);
+        let i = l1.inertial.expect("inertial passthrough");
+        assert_eq!(i.mass, 3.0);
+        // Z-up→Y-up 是共轭：I_body = M·I_urdf·Mᵀ——对角置换 (1,3,2)，
+        // ixy(0.1) 落到体 (0,2) 分量带符号翻 → ixz' = −0.1。
+        assert_eq!((i.ixx, i.iyy, i.izz, i.ixy, i.ixz, i.iyz), (1.0, 3.0, 2.0, 0.0, -0.1, 0.0));
+        assert_eq!(l1.density, RobotSpec::from(&ArmDescription::default()).links[1].density);
         assert_eq!(l1.added_mass, 0.0);
         assert_eq!(l1.collider_offset, [0.15, 0.0, 0.0]);
-        // l2：末体、无链段 → 质量等价立方
+        // l2：末体、无链段 → 包络立方；inertial 直给
         let l2 = &spec.links[2];
-        let LinkShape::Box { half } = l2.shape else { panic!() };
-        assert!((l2.density * box_volume(half) - 1.5).abs() < 1e-4);
+        assert!(matches!(l2.shape, LinkShape::Box { .. }));
+        assert_eq!(l2.inertial.as_ref().map(|i| i.mass), Some(1.5));
         // j1：URDF +Z 轴 → OriEra +Y；j2：URDF +Y 轴 → OriEra −Z
         assert_eq!(spec.joints[0].axis, [0.0, 1.0, 0.0]);
         assert_eq!(spec.joints[1].axis, [0.0, 0.0, -1.0]);
+    }
+
+    /// M2 U-1：惯量张量的坐标架旋转是共轭——恒等不变、90° 置换把对角
+    /// 重排并把非对角按符号翻（解析可手算的两种情形）。
+    #[test]
+    fn rotate_inertia_is_the_conjugation() {
+        // 恒等：逐项原样
+        assert_eq!(
+            rotate_inertia(&MAT_IDENTITY, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3),
+            (1.0, 2.0, 3.0, 0.1, 0.2, 0.3)
+        );
+        // Z-up→Y-up 置换 M：(x,y,z) ↦ (x,z,−y)。I = diag(1,2,3) + ixy:
+        // M·I·Mᵀ 对角 = (1, 3, 2)；ixy 分量 (0,1) ← 老 (0,2)=ixz 带符号。
+        let m = MAT_Z_UP_TO_Y_UP;
+        let (ixx, iyy, izz, ixy, ixz, iyz) =
+            rotate_inertia(&m, 1.0, 2.0, 3.0, 0.0, 0.5, 0.0);
+        assert!((ixx - 1.0).abs() < 1e-6 && (iyy - 3.0).abs() < 1e-6 && (izz - 2.0).abs() < 1e-6);
+        // M 把 ey ↦ −ez、ez ↦ ey：I[0][1]' = Σ R[0][k] λ_k R[1][k]；
+        // 直接对照手算：新 ixz'（体 (0,2)）= −老 ixy？——不手推符号，
+        // 用不变量核：迹与 Frobenius 范数必须逐项守恒。
+        let tr = ixx + iyy + izz;
+        assert!((tr - 6.0).abs() < 1e-5, "trace invariant: {tr}");
+        let frob = ixx * ixx + iyy * iyy + izz * izz + 2.0 * (ixy * ixy + ixz * ixz + iyz * iyz);
+        let want = 1.0 + 4.0 + 9.0 + 2.0 * 0.25;
+        assert!((frob - want).abs() < 1e-4, "Frobenius invariant: {frob} vs {want}");
+    }
+
+    /// M2 U-3：给了 `opts.mesh_base_dir` 的 STL mesh → ConvexHull（顶点
+    /// 旋到体轴、`mesh_uri` 留原文）；GLB 仍探针 → 包络降级。
+    #[test]
+    fn stl_mesh_resolves_to_a_convex_hull() {
+        let t = TempDir::new("stl_hull");
+        let cube_stl = cube_stl_bytes(0.05);
+        std::fs::write(t.0.join("cube.stl"), &cube_stl).unwrap();
+        std::fs::write(t.0.join("hand.glb"), b"glTF-mock-not-parsed").unwrap_or(());
+        let xml = r#"<robot name="h">
+          <link name="base"/>
+          <link name="l1"><collision><geometry><mesh filename="cube.stl"/></geometry></collision></link>
+          <link name="l2"><collision><geometry><mesh filename="hand.glb"/></geometry></collision></link>
+          <joint name="j1" type="revolute"><parent link="base"/><child link="l1"/>
+            <origin xyz="0 0 0.1"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="10" velocity="1"/></joint>
+          <joint name="j2" type="revolute"><parent link="l1"/><child link="l2"/>
+            <origin xyz="0.2 0 0"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="10" velocity="1"/></joint>
+        </robot>"#;
+        let rep = UrdfReport::parse(xml).unwrap();
+        let mut opts = RobotSpecOpts {
+            mesh_base_dir: Some(t.0.clone()),
+            ..RobotSpecOpts::default()
+        };
+        let spec = rep.to_robot_spec(&mut opts).expect("全链导入");
+        spec.validate().expect("hull spec 合法（mesh_uri 是 metadata）");
+        let l1 = &spec.links[1];
+        let LinkShape::ConvexHull { points } = &l1.shape else {
+            panic!("STL 应解析为 ConvexHull：{:?}", l1.shape)
+        };
+        assert_eq!(points.len(), 8, "立方体 12 三角去重后 8 顶点：{points:?}");
+        let lo = [f32::MIN; 3];
+        let _ = lo;
+        let mut mn = [f32::MAX; 3];
+        let mut mx = [f32::MIN; 3];
+        for p in points {
+            for k in 0..3 {
+                mn[k] = mn[k].min(p[k]);
+                mx[k] = mx[k].max(p[k]);
+            }
+        }
+        for k in 0..3 {
+            assert!(
+                ((mx[k] - mn[k]) - 0.1).abs() < 1e-5,
+                "AABB 边长 = 0.1（半 0.05 立方），axis {k}: {mn:?} {mx:?}"
+            );
+        }
+        assert_eq!(l1.mesh_uri.as_deref(), Some("cube.stl"), "provenance 保留");
+        // GLB：探针-only → 包络降级、mesh_uri None
+        let l2 = &spec.links[2];
+        assert!(!matches!(l2.shape, LinkShape::ConvexHull { .. }), "{:?}", l2.shape);
+        assert!(l2.mesh_uri.is_none());
+        assert!(opts.skipped.iter().any(|s| s.contains("hand.glb")));
+        // 构建过闸：from_robot 接受 hull 链体
+        let sys = oriera_subsys::MultibodySystem::from_robot(spec, oriera_subsys::Scene3D::default());
+        assert!(sys.is_ok(), "hull builds: {:?}", sys.err());
+    }
+
+    /// 中心在原点、半边 `h` 的立方体二进制 STL（12 三角，法线占位零）。
+    fn cube_stl_bytes(h: f32) -> Vec<u8> {
+        let s = h;
+        let v: [[f32; 3]; 8] = [
+            [-s, -s, -s],
+            [s, -s, -s],
+            [s, s, -s],
+            [-s, s, -s],
+            [-s, -s, s],
+            [s, -s, s],
+            [s, s, s],
+            [-s, s, s],
+        ];
+        let q: [[usize; 3]; 12] = [
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [3, 6, 2],
+            [3, 7, 6],
+            [1, 2, 6],
+            [1, 6, 5],
+            [0, 4, 7],
+            [0, 7, 3],
+        ];
+        let mut out = vec![0u8; 80];
+        out.extend_from_slice(&12u32.to_le_bytes());
+        for t in &q {
+            for k in std::iter::once(&[0.0f32; 3]).chain(t.iter().map(|i| &v[*i])) {
+                for c in k {
+                    out.extend_from_slice(&c.to_le_bytes());
+                }
+            }
+            out.extend_from_slice(&0u16.to_le_bytes());
+        }
+        out
     }
 
     #[test]

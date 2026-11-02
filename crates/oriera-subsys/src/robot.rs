@@ -11,12 +11,20 @@
 //! golden tests in `rigid3d`).
 //!
 //! **M0a scope (honest)**: fixed-base revolute chains, box/capsule
-//! primitive colliders, one parallel-plate gripper. `mesh_uri` is
-//! *registered* here (so URDF import can carry it) but the builder
-//! refuses it — mesh colliders are M2. `home` / `action_scale` are
-//! carried for the wrapper layers (Python / spec) and not consumed by
-//! the physics build. `effort` on the gripper is registered for the
-//! contact-force gripper; the M0a kinematic plates ignore it.
+//! primitive colliders, one parallel-plate gripper. **M2 物理保真
+//! (PLAN-embodied-general §四 / §9.1 U-1/U-3/U-6/U-9)** adds the
+//! opt-in fidelity layer, every field defaulting to the M0 behaviour:
+//! `LinkSpec::inertial` (real mass/inertia tensor into the rigid
+//! body), `LinkShape::ConvexHull`/`LinkShape::Mesh` (resolved mesh
+//! collision; `mesh_uri` demoted to provenance metadata),
+//! `RobotSpec::self_collision` (`AdjacentExempt` = non-adjacent links
+//! collide), `GripperSpec::holding_criterion` (contact-force grasp
+//! acceptance) and `GripperSpec::contact_mesh` (plate contact faces as
+//! triangle meshes). `home` / `action_scale` are carried for the
+//! wrapper layers (Python / spec) and not consumed by the physics
+//! build. `effort` on the gripper feeds the
+//! [`HoldingCriterion::Contact`]-capable plate drive bookkeeping; the
+//! kinematic plates themselves stay kinematic.
 
 use crate::rigid3d::{
     ArmDescription, ARMATURE, FINGER_FRICTION, FINGER_GAP_CLOSED, FINGER_GAP_OPEN, FINGER_GAP_RATE,
@@ -27,13 +35,74 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 /// Collider primitive of one link, in the link body's local frame.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// **M2 (PLAN-embodied-general §四 M2 物理保真 / U-3)**: beyond the two
+/// analytic primitives, a link may carry an already-resolved *point
+/// cloud* ([`LinkShape::ConvexHull`]) or *triangle mesh*
+/// ([`LinkShape::Mesh`]). The engine consumes resolved geometry only —
+/// asset URIs are resolved by the importer (`urdf.rs` via
+/// `meshres::parse_stl`), which fills `ConvexHull` with the STL
+/// vertices; GLB stays probe-only until M3.
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LinkShape {
     /// Capsule along local +X: `half_len` is half the segment length.
     Capsule { half_len: f32, radius: f32 },
     /// Axis-aligned box with the given half extents.
     Box { half: [f32; 3] },
+    /// Convex hull of a resolved point cloud (link frame, metres).
+    /// Built with rapier `convex_hull` — the *stable* mesh-collision
+    /// policy for chain bodies (smooth manifold contacts, unlike raw
+    /// triangle soup). Degenerate clouds (< 4 points, coplanar) are a
+    /// build error.
+    ConvexHull { points: Vec<[f32; 3]> },
+    /// Triangle mesh (link frame, metres). Full-fidelity contact surface
+    /// — opt-in for gripper contact faces via
+    /// [`GripperSpec::contact_mesh`]; chain bodies should prefer
+    /// [`LinkShape::ConvexHull`] (see `docs/PHYSICS-FIDELITY.md`).
+    /// Index buffer must be in range; non-manifold meshes build but
+    /// their contact behaviour is the caller's to reason about.
+    Mesh {
+        vertices: Vec<[f32; 3]>,
+        indices: Vec<[u32; 3]>,
+    },
+}
+
+impl LinkShape {
+    /// Every coordinate finite (shape-independent sanity gate).
+    pub fn is_finite(&self) -> bool {
+        let ok3 = |p: [f32; 3]| p.iter().all(|v| v.is_finite());
+        match self {
+            Self::Capsule { half_len, radius } => half_len.is_finite() && radius.is_finite(),
+            Self::Box { half } => ok3(*half),
+            Self::ConvexHull { points } => points.iter().all(|p| ok3(*p)),
+            Self::Mesh { vertices, .. } => vertices.iter().all(|p| ok3(*p)),
+        }
+    }
+}
+
+/// Real inertial properties of one link (U-1, URDF `<inertial>`): mass,
+/// centre of mass and the full symmetric inertia tensor, all in the
+/// **link body's local frame** (the tensor about `com`, in link-frame
+/// axes). `Some` replaces the density-geometry mass model wholesale
+/// (density/`added_mass` become inert bookkeeping for that link) — the
+/// builder hands the tensor to rapier's `MassProperties` via
+/// `with_inertia_matrix` (principal-axis decomposition included).
+/// `None` (the default) keeps the legacy density derivation bit for bit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Inertial {
+    /// Mass (kg), > 0.
+    pub mass: f32,
+    /// Centre of mass, link body frame (m).
+    pub com: [f32; 3],
+    /// Symmetric inertia tensor about `com`, link-frame axes (kg·m²).
+    pub ixx: f32,
+    pub iyy: f32,
+    pub izz: f32,
+    pub ixy: f32,
+    pub ixz: f32,
+    pub iyz: f32,
 }
 
 /// One rigid link of the chain.
@@ -59,11 +128,22 @@ pub struct LinkSpec {
     pub friction: f32,
     /// Extra body mass (kg) on top of the collider's — keeps light
     /// stages inside the solver's healthy mass range. Scaled by
-    /// `mass_scale`; not applied to the fixed root.
+    /// `mass_scale`; not applied to the fixed root. Inert when
+    /// `inertial` is `Some` (the real tensor replaces the whole mass
+    /// model).
     pub added_mass: f32,
-    /// Mesh asset for a mesh collider. **M0a registers it only** — the
-    /// builder returns [`RobotSpecError::MeshNotSupported`] (M2 consumes
-    /// it). Carried so URDF import can round-trip the reference.
+    /// Real mass/inertia (U-1). `None` ⇒ legacy density geometry
+    /// (default path, bit-identical).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub inertial: Option<Inertial>,
+    /// Provenance of a mesh-derived collider (round-trip reference for
+    /// URDF import). **Metadata only since M2**: the builder never reads
+    /// it — the resolved geometry lives in `LinkShape::ConvexHull` /
+    /// `LinkShape::Mesh`; a `mesh_uri` next to a primitive shape builds
+    /// the primitive.
     pub mesh_uri: Option<String>,
 }
 
@@ -106,6 +186,77 @@ pub enum GripperKind {
     /// attach link's gap axis (legacy: local Z); the prop stays dynamic
     /// and plate/prop friction does the holding.
     ParallelPlates,
+}
+
+/// Arm↔arm self-collision policy (U-9, M2). The default is the legacy
+/// global off — the chain's colliders overlap at their joints at build
+/// time, and contact-driven separation against light links injects
+/// explosive energy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SelfCollision {
+    /// Arm colliders only ever meet furniture/props (legacy behaviour).
+    #[default]
+    Off,
+    /// Non-adjacent links may collide; pairs joined by a joint stay
+    /// exempt (rapier's per-joint `contacts_enabled(false)` plus a
+    /// per-link collision-group bit mask). Caps at ~28 identity bits —
+    /// longer chains share the last bit and lose some non-adjacent
+    /// contacts (documented, `docs/PHYSICS-FIDELITY.md`).
+    AdjacentExempt,
+}
+
+impl SelfCollision {
+    /// The legacy default (canonical form for hashing). `&self` on
+    /// purpose — serde's `skip_serializing_if` wants `fn(&T) -> bool`.
+    pub fn is_off(&self) -> bool {
+        *self == Self::Off
+    }
+}
+
+/// How `holding` telemetry is decided (U-6, M2).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HoldingCriterion {
+    /// v1 heuristic (default): gripper demand closed + a prop centre
+    /// within [`crate::rigid3d::GRASP_RADIUS`] of the TCP. Cheap and
+    /// deterministic; the contact solve does the actual holding.
+    #[default]
+    TipRadius,
+    /// Contact-level acceptance: both plates touch the *same* prop with
+    /// per-tick normal force ≥ `min_normal_force` (N; the solver's
+    /// normal impulse divided by the substep dt) and plate↔prop
+    /// relative speed ≤ `max_slip` (m/s). `holding` then means "the
+    /// physics says gripped", not "the geometry says close".
+    Contact {
+        min_normal_force: f32,
+        max_slip: f32,
+    },
+}
+
+impl HoldingCriterion {
+    /// The v1 default (canonical form for hashing). `&self` on purpose
+    /// — serde's `skip_serializing_if` wants `fn(&T) -> bool`.
+    pub fn is_tip_radius(&self) -> bool {
+        matches!(self, Self::TipRadius)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if let Self::Contact {
+            min_normal_force,
+            max_slip,
+        } = self
+        {
+            let ok = |v: f32| v.is_finite() && v >= 0.0;
+            if !ok(*min_normal_force) || !ok(*max_slip) {
+                return Err(format!(
+                    "Contact criterion needs finite min_normal_force/max_slip >= 0, got \
+                     {min_normal_force}/{max_slip}"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Legacy plate approach direction (attach-link frame): the plate
@@ -168,6 +319,28 @@ pub struct GripperSpec {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub gap_axis: Option<[f32; 3]>,
+    /// Build the plates as triangle meshes (the box tessellated into 12
+    /// triangles) instead of the analytic cuboid collider. Opt-in
+    /// contact-fidelity experiment (U-3: gripper contact face as mesh);
+    /// `false` (default) keeps the primitive — box contacts are more
+    /// stable than triangle contacts, which is why the chain bodies use
+    /// convex hulls and this knob stays off unless a study needs it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "std::ops::Not::not")
+    )]
+    pub contact_mesh: bool,
+    /// How `holding` is decided ([`HoldingCriterion::TipRadius`] is the
+    /// legacy default; [`HoldingCriterion::Contact`] reads real contact
+    /// forces — U-6).
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default,
+            skip_serializing_if = "HoldingCriterion::is_tip_radius"
+        )
+    )]
+    pub holding_criterion: HoldingCriterion,
 }
 
 impl GripperSpec {
@@ -215,13 +388,21 @@ pub struct RobotSpec {
     /// Per-joint action scale (rad per unit action) for the wrapper
     /// layers; not consumed by the physics build.
     pub action_scale: Vec<f32>,
+    /// Arm↔arm self-collision policy (U-9). [`SelfCollision::Off`] is
+    /// the legacy default and changes nothing.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "SelfCollision::is_off")
+    )]
+    pub self_collision: SelfCollision,
 }
 
 /// Why a [`RobotSpec`] cannot be built.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RobotSpecError {
-    /// A link carries `mesh_uri` — mesh colliders arrive in M2.
-    MeshNotSupported { link: String, uri: String },
+    /// A link's shape is not buildable (degenerate convex hull, mesh
+    /// index out of range, non-finite coordinates…).
+    BadShape { link: String, reason: String },
     NoLinks,
     NoJoints,
     /// Joint references a link index out of range or parent == child.
@@ -249,11 +430,9 @@ pub enum RobotSpecError {
 impl fmt::Display for RobotSpecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MeshNotSupported { link, uri } => write!(
-                f,
-                "link `{link}` references mesh `{uri}`: mesh colliders are not supported in M0a \
-                 (registered only; mesh collision lands in M2 — use a Box/Capsule primitive for now)"
-            ),
+            Self::BadShape { link, reason } => {
+                write!(f, "link `{link}` has an unbuildable collider shape: {reason}")
+            }
             Self::NoLinks => write!(f, "robot has no links"),
             Self::NoJoints => write!(f, "robot has no joints"),
             Self::BadLinkRef { joint } => {
@@ -319,12 +498,8 @@ impl RobotSpec {
             return Err(RobotSpecError::NoJoints);
         }
         for l in &self.links {
-            if let Some(uri) = &l.mesh_uri {
-                return Err(RobotSpecError::MeshNotSupported {
-                    link: l.name.clone(),
-                    uri: uri.clone(),
-                });
-            }
+            // `mesh_uri` is provenance metadata since M2 — validated no
+            // more; the collider comes from `l.shape`.
             if !(l.density.is_finite() && l.density > 0.0) {
                 return Err(RobotSpecError::BadMass {
                     what: format!("link `{}` density", l.name),
@@ -334,6 +509,63 @@ impl RobotSpec {
                 return Err(RobotSpecError::BadMass {
                     what: format!("link `{}` added_mass", l.name),
                 });
+            }
+            if !l.shape.is_finite() {
+                return Err(RobotSpecError::BadShape {
+                    link: l.name.clone(),
+                    reason: "shape has a non-finite coordinate".into(),
+                });
+            }
+            if let Some(i) = &l.inertial {
+                let ok = |v: f32| v.is_finite();
+                let tensor_ok = ok(i.ixx)
+                    && ok(i.iyy)
+                    && ok(i.izz)
+                    && ok(i.ixy)
+                    && ok(i.ixz)
+                    && ok(i.iyz)
+                    && i.ixx >= 0.0
+                    && i.iyy >= 0.0
+                    && i.izz >= 0.0
+                    && i.com.iter().all(|v| ok(*v));
+                if !(ok(i.mass) && i.mass > 0.0 && tensor_ok) {
+                    return Err(RobotSpecError::BadMass {
+                        what: format!(
+                            "link `{}` inertial (mass must be > 0, tensor entries finite, \
+                             diagonal >= 0)",
+                            l.name
+                        ),
+                    });
+                }
+            }
+            let shape_err = |reason: String| RobotSpecError::BadShape {
+                link: l.name.clone(),
+                reason,
+            };
+            match &l.shape {
+                LinkShape::ConvexHull { points } if points.len() < 4 => {
+                    return Err(shape_err(format!(
+                        "ConvexHull needs >= 4 points, got {}",
+                        points.len()
+                    )));
+                }
+                LinkShape::Mesh { vertices, indices } => {
+                    if vertices.len() < 3 {
+                        return Err(shape_err(format!(
+                            "Mesh needs >= 3 vertices, got {}",
+                            vertices.len()
+                        )));
+                    }
+                    if let Some(bad) = indices.iter().find(|t| {
+                        t.iter().any(|i| (*i as usize) >= vertices.len())
+                    }) {
+                        return Err(shape_err(format!(
+                            "Mesh index {bad:?} out of range ({} vertices)",
+                            vertices.len()
+                        )));
+                    }
+                }
+                _ => {}
             }
         }
         if !(self.mass_scale.is_finite() && self.mass_scale > 0.0) {
@@ -427,6 +659,9 @@ impl RobotSpec {
             if !(g.friction.is_finite() && g.friction >= 0.0) {
                 return Err(RobotSpecError::BadGripper("friction must be >= 0".into()));
             }
+            if let Err(e) = g.holding_criterion.validate() {
+                return Err(RobotSpecError::BadGripper(e));
+            }
             // Plate frame axes: finite, non-degenerate and not parallel
             // (the plates must be able to straddle the approach line).
             let unit_ok = |a: [f32; 3]| {
@@ -485,6 +720,7 @@ impl From<&ArmDescription> for RobotSpec {
             density: LINK_DENSITY,
             friction: 0.7,
             added_mass: LINK_ADDED_MASS,
+            inertial: None,
             mesh_uri: None,
         };
         let links = vec![
@@ -501,6 +737,7 @@ impl From<&ArmDescription> for RobotSpec {
                 density: 1.0,
                 friction: 0.5,
                 added_mass: 0.0,
+                inertial: None,
                 mesh_uri: None,
             },
             dynamic("yaw_carrier", [0.015, 0.015, 0.015], at_shoulder, [0.0; 3]),
@@ -561,6 +798,8 @@ impl From<&ArmDescription> for RobotSpec {
             kind: GripperKind::ParallelPlates,
             approach_axis: None,
             gap_axis: None,
+            contact_mesh: false,
+            holding_criterion: HoldingCriterion::default(),
         });
         RobotSpec {
             name: "tabletop-4dof".into(),
@@ -571,6 +810,7 @@ impl From<&ArmDescription> for RobotSpec {
             home: d.home.to_vec(),
             mass_scale: d.mass_scale,
             action_scale: vec![2.0; 4],
+            self_collision: SelfCollision::Off,
         }
     }
 }
@@ -612,6 +852,11 @@ mod tests {
         assert_eq!((g.approach_axis, g.gap_axis), (None, None));
         assert_eq!(g.approach_axis_or_default(), GRIPPER_APPROACH_DEFAULT);
         assert_eq!(g.gap_axis_or_default(), GRIPPER_GAP_DEFAULT);
+        // M2 fidelity knobs default to the legacy behaviour.
+        assert_eq!(g.holding_criterion, HoldingCriterion::TipRadius);
+        assert!(!g.contact_mesh);
+        assert_eq!(r.self_collision, SelfCollision::Off);
+        assert!(r.links.iter().all(|l| l.inertial.is_none()));
         assert_eq!(r.action_scale, vec![2.0; 4]);
         assert_eq!(r.home, d.home.to_vec());
         // passive_damping override flows into every joint.
@@ -655,11 +900,48 @@ mod tests {
         grip.gripper.as_mut().unwrap().attach_link = 9;
         assert!(matches!(grip.validate(), Err(RobotSpecError::BadGripper(_))));
 
-        let mut mesh = ok;
-        mesh.links[2].mesh_uri = Some("file:///panda/link2.stl".into());
-        let err = mesh.validate().unwrap_err();
-        assert!(matches!(err, RobotSpecError::MeshNotSupported { .. }));
-        assert!(err.to_string().contains("M2"), "{err}");
+        // M2: a degenerate convex hull is a named build error …
+        let mut hull = ok.clone();
+        hull.links[2].shape = LinkShape::ConvexHull {
+            points: vec![[0.0; 3]; 3],
+        };
+        let err = hull.validate().unwrap_err();
+        match err {
+            RobotSpecError::BadShape { link, reason } => {
+                assert_eq!(link, "upper_arm");
+                assert!(reason.contains("4 points"), "{reason}");
+            }
+            e => panic!("expected BadShape, got {e}"),
+        }
+        // … a mesh index out of range too …
+        let mut mesh = ok.clone();
+        mesh.links[2].shape = LinkShape::Mesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            indices: vec![[0, 1, 7]],
+        };
+        assert!(matches!(mesh.validate(), Err(RobotSpecError::BadShape { .. })));
+        // … a non-finite inertial tensor is a mass error …
+        let mut bad_i = ok.clone();
+        bad_i.links[2].inertial = Some(Inertial {
+            mass: 1.0,
+            com: [0.0; 3],
+            ixx: f32::NAN,
+            iyy: 1.0,
+            izz: 1.0,
+            ixy: 0.0,
+            ixz: 0.0,
+            iyz: 0.0,
+        });
+        assert!(matches!(bad_i.validate(), Err(RobotSpecError::BadMass { .. })));
+        // … and a `mesh_uri` is metadata since M2: it validates.
+        let mut uri = ok.clone();
+        uri.links[2].mesh_uri = Some("file:///panda/link2.stl".into());
+        assert!(uri.validate().is_ok(), "mesh_uri is provenance only");
+        // A Contact criterion with a negative threshold is refused.
+        let mut bad_c = ok;
+        bad_c.gripper.as_mut().unwrap().holding_criterion =
+            HoldingCriterion::Contact { min_normal_force: -1.0, max_slip: 0.0 };
+        assert!(matches!(bad_c.validate(), Err(RobotSpecError::BadGripper(_))));
     }
 
     /// M0b plate frame: zero / non-finite / parallel axes are refused

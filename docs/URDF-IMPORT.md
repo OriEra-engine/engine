@@ -110,7 +110,7 @@ OriEra 的 Y-up（`RobotSpecOpts.up_axis`，`(x,y,z) ↦ (x, z, −y)`）；
 | `<collision><mesh filename>` | **诚实降级**：链段包络（见下）；`mesh_uri` 留 `None`（否则 `validate()` 拒绝），**URI 原文进 `opts.skipped`（M2 消费）** | — |
 | 无 `<collision>` | 链段包络（入 `skipped`） | — |
 | `<collision><origin xyz rpy>` | `collider_offset`（旋到世界系）；primitive 朝向同旋 | — |
-| `<inertial><mass value>` | 密度按包络体积反推 `density = m / V`（**质量精确等价**，`added_mass = 0`）——真惯量张量 M2 接 | 无质量 → 引擎默认密度 1500 + `added_mass` 0.2 |
+| `<inertial>` 全块 | **M2-A**：mass/origin/全张量经 `rotate_inertia` 旋到体轴直进 `LinkSpec.inertial`（构建端显式 MassProperties）；`added_mass = 0`、`density` 退为簿记缺省 | 无 `<inertial>` → 引擎默认密度 1500 + `added_mass` 0.2（密度反推路径仅在此分支存活） |
 | `<link name>` | `LinkSpec.name` | — |
 | ——（URDF 无此语义） | `friction` 引擎默认 0.7（根 0.5） | — |
 
@@ -135,10 +135,13 @@ joint2 原点与 joint1 重合）；半径由质量反推 `r = √(m/(π·ρ·L)
 | 手指 `<limit velocity>` | `gap_rate = v·(1+|multiplier|)/tick_hz`（缺省 60 Hz） | 缺省 0.004 m/tick |
 | ——（URDF 无此语义） | `friction` 引擎默认 1.4；`kind = ParallelPlates` | — |
 
-**已知近似（诚实边界）**：builder 的双板按「挂载 link 局部 +X 前伸、
-局部 Z 开合」摆放（`GripperSpec` 无板系朝向字段——M0b 缺字段，见文末缺字段清单/工作包报告）。对外部夹爪，`tcp_offset`（TCP 遥测）是几何正确的，但
-指板位置在该约定系内摆放——接近轴非 +X 的夹爪（如 Panda 法兰朝下的
-真实构型）需要 M0b 的板系朝向字段才能板/TCP 全对齐。
+**已知近似（诚实边界）**：~~builder 的双板按「挂载 link 局部 +X 前伸、
+局部 Z 开合」摆放~~——**M2-A 已闭环**：`approach_axis`/`gap_axis` 由
+`r_up ∘ site.mount.r` 把手系方向旋到挂载体系直写（M0b 字段），板与
+TCP 同系全对齐（Panda 法兰朝下构型的 `approach_axis = [0,−1,0]`、
+`gap_axis = [−√2/2, 0, −√2/2]`，tests/urdf_robot_spec.rs 钉死）。
+遗留保守近似只剩 `finger_half`：135° 类非整倍角旋转取轴对齐包络
+（90° 整数倍精确），与链体碰撞体同一纪律。
 
 ### 5.4 其余
 
@@ -211,17 +214,21 @@ JS `examples/15-embodied-sim/engine/urdf_mesh.js`。二进制/ASCII 判定
 - mesh 引用是外部文件（§6 支持矩阵外的格式拿不到几何）——引擎侧密度
   推导惯性，与真值偏差如实记录于 receipt。
 
-### 7.1 RobotSpec 缺字段清单（U4 实导入撞到的表达力缺口，给 M0b）
+### 7.1 RobotSpec 缺字段清单（U4 实导入撞到的表达力缺口）
 
-全部按纪律**未改** robot.rs（冻结），导入侧用包络/约定绕行并如实记录：
+原 U4 时全部按纪律**未改** robot.rs（冻结），导入侧用包络/约定绕行。
+M0b 补了板系朝向字段；**M2-A（2026-11-03）已勾掉两项**：
 
-| 缺口 | 现状绕行 | M0b 建议 |
+| 缺口 | 现状 | 状态 |
 |---|---|---|
-| `JointSpec` 无关节类型（仅 revolute） | prismatic 链关节直接报错 | 增 `kind`（prismatic 链滑关节、滑轨场景前置） |
-| `LinkShape` 无旋转 / 无 Mesh 变体 | 旋转折进轴对齐包络；mesh → 链段包络 + URI 进 `skipped` | 旋转字段（或四元数 offset）+ M2 mesh collider |
-| `GripperSpec` 无板系朝向（finger_x 恒 +X、gap 恒 Z） | tcp_offset 几何正确，板按 builder 约定系摆放 | 板系朝向 / gap 轴字段——外部夹爪「抓取过闸」（M0a 验收②后半）的前置 |
-| 每链仅一个 `<collision>` 被消费 | 只取首个 collision | 链体多 collider 列表 |
-| 惯量张量只进质量等价（密度反推） | ixx..iyz 已解析未进物理 | M2 真惯量进刚体构建 |
+| `GripperSpec` 无板系朝向（finger_x 恒 +X、gap 恒 Z） | M0b 加 `approach_axis`/`gap_axis` 字段；**M2-A 接上导入**：接近/开合方向经 `r_up ∘ site.mount.r` 旋到挂载体系直写字段，`finger_half` 改取挂载系 AABB 半尺寸（不再 [接近,其余,开合] 轴重排）——外部夹爪板/TCP 全对齐（`tests/urdf_robot_spec.rs` 重钉） | ✅ 闭环 |
+| 惯量张量只进质量等价（密度反推） | **M2-A**：`UrdfInertial` 全张量（含非对角）经 `rotate_inertia`（I_body = R·I·Rᵀ，R = r_up∘body.r）直进 `LinkSpec.inertial`，构建端 `MassProperties::with_inertia_matrix` 显式设置（含主轴分解）；无 `<inertial>` 才走包络体积反推。Panda 8 链体质量逐位/张量不变量逐项对照过闸 | ✅ 闭环 |
+| `LinkShape` 无 Mesh 变体 | **M2-A**：`LinkShape::ConvexHull`/`Mesh` 落地；STL（给了 `opts.mesh_base_dir`）经 `meshres::parse_stl` 全量解析，顶点旋到体轴填进 ConvexHull（链体=凸包策略，接触稳定）；GLB 仍探针 → 包络降级（全量解码 M3）；`mesh_uri` 降级为 provenance 元数据（validate 不再拒）；人话报告 `collision_report()` | ✅ 闭环（无旋转字段——体轴对齐点集本身即表示；盒/柱 primitive 的任意角旋转包络仍保守） |
+| `JointSpec` 无关节类型（仅 revolute） | prismatic 链关节仍报错 | ⏳ 待 `kind` 字段（M0b 未加；滑轨场景前置） |
+| 每链仅一个 `<collision>` 被消费 | 只取首个 collision | ⏳ 链体多 collider 列表，后续包 |
+
+策略文档与验收数字：`docs/PHYSICS-FIDELITY.md`（每项 spec 字段、
+默认值、何时 opt-in、验收数字）。
 
 ## 附录：MJCF 全量交叉验证（2026-11-01 · MuJoCo 3.17.0）
 

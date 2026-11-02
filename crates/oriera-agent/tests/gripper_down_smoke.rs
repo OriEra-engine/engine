@@ -95,6 +95,7 @@ fn seven_axis_down_gripper_spec() -> RobotSpec {
         density: LINK_DENSITY,
         friction: 0.7,
         added_mass: LINK_ADDED_MASS,
+        inertial: None, // M2 opt-in: real inertia not used by this robot
         mesh_uri: None,
     };
     let links = vec![
@@ -108,6 +109,7 @@ fn seven_axis_down_gripper_spec() -> RobotSpec {
             density: 1.0,
             friction: 0.5,
             added_mass: 0.0,
+            inertial: None, // M2 opt-in
             mesh_uri: None,
         },
         link("carrier", [0.015; 3], [sx, sy, 0.0], [0.0; 3]),
@@ -224,6 +226,8 @@ fn seven_axis_down_gripper_spec() -> RobotSpec {
         kind: GripperKind::ParallelPlates,
         approach_axis: Some([0.0, 0.0, -1.0]), // flange local −Z = world down (after the roll)
         gap_axis: Some([0.0, 1.0, 0.0]),       // plates separate along flange local +Y
+        contact_mesh: false,                    // M2 opt-in (primitive plates)
+        holding_criterion: oriera_subsys::HoldingCriterion::default(), // v1 tip-radius
     };
     RobotSpec {
         name: "tabletop-7dof-down-gripper".into(),
@@ -234,6 +238,7 @@ fn seven_axis_down_gripper_spec() -> RobotSpec {
         home: vec![0.0; 7],
         mass_scale: 1.0,
         action_scale: vec![2.0; 7],
+        self_collision: oriera_subsys::SelfCollision::Off, // M2 opt-in (legacy off)
     }
 }
 
