@@ -1,0 +1,29 @@
+# baselines/pick_place/ppo-sb3.yaml — SB3 PPO（LAB-GUIDE §5 RL 路线）
+method: ppo-sb3
+task_id: pick_place@v1
+entry: python scripts/train_ppo.py --task pick_place --steps 100000 [--dr]
+presets:
+  - name: tabletop-4dof-pick      # train_ppo 走 OrieraPickPlaceEnv(task=...) = 预设等价物
+    spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json
+    gate: null                    # 学习类基线不设硬闸，只记录
+eval:
+  protocol: course@v1             # 口径：12 集固定带（与 CLI 验收带分开，held-out）
+  episodes: 12
+  seed0: 10000000                 # EVAL_SEED0（train_ppo.py）：训练序列 reset(7)+i 永不踩进
+  success_criteria: v1
+  eval_every_steps: 20000
+train:
+  seeds: [7]                      # SB3 seed；paper@v1 口径要 ≥5：[7, 17, 27, 37, 47]
+  total_timesteps: 100000         # 500k 平台期震荡，成功率仍 0%（LAB-GUIDE 实测）
+hyperparams:
+  algo: PPO
+  policy: MlpPolicy
+  sb3_defaults: true              # n_steps 2048 / batch 64 / lr 3e-4 / gamma 0.99 / gae 0.95 / clip 0.2
+  domain_randomization:           # --dr
+    kp_jitter: 0.2
+    mass_jitter: 0.15
+    obs_noise: 0.01
+reference: out/rl-training/<task>-<steps>/eval_curve.json   # 训练器自己落盘；汇总走 oriera_results
+notes: >
+  已知结论非 bug：vanilla PPO 在 pick_place 上 0%（抓取奖励鸿沟）；reach 100k 可逼近脚本回报。
+  进阶：课程表 / HER / IL 预热。

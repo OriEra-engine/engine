@@ -1,0 +1,15 @@
+# baselines/reach/ppo-sb3.yaml — SB3 PPO on reach（LAB-GUIDE §5 RL 路线，纯 CPU 可跑）
+method: ppo-sb3
+task_id: reach@v1
+entry: python scripts/train_ppo.py --task reach --steps 100000 --dr
+presets:
+  - { name: tabletop-4dof-pick, spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json, gate: null }
+eval: { protocol: course@v1, episodes: 12, seed0: 10000000, success_criteria: v1, eval_every_steps: 20000 }
+train: { seeds: [7], total_timesteps: 100000 }   # paper@v1 口径：[7, 17, 27, 37, 47]
+hyperparams:
+  algo: PPO
+  policy: MlpPolicy
+  sb3_defaults: true
+  domain_randomization: { kp_jitter: 0.2, mass_jitter: 0.15, obs_noise: 0.01 }
+reference: out/rl-training/reach-dr-100000/eval_curve.json
+notes: reach 100k 即逼近脚本基线回报（-213 → -46，2026-11-01 实测）。

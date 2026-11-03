@@ -1,0 +1,27 @@
+# baselines/stack/dls-ik.yaml — stack@v1 × DLS 数值 IK 相位机（M2 新任务首版）
+method: dls-ik
+task_id: stack@v1
+entry: >
+  cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf --
+  --spec crates/oriera-agent/specs/official/stack-4dof.json --protocol course@v1
+  --reference-out results/reference
+presets:
+  - name: stack-4dof
+    spec: crates/oriera-agent/specs/official/stack-4dof.json
+    gate: 0.75                    # 新任务首版诚实门槛
+eval:
+  protocol: course@v1
+  episodes: 12
+  seed0: 1000
+  success_criteria: v2            # 叠好 + 松爪 + 静止 10 步
+  verify_determinism: full
+train:
+  seeds: null
+hyperparams:
+  ik: { solver: damped-least-squares, rows: 6, rot_weight: 0.5, lambda: 0.05, max_step_rad: 0.3 }
+  phases: stack_phases            # 抓 A → 提到 goal 高度+0.12 → 移到 B 上方 → 降到 goal+0.03 → 开爪 → 退
+  dwell_ticks: [70, 60, 40, 70, 70, 70, 30, 45]
+  criteria: { stack_xz_tol: 0.03, stack_y_tol: 0.02, rest_steps: 10, rest_speed: 0.01, release_below: 0.5 }
+reference: results/reference/<spec_hash8>/course_v1.json
+notes: >
+  判据读底座 B 的实时位置（不是出生位）——B 被撞歪也按真实相对位姿判。

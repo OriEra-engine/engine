@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "oriera-sim"
+version = "0.10.0"
+description = "OriEra embodied simulation Gymnasium bridge (PyO3)"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+
+[tool.maturin]
+# feature 名以 crates/oriera-agent/Cargo.toml 的 [features] 为准（`python`，
+# 不是 "pyo3/python"——M1 wheel 实测勘误 2026-11-02）。
+module-name = "oriera_sim"
+features = ["python", "spec"]
+manifest-path = "crates/oriera-agent/Cargo.toml"
+# maturin 要求 python-source 指向一个真实包目录（oriera_gym.py 是模块
+# 文件不是包）——改用 include 平铺进 wheel 根（venv 冒烟实测可行）。
+include = ["scripts/oriera_gym.py"]

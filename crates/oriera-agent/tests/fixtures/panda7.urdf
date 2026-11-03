@@ -1,0 +1,175 @@
+<?xml version="1.0"?>
+<!--
+  panda7.urdf — Franka Emika Panda, 7-DoF, "converted reference" fixture for
+  the OriEra URDF to RobotSpec full-chain import (U4, PLAN-embodied-general
+  M0a 工作包 D; tests/urdf_robot_spec.rs). NOT a Franka release.
+
+  Provenance / licence:
+  Kinematics, limits, efforts, damping and the full inertial payload are
+  copied verbatim from out/mjcf-crosscheck/panda_converted.urdf, which is the
+  1:1 conversion of mujoco_menagerie/franka_emika_panda/panda_nohand.xml
+  (https://github.com/google-deepmind/mujoco_menagerie, rev b065505,
+  Apache-2.0; conversion table in scripts/mjcf_crosscheck.py). See NOTICE.md.
+
+  Deltas vs panda_converted.urdf (both deliberate, both needed by the tests):
+  1. collision mesh filename="package://mujoco_menagerie/..."
+     on every link, pointing at the menagerie collision assets the MJCF
+     references (link0.stl ... link7.stl, link5_collision_0.obj). The meshes
+     are NOT redistributed here and are NOT loaded: they exist so the honest
+     mesh -> chain-segment-envelope degradation path is really exercised
+     (mesh_uri stays None, the URI lands in RobotSpecOpts.skipped for M2).
+  2. limit velocity on the seven joints: 2.1750 rad/s (joints 1-4) and
+     2.6100 rad/s (joints 5-7), the Franka datasheet values carried by
+     franka_description (Apache-2.0). The menagerie MJCF has no joint
+     velocity limit (MuJoCo has none natively), so the crosscheck URDF has
+     none either; JointSpec::velocity_limit needs a real number to test.
+-->
+<robot name="panda7">
+
+  <link name="link0">
+    <inertial>
+      <origin xyz="-0.041018 -0.00014 0.049974"/>
+      <mass value="0.629769"/>
+      <inertia ixx="0.00315" iyy="0.00388" izz="0.004285"
+               ixy="8.2904e-7" ixz="0.00015" iyz="8.2299e-6"/>
+    </inertial>
+    <collision><geometry><mesh filename="package://mujoco_menagerie/franka_emika_panda/assets/link0.stl"/></geometry></collision>
+  </link>
+
+  <link name="link1">
+    <inertial>
+      <origin xyz="0.003875 0.002081 -0.04762"/>
+      <mass value="4.970684"/>
+      <inertia ixx="0.70337" iyy="0.70661" izz="0.0091170"
+               ixy="-0.00013900" ixz="0.0067720" iyz="0.019169"/>
+    </inertial>
+    <collision><geometry><mesh filename="package://mujoco_menagerie/franka_emika_panda/assets/link1.stl"/></geometry></collision>
+  </link>
+  <joint name="joint1" type="revolute">
+    <parent link="link0"/> <child link="link1"/>
+    <!-- MJCF: <body name="link1" pos="0 0 0.333"> -->
+    <origin xyz="0 0 0.333" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.8973" upper="2.8973" effort="87" velocity="2.1750"/>
+    <dynamics damping="1"/>
+  </joint>
+
+  <link name="link2">
+    <inertial>
+      <origin xyz="-0.003141 -0.02872 0.003495"/>
+      <mass value="0.646926"/>
+      <inertia ixx="0.0079620" iyy="2.8110e-2" izz="2.5995e-2"
+               ixy="-3.925e-3" ixz="1.0254e-2" iyz="7.04e-4"/>
+    </inertial>
+    <collision><geometry><mesh filename="package://mujoco_menagerie/franka_emika_panda/assets/link2.stl"/></geometry></collision>
+  </link>
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/> <child link="link2"/>
+    <!-- MJCF: <body name="link2" quat="1 -1 0 0"> = Rx(-pi/2) -->
+    <origin xyz="0 0 0" rpy="-1.5707963267948966 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.7628" upper="1.7628" effort="87" velocity="2.1750"/>
+    <dynamics damping="1"/>
+  </joint>
+
+  <link name="link3">
+    <inertial>
+      <origin xyz="2.7518e-2 3.9252e-2 -6.6502e-2"/>
+      <mass value="3.228604"/>
+      <inertia ixx="3.7242e-2" iyy="3.6155e-2" izz="1.083e-2"
+               ixy="-4.761e-3" ixz="-1.1396e-2" iyz="-1.2805e-2"/>
+    </inertial>
+    <collision><geometry><mesh filename="package://mujoco_menagerie/franka_emika_panda/assets/link3.stl"/></geometry></collision>
+  </link>
+  <joint name="joint3" type="revolute">
+    <parent link="link2"/> <child link="link3"/>
+    <!-- MJCF: <body name="link3" pos="0 -0.316 0" quat="1 1 0 0"> = Rx(+pi/2) -->
+    <origin xyz="0 -0.316 0" rpy="1.5707963267948966 0 0"/>
+    <axis xyz="0 0 1"/>
+    <!-- range inherited from MJCF default class panda -->
+    <limit lower="-2.8973" upper="2.8973" effort="87" velocity="2.1750"/>
+    <dynamics damping="1"/>
+  </joint>
+
+  <link name="link4">
+    <inertial>
+      <origin xyz="-5.317e-2 1.04419e-1 2.7454e-2"/>
+      <mass value="3.587895"/>
+      <inertia ixx="2.5853e-2" iyy="1.9552e-2" izz="2.8323e-2"
+               ixy="7.796e-3" ixz="-1.332e-3" iyz="8.641e-3"/>
+    </inertial>
+    <collision><geometry><mesh filename="package://mujoco_menagerie/franka_emika_panda/assets/link4.stl"/></geometry></collision>
+  </link>
+  <joint name="joint4" type="revolute">
+    <parent link="link3"/> <child link="link4"/>
+    <!-- MJCF: <body name="link4" pos="0.0825 0 0" quat="1 1 0 0"> -->
+    <origin xyz="0.0825 0 0" rpy="1.5707963267948966 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.0718" upper="-0.0698" effort="87" velocity="2.1750"/>
+    <dynamics damping="1"/>
+  </joint>
+
+  <link name="link5">
+    <inertial>
+      <origin xyz="-1.1953e-2 4.1065e-2 -3.8437e-2"/>
+      <mass value="1.225946"/>
+      <inertia ixx="3.5549e-2" iyy="2.9474e-2" izz="8.627e-3"
+               ixy="-2.117e-3" ixz="-4.037e-3" iyz="2.29e-4"/>
+    </inertial>
+    <collision><geometry><mesh filename="package://mujoco_menagerie/franka_emika_panda/assets/link5_collision_0.obj"/></geometry></collision>
+  </link>
+  <joint name="joint5" type="revolute">
+    <parent link="link4"/> <child link="link5"/>
+    <!-- MJCF: <body name="link5" pos="-0.0825 0.384 0" quat="1 -1 0 0"> -->
+    <origin xyz="-0.0825 0.384 0" rpy="-1.5707963267948966 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.8973" upper="2.8973" effort="12" velocity="2.6100"/>
+    <dynamics damping="1"/>
+  </joint>
+
+  <link name="link6">
+    <inertial>
+      <origin xyz="6.0149e-2 -1.4117e-2 -1.0517e-2"/>
+      <mass value="1.666555"/>
+      <inertia ixx="1.964e-3" iyy="4.354e-3" izz="5.433e-3"
+               ixy="1.09e-4" ixz="-1.158e-3" iyz="3.41e-4"/>
+    </inertial>
+    <collision><geometry><mesh filename="package://mujoco_menagerie/franka_emika_panda/assets/link6.stl"/></geometry></collision>
+  </link>
+  <joint name="joint6" type="revolute">
+    <parent link="link5"/> <child link="link6"/>
+    <!-- MJCF: <body name="link6" quat="1 1 0 0"> -->
+    <origin xyz="0 0 0" rpy="1.5707963267948966 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.0175" upper="3.7525" effort="12" velocity="2.6100"/>
+    <dynamics damping="1"/>
+  </joint>
+
+  <link name="link7">
+    <inertial>
+      <origin xyz="1.0517e-2 -4.252e-3 6.1597e-2"/>
+      <mass value="0.735522"/>
+      <inertia ixx="1.2516e-2" iyy="1.0027e-2" izz="4.815e-3"
+               ixy="-4.28e-4" ixz="-1.196e-3" iyz="-7.41e-4"/>
+    </inertial>
+    <collision><geometry><mesh filename="package://mujoco_menagerie/franka_emika_panda/assets/link7.stl"/></geometry></collision>
+  </link>
+  <joint name="joint7" type="revolute">
+    <parent link="link6"/> <child link="link7"/>
+    <!-- MJCF: <body name="link7" pos="0.088 0 0" quat="1 1 0 0"> -->
+    <origin xyz="0.088 0 0" rpy="1.5707963267948966 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.8973" upper="2.8973" effort="12" velocity="2.6100"/>
+    <dynamics damping="1"/>
+  </joint>
+
+  <link name="attachment"/>
+
+  <joint name="joint8" type="fixed">
+    <parent link="link7"/> <child link="attachment"/>
+    <!-- MJCF: <body name="attachment" pos="0 0 0.107"
+         quat="0.3826834 0 0 0.9238795"> = Rz(135 deg) -->
+    <origin xyz="0 0 0.107" rpy="0 0 2.356194490192345"/>
+  </joint>
+
+</robot>

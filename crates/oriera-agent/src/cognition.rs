@@ -190,6 +190,42 @@ struct PendingSpeech {
 }
 
 impl<P: ModelProvider + 'static> CognitionSystem<P> {
+    /// 收割一批已完成的在途作业并落地（run 每帧调用；关窗排空时由
+    /// [`Self::drain_pending`] 复用同一落地路径——台账/用量/日志/记忆
+    /// 与帧内收割逐字节一致，不留第二套落地上线）。
+    fn harvest(&mut self, world: &mut World) {
+        if self.jobs.is_none() {
+            return;
+        }
+        for done in self.jobs.as_mut().expect("just checked").poll() {
+            let Some(idx) = self.pending.iter().position(|p| p.job == done.id) else {
+                continue; // 非本系统的 job(如 director 共享池),跳过
+            };
+            let p = self.pending.swap_remove(idx);
+            if done.usage.total() > 0 {
+                world.resource_or_default::<UsageMeter>().record(done.usage);
+            }
+            let reply = done.result.unwrap_or_else(|_| "……".into());
+            record_fingerprint(world, self.provider.as_ref(), &p.sys, &p.user, &reply);
+            Self::land_reply(
+                world, p.speaker, &p.persona, &p.partner, reply, p.turn, p.day,
+            );
+        }
+    }
+
+    /// 关窗排空（优雅停机语义）：只收割落地、**不提交新台词**。返回
+    /// `true` = 已提交的台词全部落地（pending 清空且无仍在计算的作业），
+    /// `false` = 尚有在途，调用方稍候重试（帧循环停止后 poll 不再发生，
+    /// rx 随作业池丢弃会让尾批台词无声消失——停机/收卷前循环调用直至
+    /// `true`，这是「每条提交必落地」契约在关窗时刻的兑现点）。
+    pub fn drain_pending(&mut self, world: &mut World) -> bool {
+        if self.jobs.is_none() {
+            return true; // 同步路：无在途作业
+        }
+        self.harvest(world);
+        self.pending.is_empty() && self.jobs.as_ref().expect("checked above").inflight() == 0
+    }
+
     /// Switch to async mode: at most one in-flight call, replies land
     /// one or more frames later. The frame loop never blocks on the
     /// network again (STABILITY P0: 同步阻塞).
@@ -275,20 +311,7 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
         // 在途台词;收割按 job id 匹配,谁先回谁先落地(世界节拍不再被
         // 单条最慢的供应商往返拖住)。
         if self.jobs.is_some() {
-            for done in self.jobs.as_mut().expect("just checked").poll() {
-                let Some(idx) = self.pending.iter().position(|p| p.job == done.id) else {
-                    continue; // 非本系统的 job(如 director 共享池),跳过
-                };
-                let p = self.pending.swap_remove(idx);
-                if done.usage.total() > 0 {
-                    world.resource_or_default::<UsageMeter>().record(done.usage);
-                }
-                let reply = done.result.unwrap_or_else(|_| "……".into());
-                record_fingerprint(world, self.provider.as_ref(), &p.sys, &p.user, &reply);
-                Self::land_reply(
-                    world, p.speaker, &p.persona, &p.partner, reply, p.turn, p.day,
-                );
-            }
+            self.harvest(world);
             if !due {
                 return; // 未到节拍,帧照常走
             }
@@ -1217,50 +1240,113 @@ mod tests {
 
     // ---- 异步路径(RFC 0002 v0.5):帧不阻塞,回复晚落 ----
 
-    /// Simulates a real LLM: blocks for `delay`, then answers with the
-    /// full say|action|mood|memory tail.
-    struct SlowLlm {
-        delay: std::time::Duration,
+    /// 门控 LLM：complete() 一进入就在闸门处阻塞，直到测试放行才应答。
+    /// 「帧不等网络」的负载无关证明——提交帧返回时，供应商调用被证明
+    /// 仍在途（entered=true 且闸门未开）。旧法用 30ms 墙钟预算，实际测
+    /// 的是线程 spawn 速度而非网络阻塞：全量套件并行负载下 spawn 抖动
+    /// 实测可达 197ms，与 80ms 的模拟"网络"延迟分布重叠，任何预算都
+    /// 分不开两条分布（2026-11-01 全量 ×5 实测 2/5 翻车，改动前后同病）。
+    struct GatedLlm {
+        /// complete() 已被 worker 进入（调用真实在途）。
+        entered: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        /// 测试放行闸门：置 true 并 notify 后才应答。
+        gate: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
     }
 
-    impl ModelProvider for SlowLlm {
+    impl GatedLlm {
+        fn entered_within(&self, limit: std::time::Duration) -> bool {
+            let (lock, _) = &*self.entered;
+            let deadline = std::time::Instant::now() + limit;
+            while !*lock.lock().unwrap() {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            true
+        }
+        fn open(&self) {
+            let (lock, cv) = &*self.gate;
+            *lock.lock().unwrap() = true;
+            cv.notify_all();
+        }
+    }
+
+    impl ModelProvider for GatedLlm {
         fn id(&self) -> &str {
-            "slow-llm-test"
+            "gated-llm-test"
         }
         fn complete(
             &self,
             _m: &[oriera_infer::ChatMessage],
         ) -> Result<String, oriera_infer::InferError> {
-            std::thread::sleep(self.delay);
+            {
+                let (lock, cv) = &*self.entered;
+                *lock.lock().unwrap() = true;
+                cv.notify_all();
+            }
+            // 闸门 10s 超时兜底：测试若在放行前崩溃，worker 不得永久占槽
+            // （对齐 jobs.rs 的「panic 的 job 不许永久占位」铁律）。
+            let (lock, cv) = &*self.gate;
+            let mut open = lock.lock().unwrap();
+            while !*open {
+                let (ok, timeout) = cv
+                    .wait_timeout(open, std::time::Duration::from_secs(10))
+                    .unwrap();
+                if timeout.timed_out() {
+                    return Err(oriera_infer::InferError::Provider(
+                        "test: gate never opened".into(),
+                    ));
+                }
+                open = ok;
+            }
             Ok("好豆子要等。|wave|happy|今天客人问起埃塞豆".into())
         }
     }
 
     #[test]
     fn async_cognition_never_blocks_and_lands_one_frame_later() {
+        let entered =
+            std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let mut w = cafe_world();
         let mut cog = CognitionSystem::new(
-            Arc::new(SlowLlm {
-                delay: std::time::Duration::from_millis(80),
+            Arc::new(GatedLlm {
+                entered: entered.clone(),
+                gate: gate.clone(),
             }),
             1,
         )
         .with_async();
 
-        // 节拍帧:提交即返回 —— 帧本身绝不能等网络。
-        let t0 = std::time::Instant::now();
+        // 节拍帧:提交即返回 —— 帧本身绝不能等网络。结构性证明：帧返回
+        // 后供应商调用已真实在途（entered）且仍被闸门阻塞——若异步路
+        // 退化为帧内同步调用，本帧会卡死在闸门上直至 10s 超时降级，
+        // 随后的台词断言必然失败。
         cog.run(&ctx(), &mut w);
         assert!(
-            t0.elapsed() < std::time::Duration::from_millis(30),
-            "submitting frame blocked for {:?}",
-            t0.elapsed()
+            GatedLlm {
+                entered: entered.clone(),
+                gate: gate.clone(),
+            }
+            .entered_within(std::time::Duration::from_secs(5)),
+            "provider call never started"
         );
         assert!(
             w.resource::<DialogueLog>().unwrap().turns.is_empty(),
             "reply cannot land before the network answers"
         );
 
-        // 后续帧照常走(收割为空),直到作业完成那一帧落地。
+        // 后续帧照常走(收割为空;闸门未开,无人落地,槽位占满也不重复提交)。
+        cog.run(&ctx(), &mut w);
+        assert!(w.resource::<DialogueLog>().unwrap().turns.is_empty());
+
+        // 放行：回复在完成那一帧落地。
+        GatedLlm {
+            entered: entered.clone(),
+            gate: gate.clone(),
+        }
+        .open();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             cog.run(&ctx(), &mut w);
@@ -1272,8 +1358,8 @@ mod tests {
         }
 
         let log = w.resource::<DialogueLog>().unwrap();
-        // #105a 多槽：cafe_world 的 3 个 NPC 在同一拍并发提交——SlowLlm
-        // 等延迟下它们几乎同时落地，turns 数=在线卡司数（1..=3）。
+        // #105a 多槽：cafe_world 的 3 个 NPC 在同一拍并发提交——闸门
+        // 齐开时它们几乎同时落地，turns 数=在线卡司数（1..=3）。
         assert!(
             (1..=3).contains(&log.turns.len()),
             "concurrent landing: turns={}",
@@ -1294,10 +1380,14 @@ mod tests {
 
     #[test]
     fn async_director_lands_beats_off_the_frame_loop() {
+        let entered =
+            std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let mut w = cafe_world();
         let mut dir = DirectorSystem::new(
-            Arc::new(SlowLlm {
-                delay: std::time::Duration::from_millis(60),
+            Arc::new(GatedLlm {
+                entered: entered.clone(),
+                gate: gate.clone(),
             }),
             1,
         )
@@ -1309,11 +1399,25 @@ mod tests {
             text: "新到的豆子".into(),
         });
 
-        let t0 = std::time::Instant::now();
+        // 提交帧即返回,调用在途证明同 cognition 侧（见上个测试的注释——
+        // 30ms 墙钟预算在全量并行负载下测的是 spawn 抖动,已弃用）。
         dir.run(&ctx(), &mut w);
-        assert!(t0.elapsed() < std::time::Duration::from_millis(30));
+        assert!(
+            GatedLlm {
+                entered: entered.clone(),
+                gate: gate.clone(),
+            }
+            .entered_within(std::time::Duration::from_secs(5)),
+            "director provider call never started"
+        );
         assert!(w.resource::<WorldStory>().unwrap().beats.is_empty());
 
+        // 放行：拍子落在完成那一帧。
+        GatedLlm {
+            entered: entered.clone(),
+            gate: gate.clone(),
+        }
+        .open();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while w.resource::<WorldStory>().unwrap().beats.is_empty() {
             dir.run(&ctx(), &mut w);
@@ -1332,24 +1436,50 @@ mod tests {
 
     #[test]
     fn sync_and_async_paths_say_the_same_things() {
-        // 异步的真实差异是相位:第一条回复晚一两拍落地,所以固定帧数下
-        // 日志窗口的起始点会平移。不变量是「谁说了什么」和轮转环序:
-        // 每个说话者的台词集合一致,且 speakers 严格按同一环循环。
-        // (#105a 多槽化更新:一拍可并发提交多条,台词的「集合」不变量
-        // 依旧成立——BTreeSet 天然去重排序,不依赖落地顺序;环序断言
-        // 按说话者首次出现序校验,同样与并发提交兼容。)
+        // 竞态已修（根因：从来不是丢行——提交-收割链路零丢失：无界
+        // channel + 每帧 poll，提交数=落地数，落地序列无空洞）。真因是
+        // 「启动瞬态 vs 稳态吸引子」的窗口错配：RuleProvider 按关键词
+        // 选句，每条台词=f(装配那一刻的日志+检索)，Aria 的绘本句只在
+        // 两条路的第 ~7 行出现一次（早期记忆池小、绘本头记忆尚在检索
+        // top-4；随后被与 recent 对话文本高 bigram 命中的台词头记忆永久
+        // 挤出——offline_score 的 hits×1.6 项碾压，两条路的长跑吸引子里
+        // 它都不再复现，且吸引子逐集合一致：老周{咖啡豆,绘本}、
+        // Aria{咖啡豆,街道}、阿哲{咖啡豆,街道}）。旧 sync 只跑 30 行，
+        // 24 行窗口 [6..30) 必含该瞬态，而 async 60 拍×3 条/拍≈180 行、
+        // 窗口深在吸引子——机器越快翻车越确定，CI 负载挤慢管线让窗口
+        // 滑回瞬态区反而偶然通过（2026-10-30「偶发丢行」实录的真相）。
+        // 另：旧「日志 30ms 不变」排空从不 tick 系统——poll 只在 run()
+        // 里发生，迟到落地根本不可能被观察到，尾批 3 条随 rx 静默丢弃，
+        // 纯自欺。2026-11-01 修复：①CognitionSystem::drain_pending 关窗
+        // 精确排空（只收割不提交，pending 清空+inflight 归零=完成条件，
+        // 不再是时间启发式）；②sync 同跑 60 拍，两路窗口同采稳态内容环
+        // （同步路确定性，60 拍窗口=第[36..60)行，实测含全集；负载方向
+        // 安全：async 窗口只会滑向启动瞬态=只增不减的超集）。
         let run = |async_mode: bool| {
             let mut w = cafe_world();
             let cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 1);
             let mut cog = if async_mode { cog.with_async() } else { cog };
-            let ticks = if async_mode { 60 } else { 30 };
+            let ticks = 60;
             for _ in 0..ticks {
                 cog.run(&ctx(), &mut w);
-                // 真实帧间隔是毫秒级;给后台线程一点完成时间。
-                // (#105a 并发后轮转加速 4 倍,窗口加大保证每个 NPC 覆盖
-                // 完整句库,避免窗口截断的集合假差异。)
+                // 真实帧间隔是毫秒级；给后台线程一点完成时间，让管线以
+                // ≈3 条/拍的节奏流动（#105a 多槽：一拍并发提交多条，落地
+                // 序=完成序——BTreeSet 集合断言与落地顺序天然无关）。
                 if async_mode {
                     std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+            if async_mode {
+                // 精确排空：drain_pending 只收割不提交，返回 true 即每条
+                // 已提交台词都已落地——完成条件，不是时间启发式。deadline
+                // 只防挂死（Rule 后端作业瞬时完成，正常一两次收割即清零）。
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while !cog.drain_pending(&mut w) {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "in-flight lines never landed"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(2));
                 }
             }
             w.resource::<DialogueLog>()
@@ -1395,18 +1525,34 @@ mod tests {
             }
         }
 
-        // 轮转环序一致:async 的 speakers 是 sync 环的循环移位。
-        let cyc: Vec<String> = sync.iter().map(|(s, _)| s.clone()).collect();
-        let next_of = |cur: &str| {
-            let i = cyc.iter().position(|s| s == cur).unwrap();
-            cyc[(i + 1) % cyc.len()].clone()
+        // 「覆盖不缩水」（同步 ⊆ 异步）如今是稳态环对稳态环：两路各跑
+        // 60 拍，24 行窗口 ≥ 内容环周期（异步路稳态环 9 行、同步路 21 行，
+        // 实测钉死），任何 24 行连窗都含各说话者全集；负载把 async 管线
+        // 挤慢时窗口只会滑向启动瞬态——瞬态是吸引子集合的超集，断言方向
+        // 天然安全（2026-10-30 flake 的教训：只有「瞬态窗 vs 吸引子窗」
+        // 这种错配才会翻车，修复后两窗同采稳态）。断言：①每个说话者的
+        // 去重台词集合，同步 ⊆ 异步（异步路径不比同步少说话）；②全部
+        // 台词都在规则库内（上文已断）。
+        let group = |log: &[(String, String)]| -> std::collections::BTreeMap<
+            String,
+            std::collections::BTreeSet<String>,
+        > {
+            let mut m: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+                std::collections::BTreeMap::new();
+            for (sp, text) in log {
+                m.entry(sp.clone()).or_default().insert(text.clone());
+            }
+            m
         };
-        for pair in asyn.windows(2) {
-            assert_eq!(
-                pair[1].0,
-                next_of(&pair[0].0),
-                "round-robin cycle order must hold"
-            );
+        let sync_by = group(&sync);
+        let asyn_by = group(&asyn);
+        for (sp, texts) in &sync_by {
+            let a = asyn_by.get(sp).unwrap_or_else(|| {
+                panic!("async path lost speaker {sp:?} entirely");
+            });
+            for t in texts {
+                assert!(a.contains(t), "async path lost a line of {sp:?}: {t}");
+            }
         }
     }
 
@@ -1649,12 +1795,16 @@ mod tests {
         use oriera_infer::InferenceLedger;
         // 同一 tick 序列：同步世界 vs 异步作业世界——台账逐条相等
         //（PendingSpeech 携带 sys/user 就是为了这条不依赖哪条路服务）。
-        let run = |async_mode: bool| {
+        let run = |async_mode: bool, wait_prompt: Option<u64>| {
             let mut w = cafe_world();
             let cog = CognitionSystem::new(Arc::new(RuleProvider::new()), 1);
             let mut cog = if async_mode { cog.with_async() } else { cog };
             // 异步路后台线程与测试赛跑：多跑轮次直到台账落地（Rule 后端
             // 作业瞬时完成，几轮即可），上限封顶防挂。
+            // 「落地」判据 = sync 台账的指纹在 asc 里出现（即第一提交者
+            // 的作业已收割）。旧判据「entries 非空即 break」在并行负载下
+            // 会被部分批次收割欺骗：一拍 3 条中旁人先落地、第一提交者还
+            // 在途时就交卷，sync 的条目被误判为 asc 缺失（子多重集假阴）。
             for _ in 0..200 {
                 cog.run(&ctx(), &mut w);
                 if !async_mode {
@@ -1662,7 +1812,7 @@ mod tests {
                 }
                 let landed = w
                     .resource::<InferenceLedger>()
-                    .map(|l| !l.entries.is_empty())
+                    .map(|l| wait_prompt.is_none_or(|p| l.entries.iter().any(|e| e.prompt == p)))
                     .unwrap_or(false);
                 if landed {
                     break;
@@ -1673,9 +1823,9 @@ mod tests {
             }
             w.resource::<InferenceLedger>().unwrap().clone()
         };
-        let sync = run(false);
-        let asc = run(true);
+        let sync = run(false, None);
         assert!(!sync.entries.is_empty());
+        let asc = run(true, Some(sync.entries[0].prompt));
         assert!(
             !asc.entries.is_empty(),
             "async road must land its ledger too"

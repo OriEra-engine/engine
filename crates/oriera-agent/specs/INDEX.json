@@ -1,0 +1,77 @@
+{
+ "schema": "oriera.spec-index/1",
+ "root": "crates/oriera-agent/specs",
+ "rule": "name → spec_hash；同名异 hash 报错；同 hash 异名 = 别名（见 aliases）",
+ "specs": {
+  "bin-pick-4dof": {
+   "hash": "14fc9bf8c107e5da",
+   "files": [
+    "official/bin-pick-4dof.json"
+   ],
+   "tier": "official"
+  },
+  "drawer-4dof": {
+   "hash": "ef18ac077252995e",
+   "files": [
+    "official/drawer-4dof.json"
+   ],
+   "tier": "official"
+  },
+  "lab-example-cylinder": {
+   "hash": "a0f523ed0cd0e3c4",
+   "files": [
+    "lab/example-cylinder.json"
+   ],
+   "tier": "lab"
+  },
+  "lab-wrist-cam-demo": {
+   "hash": "77b054545861ce80",
+   "files": [
+    "lab/wrist-cam-demo.json"
+   ],
+   "tier": "lab"
+  },
+  "mobile-arm-4dof": {
+   "hash": "9ee15317e14788f5",
+   "files": [
+    "official/mobile-arm-4dof.json"
+   ],
+   "tier": "official"
+  },
+  "panda-7dof-pick": {
+   "hash": "b5535a74f18fb57b",
+   "files": [
+    "official/panda-7dof-pick.json"
+   ],
+   "tier": "official"
+  },
+  "pick_place": {
+   "hash": "c90869dcf6a04875",
+   "files": [
+    "pick_place.json"
+   ],
+   "tier": "legacy"
+  },
+  "stack-4dof": {
+   "hash": "ffc96325c54141d2",
+   "files": [
+    "official/stack-4dof.json"
+   ],
+   "tier": "official"
+  },
+  "tabletop-4dof-pick": {
+   "hash": "c90869dcf6a04875",
+   "files": [
+    "official/tabletop-4dof-pick.json",
+    "tabletop-4dof-pick.json"
+   ],
+   "tier": "official"
+  }
+ },
+ "aliases": {
+  "c90869dcf6a04875": [
+   "pick_place",
+   "tabletop-4dof-pick"
+  ]
+ }
+}

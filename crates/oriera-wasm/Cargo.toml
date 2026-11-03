@@ -1,0 +1,24 @@
+[package]
+name = "oriera-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OriEra embodied sim → wasm-bindgen glue (PLAN-embodied-general M1): one physics, browser front end"
+
+[lib]
+name = "oriera_wasm"
+path = "src/lib.rs"
+# cdylib = the `.wasm` the browser/node loads; rlib = native unit tests
+# of the FK / baseline mirror (`cargo test -p oriera-wasm`).
+crate-type = ["cdylib", "rlib"]
+
+# Dependency discipline (M1 工作包): oriera-agent (+spec/rigid3d) +
+# wasm-bindgen + serde_json — nothing else. The robot/scene types are
+# reached through `TableTopEnv`'s public fields (no direct oriera-subsys
+# dep); link/prop *shapes* travel to the renderer as the resolved spec
+# JSON (`spec_json()`), so this crate never names a subsys enum.
+[dependencies]
+oriera-agent = { workspace = true, features = ["rigid3d", "spec"] }
+wasm-bindgen = "0.2"
+serde_json = { workspace = true }

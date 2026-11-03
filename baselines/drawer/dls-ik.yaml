@@ -1,0 +1,27 @@
+# baselines/drawer/dls-ik.yaml — drawer@v1 × DLS 数值 IK 相位机（M2 新任务首版）
+method: dls-ik
+task_id: drawer@v1
+entry: >
+  cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf --
+  --spec crates/oriera-agent/specs/official/drawer-4dof.json --protocol course@v1
+  --reference-out results/reference
+presets:
+  - name: drawer-4dof
+    spec: crates/oriera-agent/specs/official/drawer-4dof.json
+    gate: 0.60                    # 新任务首版诚实门槛（可动盒体近似 prismatic）
+eval:
+  protocol: course@v1
+  episodes: 12
+  seed0: 1000
+  success_criteria: v2            # 拉出 ≥ pull_distance + 松爪 + 静止
+  verify_determinism: full
+train:
+  seeds: null
+hyperparams:
+  ik: { solver: damped-least-squares, rows: 6, rot_weight: 0.5, lambda: 0.05, max_step_rad: 0.3 }
+  phases: drawer_phases           # 抓面板 → 跟随拖拽 220 tick（目标随物体走）→ 开爪 → 退
+  dwell_ticks: [70, 60, 40, 220, 30, 45]
+  criteria: { pull_axis: [-1, 0, 0], pull_distance: 0.08, rest_steps: 10, rest_speed: 0.01 }
+reference: results/reference/<spec_hash8>/course_v1.json
+notes: >
+  真 prismatic 抽屉 fixture 在 M3；现用 0.12 kg 木块面板在桌面上拖——拖拽机制与 pick 的「夹持搬运」同源。

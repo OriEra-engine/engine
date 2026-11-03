@@ -19,7 +19,22 @@ oriera-ecs.workspace = true
 # with Scheduler::with_fixed_dt for replayable embodied data collection.
 # Apache-2.0. Optional: default builds stay dependency-free.
 rapier2d = { workspace = true, optional = true }
+# PLAN-embodied-sim: 3D articulated backend (multibody revolute chains).
+# Same family/contract as rapier2d above — same-build deterministic,
+# zero C toolchain, wasm32 first-class. Optional: default builds stay
+# dependency-free.
+rapier3d = { workspace = true, optional = true }
+# Top-down RGB camera track (PNG frames) for the embodied bench.
+png = { workspace = true, optional = true }
+# SceneSpec serde (M1 #5): Scene3D/ArmDescription as JSON scene files.
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+rapier3d = { workspace = true }
 
 [features]
 default = []
 rigid = ["dep:rapier2d"]
+rigid3d = ["dep:rapier3d"]
+cam = ["dep:png"]
+serde = ["dep:serde"]

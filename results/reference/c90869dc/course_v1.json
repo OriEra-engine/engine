@@ -1,0 +1,151 @@
+{
+  "backend": "rigid3d",
+  "baseline_gate": {
+    "threshold": 0.9,
+    "verdict": "pass",
+    "why": "金标桌面预设：91.7% 锚不许退（走原脚本或 DLS 均需过）"
+  },
+  "draws": 13,
+  "dt": 0.01666666753590107,
+  "engine": "oriera-engine/0.10.0",
+  "episodes": 12,
+  "identity_hash": "834494da02895592",
+  "method": "dls-ik",
+  "protocol": {
+    "degenerate": "redraw",
+    "episodes": 12,
+    "gate": "hard90",
+    "id": "course@v1",
+    "parameter_hash": "aa75f55bdad047c1",
+    "seed0": 1000,
+    "success_criteria": "v1"
+  },
+  "redraws": 1,
+  "runs": [
+    {
+      "rand": "cube_density=494kg/m3 cube_friction=1.02 profile=default",
+      "reward_sum": 15.332,
+      "seed": 1000,
+      "steps": 344,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "cube_density=489kg/m3 cube_friction=0.96 profile=default",
+      "reward_sum": 4.701,
+      "seed": 66538,
+      "steps": 73,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "cube_density=324kg/m3 cube_friction=0.99 profile=default",
+      "reward_sum": 14.402,
+      "seed": 66539,
+      "steps": 341,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "cube_density=418kg/m3 cube_friction=0.89 profile=default",
+      "reward_sum": 12.614,
+      "seed": 66540,
+      "steps": 342,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "cube_density=253kg/m3 cube_friction=0.92 profile=default",
+      "reward_sum": -70.377,
+      "seed": 66541,
+      "steps": 700,
+      "success": false,
+      "success_at_end": false,
+      "success_once": false
+    },
+    {
+      "rand": "cube_density=348kg/m3 cube_friction=0.81 profile=default",
+      "reward_sum": 15.29,
+      "seed": 66542,
+      "steps": 341,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "cube_density=583kg/m3 cube_friction=0.85 profile=default",
+      "reward_sum": 9.34,
+      "seed": 66543,
+      "steps": 342,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "cube_density=277kg/m3 cube_friction=0.74 profile=default",
+      "reward_sum": 12.413,
+      "seed": 66544,
+      "steps": 339,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "cube_density=512kg/m3 cube_friction=0.78 profile=default",
+      "reward_sum": 15.148,
+      "seed": 66545,
+      "steps": 339,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "cube_density=606kg/m3 cube_friction=0.67 profile=default",
+      "reward_sum": 10.594,
+      "seed": 66546,
+      "steps": 344,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "cube_density=442kg/m3 cube_friction=0.70 profile=default",
+      "reward_sum": 16.889,
+      "seed": 66547,
+      "steps": 340,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "cube_density=536kg/m3 cube_friction=0.60 profile=default",
+      "reward_sum": 13.804,
+      "seed": 66548,
+      "steps": 341,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    }
+  ],
+  "spec_hash": "c90869dcf6a04875",
+  "success_at_end_rate": 0.9166666666666666,
+  "success_once_rate": 0.9166666666666666,
+  "success_rate": 0.9166666666666666,
+  "successes": 11,
+  "task": "pick up the cube and place it at the target",
+  "task_id": "pick_place@v1",
+  "throughput_steps_per_s": 780.635116973305,
+  "verify_determinism": "full",
+  "wilson95_at_end": [
+    0.646120088858883,
+    0.9851349055950829
+  ],
+  "wilson95_once": [
+    0.646120088858883,
+    0.9851349055950829
+  ]
+}

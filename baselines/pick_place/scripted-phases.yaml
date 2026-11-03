@@ -1,0 +1,26 @@
+# baselines/pick_place/scripted-phases.yaml — 4 轴解析 IK 相位机（金标采集路，M0a 起）
+method: scripted-phases
+task_id: pick_place@v1
+entry: >
+  cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf --
+  --task pick_place --episodes 12 --runs-root runs
+presets:
+  - name: tabletop-4dof-pick
+    spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json
+    gate: 0.90                    # course@v1 硬闸（91.7% = 11/12 锚）
+eval:
+  protocol: course@v1
+  episodes: 12
+  seed0: 1000
+  success_criteria: v1
+  verify_determinism: full
+train:
+  seeds: null
+hyperparams:
+  ik: analytic-4dof               # yaw + 平面 2R + 腕俯仰朝下（仅 4 轴桌面预设）
+  phases: pick_place_phases
+  dwell_ticks: [70, 60, 40, 70, 95, 70, 35, 45]
+reference: contracts/golden/embodied_fingerprints.v2.json   # 12 seed 三口径指纹 + successes 11/12
+notes: >
+  金标锚：pre-m0a 12 集 state hash 逐个相等是「v1 任务不变」的硬证据；本方法文件冻结
+  （embodied_sim_collect.rs 归 WP-C 动）。

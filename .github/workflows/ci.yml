@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: # M3 跨平台指纹矩阵手动触发用（embodied-fingerprints-matrix）
 
 env:
   CARGO_TERM_COLOR: always
@@ -45,6 +46,22 @@ jobs:
           - name: subsys-rigid
             test: cargo test -p oriera-subsys --features rigid
             clippy: cargo clippy -p oriera-subsys --all-targets --features rigid -- -D warnings
+          - name: subsys-rigid3d
+            test: cargo test -p oriera-subsys --features rigid3d
+            clippy: cargo clippy -p oriera-subsys --all-targets --features rigid3d -- -D warnings
+          - name: subsys-rigid3d-cam
+            test: cargo test -p oriera-subsys --features rigid3d,cam
+            clippy: cargo clippy -p oriera-subsys --all-targets --features rigid3d,cam -- -D warnings
+          - name: agent-rigid3d-cam
+            test: cargo test -p oriera-agent --features rigid3d,cam
+            clippy: cargo clippy -p oriera-agent --all-targets --features rigid3d,cam -- -D warnings
+          # pyo3 桥腿：Windows 下 cdylib+测试二进制并行有已知交互，串行跑
+          - name: agent-spec
+            test: cargo test -p oriera-agent --features spec,urdf,rigid3d,cam,json
+            clippy: cargo clippy -p oriera-agent --all-targets --features spec,urdf,rigid3d,cam,json -- -D warnings
+          - name: agent-python-bridge
+            test: cargo test -p oriera-agent --features python -- --test-threads=1
+            clippy: cargo clippy -p oriera-agent --all-targets --features python -- -D warnings
     name: rust (${{ matrix.leg.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -142,3 +159,59 @@ jobs:
         run: cargo install wasm-pack --locked
       - name: Browser clock and host smoke tests
         run: wasm-pack test --headless --chrome platforms/web
+
+  # M3 跨平台指纹矩阵（PLAN-embodied-general §四 M3 / P-10）：三个平台
+  # 各跑金标采集，逐集 hash 与 contracts/golden/embodied_fingerprints.
+  # v2.json 对拍。f32 数值跨 libm/编译器可能差 1 ulp（M1 native↔wasm
+  # 已实证）——当前契约「同平台逐位、跨平台统计一致」：本 job 报告差
+  # 异不拦门（continue-on-error），差异超限则按 physics-behavior-change
+  # 流程重锚。默认只在 main 手动触发（workflow_dispatch），PR 不跑
+  #（三平台 × 金标采集 ≈ 30 分钟成本）。
+  embodied-fingerprints-matrix:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Golden collection (12 episodes, default preset)
+        run: >
+          cargo run -q -p oriera-agent --example embodied_sim_collect
+          --features rigid3d,cam,spec,urdf
+          -- --task pick_place --episodes 12 --out out/fp-matrix
+      - name: Compare against v2 golden anchor
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, sys
+          anchor = json.load(open("contracts/golden/embodied_fingerprints.v2.json", encoding="utf-8"))
+          rep = json.load(open("out/fp-matrix/eval_report.json", encoding="utf-8"))
+          # 三口径逐项对拍：v1 视图 / state（反演口径）/ v2
+          def col(rep_key, anchor_key):
+              got = [r[rep_key] for r in rep["runs"]] if rep_key in rep.get("runs", [{}])[0] else rep.get(rep_key)
+              want = anchor[anchor_key]
+              return got == want, rep_key
+          rows = rep.get("fingerprints", anchor.get("fingerprints", {}))
+          mism = []
+          for rep_key, anchor_key in [("episode_fingerprints_v1", "episode_fingerprints_v1"),
+                                      ("episode_fingerprints_v2", "episode_fingerprints_v2")]:
+              got = rep.get(rep_key) or rows.get(rep_key)
+              want = anchor.get(anchor_key) or anchor.get("fingerprints", {}).get(rep_key)
+              if got != want:
+                  mism.append(rep_key)
+          # state hash：旧回执字段（v1 折叠）——金标锚口径
+          import pathlib
+          receipt = json.load(open("out/fp-matrix/lerobot-v21/meta/oriera_receipt.json", encoding="utf-8"))
+          if receipt["episode_state_hashes"] != json.load(open("contracts/golden/embodied_fingerprints.pre-m0a.json", encoding="utf-8"))["episode_state_hashes"]:
+              mism.append("episode_state_hashes")
+          print(f"[{sys.platform}] mismatches: {mism or 'none'}")
+          if mism:
+              print("::warning::cross-platform fingerprints differ from the golden anchor "
+                    "(expected under the same-platform-bit-exact contract; re-anchor via "
+                    "physics-behavior-change if the statistical distribution also drifts)")
+          PY

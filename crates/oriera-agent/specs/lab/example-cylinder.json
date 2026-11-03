@@ -1,0 +1,16 @@
+{
+  "extends": "tabletop-4dof-pick",
+  "meta": {
+    "name": "lab-example-cylinder",
+    "author": "lab-example",
+    "notes": "M0b spec 库示例：继承官方金标 tabletop-4dof-pick，只把 prop[0] 的形状换成圆柱（其余全部沿用；resolve 后的完整 spec 才进 hash）"
+  },
+  "scene": {
+    "props": [
+      {
+        "name": "cylinder",
+        "shape": { "kind": "cylinder", "half_h": 0.03, "radius": 0.025 }
+      }
+    ]
+  }
+}

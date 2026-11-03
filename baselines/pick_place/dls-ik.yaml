@@ -1,0 +1,40 @@
+# baselines/pick_place/dls-ik.yaml — DLS 数值 IK 相位机基线（M2）
+method: dls-ik
+task_id: pick_place@v1
+entry: >
+  cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf --
+  --spec crates/oriera-agent/specs/official/<preset>.json --protocol course@v1
+  --reference-out results/reference
+presets:
+  - name: tabletop-4dof-pick      # 金标桌面（4 轴）——走 DLS 也须 ≥90%
+    spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json
+    gate: 0.90
+  - name: panda-7dof-pick         # Panda 7 轴 + gripper2f（--dump-panda-spec 生成）
+    spec: crates/oriera-agent/specs/official/panda-7dof-pick.json
+    gate: 0.75
+eval:
+  protocol: course@v1
+  episodes: 12
+  seed0: 1000
+  success_criteria: v1            # 预设任务是 pick_place@v1（@v2 换 task.id 即可，判据随注册表）
+  verify_determinism: full
+train:
+  seeds: null                     # 脚本类基线无训练
+hyperparams:
+  ik:
+    solver: damped-least-squares
+    rows: 6                       # 3 位置 + 3 工具朝向（期望世界 -Y）
+    rot_weight: 0.5
+    lambda: 0.05
+    max_step_rad: 0.3
+    eps_rad: 1.0e-4
+    max_iterations: 300
+    tol_pos_m: 1.0e-4
+    tol_rot: 2.0e-3
+    warm_start: previous-solution # 每 tick 从上一解起步
+  phases: pick_phases             # 8 相：above 0.12 → 0.03 → 闭爪 → 提 0.20 → 移到 goal 0.20 → 降 0.06 → 开爪 → 退 0.22
+  dwell_ticks: [70, 60, 40, 70, 95, 70, 35, 45]
+reference: results/reference/<spec_hash8>/course_v1.json
+notes: >
+  相位机与 collect 的解析 IK 金标同一套 waypoint/dwell（可直接对比两条 IK 路的成功率）；
+  任何 N-DoF RobotSpec 都吃——Panda 预设靠它。达不到闸 = 如实报数字，不许调判据凑。

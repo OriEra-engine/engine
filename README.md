@@ -31,6 +31,12 @@
 
 ## 这是什么
 
+
+**不重造物理引擎，不重造数据集格式**——把自己做成便宜、可复位、可回放的训练场（world as benchmark）。物理与数据出口对接开源标准：[Rapier](https://rapier.rs) 3D 接触物理 × [LeRobotDataset v2.1](https://huggingface.co/docs/lerobot) 训练数据导出 × [Gymnasium](https://gymnasium.farama.org) Python 桥。
+
+15 号 demo 一句话：**打开浏览器 → 键鼠遥操作机械臂 → 一键导出可训练数据 → lerobot-train**。
+
+
 OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网页、AR 眼镜（以及未来的脑机接口）上，跑一个**能被 AI 驱动、能持续自我演化、用户可以用自然语言创造内容**的实时 3D 世界。
 
 架构上是 **11 层分层结构**，五端一等公民接入，脑机接口在 v1 只留位不接硬件。
@@ -39,7 +45,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 
 **🌐 https://oriera-engine.github.io/engine/**
 
-14 个可玩 demo，浏览器直接打开：
+15 个可玩 demo，浏览器直接打开：
 
 | Demo | 展示 | 打开 |
 |---|---|---|
@@ -57,6 +63,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 | 12 Memory Atlas 记忆星图 | 离线 NPC 记忆写入、检索与时间衰减可视化 | [▶](https://oriera-engine.github.io/engine/examples/12-memory-atlas/index.html) |
 | 13 Generative Gallery 生成式画廊 | 一句话主题 → L8 文生图/文生 3D → L4 热替换装帧小 3D 世界 | [▶](https://oriera-engine.github.io/engine/examples/13-genai-gallery/index.html) |
 | 14 Frame Hunter 帧猎 | 跑酷答题游戏：三车道跑酷 + 谬误之门 + Boss 战，BKT 知识追踪，全离线 2.3MB | [▶](https://oriera-engine.github.io/engine/frame-hunter/index.html) |
+| 15 Embodied Sim 具身仿真台 | **rapier3d 接触物理机械臂桌面抓放**：键鼠遥操作/脚本策略/录制→导出 LeRobot v2.1 训练数据 | [▶](https://oriera-engine.github.io/engine/examples/15-embodied-sim/index.html) |
 
 ## 架构
 
@@ -195,9 +202,11 @@ ORIERA_SMOKE_PROVIDER=zhipu cargo run -p oriera-infer --example provider_smoke  
 
 - [AtomGit](https://atomgit.com/OriEra-engine/engine)：在国内托管 OriEra 世界引擎，帮助中国大陆用户更快访问项目与下载 Release。
 
-## 协议
+## 许可与数据归属
 
-[Apache License 2.0](LICENSE) — 专利授权条款，云厂商友好。
+- **引擎**：[Apache License 2.0](LICENSE)（全文见仓库根 `LICENSE`）——含专利授权条款，云厂商友好。
+- **你的数据 100% 归你**：你导入的 URDF、采集的数据集、训练出的模型与评测产物都归你所有，引擎及其作者不主张任何权利（你导入的第三方 URDF 仍按其原许可证使用）。
+- **第三方资产仅 CC0**：具身仿真台内置的第三方美术资产（HDRI 环境光、PBR 贴图）全部是 CC0 公有领域素材，来源逐项登记在 [ASSETS-NOTICE.md](examples/15-embodied-sim/vendor/assets/ASSETS-NOTICE.md)；随附的第三方代码库（three.js 为 MIT、rapier 为 Apache-2.0）见 [THIRD-PARTY-NOTICES.md](examples/15-embodied-sim/vendor/THIRD-PARTY-NOTICES.md)。
 
 ---
 
