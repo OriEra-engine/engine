@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: # M3 跨平台指纹矩阵手动触发用（embodied-fingerprints-matrix）
 
 env:
   CARGO_TERM_COLOR: always
