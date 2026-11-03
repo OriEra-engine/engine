@@ -227,7 +227,7 @@ fn seven_axis_down_gripper_spec() -> RobotSpec {
         kind: GripperKind::ParallelPlates,
         approach_axis: Some([0.0, 0.0, -1.0]), // flange local −Z = world down (after the roll)
         gap_axis: Some([0.0, 1.0, 0.0]),       // plates separate along flange local +Y
-        contact_mesh: false,                    // M2 opt-in (primitive plates)
+        contact_mesh: false,                   // M2 opt-in (primitive plates)
         holding_criterion: oriera_subsys::HoldingCriterion::default(), // v1 tip-radius
     };
     RobotSpec {

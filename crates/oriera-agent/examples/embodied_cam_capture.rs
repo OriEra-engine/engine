@@ -61,8 +61,16 @@ fn parse_args() -> Args {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--spec" => a.spec = it.next().expect("--spec 需要一个文件路径"),
-            "--episodes" => a.episodes = it.next().expect("--episodes 需要一个值").parse().expect("episodes: 数字"),
-            "--seed0" | "--seed" => a.seed0 = it.next().expect("需要值").parse().expect("seed: 数字"),
+            "--episodes" => {
+                a.episodes = it
+                    .next()
+                    .expect("--episodes 需要一个值")
+                    .parse()
+                    .expect("episodes: 数字")
+            }
+            "--seed0" | "--seed" => {
+                a.seed0 = it.next().expect("需要值").parse().expect("seed: 数字")
+            }
             "--out" => a.out = it.next().expect("--out 需要一个值"),
             "--verify-determinism" => {
                 a.verify = match it.next().expect("--verify-determinism 需要一个值").as_str() {
@@ -104,14 +112,46 @@ fn above(p: [f32; 3], h: f32) -> [f32; 3] {
 
 fn pick_place_phases() -> Vec<Phase> {
     vec![
-        Phase { gripper: 0.0, ticks: 70, target: |o, _g| above(o, 0.12) },
-        Phase { gripper: 0.0, ticks: 60, target: |o, _g| above(o, 0.030) },
-        Phase { gripper: 1.0, ticks: 40, target: |o, _g| above(o, 0.030) },
-        Phase { gripper: 1.0, ticks: 70, target: |o, _g| above(o, 0.20) },
-        Phase { gripper: 1.0, ticks: 95, target: |_o, g| above(g, 0.20) },
-        Phase { gripper: 1.0, ticks: 70, target: |_o, g| above(g, 0.06) },
-        Phase { gripper: 0.0, ticks: 35, target: |_o, g| above(g, 0.06) },
-        Phase { gripper: 0.0, ticks: 45, target: |_o, g| above(g, 0.22) },
+        Phase {
+            gripper: 0.0,
+            ticks: 70,
+            target: |o, _g| above(o, 0.12),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 60,
+            target: |o, _g| above(o, 0.030),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 40,
+            target: |o, _g| above(o, 0.030),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 70,
+            target: |o, _g| above(o, 0.20),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 95,
+            target: |_o, g| above(g, 0.20),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 70,
+            target: |_o, g| above(g, 0.06),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 35,
+            target: |_o, g| above(g, 0.06),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 45,
+            target: |_o, g| above(g, 0.22),
+        },
     ]
 }
 
@@ -137,7 +177,11 @@ impl IkArm {
         Ok(Self {
             base: r.base,
             shoulder_y: r.links[r.joints[1].child_link].origin[1],
-            links: [r.joints[2].anchor[0], r.joints[3].anchor[0], g.tcp_offset[0]],
+            links: [
+                r.joints[2].anchor[0],
+                r.joints[3].anchor[0],
+                g.tcp_offset[0],
+            ],
             limits: [
                 r.joints[0].limits,
                 r.joints[1].limits,
@@ -160,7 +204,12 @@ fn ik(arm: &IkArm, target: [f32; 3]) -> [f32; 4] {
     let shoulder = f32::atan2(h, d) - f32::atan2(l2 * elbow.sin(), l1 + l2 * elbow.cos());
     let wrist = -std::f32::consts::FRAC_PI_2 - shoulder - elbow;
     let clamp = |v: f32, i: usize| v.clamp(arm.limits[i].0, arm.limits[i].1);
-    [clamp(yaw, 0), clamp(shoulder, 1), clamp(elbow, 2), clamp(wrist, 3)]
+    [
+        clamp(yaw, 0),
+        clamp(shoulder, 1),
+        clamp(elbow, 2),
+        clamp(wrist, 3),
+    ]
 }
 
 struct ObsIdx {
@@ -234,8 +283,7 @@ const SHADE_RESIDUAL2: f32 = 40.0;
 fn matches_target(pixel: [u8; 3], target: [u8; 3]) -> bool {
     let p = [pixel[0] as f32, pixel[1] as f32, pixel[2] as f32];
     let t = [target[0] as f32, target[1] as f32, target[2] as f32];
-    let a = (p[0] * t[0] + p[1] * t[1] + p[2] * t[2])
-        / (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+    let a = (p[0] * t[0] + p[1] * t[1] + p[2] * t[2]) / (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
     let e0 = p[0] - a * t[0];
     let e1 = p[1] - a * t[1];
     let e2 = p[2] - a * t[2];
@@ -373,16 +421,24 @@ fn main() {
 
     // (camera × point) → best sighting over the whole run
     let points = [
-        Target { name: "tip", color: TIP_COLOR, depth_check: false },
-        Target { name: "cube", color: CUBE_COLOR, depth_check: true },
-        Target { name: "goal", color: GOAL_COLOR, depth_check: true },
+        Target {
+            name: "tip",
+            color: TIP_COLOR,
+            depth_check: false,
+        },
+        Target {
+            name: "cube",
+            color: CUBE_COLOR,
+            depth_check: true,
+        },
+        Target {
+            name: "goal",
+            color: GOAL_COLOR,
+            depth_check: true,
+        },
     ];
-    let mut best: Vec<[Option<Sighting>; 3]> = spec
-        .scene
-        .cameras
-        .iter()
-        .map(|_| [None; 3])
-        .collect();
+    let mut best: Vec<[Option<Sighting>; 3]> =
+        spec.scene.cameras.iter().map(|_| [None; 3]).collect();
     let mut last_shot: Option<CameraShot> = None;
     let mut last_wrist: Option<CameraShot> = None;
     let mut total_steps = 0u64;
@@ -424,7 +480,11 @@ fn main() {
                         let Some((u, v, z)) = shot.pinhole.project(world[pi]) else {
                             continue; // behind the near plane
                         };
-                        if u < -3.0 || v < -3.0 || u >= shot.w as f32 + 3.0 || v >= shot.h as f32 + 3.0 {
+                        if u < -3.0
+                            || v < -3.0
+                            || u >= shot.w as f32 + 3.0
+                            || v >= shot.h as f32 + 3.0
+                        {
                             continue; // out of frame
                         }
                         if rgb.is_empty() {
@@ -442,7 +502,10 @@ fn main() {
                             if let Some(s) = slot {
                                 s.better(err, step);
                             } else {
-                                *slot = Some(Sighting { err_px: err, tick: step });
+                                *slot = Some(Sighting {
+                                    err_px: err,
+                                    tick: step,
+                                });
                             }
                         }
                     }
@@ -560,7 +623,10 @@ fn main() {
     // wrist camera's RGB+depth when present, else the last shot) ------
     let stats_shot = last_wrist.as_ref().or(last_shot.as_ref());
     if let Some(shot) = stats_shot {
-        println!("\n  ── 像素统计（最后自检帧：{} {}×{}）──", shot.cam, shot.w, shot.h);
+        println!(
+            "\n  ── 像素统计（最后自检帧：{} {}×{}）──",
+            shot.cam, shot.w, shot.h
+        );
         if let Some(rgb) = &shot.rgb {
             let mut stats = [[0usize; 256]; 3];
             for px in rgb.as_chunks::<3>().0 {
@@ -582,7 +648,11 @@ fn main() {
             }
         }
         if let Some(depth) = &shot.depth {
-            let hit: Vec<u32> = depth.iter().filter(|d| **d > 0).map(|d| *d as u32).collect();
+            let hit: Vec<u32> = depth
+                .iter()
+                .filter(|d| **d > 0)
+                .map(|d| *d as u32)
+                .collect();
             if hit.is_empty() {
                 println!("    depth: 全空（无回波）");
             } else {
@@ -692,8 +762,22 @@ fn main() {
     )
     .unwrap();
 
-    println!("\n  ✓ 已写出 {}/ 与 {}/（{n} 集 · 多视频轨）", root.display(), root_v3.display());
-    println!("  ✓ {} 与 {}", report_path.display(), out.join("run_manifest.json").display());
-    println!("  ✓ 吞吐（RGB+depth 逐 tick 渲染）：{:.0} steps/s（{total_steps} 步 / {secs:.1}s）", total_steps as f64 / secs.max(1e-9));
-    println!("  下一步：python scripts/jsonl_to_lerobot_v21.py {}/", root_v3.display());
+    println!(
+        "\n  ✓ 已写出 {}/ 与 {}/（{n} 集 · 多视频轨）",
+        root.display(),
+        root_v3.display()
+    );
+    println!(
+        "  ✓ {} 与 {}",
+        report_path.display(),
+        out.join("run_manifest.json").display()
+    );
+    println!(
+        "  ✓ 吞吐（RGB+depth 逐 tick 渲染）：{:.0} steps/s（{total_steps} 步 / {secs:.1}s）",
+        total_steps as f64 / secs.max(1e-9)
+    );
+    println!(
+        "  下一步：python scripts/jsonl_to_lerobot_v21.py {}/",
+        root_v3.display()
+    );
 }

@@ -16,7 +16,7 @@
 //! 纯函数浮点数学，不碰物理后端——同输入必同输出（确定性契约）。
 
 use oriera_subsys::robot::GRIPPER_GAP_DEFAULT;
-use oriera_subsys::{RobotSpec, GRIPPER_APPROACH_DEFAULT, JointKind};
+use oriera_subsys::{JointKind, RobotSpec, GRIPPER_APPROACH_DEFAULT};
 
 /// 3×3 row-major.
 type Mat3 = [[f32; 3]; 3];
@@ -74,16 +74,12 @@ pub struct FkPose {
 /// about the parent-frame axis (right-hand rule) — the same convention
 /// the rapier multibody build uses, so FK and the sim agree.
 pub fn fk_pose(robot: &RobotSpec, q: &[f32]) -> FkPose {
-    let root = robot.root_link().expect("RobotSpec::validate guarantees one root");
+    let root = robot
+        .root_link()
+        .expect("RobotSpec::validate guarantees one root");
     let mut p: Vec<[f32; 3]> = vec![[0.0; 3]; robot.links.len()];
-    let mut r: Vec<Mat3> = vec![
-        [
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0]
-        ];
-        robot.links.len()
-    ];
+    let mut r: Vec<Mat3> =
+        vec![[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]; robot.links.len()];
     p[root] = robot.links[root].origin;
     for (i, j) in robot.joints.iter().enumerate() {
         let angle = q.get(i).copied().unwrap_or(0.0);
@@ -96,21 +92,30 @@ pub fn fk_pose(robot: &RobotSpec, q: &[f32]) -> FkPose {
         let parent = j.parent_link;
         let child = j.child_link;
         p[child] = [
-            p[parent][0] + r[parent][0][0] * j.anchor[0] + r[parent][0][1] * j.anchor[1]
+            p[parent][0]
+                + r[parent][0][0] * j.anchor[0]
+                + r[parent][0][1] * j.anchor[1]
                 + r[parent][0][2] * j.anchor[2],
-            p[parent][1] + r[parent][1][0] * j.anchor[0] + r[parent][1][1] * j.anchor[1]
+            p[parent][1]
+                + r[parent][1][0] * j.anchor[0]
+                + r[parent][1][1] * j.anchor[1]
                 + r[parent][1][2] * j.anchor[2],
-            p[parent][2] + r[parent][2][0] * j.anchor[0] + r[parent][2][1] * j.anchor[1]
+            p[parent][2]
+                + r[parent][2][0] * j.anchor[0]
+                + r[parent][2][1] * j.anchor[1]
                 + r[parent][2][2] * j.anchor[2],
         ];
         // prismatic（M3-WPB 遗留）：子体不旋转、位置沿父系轴平移 q 米
         //（revolute 才有轴旋转）。mobile-arm 底盘的两个滑轨因此进 FK。
         if j.kind == JointKind::Prismatic {
-            p[child][0] += r[parent][0][0] * axis[0] * angle + r[parent][0][1] * axis[1] * angle
+            p[child][0] += r[parent][0][0] * axis[0] * angle
+                + r[parent][0][1] * axis[1] * angle
                 + r[parent][0][2] * axis[2] * angle;
-            p[child][1] += r[parent][1][0] * axis[0] * angle + r[parent][1][1] * axis[1] * angle
+            p[child][1] += r[parent][1][0] * axis[0] * angle
+                + r[parent][1][1] * axis[1] * angle
                 + r[parent][1][2] * axis[2] * angle;
-            p[child][2] += r[parent][2][0] * axis[0] * angle + r[parent][2][1] * axis[1] * angle
+            p[child][2] += r[parent][2][0] * axis[0] * angle
+                + r[parent][2][1] * axis[1] * angle
                 + r[parent][2][2] * axis[2] * angle;
             r[child] = r[parent];
         } else {
@@ -118,17 +123,11 @@ pub fn fk_pose(robot: &RobotSpec, q: &[f32]) -> FkPose {
             r[child] = mat_mul(&r[parent], &local);
         }
     }
-    let ee_link = robot
-        .gripper
-        .as_ref()
-        .map_or_else(
-            || robot.joints.last().map_or(root, |j| j.child_link),
-            |g| g.attach_link,
-        );
-    let tcp = robot
-        .gripper
-        .as_ref()
-        .map_or([0.0; 3], |g| g.tcp_offset);
+    let ee_link = robot.gripper.as_ref().map_or_else(
+        || robot.joints.last().map_or(root, |j| j.child_link),
+        |g| g.attach_link,
+    );
+    let tcp = robot.gripper.as_ref().map_or([0.0; 3], |g| g.tcp_offset);
     let approach = robot
         .gripper
         .as_ref()
@@ -143,11 +142,17 @@ pub fn fk_pose(robot: &RobotSpec, q: &[f32]) -> FkPose {
     let gap = [gap[0] / gunit, gap[1] / gunit, gap[2] / gunit];
     FkPose {
         tip: [
-            p[ee_link][0] + r[ee_link][0][0] * tcp[0] + r[ee_link][0][1] * tcp[1]
+            p[ee_link][0]
+                + r[ee_link][0][0] * tcp[0]
+                + r[ee_link][0][1] * tcp[1]
                 + r[ee_link][0][2] * tcp[2],
-            p[ee_link][1] + r[ee_link][1][0] * tcp[0] + r[ee_link][1][1] * tcp[1]
+            p[ee_link][1]
+                + r[ee_link][1][0] * tcp[0]
+                + r[ee_link][1][1] * tcp[1]
                 + r[ee_link][1][2] * tcp[2],
-            p[ee_link][2] + r[ee_link][2][0] * tcp[0] + r[ee_link][2][1] * tcp[1]
+            p[ee_link][2]
+                + r[ee_link][2][0] * tcp[0]
+                + r[ee_link][2][1] * tcp[1]
                 + r[ee_link][2][2] * tcp[2],
         ],
         approach: mat_vec(&r[ee_link], approach),
@@ -316,10 +321,7 @@ impl DlsIk {
             // sequence ⇒ same solution).
             let mut rng = RestartRng::new(0x1117_1D15);
             for _ in 0..self.max_restarts {
-                let q0: Vec<f32> = seed
-                    .iter()
-                    .map(|v| v + rng.next(-1.2, 1.2))
-                    .collect();
+                let q0: Vec<f32> = seed.iter().map(|v| v + rng.next(-1.2, 1.2)).collect();
                 self.q = q0;
                 let rep = self.solve_inner(goal);
                 if better(&rep, &best) {
@@ -383,7 +385,9 @@ impl DlsIk {
                     jjt[i * n + k] = acc + if i == k { lam2 } else { 0.0 };
                 }
             }
-            let Some(inv) = invert(&mut jjt, n) else { break };
+            let Some(inv) = invert(&mut jjt, n) else {
+                break;
+            };
             // dq_c = Σ_i jac[i][c] · (inv·r)_i — this is +[Jᵀ(JJᵀ+λ²I)⁻¹r]_c
             // with J = ∂r/∂q (the residual Jacobian, = −∂f/∂q), so the
             // Gauss-Newton DESCENT step is q −= dq (the minus sign is the
@@ -560,24 +564,95 @@ mod tests {
             },
             box_link("carrier", [0.015; 3], [sx, sy, 0.0], [0.0; 3]),
             box_link("upper_arm", [0.07, r, r], [sx, sy, 0.0], [0.07, 0.0, 0.0]),
-            box_link("forearm", [0.06, r, r], [sx + 0.14, sy, 0.0], [0.06, 0.0, 0.0]),
-            box_link("wrist", [0.03, r, r], [sx + 0.26, sy, 0.0], [0.03, 0.0, 0.0]),
-            box_link("roll_seg", [0.015, r, r], [sx + 0.32, sy, 0.0], [0.015, 0.0, 0.0]),
-            box_link("yaw_seg", [0.015, r, r], [sx + 0.35, sy, 0.0], [0.015, 0.0, 0.0]),
-            box_link("flange", [0.01, r, r], [sx + 0.38, sy, 0.0], [0.01, 0.0, 0.0]),
+            box_link(
+                "forearm",
+                [0.06, r, r],
+                [sx + 0.14, sy, 0.0],
+                [0.06, 0.0, 0.0],
+            ),
+            box_link(
+                "wrist",
+                [0.03, r, r],
+                [sx + 0.26, sy, 0.0],
+                [0.03, 0.0, 0.0],
+            ),
+            box_link(
+                "roll_seg",
+                [0.015, r, r],
+                [sx + 0.32, sy, 0.0],
+                [0.015, 0.0, 0.0],
+            ),
+            box_link(
+                "yaw_seg",
+                [0.015, r, r],
+                [sx + 0.35, sy, 0.0],
+                [0.015, 0.0, 0.0],
+            ),
+            box_link(
+                "flange",
+                [0.01, r, r],
+                [sx + 0.38, sy, 0.0],
+                [0.01, 0.0, 0.0],
+            ),
         ];
-        let j = |name: &str, p: usize, c: usize, anchor: [f32; 3], axis: [f32; 3], limits: (f32, f32)| {
-            joint(name, p, c, anchor, axis, limits, 400.0)
-        };
+        let j =
+            |name: &str,
+             p: usize,
+             c: usize,
+             anchor: [f32; 3],
+             axis: [f32; 3],
+             limits: (f32, f32)| { joint(name, p, c, anchor, axis, limits, 400.0) };
         let pi = std::f32::consts::PI;
         let joints = vec![
-            j("base_yaw", 0, 1, [0.0, 0.12 - base_h, 0.0], [0.0, 1.0, 0.0], (-pi, pi)),
+            j(
+                "base_yaw",
+                0,
+                1,
+                [0.0, 0.12 - base_h, 0.0],
+                [0.0, 1.0, 0.0],
+                (-pi, pi),
+            ),
             j("shoulder", 1, 2, [0.0; 3], [0.0, 0.0, 1.0], (-0.35, 1.45)),
-            j("elbow", 2, 3, [0.14, 0.0, 0.0], [0.0, 0.0, 1.0], (-2.5, 0.35)),
-            j("wrist_pitch", 3, 4, [0.12, 0.0, 0.0], [0.0, 0.0, 1.0], (-2.0, 2.0)),
-            j("wrist_roll", 4, 5, [0.06, 0.0, 0.0], [1.0, 0.0, 0.0], (-pi, pi)),
-            j("wrist_yaw", 5, 6, [0.03, 0.0, 0.0], [0.0, 1.0, 0.0], (-2.0, 2.0)),
-            j("tool_pitch", 6, 7, [0.03, 0.0, 0.0], [0.0, 0.0, 1.0], (-2.0, 2.0)),
+            j(
+                "elbow",
+                2,
+                3,
+                [0.14, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                (-2.5, 0.35),
+            ),
+            j(
+                "wrist_pitch",
+                3,
+                4,
+                [0.12, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                (-2.0, 2.0),
+            ),
+            j(
+                "wrist_roll",
+                4,
+                5,
+                [0.06, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                (-pi, pi),
+            ),
+            j(
+                "wrist_yaw",
+                5,
+                6,
+                [0.03, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                (-2.0, 2.0),
+            ),
+            j(
+                "tool_pitch",
+                6,
+                7,
+                [0.03, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                (-2.0, 2.0),
+            ),
         ];
         let gripper = GripperSpec {
             attach_link: 7,
@@ -614,12 +689,20 @@ mod tests {
         let g = fk_pose(&robot, &robot.home);
         // wrist at [0.40, 0.62, 0] + tcp 0.09 along +X
         assert!(vec_close(g.tip, [0.49, 0.62, 0.0], 1e-5), "{:?}", g.tip);
-        assert!(vec_close(g.approach, [1.0, 0.0, 0.0], 1e-6), "{:?}", g.approach);
+        assert!(
+            vec_close(g.approach, [1.0, 0.0, 0.0], 1e-6),
+            "{:?}",
+            g.approach
+        );
         // yaw 90° about +Y swings +X to −Z: tip = [0.02, 0.62, −0.47]
         let q = [std::f32::consts::FRAC_PI_2, 0.0, 0.0, 0.0];
         let g = fk_pose(&robot, &q);
         assert!(vec_close(g.tip, [0.02, 0.62, -0.47], 1e-5), "{:?}", g.tip);
-        assert!(vec_close(g.approach, [0.0, 0.0, -1.0], 1e-5), "{:?}", g.approach);
+        assert!(
+            vec_close(g.approach, [0.0, 0.0, -1.0], 1e-5),
+            "{:?}",
+            g.approach
+        );
         // shoulder +90° (about +Z) lifts the whole 0.47 m chain vertical:
         // tip = shoulder_y + l1 + l2 + l3 = [0.02, 1.09, 0]
         let q = [0.0, std::f32::consts::FRAC_PI_2, 0.0, 0.0];
@@ -642,7 +725,11 @@ mod tests {
         );
         let g = fk_pose(&robot, &ik.q);
         assert!(vec_close(g.tip, target, 1e-3), "{:?} vs {target:?}", g.tip);
-        assert!(vec_close(g.approach, [0.0, -1.0, 0.0], 5e-3), "{:?}", g.approach);
+        assert!(
+            vec_close(g.approach, [0.0, -1.0, 0.0], 5e-3),
+            "{:?}",
+            g.approach
+        );
         // Every joint within its limits (projected gradient never lies).
         for (j, qv) in robot.joints.iter().zip(&ik.q) {
             assert!(*qv >= j.limits.0 - 1e-5 && *qv <= j.limits.1 + 1e-5);
@@ -671,7 +758,11 @@ mod tests {
         );
         let g = fk_pose(&robot, &ik.q);
         assert!(vec_close(g.tip, target, 1e-3), "{:?} vs {target:?}", g.tip);
-        assert!(vec_close(g.approach, [0.0, -1.0, 0.0], 5e-3), "{:?}", g.approach);
+        assert!(
+            vec_close(g.approach, [0.0, -1.0, 0.0], 5e-3),
+            "{:?}",
+            g.approach
+        );
         for (j, qv) in robot.joints.iter().zip(&ik.q) {
             assert!(*qv >= j.limits.0 - 1e-5 && *qv <= j.limits.1 + 1e-5);
         }
@@ -687,11 +778,11 @@ mod tests {
         // Far beyond the 0.4 m reach.
         let mut ik = DlsIk::new(&robot, &robot.home);
         let rep = ik.solve_pose([2.0, 0.6, 0.0], [0.0, -1.0, 0.0]);
-        assert!(!rep.converged(), "stretched-out target must not claim success");
         assert!(
-            rep.pos_error > 0.5,
-            "honest residual: {rep:?}"
+            !rep.converged(),
+            "stretched-out target must not claim success"
         );
+        assert!(rep.pos_error > 0.5, "honest residual: {rep:?}");
         assert!(ik.q.iter().all(|v| v.is_finite()));
     }
 

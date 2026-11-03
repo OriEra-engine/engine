@@ -29,7 +29,8 @@ pub mod robot;
 #[cfg(feature = "rigid3d")]
 pub use robot::{
     GripperKind, GripperSpec, HoldingCriterion, Inertial, JointKind, JointSpec, LinkShape,
-    LinkSpec, RobotSpec, RobotSpecError, SelfCollision, GRIPPER_APPROACH_DEFAULT};
+    LinkSpec, RobotSpec, RobotSpecError, SelfCollision, GRIPPER_APPROACH_DEFAULT,
+};
 
 #[cfg(feature = "cam")]
 pub mod camera;

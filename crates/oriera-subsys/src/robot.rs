@@ -411,10 +411,7 @@ pub struct GripperSpec {
     /// forces — U-6).
     #[cfg_attr(
         feature = "serde",
-        serde(
-            default,
-            skip_serializing_if = "HoldingCriterion::is_tip_radius"
-        )
+        serde(default, skip_serializing_if = "HoldingCriterion::is_tip_radius")
     )]
     pub holding_criterion: HoldingCriterion,
 }
@@ -478,34 +475,58 @@ pub struct RobotSpec {
 pub enum RobotSpecError {
     /// A link's shape is not buildable (degenerate convex hull, mesh
     /// index out of range, non-finite coordinates…).
-    BadShape { link: String, reason: String },
+    BadShape {
+        link: String,
+        reason: String,
+    },
     NoLinks,
     NoJoints,
     /// Joint references a link index out of range or parent == child.
-    BadLinkRef { joint: String },
+    BadLinkRef {
+        joint: String,
+    },
     /// Not exactly one root (a link that is no joint's child).
     RootCount(usize),
     /// A link is the child of more than one joint.
-    MultiParent { link: String },
+    MultiParent {
+        link: String,
+    },
     /// Joint order is not topological: its parent is not yet placed.
-    NotTopological { joint: String },
+    NotTopological {
+        joint: String,
+    },
     /// Zero-length joint axis (rotation axis or slide direction).
-    ZeroAxis { joint: String },
+    ZeroAxis {
+        joint: String,
+    },
     /// `limits.0 > limits.1` (or a non-finite prismatic limit).
-    BadLimits { joint: String },
+    BadLimits {
+        joint: String,
+    },
     /// `home` / `action_scale` length ≠ joint count (when non-empty).
-    VectorLength { field: &'static str, got: usize, want: usize },
+    VectorLength {
+        field: &'static str,
+        got: usize,
+        want: usize,
+    },
     /// Non-finite or negative gain / inertia / damping / effort.
-    BadGain { joint: String },
+    BadGain {
+        joint: String,
+    },
     /// Non-positive `mass_scale` or link density / non-finite mass.
-    BadMass { what: String },
+    BadMass {
+        what: String,
+    },
     /// Gripper attach link out of range / gap or rate inconsistent.
     BadGripper(String),
     /// A scene fixture slab handed to
     /// `MultibodySystem::from_robot_fixtures` is not buildable
     /// (non-finite centre, non-positive half extent, negative friction).
     /// M3; `index` is the slab's position in the fixture list.
-    BadFixture { index: usize, reason: String },
+    BadFixture {
+        index: usize,
+        reason: String,
+    },
 }
 
 impl fmt::Display for RobotSpecError {
@@ -643,9 +664,10 @@ impl RobotSpec {
                             vertices.len()
                         )));
                     }
-                    if let Some(bad) = indices.iter().find(|t| {
-                        t.iter().any(|i| (*i as usize) >= vertices.len())
-                    }) {
+                    if let Some(bad) = indices
+                        .iter()
+                        .find(|t| t.iter().any(|i| (*i as usize) >= vertices.len()))
+                    {
                         return Err(shape_err(format!(
                             "Mesh index {bad:?} out of range ({} vertices)",
                             vertices.len()
@@ -687,8 +709,7 @@ impl RobotSpec {
             // A slide has no natural ±π wrap: its travel must be a real,
             // finite interval (an unbounded rail would let the PD chase a
             // target to infinity). Revolute limits keep the legacy check.
-            if j.kind == JointKind::Prismatic
-                && !(j.limits.0.is_finite() && j.limits.1.is_finite())
+            if j.kind == JointKind::Prismatic && !(j.limits.0.is_finite() && j.limits.1.is_finite())
             {
                 return Err(RobotSpecError::BadLimits {
                     joint: j.name.clone(),
@@ -707,8 +728,7 @@ impl RobotSpec {
         let root = match self.root_link() {
             Some(r) => r,
             None => {
-                let children: BTreeSet<usize> =
-                    self.joints.iter().map(|j| j.child_link).collect();
+                let children: BTreeSet<usize> = self.joints.iter().map(|j| j.child_link).collect();
                 let count = (0..n).filter(|i| !children.contains(i)).count();
                 return Err(RobotSpecError::RootCount(count));
             }
@@ -744,8 +764,7 @@ impl RobotSpec {
                     g.attach_link, n
                 )));
             }
-            if !(g.gap_open.is_finite() && g.gap_closed.is_finite() && g.gap_closed <= g.gap_open)
-            {
+            if !(g.gap_open.is_finite() && g.gap_closed.is_finite() && g.gap_closed <= g.gap_open) {
                 return Err(RobotSpecError::BadGripper(
                     "gap_closed must be <= gap_open".into(),
                 ));
@@ -858,8 +877,8 @@ impl From<&ArmDescription> for RobotSpec {
             ),
         ];
         let damping = d.passive_damping.unwrap_or(JOINT_DAMPING);
-        let joint = |i: usize, parent: usize, child: usize, anchor: [f32; 3], axis: [f32; 3]| {
-            JointSpec {
+        let joint =
+            |i: usize, parent: usize, child: usize, anchor: [f32; 3], axis: [f32; 3]| JointSpec {
                 name: JOINT_NAMES[i].into(),
                 kind: JointKind::Revolute,
                 parent_link: parent,
@@ -873,12 +892,17 @@ impl From<&ArmDescription> for RobotSpec {
                 kd: d.kd,
                 armature: ARMATURE,
                 damping,
-            }
-        };
+            };
         let joints = vec![
             // base body centre sits shoulder_height/2 below the shoulder
             // anchor — the anchor is LOCAL to the base body.
-            joint(0, 0, 1, [0.0, d.shoulder_height - base_h, 0.0], [0.0, 1.0, 0.0]),
+            joint(
+                0,
+                0,
+                1,
+                [0.0, d.shoulder_height - base_h, 0.0],
+                [0.0, 1.0, 0.0],
+            ),
             joint(1, 1, 2, [0.0; 3], [0.0, 0.0, 1.0]),
             joint(2, 2, 3, [d.links[0], 0.0, 0.0], [0.0, 0.0, 1.0]),
             joint(3, 3, 4, [d.links[1], 0.0, 0.0], [0.0, 0.0, 1.0]),
@@ -938,14 +962,20 @@ mod tests {
         }
         for (j, lim) in r.joints.iter().zip(d.limits) {
             assert_eq!(j.limits, lim);
-            assert_eq!((j.kp, j.kd, j.armature, j.damping), (d.kp, d.kd, ARMATURE, JOINT_DAMPING));
+            assert_eq!(
+                (j.kp, j.kd, j.armature, j.damping),
+                (d.kp, d.kd, ARMATURE, JOINT_DAMPING)
+            );
             assert_eq!((j.effort, j.velocity_limit), (None, None));
         }
         let g = r.gripper.as_ref().unwrap();
         assert_eq!(g.attach_link, 4);
         assert_eq!(g.finger_x, FINGER_X);
         assert_eq!(g.tcp_offset, [d.links[2], 0.0, 0.0]);
-        assert_eq!((g.gap_open, g.gap_closed), (FINGER_GAP_OPEN, FINGER_GAP_CLOSED));
+        assert_eq!(
+            (g.gap_open, g.gap_closed),
+            (FINGER_GAP_OPEN, FINGER_GAP_CLOSED)
+        );
         // M0b: the preset leaves the plate frame at the legacy +X/+Z.
         assert_eq!((g.approach_axis, g.gap_axis), (None, None));
         assert_eq!(g.approach_axis_or_default(), GRIPPER_APPROACH_DEFAULT);
@@ -981,22 +1011,35 @@ mod tests {
 
         let mut dup = ok.clone();
         dup.joints[3].child_link = 2;
-        assert!(matches!(dup.validate(), Err(RobotSpecError::MultiParent { .. })));
+        assert!(matches!(
+            dup.validate(),
+            Err(RobotSpecError::MultiParent { .. })
+        ));
 
         let mut zero_axis = ok.clone();
         zero_axis.joints[1].axis = [0.0; 3];
-        assert!(matches!(zero_axis.validate(), Err(RobotSpecError::ZeroAxis { .. })));
+        assert!(matches!(
+            zero_axis.validate(),
+            Err(RobotSpecError::ZeroAxis { .. })
+        ));
 
         let mut home_len = ok.clone();
         home_len.home = vec![0.0; 3];
         assert!(matches!(
             home_len.validate(),
-            Err(RobotSpecError::VectorLength { field: "home", got: 3, want: 4 })
+            Err(RobotSpecError::VectorLength {
+                field: "home",
+                got: 3,
+                want: 4
+            })
         ));
 
         let mut grip = ok.clone();
         grip.gripper.as_mut().unwrap().attach_link = 9;
-        assert!(matches!(grip.validate(), Err(RobotSpecError::BadGripper(_))));
+        assert!(matches!(
+            grip.validate(),
+            Err(RobotSpecError::BadGripper(_))
+        ));
 
         // M2: a degenerate convex hull is a named build error …
         let mut hull = ok.clone();
@@ -1017,7 +1060,10 @@ mod tests {
             vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             indices: vec![[0, 1, 7]],
         };
-        assert!(matches!(mesh.validate(), Err(RobotSpecError::BadShape { .. })));
+        assert!(matches!(
+            mesh.validate(),
+            Err(RobotSpecError::BadShape { .. })
+        ));
         // … a non-finite inertial tensor is a mass error …
         let mut bad_i = ok.clone();
         bad_i.links[2].inertial = Some(Inertial {
@@ -1030,16 +1076,24 @@ mod tests {
             ixz: 0.0,
             iyz: 0.0,
         });
-        assert!(matches!(bad_i.validate(), Err(RobotSpecError::BadMass { .. })));
+        assert!(matches!(
+            bad_i.validate(),
+            Err(RobotSpecError::BadMass { .. })
+        ));
         // … and a `mesh_uri` is metadata since M2: it validates.
         let mut uri = ok.clone();
         uri.links[2].mesh_uri = Some("file:///panda/link2.stl".into());
         assert!(uri.validate().is_ok(), "mesh_uri is provenance only");
         // A Contact criterion with a negative threshold is refused.
         let mut bad_c = ok;
-        bad_c.gripper.as_mut().unwrap().holding_criterion =
-            HoldingCriterion::Contact { min_normal_force: -1.0, max_slip: 0.0 };
-        assert!(matches!(bad_c.validate(), Err(RobotSpecError::BadGripper(_))));
+        bad_c.gripper.as_mut().unwrap().holding_criterion = HoldingCriterion::Contact {
+            min_normal_force: -1.0,
+            max_slip: 0.0,
+        };
+        assert!(matches!(
+            bad_c.validate(),
+            Err(RobotSpecError::BadGripper(_))
+        ));
     }
 
     /// M3 joint kind: the preset (and every pre-M3 spec) is revolute;
@@ -1050,7 +1104,10 @@ mod tests {
         assert_eq!(JointKind::default(), JointKind::Revolute);
         assert!(JointKind::Revolute.is_revolute());
         assert!(!JointKind::Prismatic.is_revolute());
-        assert_eq!((JointKind::Revolute.unit(), JointKind::Prismatic.unit()), ("rad", "m"));
+        assert_eq!(
+            (JointKind::Revolute.unit(), JointKind::Prismatic.unit()),
+            ("rad", "m")
+        );
         let ok = RobotSpec::from(&ArmDescription::default());
         assert!(ok.joints.iter().all(|j| j.kind == JointKind::Revolute));
 
@@ -1089,13 +1146,27 @@ mod tests {
             g.gap_axis = gp;
             r
         };
-        assert!(with(Some([0.0, 0.0, -1.0]), Some([0.0, 1.0, 0.0])).validate().is_ok());
-        assert!(with(Some([0.0, -2.0, 0.0]), None).validate().is_ok(), "non-unit is fine");
-        let err = with(Some([0.0; 3]), None).validate().unwrap_err().to_string();
+        assert!(with(Some([0.0, 0.0, -1.0]), Some([0.0, 1.0, 0.0]))
+            .validate()
+            .is_ok());
+        assert!(
+            with(Some([0.0, -2.0, 0.0]), None).validate().is_ok(),
+            "non-unit is fine"
+        );
+        let err = with(Some([0.0; 3]), None)
+            .validate()
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("approach_axis"), "{err}");
-        let err = with(None, Some([f32::NAN, 0.0, 0.0])).validate().unwrap_err().to_string();
+        let err = with(None, Some([f32::NAN, 0.0, 0.0]))
+            .validate()
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("gap_axis"), "{err}");
-        let err = with(Some([0.0, 0.0, 1.0]), None).validate().unwrap_err().to_string();
+        let err = with(Some([0.0, 0.0, 1.0]), None)
+            .validate()
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("parallel"), "{err}");
         let err = with(Some([1.0, 0.0, 0.0]), Some([-3.0, 0.0, 0.0]))
             .validate()
@@ -1108,6 +1179,9 @@ mod tests {
         assert_eq!(explicit, ok, "explicit default axes canonicalize to None");
         let mut custom = with(Some([0.0, 0.0, -1.0]), None);
         custom.gripper.as_mut().unwrap().canonicalize_axes();
-        assert_eq!(custom.gripper.as_ref().unwrap().approach_axis, Some([0.0, 0.0, -1.0]));
+        assert_eq!(
+            custom.gripper.as_ref().unwrap().approach_axis,
+            Some([0.0, 0.0, -1.0])
+        );
     }
 }

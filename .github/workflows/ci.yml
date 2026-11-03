@@ -189,8 +189,8 @@ jobs:
         run: |
           python - <<'PY'
           import json, sys
-          anchor = json.load(open("contracts/golden/embodied_fingerprints.v2.json"))
-          rep = json.load(open("out/fp-matrix/eval_report.json"))
+          anchor = json.load(open("contracts/golden/embodied_fingerprints.v2.json", encoding="utf-8"))
+          rep = json.load(open("out/fp-matrix/eval_report.json", encoding="utf-8"))
           # 三口径逐项对拍：v1 视图 / state（反演口径）/ v2
           def col(rep_key, anchor_key):
               got = [r[rep_key] for r in rep["runs"]] if rep_key in rep.get("runs", [{}])[0] else rep.get(rep_key)
@@ -206,12 +206,12 @@ jobs:
                   mism.append(rep_key)
           # state hash：旧回执字段（v1 折叠）——金标锚口径
           import pathlib
-          receipt = json.load(open("out/fp-matrix/lerobot-v21/meta/oriera_receipt.json"))
-          if receipt["episode_state_hashes"] != json.load(
-              open("contracts/golden/embodied_fingerprints.pre-m0a.json"))["episode_state_hashes"]:
+          receipt = json.load(open("out/fp-matrix/lerobot-v21/meta/oriera_receipt.json", encoding="utf-8"))
+          if receipt["episode_state_hashes"] != json.load(open("contracts/golden/embodied_fingerprints.pre-m0a.json", encoding="utf-8"))["episode_state_hashes"]:
               mism.append("episode_state_hashes")
           print(f"[{sys.platform}] mismatches: {mism or 'none'}")
           if mism:
-              print("::warning::跨平台指纹与金标不一致（预期内——契约=同平台逐位+跨平台统计；"
-                    "若统计分布也漂移，按 physics-behavior-change 流程重锚）")
+              print("::warning::cross-platform fingerprints differ from the golden anchor "
+                    "(expected under the same-platform-bit-exact contract; re-anchor via "
+                    "physics-behavior-change if the statistical distribution also drifts)")
           PY

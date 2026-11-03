@@ -188,22 +188,66 @@ fn toward(p: [f32; 3], dir: [f32; 3], d: f32) -> [f32; 3] {
 /// get the same plate/object geometry).
 fn pick_phases() -> Vec<Phase> {
     vec![
-        Phase { gripper: 0.0, ticks: 70, target: |o, _g, _e, _m| above(o, 0.12) },
-        Phase { gripper: 0.0, ticks: 60, target: |o, _g, _e, m| above(o, m.grasp()) },
-        Phase { gripper: 1.0, ticks: 40, target: |o, _g, _e, m| above(o, m.grasp()) },
-        Phase { gripper: 1.0, ticks: 70, target: |o, _g, _e, _m| above(o, 0.20) },
-        Phase { gripper: 1.0, ticks: 95, target: |_o, g, _e, _m| above(g, 0.20) },
-        Phase { gripper: 1.0, ticks: 70, target: |_o, g, _e, m| above(g, m.place()) },
-        Phase { gripper: 0.0, ticks: 35, target: |_o, g, _e, m| above(g, m.place()) },
-        Phase { gripper: 0.0, ticks: 45, target: |_o, g, _e, _m| above(g, 0.22) },
+        Phase {
+            gripper: 0.0,
+            ticks: 70,
+            target: |o, _g, _e, _m| above(o, 0.12),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 60,
+            target: |o, _g, _e, m| above(o, m.grasp()),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 40,
+            target: |o, _g, _e, m| above(o, m.grasp()),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 70,
+            target: |o, _g, _e, _m| above(o, 0.20),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 95,
+            target: |_o, g, _e, _m| above(g, 0.20),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 70,
+            target: |_o, g, _e, m| above(g, m.place()),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 35,
+            target: |_o, g, _e, m| above(g, m.place()),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 45,
+            target: |_o, g, _e, _m| above(g, 0.22),
+        },
     ]
 }
 
 fn reach_phases() -> Vec<Phase> {
     vec![
-        Phase { gripper: 0.0, ticks: 70, target: |o, _g, _e, _m| above(o, 0.12) },
-        Phase { gripper: 0.0, ticks: 70, target: |o, _g, _e, m| above(o, m.grasp()) },
-        Phase { gripper: 0.0, ticks: 400, target: |o, _g, _e, m| above(o, m.grasp()) },
+        Phase {
+            gripper: 0.0,
+            ticks: 70,
+            target: |o, _g, _e, _m| above(o, 0.12),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 70,
+            target: |o, _g, _e, m| above(o, m.grasp()),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 400,
+            target: |o, _g, _e, m| above(o, m.grasp()),
+        },
     ]
 }
 
@@ -228,18 +272,50 @@ fn stack_phases() -> Vec<Phase> {
             ticks: 40,
             target: |o, _g, _e, _m| [o[0] + 0.12, o[1] + 0.18, o[2]],
         },
-        Phase { gripper: 0.0, ticks: 70, target: |o, _g, _e, _m| above(o, 0.12) },
-        Phase { gripper: 0.0, ticks: 60, target: |o, _g, _e, m| above(o, m.stack_grasp()) },
-        Phase { gripper: 1.0, ticks: 40, target: |o, _g, _e, m| above(o, m.stack_grasp()) },
-        Phase { gripper: 1.0, ticks: 70, target: |o, g, e, _m| carry_to(o, e, lift_to(o, g, 0.12)) },
-        Phase { gripper: 1.0, ticks: 70, target: |o, g, e, _m| carry_to(o, e, above(g, 0.12)) },
+        Phase {
+            gripper: 0.0,
+            ticks: 70,
+            target: |o, _g, _e, _m| above(o, 0.12),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 60,
+            target: |o, _g, _e, m| above(o, m.stack_grasp()),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 40,
+            target: |o, _g, _e, m| above(o, m.stack_grasp()),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 70,
+            target: |o, g, e, _m| carry_to(o, e, lift_to(o, g, 0.12)),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 70,
+            target: |o, g, e, _m| carry_to(o, e, above(g, 0.12)),
+        },
         // Release from 1.5 cm above the stacked centre: XZ is servoed to
         // ~2 mm, so the short drop stays on B, while the plates' bottom
         // edge (= A's bottom at this grasp) never dips into B's top — a
         // 5 mm margin was eaten by load sag and squeezed B out sideways.
-        Phase { gripper: 1.0, ticks: 80, target: |o, g, e, _m| carry_to(o, e, above(g, 0.015)) },
-        Phase { gripper: 0.0, ticks: 30, target: |o, g, e, _m| carry_to(o, e, above(g, 0.015)) },
-        Phase { gripper: 0.0, ticks: 45, target: |_o, g, _e, _m| above(g, 0.22) },
+        Phase {
+            gripper: 1.0,
+            ticks: 80,
+            target: |o, g, e, _m| carry_to(o, e, above(g, 0.015)),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 30,
+            target: |o, g, e, _m| carry_to(o, e, above(g, 0.015)),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 45,
+            target: |_o, g, _e, _m| above(g, 0.22),
+        },
     ]
 }
 
@@ -250,9 +326,21 @@ fn stack_phases() -> Vec<Phase> {
 /// yanked), release, retreat.
 fn drawer_phases() -> Vec<Phase> {
     vec![
-        Phase { gripper: 0.0, ticks: 70, target: |o, _g, _e, _m| above(o, 0.12) },
-        Phase { gripper: 0.0, ticks: 60, target: |o, _g, _e, m| above(o, m.grasp()) },
-        Phase { gripper: 1.0, ticks: 40, target: |o, _g, _e, m| above(o, m.grasp()) },
+        Phase {
+            gripper: 0.0,
+            ticks: 70,
+            target: |o, _g, _e, _m| above(o, 0.12),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 60,
+            target: |o, _g, _e, m| above(o, m.grasp()),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 40,
+            target: |o, _g, _e, m| above(o, m.grasp()),
+        },
         Phase {
             gripper: 1.0,
             ticks: 240,
@@ -264,8 +352,16 @@ fn drawer_phases() -> Vec<Phase> {
                 above(toward(o, [g[0] - o[0], 0.0, g[2] - o[2]], lead), m.grasp())
             },
         },
-        Phase { gripper: 0.0, ticks: 30, target: |o, _g, _e, m| above(o, m.grasp()) },
-        Phase { gripper: 0.0, ticks: 45, target: |o, _g, _e, _m| above(o, 0.22) },
+        Phase {
+            gripper: 0.0,
+            ticks: 30,
+            target: |o, _g, _e, m| above(o, m.grasp()),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 45,
+            target: |o, _g, _e, _m| above(o, 0.22),
+        },
     ]
 }
 
@@ -275,7 +371,9 @@ fn phases_for(task_id: &str) -> Result<Vec<Phase>, String> {
         "pick_place" | "bin_pick" => Ok(pick_phases()),
         "stack" => Ok(stack_phases()),
         "drawer" => Ok(drawer_phases()),
-        other => Err(format!("相位机：没有 {other:?} 的脚本（reach/pick_place/bin_pick/stack/drawer）")),
+        other => Err(format!(
+            "相位机：没有 {other:?} 的脚本（reach/pick_place/bin_pick/stack/drawer）"
+        )),
     }
 }
 
@@ -356,7 +454,11 @@ fn policy(
         state.sag = [raw[0] - ee[0], raw[1] - ee[1], raw[2] - ee[2]];
     }
     let target = if geom.sag_comp && step > hover_end {
-        [raw[0] + state.sag[0], raw[1] + state.sag[1], raw[2] + state.sag[2]]
+        [
+            raw[0] + state.sag[0],
+            raw[1] + state.sag[1],
+            raw[2] + state.sag[2],
+        ]
     } else {
         raw
     };
@@ -443,10 +545,17 @@ fn parse_args() -> Args {
             "--spec" => a.spec = Some(it.next().expect("--spec 需要一个文件路径")),
             "--set" => a.sets.push(it.next().expect("--set 需要 a.b.c=v")),
             "--episodes" => {
-                a.episodes = Some(it.next().expect("--episodes 需要一个值").parse().expect("episodes: 数字"))
+                a.episodes = Some(
+                    it.next()
+                        .expect("--episodes 需要一个值")
+                        .parse()
+                        .expect("episodes: 数字"),
+                )
             }
             "--seed0" | "--seed" => {
-                let v = it.next().unwrap_or_else(|| fail(&format!("{arg} 需要一个值")));
+                let v = it
+                    .next()
+                    .unwrap_or_else(|| fail(&format!("{arg} 需要一个值")));
                 a.seed0 = v.parse().expect("seed: 数字");
             }
             "--protocol" => a.protocol = Some(it.next().expect("--protocol 需要一个值")),
@@ -491,11 +600,13 @@ fn resolve_spec(args: &Args) -> SceneSpec {
                 .unwrap_or_else(|e| fail(&format!("spec 加载失败：{e}")));
             loaded.spec
         }
-        None => SceneSpec::load_file(std::path::Path::new(
-            "crates/oriera-agent/specs/official/tabletop-4dof-pick.json",
-        ))
-        .unwrap_or_else(|e| fail(&format!("默认金标 spec 加载失败：{e}")))
-        .spec,
+        None => {
+            SceneSpec::load_file(std::path::Path::new(
+                "crates/oriera-agent/specs/official/tabletop-4dof-pick.json",
+            ))
+            .unwrap_or_else(|e| fail(&format!("默认金标 spec 加载失败：{e}")))
+            .spec
+        }
     };
     spec.apply_sets(&args.sets)
         .unwrap_or_else(|e| fail(&format!("--set 失败：{e}")));
@@ -518,8 +629,7 @@ fn resolve_spec(args: &Args) -> SceneSpec {
 fn dump_panda_spec(out: &str) {
     let fixture = |name: &str| {
         let path = format!("crates/oriera-agent/tests/fixtures/{name}");
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| fail(&format!("读 {path} 失败：{e}")))
+        std::fs::read_to_string(&path).unwrap_or_else(|e| fail(&format!("读 {path} 失败：{e}")))
     };
     let arm = oriera_agent::urdf::UrdfReport::parse(&fixture("panda7.urdf"))
         .unwrap_or_else(|e| fail(&format!("panda7.urdf 解析失败：{e}")));
@@ -541,7 +651,9 @@ fn dump_panda_spec(out: &str) {
     let mut robot = arm
         .to_robot_spec_with_gripper(&grip, &mut opts)
         .unwrap_or_else(|e| fail(&format!("panda7 + gripper2f 导入失败：{e}")));
-    robot.validate().unwrap_or_else(|e| fail(&format!("robot 非法：{e}")));
+    robot
+        .validate()
+        .unwrap_or_else(|e| fail(&format!("robot 非法：{e}")));
 
     // 板系朝向：URDF 导出的 tcp_offset 即「法兰 → 指板中心」的世界（=
     // 挂载系）方向；approach 取它，gap 取法兰 +Z（指板薄边方向，与导入
@@ -552,7 +664,7 @@ fn dump_panda_spec(out: &str) {
         let n = (g.tcp_offset[0] * g.tcp_offset[0]
             + g.tcp_offset[1] * g.tcp_offset[1]
             + g.tcp_offset[2] * g.tcp_offset[2])
-        .sqrt();
+            .sqrt();
         let approach = snap3([
             g.tcp_offset[0] / n,
             g.tcp_offset[1] / n,
@@ -1019,9 +1131,7 @@ fn main() {
 }
 
 fn env_phrase(spec: &SceneSpec) -> &'static str {
-    task_entry(&spec.task.id)
-        .map(|e| e.phrase)
-        .unwrap_or("")
+    task_entry(&spec.task.id).map(|e| e.phrase).unwrap_or("")
 }
 
 /// The legacy once-rate (EpisodeRow.success), identical to

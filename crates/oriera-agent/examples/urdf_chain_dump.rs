@@ -30,10 +30,7 @@ fn main() {
     let mut want = 7usize;
     while let Some(a) = args.next() {
         if a == "--want" {
-            want = args
-                .next()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(want);
+            want = args.next().and_then(|v| v.parse().ok()).unwrap_or(want);
         }
     }
 

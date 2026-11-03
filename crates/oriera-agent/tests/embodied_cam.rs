@@ -15,10 +15,7 @@ use oriera_subsys::camera::PinholeCam;
 /// The shipped lab demo: golden spec + wrist (EE, 160×120 RGB+depth,
 /// k1=0.15) + top (world, 320×240 RGB).
 fn demo_spec() -> SceneSpec {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/specs/lab/wrist-cam-demo.json"
-    );
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/specs/lab/wrist-cam-demo.json");
     SceneSpec::load_file(std::path::Path::new(path))
         .expect("wrist-cam-demo resolves against the official library")
         .spec
@@ -87,10 +84,7 @@ fn wrist_extrinsics_follow_the_ee_tick_by_tick() {
         .find(|c| c.name == "wrist")
         .expect("demo has a wrist camera")
         .clone();
-    assert!(matches!(
-        wrist_spec.pinhole().attach,
-        CamAttach::Ee
-    ));
+    assert!(matches!(wrist_spec.pinhole().attach, CamAttach::Ee));
     let mut env = cam_env();
     env.reset(5);
     let (p0, l0, _) = env.cam_axes(&wrist_spec);
@@ -99,7 +93,10 @@ fn wrist_extrinsics_follow_the_ee_tick_by_tick() {
     }
     let (p1, l1, _) = env.cam_axes(&wrist_spec);
     let dist = ((p1[0] - p0[0]).powi(2) + (p1[1] - p0[1]).powi(2) + (p1[2] - p0[2]).powi(2)).sqrt();
-    assert!(dist > 0.005, "EE mount must move with the arm (moved {dist} m)");
+    assert!(
+        dist > 0.005,
+        "EE mount must move with the arm (moved {dist} m)"
+    );
     // the mount offset is rigid: look_at keeps its offset from pos
     let d0 = [l0[0] - p0[0], l0[1] - p0[1], l0[2] - p0[2]];
     let d1 = [l1[0] - p1[0], l1[1] - p1[1], l1[2] - p1[2]];
@@ -150,8 +147,16 @@ fn reprojection_gate_under_2px() {
         }
         let obs = env.step(&[0.0; 5]).obs;
         let tip = [obs[ee_i], obs[ee_i + 1], obs[ee_i + 2]];
-        let cube = [tip[0] + obs[obj_i], tip[1] + obs[obj_i + 1], tip[2] + obs[obj_i + 2]];
-        let goal = [tip[0] + obs[goal_i], tip[1] + obs[goal_i + 1], tip[2] + obs[goal_i + 2]];
+        let cube = [
+            tip[0] + obs[obj_i],
+            tip[1] + obs[obj_i + 1],
+            tip[2] + obs[obj_i + 2],
+        ];
+        let goal = [
+            tip[0] + obs[goal_i],
+            tip[1] + obs[goal_i + 1],
+            tip[2] + obs[goal_i + 2],
+        ];
         let targets: [(&str, [f32; 3], [u8; 3], bool); 3] = [
             ("tip", tip, TIP_COLOR, false),
             ("cube", cube, CUBE_COLOR, true),
@@ -220,13 +225,9 @@ fn nearest_color(
     let matches = |c: [u8; 3]| {
         let p = [c[0] as f32, c[1] as f32, c[2] as f32];
         let t = [color[0] as f32, color[1] as f32, color[2] as f32];
-        let a = (p[0] * t[0] + p[1] * t[1] + p[2] * t[2])
-            / (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
-        let e = [
-            p[0] - a * t[0],
-            p[1] - a * t[1],
-            p[2] - a * t[2],
-        ];
+        let a =
+            (p[0] * t[0] + p[1] * t[1] + p[2] * t[2]) / (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+        let e = [p[0] - a * t[0], p[1] - a * t[1], p[2] - a * t[2]];
         e[0] * e[0] + e[1] * e[1] + e[2] * e[2] <= 40.0
     };
     let mut best = f32::INFINITY;
@@ -257,7 +258,11 @@ fn depth_channel_reports_millimetre_ranges() {
     env.reset(3);
     for shot in env.render_cameras() {
         let Some(depth) = &shot.depth else { continue };
-        let hit: Vec<u32> = depth.iter().filter(|d| **d > 0).map(|d| *d as u32).collect();
+        let hit: Vec<u32> = depth
+            .iter()
+            .filter(|d| **d > 0)
+            .map(|d| *d as u32)
+            .collect();
         assert!(!hit.is_empty(), "{} must see something", shot.cam);
         let max = *hit.iter().max().unwrap();
         assert!(max <= 65_000, "the bench lives under 65 m ({max} mm)");
@@ -287,12 +292,16 @@ fn multi_track_dataset_round_trips_through_lerobot() {
     ds.start_episode("pick up the cube");
     ds.push_step(&[0.0], &[0.0]).unwrap();
     for (name, w, h) in [("wrist", 160u32, 120u32), ("top", 320, 240)] {
-        let png = oriera_subsys::camera::encode_png(&vec![7u8; (w * h * 3) as usize], w, h).unwrap();
+        let png =
+            oriera_subsys::camera::encode_png(&vec![7u8; (w * h * 3) as usize], w, h).unwrap();
         ds.push_frame(oriera_agent::embodied_env::CameraFrame {
             cam: name.into(),
             rgb_png: Some(png),
             depth_png: if name == "wrist" {
-                Some(oriera_subsys::camera::encode_depth_png(&vec![600u16; (w * h) as usize], w, h).unwrap())
+                Some(
+                    oriera_subsys::camera::encode_depth_png(&vec![600u16; (w * h) as usize], w, h)
+                        .unwrap(),
+                )
             } else {
                 None
             },
@@ -303,8 +312,7 @@ fn multi_track_dataset_round_trips_through_lerobot() {
     let root_pre = std::env::temp_dir().join(format!("oriera-cam-it-info-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root_pre);
     ds.write_dir(&root_pre).expect("tree for info.json");
-    let info =
-        std::fs::read_to_string(root_pre.join("meta/info.json")).expect("info.json");
+    let info = std::fs::read_to_string(root_pre.join("meta/info.json")).expect("info.json");
     let _ = std::fs::remove_dir_all(&root_pre);
     assert!(info.contains("\"observation.images.wrist\""), "{info}");
     assert!(info.contains("\"depth.wrist\""), "{info}");
@@ -331,7 +339,15 @@ fn pinhole_from_spec_geometry() {
     for c in &spec.scene.cameras {
         let p = c.pinhole();
         let cam = PinholeCam::from_look(
-            p.pos, p.look_at, p.up, p.width, p.height, p.fx, p.fy, p.cx, p.cy,
+            p.pos,
+            p.look_at,
+            p.up,
+            p.width,
+            p.height,
+            p.fx,
+            p.fy,
+            p.cx,
+            p.cy,
             oriera_subsys::camera::Distortion {
                 k1: p.dist.k1,
                 k2: p.dist.k2,

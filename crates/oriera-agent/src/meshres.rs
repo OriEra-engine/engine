@@ -48,15 +48,9 @@ pub struct GltfInfo {
 #[derive(Debug, Clone)]
 pub enum UrdfMesh {
     /// STL（二进制/ASCII 同形）：全量三角网格。
-    Stl {
-        mesh: TriMesh,
-        source_bytes: usize,
-    },
+    Stl { mesh: TriMesh, source_bytes: usize },
     /// GLB/glTF：轻量探针信息（几何解码走 L4 `oriera_asset::glb`）。
-    Probed {
-        info: GltfInfo,
-        source_bytes: usize,
-    },
+    Probed { info: GltfInfo, source_bytes: usize },
 }
 
 const GLB_MAGIC: &[u8; 4] = b"glTF";
@@ -145,7 +139,9 @@ fn join_checked(root: &Path, rel: &str) -> Result<PathBuf, String> {
             cur.pop();
             depth -= 1;
         } else if comp.contains(':') {
-            return Err(format!("路径 `{rel}` 组件 `{comp}` 含 `:`（盘符/ADS 逃逸面，拒绝）"));
+            return Err(format!(
+                "路径 `{rel}` 组件 `{comp}` 含 `:`（盘符/ADS 逃逸面，拒绝）"
+            ));
         } else {
             cur.push(comp);
             depth += 1;
@@ -319,7 +315,9 @@ fn build_mesh(tris: &[[[f32; 3]; 3]], mut degenerate: usize) -> Result<TriMesh, 
         indices.push(idx);
     }
     if indices.is_empty() {
-        return Err(format!("STL 无有效三角形（{degenerate} 个全部退化/非有限）"));
+        return Err(format!(
+            "STL 无有效三角形（{degenerate} 个全部退化/非有限）"
+        ));
     }
     // 修剪被剔除面独占的孤儿顶点（其坐标不得进 bounds）
     let mut used = vec![false; verts.len()];
@@ -367,8 +365,9 @@ pub fn gltf_probe(bytes: &[u8]) -> Result<GltfInfo, String> {
                 bytes.len()
             ));
         }
-        let u32le =
-            |off: usize| u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
+        let u32le = |off: usize| {
+            u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+        };
         if u32le(4) != 2 {
             return Err("GLB version ≠ 2（本探针只认 glTF 2.0 容器）".into());
         }
@@ -536,7 +535,10 @@ mod tests {
     fn pkg_map(root: &Path) -> BTreeMap<String, PathBuf> {
         BTreeMap::from([
             ("oriera_arm".to_string(), root.join("oriera_arm")),
-            ("panda_description".to_string(), root.join("panda_description")),
+            (
+                "panda_description".to_string(),
+                root.join("panda_description"),
+            ),
         ])
     }
 
@@ -668,8 +670,7 @@ endfacet
 
     #[test]
     fn bare_gltf_json_probes_too() {
-        let info =
-            gltf_probe(br#"{"meshes":[{"name":"m","primitives":[{},{}]}]}"#).expect("probe");
+        let info = gltf_probe(br#"{"meshes":[{"name":"m","primitives":[{},{}]}]}"#).expect("probe");
         assert_eq!(info.mesh_count, 1);
         assert_eq!(info.primitive_count, 2);
         assert_eq!(info.name.as_deref(), Some("m"));
@@ -715,7 +716,9 @@ endfacet
         // model:// 同 package 语义
         assert_eq!(
             resolve_mesh_uri("model://panda_description/visual/link0.glb", &t.0, &pkgs).unwrap(),
-            t.0.join("panda_description").join("visual").join("link0.glb")
+            t.0.join("panda_description")
+                .join("visual")
+                .join("link0.glb")
         );
         // Windows 反斜杠 URI 归一为 '/'
         assert_eq!(
@@ -785,7 +788,10 @@ endfacet
         #[cfg(windows)]
         {
             let uri3 = format!("file:///{}", abs.display().to_string().replace('\\', "/"));
-            assert!(uri3.starts_with("file:///") && uri3.as_bytes()[9] == b':', "fixture: {uri3}");
+            assert!(
+                uri3.starts_with("file:///") && uri3.as_bytes()[9] == b':',
+                "fixture: {uri3}"
+            );
             assert_eq!(resolve_mesh_uri(&uri3, &t.0, &pkgs).unwrap(), abs);
         }
         // 空 URI
@@ -804,10 +810,7 @@ endfacet
         // .STL（大写）→ 全量网格 + 字节来源大小
         std::fs::write(pkg_dir.join("meshes/link.STL"), write_binary_stl(&TETRA)).unwrap();
         match load_urdf_mesh("package://oriera_arm/meshes/link.STL", &t.0, &pkgs).unwrap() {
-            UrdfMesh::Stl {
-                mesh,
-                source_bytes,
-            } => {
+            UrdfMesh::Stl { mesh, source_bytes } => {
                 assert_eq!(mesh.indices.len(), 4);
                 assert_eq!(source_bytes, 84 + 50 * 4);
             }

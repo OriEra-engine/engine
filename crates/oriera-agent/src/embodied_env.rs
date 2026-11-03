@@ -166,7 +166,10 @@ pub struct Fixture {
 /// height, or pinned to a point (no draws).
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "spec", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "spec", serde(rename_all = "snake_case", deny_unknown_fields))]
+#[cfg_attr(
+    feature = "spec",
+    serde(rename_all = "snake_case", deny_unknown_fields)
+)]
 pub enum Placement {
     /// Draw `[x.lo, x.hi]` then `[z.lo, z.hi]` (draw order is part of
     /// the episode receipt: x first, then z).
@@ -236,7 +239,12 @@ pub struct DistortionSpec {
 
 impl Default for DistortionSpec {
     fn default() -> Self {
-        Self { k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0 }
+        Self {
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        }
     }
 }
 
@@ -253,7 +261,10 @@ pub struct CamChannels {
 
 impl Default for CamChannels {
     fn default() -> Self {
-        Self { rgb: true, depth: false }
+        Self {
+            rgb: true,
+            depth: false,
+        }
     }
 }
 
@@ -704,7 +715,9 @@ impl TaskParams {
     /// move the hash.
     #[cfg(feature = "json")]
     pub fn canonicalize_json(params: &mut serde_json::Value) {
-        let Some(obj) = params.as_object_mut() else { return };
+        let Some(obj) = params.as_object_mut() else {
+            return;
+        };
         let defaults = serde_json::to_value(Self::default()).expect("TaskParams serializes");
         for key in TASK_PARAMS_M2_KEYS {
             if obj.get(key) == defaults.get(key) {
@@ -716,7 +729,9 @@ impl TaskParams {
     pub fn validate(&self) -> Result<(), String> {
         let ok = |v: f32| v.is_finite() && v > 0.0;
         if !ok(self.goal_xz_tol) || !ok(self.reach_radius) || !ok(self.min_separation) {
-            return Err("task.params: goal_xz_tol / reach_radius / min_separation 须为有限正数".into());
+            return Err(
+                "task.params: goal_xz_tol / reach_radius / min_separation 须为有限正数".into(),
+            );
         }
         if self.rest_steps == 0 {
             return Err("task.params.rest_steps = 0：@v2 静止判据至少要 1 步（默认 10）".into());
@@ -727,7 +742,9 @@ impl TaskParams {
                 self.rest_speed
             ));
         }
-        if !(self.release_below.is_finite() && self.release_below > 0.0 && self.release_below <= 1.0)
+        if !(self.release_below.is_finite()
+            && self.release_below > 0.0
+            && self.release_below <= 1.0)
         {
             return Err(format!(
                 "task.params.release_below = {}：须在 (0, 1]（夹爪指令低于它视为松爪，默认 0.5）",
@@ -737,7 +754,8 @@ impl TaskParams {
         if !ok(self.stack_xz_tol) || !ok(self.stack_y_tol) {
             return Err("task.params: stack_xz_tol / stack_y_tol 须为有限正数".into());
         }
-        let horiz = (self.pull_axis[0] * self.pull_axis[0] + self.pull_axis[2] * self.pull_axis[2]).sqrt();
+        let horiz =
+            (self.pull_axis[0] * self.pull_axis[0] + self.pull_axis[2] * self.pull_axis[2]).sqrt();
         if !(self.pull_axis.iter().all(|v| v.is_finite()) && horiz > 1e-6) {
             return Err(format!(
                 "task.params.pull_axis = {:?}：须为有限、水平分量非零的向量（默认 [-1,0,0] = 朝臂基座拉）",
@@ -750,7 +768,9 @@ impl TaskParams {
                 self.pull_distance
             ));
         }
-        if !(self.goal_y_min.is_finite() && self.goal_y_max.is_finite() && self.goal_y_min < self.goal_y_max)
+        if !(self.goal_y_min.is_finite()
+            && self.goal_y_max.is_finite()
+            && self.goal_y_min < self.goal_y_max)
         {
             return Err(format!(
                 "task.params: goal_y_min ({}) 须 < goal_y_max ({})",
@@ -889,7 +909,11 @@ impl Task for ReachTask {
         // Reach: the goal IS the object — `goal_rel` stays a real
         // channel (a zeroed goal used to leak −ee noise into obs,
         // caught in the ten-role review). Zero extra draws.
-        let props: Vec<[f32; 3]> = scene.props.iter().map(|p| p.placement.sample(rng)).collect();
+        let props: Vec<[f32; 3]> = scene
+            .props
+            .iter()
+            .map(|p| p.placement.sample(rng))
+            .collect();
         let goal = props[0];
         Placements { props, goal }
     }
@@ -961,7 +985,11 @@ impl Task for PickPlaceTask {
     }
 
     fn reset(&mut self, rng: &mut Lcg, scene: &SceneGraph) -> Placements {
-        let props: Vec<[f32; 3]> = scene.props.iter().map(|p| p.placement.sample(rng)).collect();
+        let props: Vec<[f32; 3]> = scene
+            .props
+            .iter()
+            .map(|p| p.placement.sample(rng))
+            .collect();
         let goal = self.params.goal.sample(rng);
         Placements { props, goal }
     }
@@ -972,9 +1000,8 @@ impl Task for PickPlaceTask {
         let obj = placements.props[0];
         let mut attempts = 0;
         loop {
-            let d = ((obj[0] - placements.goal[0]).powi(2)
-                + (obj[2] - placements.goal[2]).powi(2))
-            .sqrt();
+            let d = ((obj[0] - placements.goal[0]).powi(2) + (obj[2] - placements.goal[2]).powi(2))
+                .sqrt();
             if d >= self.params.min_separation || attempts >= self.params.max_redraws {
                 break;
             }
@@ -1053,7 +1080,11 @@ impl Task for PushTask {
     }
 
     fn reset(&mut self, rng: &mut Lcg, scene: &SceneGraph) -> Placements {
-        let props: Vec<[f32; 3]> = scene.props.iter().map(|p| p.placement.sample(rng)).collect();
+        let props: Vec<[f32; 3]> = scene
+            .props
+            .iter()
+            .map(|p| p.placement.sample(rng))
+            .collect();
         let goal = self.params.goal.sample(rng);
         Placements { props, goal }
     }
@@ -1062,9 +1093,8 @@ impl Task for PushTask {
         let obj = placements.props[0];
         let mut attempts = 0;
         loop {
-            let d = ((obj[0] - placements.goal[0]).powi(2)
-                + (obj[2] - placements.goal[2]).powi(2))
-            .sqrt();
+            let d = ((obj[0] - placements.goal[0]).powi(2) + (obj[2] - placements.goal[2]).powi(2))
+                .sqrt();
             if d >= self.params.min_separation || attempts >= self.params.max_redraws {
                 break;
             }
@@ -1136,7 +1166,8 @@ fn finalize_goal_separation(
     let obj = placements.props[0];
     let mut attempts = 0;
     loop {
-        let d = ((obj[0] - placements.goal[0]).powi(2) + (obj[2] - placements.goal[2]).powi(2)).sqrt();
+        let d =
+            ((obj[0] - placements.goal[0]).powi(2) + (obj[2] - placements.goal[2]).powi(2)).sqrt();
         if d >= params.min_separation || attempts >= params.max_redraws {
             break;
         }
@@ -1191,7 +1222,11 @@ impl Task for PickPlaceTaskV2 {
     }
 
     fn reset(&mut self, rng: &mut Lcg, scene: &SceneGraph) -> Placements {
-        let props: Vec<[f32; 3]> = scene.props.iter().map(|p| p.placement.sample(rng)).collect();
+        let props: Vec<[f32; 3]> = scene
+            .props
+            .iter()
+            .map(|p| p.placement.sample(rng))
+            .collect();
         let goal = self.params.goal.sample(rng);
         Placements { props, goal }
     }
@@ -1268,7 +1303,11 @@ impl Task for PushTaskV2 {
     }
 
     fn reset(&mut self, rng: &mut Lcg, scene: &SceneGraph) -> Placements {
-        let props: Vec<[f32; 3]> = scene.props.iter().map(|p| p.placement.sample(rng)).collect();
+        let props: Vec<[f32; 3]> = scene
+            .props
+            .iter()
+            .map(|p| p.placement.sample(rng))
+            .collect();
         let goal = self.params.goal.sample(rng);
         Placements { props, goal }
     }
@@ -1344,7 +1383,11 @@ impl Task for ReachTaskV2 {
     }
 
     fn reset(&mut self, rng: &mut Lcg, scene: &SceneGraph) -> Placements {
-        let props: Vec<[f32; 3]> = scene.props.iter().map(|p| p.placement.sample(rng)).collect();
+        let props: Vec<[f32; 3]> = scene
+            .props
+            .iter()
+            .map(|p| p.placement.sample(rng))
+            .collect();
         let goal = props[0];
         Placements { props, goal }
     }
@@ -1424,7 +1467,11 @@ impl Task for StackTask {
     fn reset(&mut self, rng: &mut Lcg, scene: &SceneGraph) -> Placements {
         // Draw order (receipt): A first (props[0]), then B's placement
         // (Fixed in the presets — zero draws), goal derived from B.
-        let props: Vec<[f32; 3]> = scene.props.iter().map(|p| p.placement.sample(rng)).collect();
+        let props: Vec<[f32; 3]> = scene
+            .props
+            .iter()
+            .map(|p| p.placement.sample(rng))
+            .collect();
         let half_sum = match (scene.props.first(), scene.props.get(1)) {
             (Some(a), Some(b)) => prop_half_height(a.shape) + prop_half_height(b.shape),
             _ => 0.05,
@@ -1438,7 +1485,11 @@ impl Task for StackTask {
     fn finalize(&mut self, rng: &mut Lcg, scene: &SceneGraph, placements: &mut Placements) {
         // Keep A clear of B at spawn: re-draw A only (goal is derived
         // from B, never drawn — order: A, then A redraws).
-        let b = placements.props.get(1).copied().unwrap_or([0.30, 0.55, 0.0]);
+        let b = placements
+            .props
+            .get(1)
+            .copied()
+            .unwrap_or([0.30, 0.55, 0.0]);
         if let Some(placement) = scene.props.first().map(|p| p.placement) {
             let mut attempts = 0;
             while attempts < self.params.max_redraws {
@@ -1459,8 +1510,8 @@ impl Task for StackTask {
         let mut reward = -0.002;
         let grasp_event = s.holding && !s.was_holding;
         if s.holding {
-            reward += -1.2 * s.d_obj_goal
-                + 2.0 * (s.obj_pos[1] - self.params.goal_y_min).clamp(0.0, 0.2);
+            reward +=
+                -1.2 * s.d_obj_goal + 2.0 * (s.obj_pos[1] - self.params.goal_y_min).clamp(0.0, 0.2);
         } else {
             reward -= 0.6 * s.d_ee_obj;
         }
@@ -1530,7 +1581,11 @@ impl Task for BinPickTask {
     }
 
     fn reset(&mut self, rng: &mut Lcg, scene: &SceneGraph) -> Placements {
-        let props: Vec<[f32; 3]> = scene.props.iter().map(|p| p.placement.sample(rng)).collect();
+        let props: Vec<[f32; 3]> = scene
+            .props
+            .iter()
+            .map(|p| p.placement.sample(rng))
+            .collect();
         let goal = self.params.goal.sample(rng);
         Placements { props, goal }
     }
@@ -1607,7 +1662,11 @@ impl Task for DrawerTask {
     }
 
     fn reset(&mut self, rng: &mut Lcg, scene: &SceneGraph) -> Placements {
-        let props: Vec<[f32; 3]> = scene.props.iter().map(|p| p.placement.sample(rng)).collect();
+        let props: Vec<[f32; 3]> = scene
+            .props
+            .iter()
+            .map(|p| p.placement.sample(rng))
+            .collect();
         let start = props[0];
         let u = self.axis();
         let goal = [
@@ -1637,8 +1696,8 @@ impl Task for DrawerTask {
 
     fn success(&self, s: &StepState) -> bool {
         let u = self.axis();
-        let pulled = (s.obj_pos[0] - s.obj_start[0]) * u[0]
-            + (s.obj_pos[2] - s.obj_start[2]) * u[2];
+        let pulled =
+            (s.obj_pos[0] - s.obj_start[0]) * u[0] + (s.obj_pos[2] - s.obj_start[2]) * u[2];
         pulled >= self.params.pull_distance && released_and_resting(&self.params, s)
     }
 
@@ -1812,9 +1871,7 @@ pub fn task_entry(id: &str) -> Result<&'static TaskEntry, String> {
     let entry = if id.contains('@') {
         find(&|e: &TaskEntry| e.id == id)
     } else {
-        find(&|e: &TaskEntry| {
-            e.id.split('@').next() == Some(id) && e.id.ends_with("@v1")
-        })
+        find(&|e: &TaskEntry| e.id.split('@').next() == Some(id) && e.id.ends_with("@v1"))
     };
     entry.ok_or_else(|| {
         let ids: Vec<&str> = task_registry().iter().map(|e| e.id).collect();
@@ -2426,7 +2483,9 @@ impl TableTopEnv {
         }
         // props (pos + quaternion from the world; shapes from the spec)
         for (i, prop) in self.scene.props.iter().enumerate() {
-            let Some(pose) = self.prop_pose(i) else { continue };
+            let Some(pose) = self.prop_pose(i) else {
+                continue;
+            };
             match prop.shape {
                 PropShape::Cuboid { half } => prims.push(Prim::BoxQ {
                     center: pose.pos,
@@ -2582,7 +2641,12 @@ impl TableTopEnv {
     fn frame_png(&self, view: &CameraView, obj: [f32; 3]) -> Result<Vec<u8>, String> {
         let chain = self.sys.chain_points();
         let scene = self.scene.to_scene3d();
-        let shape = self.scene.props.first().map(|p| p.shape).unwrap_or_default();
+        let shape = self
+            .scene
+            .props
+            .first()
+            .map(|p| p.shape)
+            .unwrap_or_default();
         if shape == PropShape::default() {
             return capture_png(view, &scene, &chain, obj, self.goal);
         }
@@ -2642,16 +2706,12 @@ fn link_radius(shape: &oriera_subsys::LinkShape) -> f32 {
 #[cfg(feature = "cam")]
 fn stamp_prop(view: &CameraView, rgb: &mut [u8], pos: [f32; 3], shape: PropShape) {
     let prop_colour = [255u8, 206, 110];
-    let scale = |metres: f32, extent: f32, px: u32| {
-        (metres / extent * px as f32).round() as i32
-    };
+    let scale = |metres: f32, extent: f32, px: u32| (metres / extent * px as f32).round() as i32;
     // Same projection as `CameraView::px` (private in subsys; kept in
     // lockstep — deterministic integer rounding).
-    let px = ((pos[0] - (view.center[0] - view.extent[0] / 2.0)) / view.extent[0]
-        * view.w as f32)
+    let px = ((pos[0] - (view.center[0] - view.extent[0] / 2.0)) / view.extent[0] * view.w as f32)
         .round() as i32;
-    let py = ((pos[2] - (view.center[1] - view.extent[1] / 2.0)) / view.extent[1]
-        * view.h as f32)
+    let py = ((pos[2] - (view.center[1] - view.extent[1] / 2.0)) / view.extent[1] * view.h as f32)
         .round() as i32;
     let put = |rgb: &mut [u8], x: i32, y: i32| {
         if x < 0 || y < 0 || x >= view.w as i32 || y >= view.h as i32 {
@@ -2742,7 +2802,10 @@ impl EmbodiedEnv for TableTopEnv {
                     .next_f32(self.prop_friction_range[0], self.prop_friction_range[1]),
             )
         } else {
-            (self.scene.props[0].phys.density, self.scene.props[0].phys.friction)
+            (
+                self.scene.props[0].phys.density,
+                self.scene.props[0].phys.friction,
+            )
         };
         // Arm-side DR: motor gains ±kp_jitter, link mass ±mass_jitter
         // (IsaacLab EventTerm spirit — the policy must not overfit the
@@ -3025,7 +3088,10 @@ impl TableTopEnv {
 
     /// 姿态快照（M2 渲染全量 props 用；rot 自 WPA 起公开）。
     pub fn prop_pose(&self, i: usize) -> Option<Pose3> {
-        self.prop_ents.get(i).and_then(|e| self.world.get::<Pose3>(*e)).copied()
+        self.prop_ents
+            .get(i)
+            .and_then(|e| self.world.get::<Pose3>(*e))
+            .copied()
     }
 
     /// 场景 prop 总数（含任务对象）。
@@ -3305,7 +3371,10 @@ mod tests {
             Ok(_) => panic!("fly must not build"),
             Err(e) => e,
         };
-        assert!(err.contains("合法值") && err.contains("pick_place@v1"), "{err}");
+        assert!(
+            err.contains("合法值") && err.contains("pick_place@v1"),
+            "{err}"
+        );
         // every entry self-describes phrase/env_name/criteria
         for e in task_registry() {
             assert!(!e.phrase.is_empty() && !e.env_name.is_empty(), "{}", e.id);
@@ -3413,10 +3482,7 @@ mod tests {
         assert_eq!(act.total, 5);
         assert_eq!(
             act.slices_with_offsets(),
-            vec![
-                ("arm".to_string(), 0, 4),
-                ("gripper".to_string(), 4, 5),
-            ]
+            vec![("arm".to_string(), 0, 4), ("gripper".to_string(), 4, 5),]
         );
     }
 
@@ -3538,17 +3604,12 @@ mod tests {
         };
         // holding=false: -0.002 - 0.6*d_ee_obj; in-zone success bonus +10
         assert!((task.reward(&s) - (-0.002 - 0.6 * 0.1 + 10.0)).abs() < 1e-6);
-        let s_hold = StepState {
-            holding: true,
-            ..s
-        };
+        let s_hold = StepState { holding: true, ..s };
         // holding + hold edge (was_holding=false ⇒ grasp_event):
         // -0.002 - 1.2*d_obj_goal + 2*clamp(y-0.5) + 2.0 grasp bonus
         // (+10 in zone)
         assert!(
-            (task.reward(&s_hold)
-                - (-0.002 - 1.2 * 0.05 + 2.0 * (0.55 - 0.5) + 2.0 + 10.0))
-            .abs()
+            (task.reward(&s_hold) - (-0.002 - 1.2 * 0.05 + 2.0 * (0.55 - 0.5) + 2.0 + 10.0)).abs()
                 < 1e-6
         );
         // steady hold (no edge): no grasp bonus
@@ -3557,9 +3618,8 @@ mod tests {
             ..s_hold
         };
         assert!(
-            (task.reward(&s_holding_steady)
-                - (-0.002 - 1.2 * 0.05 + 2.0 * (0.55 - 0.5) + 10.0))
-            .abs()
+            (task.reward(&s_holding_steady) - (-0.002 - 1.2 * 0.05 + 2.0 * (0.55 - 0.5) + 10.0))
+                .abs()
                 < 1e-6
         );
         // outside the height band ⇒ no bonus
@@ -3681,10 +3741,7 @@ mod tests {
         };
         assert!(!t.success(&floating));
         // Gripper still holding the top block ⇒ no
-        let gripped = StepState {
-            gripper: 1.0,
-            ..s
-        };
+        let gripped = StepState { gripper: 1.0, ..s };
         assert!(!t.success(&gripped));
     }
 
@@ -3708,10 +3765,7 @@ mod tests {
         let p2 = make_task("pick_place@v2", TaskParams::default()).unwrap();
         let s = zone_state();
         assert_eq!(t.success(&s), p2.success(&s));
-        let gripped = StepState {
-            gripper: 1.0,
-            ..s
-        };
+        let gripped = StepState { gripper: 1.0, ..s };
         assert!(!t.success(&gripped));
         assert_eq!(t.success_criteria(), "v2");
     }
@@ -3858,10 +3912,15 @@ mod tests {
         ];
         let scene = env.scene.to_scene3d();
         let mut rgb = render_top_down(&view, &scene, &env.sys.chain_points(), off, env.goal());
-        stamp_prop(&view, &mut rgb, pos, PropShape::Cylinder {
-            half_h: 0.025,
-            radius: 0.025,
-        });
+        stamp_prop(
+            &view,
+            &mut rgb,
+            pos,
+            PropShape::Cylinder {
+                half_h: 0.025,
+                radius: 0.025,
+            },
+        );
         let scale = |m: f32| (m / view.extent[0] * view.w as f32).round() as i32;
         let px = ((pos[0] - (view.center[0] - view.extent[0] / 2.0)) / view.extent[0]
             * view.w as f32)

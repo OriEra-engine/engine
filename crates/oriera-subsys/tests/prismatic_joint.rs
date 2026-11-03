@@ -44,7 +44,11 @@ fn ctx(step: u64) -> FrameCtx<'static> {
 /// the preset so future LinkSpec/RobotSpec fields inherit defaults.
 fn slide_spec(axis: [f32; 3], anchor: [f32; 3], limits: (f32, f32)) -> RobotSpec {
     let preset = RobotSpec::from(&ArmDescription::default());
-    let child_o = [RAIL[0] + anchor[0], RAIL[1] + anchor[1], RAIL[2] + anchor[2]];
+    let child_o = [
+        RAIL[0] + anchor[0],
+        RAIL[1] + anchor[1],
+        RAIL[2] + anchor[2],
+    ];
     let links = vec![
         LinkSpec {
             name: "rail".into(),
@@ -123,7 +127,10 @@ fn hold(
         }
         sys.run(&ctx(i), world);
     }
-    world.get::<JointTelemetry>(arm).cloned().expect("telemetry")
+    world
+        .get::<JointTelemetry>(arm)
+        .cloned()
+        .expect("telemetry")
 }
 
 #[test]
@@ -132,21 +139,47 @@ fn prismatic_slide_follows_target_displacement() {
     let anchor = [0.05, 0.0, 0.0];
     let (mut world, mut sys, arm) = bench(slide_spec([1.0, 0.0, 0.0], anchor, (-0.2, 0.2)));
     let tel = hold(&mut world, &mut sys, arm, &[0.0], 0, 60);
-    assert!(tel.angles[0].abs() < 1e-3, "settles at 0 m: {}", tel.angles[0]);
+    assert!(
+        tel.angles[0].abs() < 1e-3,
+        "settles at 0 m: {}",
+        tel.angles[0]
+    );
     let x0 = RAIL[0] + anchor[0];
-    assert!((tel.ee_pos[0] - x0).abs() < 1e-3, "carriage at its origin: {:?}", tel.ee_pos);
+    assert!(
+        (tel.ee_pos[0] - x0).abs() < 1e-3,
+        "carriage at its origin: {:?}",
+        tel.ee_pos
+    );
 
     for (k, want) in [0.12f32, -0.15, 0.03].into_iter().enumerate() {
         let tel = hold(&mut world, &mut sys, arm, &[want], 60 + 240 * k as u64, 240);
         let q = tel.angles[0];
-        assert!((q - want).abs() < 2e-3, "slide must reach {want} m, got {q}");
+        assert!(
+            (q - want).abs() < 2e-3,
+            "slide must reach {want} m, got {q}"
+        );
         // Readout == the body's real displacement along the axis.
         let moved = tel.ee_pos[0] - x0;
-        assert!((moved - q).abs() < 1e-4, "readout {q} vs body displacement {moved}");
+        assert!(
+            (moved - q).abs() < 1e-4,
+            "readout {q} vs body displacement {moved}"
+        );
         // Only the slide axis moves (the joint locks the other 5 DoF).
-        assert!((tel.ee_pos[1] - RAIL[1]).abs() < 1e-3, "y locked: {:?}", tel.ee_pos);
-        assert!((tel.ee_pos[2] - RAIL[2]).abs() < 1e-3, "z locked: {:?}", tel.ee_pos);
-        assert!(tel.velocities[0].abs() < 0.01, "at rest: {} m/s", tel.velocities[0]);
+        assert!(
+            (tel.ee_pos[1] - RAIL[1]).abs() < 1e-3,
+            "y locked: {:?}",
+            tel.ee_pos
+        );
+        assert!(
+            (tel.ee_pos[2] - RAIL[2]).abs() < 1e-3,
+            "z locked: {:?}",
+            tel.ee_pos
+        );
+        assert!(
+            tel.velocities[0].abs() < 0.01,
+            "at rest: {} m/s",
+            tel.velocities[0]
+        );
     }
 }
 
@@ -155,7 +188,11 @@ fn prismatic_limits_and_velocity_limit_are_in_metres() {
     // A target past the stop is clamped to it (command clamp in metres).
     let (mut world, mut sys, arm) = bench(slide_spec([0.0, 0.0, 1.0], [0.0; 3], (-0.2, 0.2)));
     let tel = hold(&mut world, &mut sys, arm, &[0.5], 0, 300);
-    assert!((tel.angles[0] - 0.2).abs() < 3e-3, "parks at the 0.2 m stop: {}", tel.angles[0]);
+    assert!(
+        (tel.angles[0] - 0.2).abs() < 3e-3,
+        "parks at the 0.2 m stop: {}",
+        tel.angles[0]
+    );
 
     // velocity_limit = 0.1 m/s: after 30 ticks (0.5 s) the command has
     // moved at most 0.05 m, and it still converges.
@@ -169,7 +206,11 @@ fn prismatic_limits_and_velocity_limit_are_in_metres() {
         tel.angles[0]
     );
     let tel = hold(&mut world, &mut sys, arm, &[0.1], 30, 300);
-    assert!((tel.angles[0] - 0.1).abs() < 3e-3, "converges: {}", tel.angles[0]);
+    assert!(
+        (tel.angles[0] - 0.1).abs() < 3e-3,
+        "converges: {}",
+        tel.angles[0]
+    );
 }
 
 #[test]
@@ -180,7 +221,10 @@ fn vertical_slide_holds_gravity_until_the_effort_clamp() {
     let sag = mass * 9.8 / spec.joints[0].kp;
     let (mut world, mut sys, arm) = bench(spec.clone());
     let tel = hold(&mut world, &mut sys, arm, &[0.05], 0, 300);
-    eprintln!("vertical slide: q = {:.4} m, predicted mg/kp sag {:.4} m", tel.angles[0], sag);
+    eprintln!(
+        "vertical slide: q = {:.4} m, predicted mg/kp sag {:.4} m",
+        tel.angles[0], sag
+    );
     assert!(
         (tel.angles[0] - (0.05 - sag)).abs() < 5e-3,
         "holds at target − mg/kp: {} vs {}",
@@ -194,7 +238,11 @@ fn vertical_slide_holds_gravity_until_the_effort_clamp() {
     weak.joints[0].effort = Some(0.25 * mass * 9.8);
     let (mut world, mut sys, arm) = bench(weak);
     let tel = hold(&mut world, &mut sys, arm, &[0.05], 0, 300);
-    assert!((tel.angles[0] + 0.15).abs() < 0.01, "sinks to the −0.15 m stop: {}", tel.angles[0]);
+    assert!(
+        (tel.angles[0] + 0.15).abs() < 0.01,
+        "sinks to the −0.15 m stop: {}",
+        tel.angles[0]
+    );
 }
 
 #[test]
@@ -210,7 +258,11 @@ fn prismatic_identity_and_determinism() {
     let slide = slide_spec([1.0, 0.0, 0.0], [0.0; 3], (-0.2, 0.2));
     let mut as_revolute = slide.clone();
     as_revolute.joints[0].kind = JointKind::Revolute;
-    assert_ne!(robot_identity_hash(&slide), robot_identity_hash(&as_revolute), "kind is identity");
+    assert_ne!(
+        robot_identity_hash(&slide),
+        robot_identity_hash(&as_revolute),
+        "kind is identity"
+    );
 
     let run = || {
         let (mut world, mut sys, arm) = bench(slide.clone());
@@ -305,14 +357,24 @@ fn slide_arm_rail_carries_the_tabletop_arm() {
     let b = hold(&mut world, &mut sys, arm, &moved, 300, 300);
     for (k, (got, want)) in b.angles.iter().zip(moved).enumerate() {
         let tol = if k == 0 { 5e-3 } else { 0.08 };
-        assert!((got - want).abs() < tol, "joint {k}: got {got}, want {want}");
+        assert!(
+            (got - want).abs() < tol,
+            "joint {k}: got {got}, want {want}"
+        );
     }
     // Same arm posture, rail moved 0.15 m along +X ⇒ the TCP translates
     // by exactly that (the arm's own sag is posture-only).
-    let d = [b.ee_pos[0] - a.ee_pos[0], b.ee_pos[1] - a.ee_pos[1], b.ee_pos[2] - a.ee_pos[2]];
+    let d = [
+        b.ee_pos[0] - a.ee_pos[0],
+        b.ee_pos[1] - a.ee_pos[1],
+        b.ee_pos[2] - a.ee_pos[2],
+    ];
     eprintln!("slide-arm TCP shift {d:?} (rail 0 → 0.15 m)");
     assert!((d[0] - 0.15).abs() < 0.01, "TCP follows the rail: {d:?}");
-    assert!(d[1].abs() < 0.01 && d[2].abs() < 0.01, "no cross-talk: {d:?}");
+    assert!(
+        d[1].abs() < 0.01 && d[2].abs() < 0.01,
+        "no cross-talk: {d:?}"
+    );
     assert!(b.velocities.iter().all(|v| v.is_finite()));
 }
 

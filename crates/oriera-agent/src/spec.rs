@@ -213,13 +213,10 @@ impl SceneSpec {
         self.robot
             .validate()
             .map_err(|e| format!("spec.robot：{e}"))?;
-        self.scene
-            .validate()
-            .map_err(|e| format!("spec.{e}"))?;
+        self.scene.validate().map_err(|e| format!("spec.{e}"))?;
         let params = &self.task.params;
         params.validate().map_err(|e| format!("spec.task.{e}"))?;
-        crate::embodied_env::make_task(&self.task.id, *params)
-            .map_err(|e| format!("spec.{e}"))?;
+        crate::embodied_env::make_task(&self.task.id, *params).map_err(|e| format!("spec.{e}"))?;
         let base = self.task.id.split('@').next().unwrap_or(&self.task.id);
         if base == "stack" && self.scene.props.len() < 2 {
             return Err(format!(
@@ -245,7 +242,9 @@ impl SceneSpec {
                 ));
             }
             if scale.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-                return Err("spec.control.action_scale：每个分量须为有限正数（rad/单位动作）".into());
+                return Err(
+                    "spec.control.action_scale：每个分量须为有限正数（rad/单位动作）".into(),
+                );
             }
         }
         if !(self.dt.is_finite() && self.dt > 0.0) {
@@ -259,7 +258,10 @@ impl SceneSpec {
             return Err("spec.max_steps = 0：至少要走 1 步".into());
         }
         let r = &self.randomization;
-        for (name, rng) in [("prop_density", r.prop_density), ("prop_friction", r.prop_friction)] {
+        for (name, rng) in [
+            ("prop_density", r.prop_density),
+            ("prop_friction", r.prop_friction),
+        ] {
             if !(rng[0].is_finite() && rng[1].is_finite() && rng[0] <= rng[1]) {
                 return Err(format!(
                     "spec.randomization.{name} = {:?}：须为 [lo, hi] 且 lo ≤ hi",
@@ -340,9 +342,11 @@ impl SceneSpec {
     /// here after mutation).
     #[cfg(feature = "json")]
     pub fn from_value(v: serde_json::Value) -> Result<Self, String> {
-        let spec: Self = serde_json::from_value(v.clone())
-            .map_err(|e| format!("spec 字段非法：{e}"))?;
-        if let Some(report) = unknown_key_report(&v, &serde_json::to_value(&spec).expect("reserialize")) {
+        let spec: Self =
+            serde_json::from_value(v.clone()).map_err(|e| format!("spec 字段非法：{e}"))?;
+        if let Some(report) =
+            unknown_key_report(&v, &serde_json::to_value(&spec).expect("reserialize"))
+        {
             return Err(report);
         }
         spec.validate()?;
@@ -366,7 +370,10 @@ impl SceneSpec {
             });
         }
         let spec = Self::migrate_value(v)?;
-        Ok(LoadedSpec { spec, migrated: true })
+        Ok(LoadedSpec {
+            spec,
+            migrated: true,
+        })
     }
 
     /// Read a spec file from disk ([`Self::load`]).
@@ -384,8 +391,8 @@ impl SceneSpec {
     /// the flat randomization knobs → the `randomization` block.
     #[cfg(feature = "json")]
     pub fn migrate_value(v: serde_json::Value) -> Result<Self, String> {
-        let old: SpecV1 = serde_json::from_value(v)
-            .map_err(|e| format!("v1 spec 迁移失败：{e}"))?;
+        let old: SpecV1 =
+            serde_json::from_value(v).map_err(|e| format!("v1 spec 迁移失败：{e}"))?;
         Ok(Self::migrate_v1_struct(&old))
     }
 
@@ -442,9 +449,8 @@ impl SceneSpec {
             let (path, val) = s
                 .split_once('=')
                 .ok_or_else(|| format!("--set {s:?}：须为 a.b.c=v 形式"))?;
-            let parsed: serde_json::Value = serde_json::from_str(val).unwrap_or_else(|_| {
-                serde_json::Value::String(val.to_string())
-            });
+            let parsed: serde_json::Value = serde_json::from_str(val)
+                .unwrap_or_else(|_| serde_json::Value::String(val.to_string()));
             set_json_path(&mut v, path, parsed)?;
         }
         *self = Self::from_value(v)?;
@@ -503,7 +509,11 @@ fn default_true() -> bool {
 /// index arrays; everything else keys objects. Missing intermediates
 /// are honest errors (P-4: no silent creation).
 #[cfg(feature = "json")]
-fn set_json_path(v: &mut serde_json::Value, path: &str, new: serde_json::Value) -> Result<(), String> {
+fn set_json_path(
+    v: &mut serde_json::Value,
+    path: &str,
+    new: serde_json::Value,
+) -> Result<(), String> {
     let mut segs: Vec<&str> = path.split('.').collect();
     let last = segs.pop().ok_or("--set：路径为空")?;
     let mut cur = v;
@@ -514,9 +524,9 @@ fn set_json_path(v: &mut serde_json::Value, path: &str, new: serde_json::Value) 
                 cur = m.get_mut(*seg).ok_or_else(err)?;
             }
             serde_json::Value::Array(a) => {
-                let idx: usize = seg.parse().map_err(|_| {
-                    format!("--set {path:?}：第 {} 段 {seg:?} 不是数组下标", i + 1)
-                })?;
+                let idx: usize = seg
+                    .parse()
+                    .map_err(|_| format!("--set {path:?}：第 {} 段 {seg:?} 不是数组下标", i + 1))?;
                 cur = a.get_mut(idx).ok_or_else(err)?;
             }
             _other => {
@@ -670,7 +680,11 @@ pub fn resolve_extends_in(
     };
     let name = ext
         .as_str()
-        .ok_or_else(|| format!("spec.extends：须为字符串（官方 spec 名，如 \"tabletop-4dof-pick\"），当前 {ext}"))?
+        .ok_or_else(|| {
+            format!(
+                "spec.extends：须为字符串（官方 spec 名，如 \"tabletop-4dof-pick\"），当前 {ext}"
+            )
+        })?
         .trim()
         .trim_start_matches("official/")
         .trim_end_matches(".json")
@@ -697,13 +711,12 @@ pub fn resolve_extends_in(
                 rd.filter_map(|e| e.ok())
                     .filter_map(|e| {
                         let p = e.path();
-                        (p.extension().and_then(|s| s.to_str()) == Some("json"))
-                            .then(|| {
-                                p.file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("")
-                                    .to_string()
-                            })
+                        (p.extension().and_then(|s| s.to_str()) == Some("json")).then(|| {
+                            p.file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("")
+                                .to_string()
+                        })
                     })
                     .collect()
             })
@@ -712,11 +725,15 @@ pub fn resolve_extends_in(
         format!(
             "spec.extends = {name:?}：官方库里没有（{}；可用：{}）：{e}",
             dir.display(),
-            if have.is_empty() { "<空>".to_string() } else { have.join(", ") }
+            if have.is_empty() {
+                "<空>".to_string()
+            } else {
+                have.join(", ")
+            }
         )
     })?;
-    let base: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("spec.extends = {name:?}：基 spec JSON 非法：{e}"))?;
+    let base: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("spec.extends = {name:?}：基 spec JSON 非法：{e}"))?;
     chain.push(name);
     let mut base = resolve_extends_in(dir, base, depth + 1, chain)?;
     merge_overlay(&mut base, v);
@@ -868,10 +885,7 @@ mod tests {
     #[cfg(feature = "json")]
     #[test]
     fn checked_in_v2_file_matches_the_literal_and_the_hash_anchor() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/specs/tabletop-4dof-pick.json"
-        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/specs/tabletop-4dof-pick.json");
         let on_disk = std::fs::read_to_string(path).expect("read golden v2 spec");
         assert_eq!(
             on_disk.trim_end(),
@@ -927,11 +941,17 @@ mod tests {
         // 去掉该键后与 roundtrip 全等即显式默认），拼错仍报。
         let mut v = serde_json::to_value(golden()).unwrap();
         v["robot"]["joints"][0]["kind"] = serde_json::json!("Revolute");
-        assert!(SceneSpec::from_value(v).is_ok(), "explicit default is legal");
+        assert!(
+            SceneSpec::from_value(v).is_ok(),
+            "explicit default is legal"
+        );
         let mut v = serde_json::to_value(golden()).unwrap();
         v["robot"]["joints"][0]["kind"] = serde_json::json!("Revolote");
         let err = SceneSpec::from_value(v).unwrap_err();
-        assert!(err.contains("Revolote") || err.contains("非法"), "typo'd kind value rejected: {err}");
+        assert!(
+            err.contains("Revolote") || err.contains("非法"),
+            "typo'd kind value rejected: {err}"
+        );
         // 清单外的拼错键（halfx）不因「去除后全等」被误放行
         let mut v = serde_json::to_value(golden()).unwrap();
         v["scene"]["props"][0]["halfx"] = serde_json::json!(1.0);
@@ -944,7 +964,10 @@ mod tests {
         let mut spec = golden();
         spec.task.id = "fly@v9".into();
         let err = spec.validate().unwrap_err();
-        assert!(err.contains("task") && err.contains("pick_place@v1"), "{err}");
+        assert!(
+            err.contains("task") && err.contains("pick_place@v1"),
+            "{err}"
+        );
         let mut spec = golden();
         spec.control.action_scale = Some(vec![2.0; 3]);
         let err = spec.validate().unwrap_err();
@@ -984,7 +1007,11 @@ mod tests {
             r#"{"kind":"cylinder","half_h":0.03,"radius":0.025}"#
         )])
         .expect("sets apply");
-        assert_ne!(spec.spec_hash(), before, "overrides are experiment identity");
+        assert_ne!(
+            spec.spec_hash(),
+            before,
+            "overrides are experiment identity"
+        );
         assert!(format!("{:?}", spec.scene.props[0].shape).contains("Cylinder"));
         // plain-word / numeric values parse too
         let mut spec = golden();
@@ -1027,8 +1054,13 @@ mod tests {
     fn official_golden_is_the_checked_in_golden() {
         let official = official_specs_dir().join("tabletop-4dof-pick.json");
         let on_disk = std::fs::read_to_string(&official).expect("official golden exists");
-        assert_eq!(on_disk.trim_end(), GOLDEN_TABLETOP_4DOF_PICK_SPEC.trim_end());
-        let spec = SceneSpec::load_file(&official).expect("official loads").spec;
+        assert_eq!(
+            on_disk.trim_end(),
+            GOLDEN_TABLETOP_4DOF_PICK_SPEC.trim_end()
+        );
+        let spec = SceneSpec::load_file(&official)
+            .expect("official loads")
+            .spec;
         assert_eq!(spec.spec_hash_hex(), GOLDEN_SPEC_HASH_HEX);
     }
 
@@ -1039,7 +1071,10 @@ mod tests {
     #[cfg(feature = "json")]
     #[test]
     fn extends_resolves_against_official_and_hashes_the_result() {
-        let lab = concat!(env!("CARGO_MANIFEST_DIR"), "/specs/lab/example-cylinder.json");
+        let lab = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/specs/lab/example-cylinder.json"
+        );
         let loaded = SceneSpec::load_file(std::path::Path::new(lab)).expect("lab spec resolves");
         assert!(!loaded.migrated);
         let s = &loaded.spec;
@@ -1066,7 +1101,11 @@ mod tests {
                 ),
             ])
             .unwrap();
-        assert_eq!(s.spec_hash(), by_hand.spec_hash(), "resolved overlay == hand-edited golden");
+        assert_eq!(
+            s.spec_hash(),
+            by_hand.spec_hash(),
+            "resolved overlay == hand-edited golden"
+        );
         // the serialized resolved spec carries no `extends`
         let v = serde_json::to_value(s).unwrap();
         assert!(v.get(EXTENDS_KEY).is_none());
@@ -1078,7 +1117,10 @@ mod tests {
     #[test]
     fn extends_errors_name_the_chain_and_the_candidates() {
         let err = SceneSpec::from_json_v2(r#"{"extends":"no-such-spec"}"#).unwrap_err();
-        assert!(err.contains("no-such-spec") && err.contains("tabletop-4dof-pick"), "{err}");
+        assert!(
+            err.contains("no-such-spec") && err.contains("tabletop-4dof-pick"),
+            "{err}"
+        );
         let err = SceneSpec::from_json_v2(r#"{"extends": 7}"#).unwrap_err();
         assert!(err.contains("extends"), "{err}");
         // a self-referencing chain through a temp library dir (explicit
@@ -1128,7 +1170,11 @@ mod tests {
             "kind change replaces, no stale `half`"
         );
         assert_eq!(base["arr"][1], serde_json::json!({"n": 2}));
-        assert_eq!(base["arr"][2], serde_json::json!({"n": 3}), "extra items append");
+        assert_eq!(
+            base["arr"][2],
+            serde_json::json!({"n": 3}),
+            "extra items append"
+        );
         assert_eq!(
             base["link"]["shape"],
             serde_json::json!({"Capsule": {"half_len": 1.0, "radius": 0.1}}),
@@ -1152,12 +1198,20 @@ mod tests {
         v["robot"]["gripper"]["approach_axis"] = serde_json::json!([1.0, 0.0, 0.0]);
         v["robot"]["gripper"]["gap_axis"] = serde_json::json!([0.0, 0.0, 1.0]);
         let explicit = SceneSpec::from_value(v).expect("explicit default axes parse");
-        assert_eq!(explicit.spec_hash_hex(), GOLDEN_SPEC_HASH_HEX, "explicit default == omitted");
+        assert_eq!(
+            explicit.spec_hash_hex(),
+            GOLDEN_SPEC_HASH_HEX,
+            "explicit default == omitted"
+        );
         let mut v = serde_json::to_value(golden()).unwrap();
         v["robot"]["gripper"]["approach_axis"] = serde_json::json!([0.0, 0.0, -1.0]);
         v["robot"]["gripper"]["gap_axis"] = serde_json::json!([0.0, 1.0, 0.0]);
         let down = SceneSpec::from_value(v).expect("oriented axes parse");
-        assert_ne!(down.spec_hash_hex(), GOLDEN_SPEC_HASH_HEX, "orientation is identity");
+        assert_ne!(
+            down.spec_hash_hex(),
+            GOLDEN_SPEC_HASH_HEX,
+            "orientation is identity"
+        );
         // and a bad pair is a named validation error, not a panic
         let mut v = serde_json::to_value(golden()).unwrap();
         v["robot"]["gripper"]["gap_axis"] = serde_json::json!([1.0, 0.0, 0.0]);
@@ -1187,7 +1241,8 @@ mod tests {
         assert_ne!(stricter.spec_hash_hex(), GOLDEN_SPEC_HASH_HEX);
         // …and it round-trips through --set
         let mut spec = golden();
-        spec.apply_sets(&["task.params.rest_steps=5".into()]).unwrap();
+        spec.apply_sets(&["task.params.rest_steps=5".into()])
+            .unwrap();
         assert_eq!(spec.spec_hash(), stricter.spec_hash(), "--set == hand edit");
     }
 
@@ -1201,7 +1256,10 @@ mod tests {
         let mut env = spec.to_env();
         env.randomize = false;
         assert_eq!(env.task_id(), "pick_place@v2");
-        assert_eq!(env.task_phrase(), "pick up the cube and place it at the target");
+        assert_eq!(
+            env.task_phrase(),
+            "pick up the cube and place it at the target"
+        );
         assert_eq!(env.spec().name, "PickPlace3D-OrieraArm-v2");
         let obs = env.reset(7);
         assert_eq!(obs.len(), 21, "obs contract unchanged");
@@ -1299,7 +1357,9 @@ mod tests {
         };
         let mut c = cam_json("wrist");
         c["kind"]["pinhole"]["fx"] = serde_json::json!(0.0);
-        assert!(from_cams(serde_json::json!([c])).unwrap_err().contains("fx"));
+        assert!(from_cams(serde_json::json!([c]))
+            .unwrap_err()
+            .contains("fx"));
         let mut c = cam_json("wrist");
         c["kind"]["pinhole"]["width"] = serde_json::json!(800);
         let err = from_cams(serde_json::json!([c])).unwrap_err();
@@ -1316,11 +1376,9 @@ mod tests {
         c2["kind"]["pinhole"]["look_at"] = serde_json::json!([0.32, 1.10, 0.0]);
         let err = from_cams(serde_json::json!([c2])).unwrap_err();
         assert!(err.contains("look_at"), "{err}");
-        let err = from_cams(serde_json::json!([cam_json("cam"), cam_json("cam")]))
-            .unwrap_err();
+        let err = from_cams(serde_json::json!([cam_json("cam"), cam_json("cam")])).unwrap_err();
         assert!(err.contains("唯一") || err.contains("重复"), "{err}");
-        let err = from_cams(serde_json::json!([cam_json(" ")]))
-            .unwrap_err();
+        let err = from_cams(serde_json::json!([cam_json(" ")])).unwrap_err();
         assert!(err.contains("name"), "{err}");
     }
 

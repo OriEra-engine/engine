@@ -111,14 +111,46 @@ fn above(p: [f32; 3], h: f32) -> [f32; 3] {
 
 fn pick_place_phases() -> Vec<Phase> {
     vec![
-        Phase { gripper: 0.0, ticks: 70, target: |o, _g| above(o, 0.12) },
-        Phase { gripper: 0.0, ticks: 60, target: |o, _g| above(o, 0.030) },
-        Phase { gripper: 1.0, ticks: 40, target: |o, _g| above(o, 0.030) },
-        Phase { gripper: 1.0, ticks: 70, target: |o, _g| above(o, 0.20) },
-        Phase { gripper: 1.0, ticks: 95, target: |_o, g| above(g, 0.20) },
-        Phase { gripper: 1.0, ticks: 70, target: |_o, g| above(g, 0.06) },
-        Phase { gripper: 0.0, ticks: 35, target: |_o, g| above(g, 0.06) },
-        Phase { gripper: 0.0, ticks: 45, target: |_o, g| above(g, 0.22) },
+        Phase {
+            gripper: 0.0,
+            ticks: 70,
+            target: |o, _g| above(o, 0.12),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 60,
+            target: |o, _g| above(o, 0.030),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 40,
+            target: |o, _g| above(o, 0.030),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 70,
+            target: |o, _g| above(o, 0.20),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 95,
+            target: |_o, g| above(g, 0.20),
+        },
+        Phase {
+            gripper: 1.0,
+            ticks: 70,
+            target: |_o, g| above(g, 0.06),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 35,
+            target: |_o, g| above(g, 0.06),
+        },
+        Phase {
+            gripper: 0.0,
+            ticks: 45,
+            target: |_o, g| above(g, 0.22),
+        },
     ]
 }
 
@@ -142,7 +174,11 @@ impl IkArm {
         Some(Self {
             base: r.base,
             shoulder_y: r.links[shoulder_link].origin[1],
-            links: [r.joints[2].anchor[0], r.joints[3].anchor[0], g.tcp_offset[0]],
+            links: [
+                r.joints[2].anchor[0],
+                r.joints[3].anchor[0],
+                g.tcp_offset[0],
+            ],
             limits: [
                 r.joints[0].limits,
                 r.joints[1].limits,
@@ -166,7 +202,12 @@ fn ik(arm: &IkArm, target: [f32; 3]) -> [f32; 4] {
     let shoulder = f32::atan2(h, d) - f32::atan2(l2 * elbow.sin(), l1 + l2 * elbow.cos());
     let wrist = -std::f32::consts::FRAC_PI_2 - shoulder - elbow;
     let clamp = |v: f32, i: usize| v.clamp(arm.limits[i].0, arm.limits[i].1);
-    [clamp(yaw, 0), clamp(shoulder, 1), clamp(elbow, 2), clamp(wrist, 3)]
+    [
+        clamp(yaw, 0),
+        clamp(shoulder, 1),
+        clamp(elbow, 2),
+        clamp(wrist, 3),
+    ]
 }
 
 /// Where the baseline reads its waypoints — by layout name, as the
@@ -211,8 +252,16 @@ impl SimCore {
         let ik = IkArm::from_env(&env);
         let obs_idx = {
             let l = env.obs_layout();
-            match (l.index_of("ee.x"), l.index_of("obj_rel.x"), l.index_of("goal_rel.x")) {
-                (Some(ee), Some(obj_rel), Some(goal_rel)) => Some(ObsIdx { ee, obj_rel, goal_rel }),
+            match (
+                l.index_of("ee.x"),
+                l.index_of("obj_rel.x"),
+                l.index_of("goal_rel.x"),
+            ) {
+                (Some(ee), Some(obj_rel), Some(goal_rel)) => Some(ObsIdx {
+                    ee,
+                    obj_rel,
+                    goal_rel,
+                }),
                 _ => None,
             }
         };
@@ -431,10 +480,10 @@ impl SimCore {
 
         // TCP + plates ride the gripper's attach link (or the last
         // joint's child without a gripper).
-        let ee_link = r
-            .gripper
-            .as_ref()
-            .map_or_else(|| r.joints.last().map_or(0, |j| j.child_link), |g| g.attach_link);
+        let ee_link = r.gripper.as_ref().map_or_else(
+            || r.joints.last().map_or(0, |j| j.child_link),
+            |g| g.attach_link,
+        );
         let ee_frame = links[ee_link];
         let tcp_local = r.gripper.as_ref().map_or([0.0; 3], |g| g.tcp_offset);
         let ee = Pose {
@@ -450,7 +499,10 @@ impl SimCore {
             let gp = g.gap_axis_or_default();
             let centre = add(
                 ee_frame.pos,
-                quat_rotate(ee_frame.rot, [ap[0] * g.finger_x, ap[1] * g.finger_x, ap[2] * g.finger_x]),
+                quat_rotate(
+                    ee_frame.rot,
+                    [ap[0] * g.finger_x, ap[1] * g.finger_x, ap[2] * g.finger_x],
+                ),
             );
             let half = self.gap_now * 0.5;
             let side = quat_rotate(ee_frame.rot, [gp[0] * half, gp[1] * half, gp[2] * half]);
@@ -459,7 +511,11 @@ impl SimCore {
                 rot: ee_frame.rot,
             };
             let right = Pose {
-                pos: [centre[0] - side[0], centre[1] - side[1], centre[2] - side[2]],
+                pos: [
+                    centre[0] - side[0],
+                    centre[1] - side[1],
+                    centre[2] - side[2],
+                ],
                 rot: ee_frame.rot,
             };
             serde_json::json!({
@@ -560,7 +616,9 @@ mod tests {
         sim.reset(1000);
         let mut worst = 0.0f32;
         for step in 0..300u64 {
-            let a = sim.baseline_action(step).expect("4-DoF pick_place baseline");
+            let a = sim
+                .baseline_action(step)
+                .expect("4-DoF pick_place baseline");
             sim.step(&a);
             let poses: serde_json::Value = serde_json::from_str(&sim.poses_json()).unwrap();
             let fk: Vec<f32> = poses["ee"]["pos"]
@@ -599,14 +657,21 @@ mod tests {
         let s: serde_json::Value = serde_json::from_str(&sim.spec_json()).unwrap();
         assert_eq!(s["schema"], "oriera.scene/2");
         assert_eq!(sim.spec_hash().len(), 16);
-        assert_eq!(sim.task_phrase(), "pick up the cube and place it at the target");
+        assert_eq!(
+            sim.task_phrase(),
+            "pick up the cube and place it at the target"
+        );
     }
 
     #[test]
     fn preset_spec_is_the_golden_file() {
         let a = SimCore::from_spec_json(&preset_spec_json()).unwrap();
         let b = SimCore::from_spec_json(SPEC).unwrap();
-        assert_eq!(a.spec_hash(), b.spec_hash(), "preset() drifted from specs/tabletop-4dof-pick.json");
+        assert_eq!(
+            a.spec_hash(),
+            b.spec_hash(),
+            "preset() drifted from specs/tabletop-4dof-pick.json"
+        );
     }
 
     #[test]

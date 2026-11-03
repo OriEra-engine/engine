@@ -166,7 +166,8 @@ impl EvalProtocol {
         if self.id != PROTOCOL_COURSE_V1 && self.id != PROTOCOL_PAPER_V1 {
             return Err(format!("protocol.id：未知协议 {:?}", self.id));
         }
-        if self.success_criteria != SUCCESS_CRITERIA_V1 && self.success_criteria != SUCCESS_CRITERIA_V2
+        if self.success_criteria != SUCCESS_CRITERIA_V1
+            && self.success_criteria != SUCCESS_CRITERIA_V2
         {
             return Err(format!(
                 "protocol.success_criteria：{self:?} 只认 {SUCCESS_CRITERIA_V1:?} / {SUCCESS_CRITERIA_V2:?}（判据修订是 @v2 新任务 id，不原地改）",
@@ -696,7 +697,10 @@ mod tests {
             SuccessView::default(),
         ];
         let s = summarize_success(&views);
-        assert_eq!((s.episodes, s.successes_once, s.successes_at_end), (3, 2, 1));
+        assert_eq!(
+            (s.episodes, s.successes_once, s.successes_at_end),
+            (3, 2, 1)
+        );
         assert!((s.success_once_rate - 2.0 / 3.0).abs() < 1e-12);
         assert!((s.success_at_end_rate - 1.0 / 3.0).abs() < 1e-12);
         assert_eq!(s.once_wilson95.0, wilson95(2, 3).0);
@@ -719,7 +723,11 @@ mod tests {
         let (t, _) = baseline_gate("pick_place@v1", "panda7").expect("panda gate");
         assert_eq!(t, 0.75);
         // …and the new families their own floors; push stays ungated.
-        for (task, want) in [("stack@v1", 0.75), ("bin_pick@v1", 0.60), ("drawer@v1", 0.60)] {
+        for (task, want) in [
+            ("stack@v1", 0.75),
+            ("bin_pick@v1", 0.60),
+            ("drawer@v1", 0.60),
+        ] {
             let (t, _) = baseline_gate(task, "tabletop-4dof").expect(task);
             assert_eq!(t, want, "{task}");
         }

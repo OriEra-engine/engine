@@ -207,7 +207,9 @@ impl<P: ModelProvider + 'static> CognitionSystem<P> {
             }
             let reply = done.result.unwrap_or_else(|_| "……".into());
             record_fingerprint(world, self.provider.as_ref(), &p.sys, &p.user, &reply);
-            Self::land_reply(world, p.speaker, &p.persona, &p.partner, reply, p.turn, p.day);
+            Self::land_reply(
+                world, p.speaker, &p.persona, &p.partner, reply, p.turn, p.day,
+            );
         }
     }
 
@@ -221,8 +223,7 @@ impl<P: ModelProvider + 'static> CognitionSystem<P> {
             return true; // 同步路：无在途作业
         }
         self.harvest(world);
-        self.pending.is_empty()
-            && self.jobs.as_ref().expect("checked above").inflight() == 0
+        self.pending.is_empty() && self.jobs.as_ref().expect("checked above").inflight() == 0
     }
 
     /// Switch to async mode: at most one in-flight call, replies land
@@ -1305,7 +1306,8 @@ mod tests {
 
     #[test]
     fn async_cognition_never_blocks_and_lands_one_frame_later() {
-        let entered = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let entered =
+            std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let mut w = cafe_world();
         let mut cog = CognitionSystem::new(
@@ -1378,7 +1380,8 @@ mod tests {
 
     #[test]
     fn async_director_lands_beats_off_the_frame_loop() {
-        let entered = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let entered =
+            std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let mut w = cafe_world();
         let mut dir = DirectorSystem::new(
@@ -1552,7 +1555,6 @@ mod tests {
             }
         }
     }
-
 
     /// Captures BOTH sides of every call (stable-prefix tests).
     struct CapturePair {
@@ -1810,9 +1812,7 @@ mod tests {
                 }
                 let landed = w
                     .resource::<InferenceLedger>()
-                    .map(|l| {
-                        wait_prompt.is_none_or(|p| l.entries.iter().any(|e| e.prompt == p))
-                    })
+                    .map(|l| wait_prompt.is_none_or(|p| l.entries.iter().any(|e| e.prompt == p)))
                     .unwrap_or(false);
                 if landed {
                     break;

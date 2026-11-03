@@ -17,9 +17,7 @@ use oriera_agent::urdf::{RobotSpecOpts, UrdfReport};
 use oriera_common::{FrameIndex, Grants, Timestamp};
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::World;
-use oriera_subsys::{
-    JointTargets, JointTelemetry, MultibodySystem, RobotSpec, Scene3D, TimeScale,
-};
+use oriera_subsys::{JointTargets, JointTelemetry, MultibodySystem, RobotSpec, Scene3D, TimeScale};
 
 const DT: f32 = 1.0 / 60.0;
 const PANDA: &str = "tests/fixtures/panda7.urdf";
@@ -27,7 +25,8 @@ const GRIPPER: &str = "tests/fixtures/gripper2f.urdf";
 
 fn fixture(name: &str) -> UrdfReport {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
-    let xml = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("读 {} 失败：{e}", path.display()));
+    let xml = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("读 {} 失败：{e}", path.display()));
     UrdfReport::parse(&xml).unwrap_or_else(|e| panic!("{} 解析失败：{e}", path.display()))
 }
 
@@ -81,7 +80,8 @@ fn panda7_maps_to_a_full_robot_spec() {
     let mut opts = panda_opts();
     let spec = rep.to_robot_spec(&mut opts).expect("to_robot_spec");
     assert_eq!(spec.name, "panda7");
-    spec.validate().expect("spec 结构合法（mesh_uri 保持 None）");
+    spec.validate()
+        .expect("spec 结构合法（mesh_uri 保持 None）");
 
     // 7 关节 + 8 链体（attachment 被 fixed 吸收进 link7）
     assert_eq!(spec.joints.len(), 7, "{:?}", spec.joint_names());
@@ -93,38 +93,80 @@ fn panda7_maps_to_a_full_robot_spec() {
     for (row, j) in PANDA_JOINT_TABLE.iter().zip(&spec.joints) {
         assert_eq!(j.name, row.0, "关节顺序 = URDF 链序");
         let (lo, hi) = j.limits;
-        assert!((lo - row.1).abs() < 1e-5 && (hi - row.2).abs() < 1e-5, "{}: {:?}", j.name, j.limits);
+        assert!(
+            (lo - row.1).abs() < 1e-5 && (hi - row.2).abs() < 1e-5,
+            "{}: {:?}",
+            j.name,
+            j.limits
+        );
         assert_eq!(j.effort, Some(row.3), "{} effort", j.name);
-        assert_eq!(j.velocity_limit, Some(row.4), "{} velocity（URDF 此前被丢弃）", j.name);
+        assert_eq!(
+            j.velocity_limit,
+            Some(row.4),
+            "{} velocity（URDF 此前被丢弃）",
+            j.name
+        );
         assert_eq!(j.damping, row.5, "{} damping", j.name);
-        assert_eq!((j.kp, j.kd, j.armature), (300.0, 30.0, 0.05), "{} 用 opts 增益", j.name);
+        assert_eq!(
+            (j.kp, j.kd, j.armature),
+            (300.0, 30.0, 0.05),
+            "{} 用 opts 增益",
+            j.name
+        );
     }
     // Panda 特色：joint4 限位不含零 → home 钳到 −0.0698，其余零位
     assert!((spec.home[3] - (-0.0698)).abs() < 1e-5, "{:?}", spec.home);
-    assert!(spec.home.iter().enumerate().all(|(i, h)| i == 3 || h.abs() < 1e-6));
+    assert!(spec
+        .home
+        .iter()
+        .enumerate()
+        .all(|(i, h)| i == 3 || h.abs() < 1e-6));
 
     // 轴：Z-up→Y-up 后 joint1/3/5 竖直（OriEra +Y，yaw 式），joint2/4/6/7 横向
     // （f32 三角函数有 ~1e-8 级噪声，全部按容差断言）
-    let near = |a: [f32; 3], b: [f32; 3]| {
-        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6)
-    };
+    let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
     let ax = |i: usize| spec.joints[i].axis;
-    assert!(near(ax(1), [0.0, 0.0, -1.0]), "joint2 轴（URDF +Y → OriEra −Z）：{:?}", ax(1));
+    assert!(
+        near(ax(1), [0.0, 0.0, -1.0]),
+        "joint2 轴（URDF +Y → OriEra −Z）：{:?}",
+        ax(1)
+    );
     assert!(near(ax(3), [0.0, 0.0, 1.0]), "joint4 轴：{:?}", ax(3));
     assert!(near(ax(5), [0.0, 0.0, 1.0]), "joint6 轴：{:?}", ax(5));
-    assert!(near(ax(6), [0.0, -1.0, 0.0]), "joint7 轴（法兰零位朝下，URDF −Z → OriEra −Y）：{:?}", ax(6));
+    assert!(
+        near(ax(6), [0.0, -1.0, 0.0]),
+        "joint7 轴（法兰零位朝下，URDF −Z → OriEra −Y）：{:?}",
+        ax(6)
+    );
     for i in [0, 2, 4, 6] {
-        assert!((ax(i)[1].abs() - 1.0).abs() < 1e-5, "joint{} 轴 {:?} 应竖直", i + 1, ax(i));
+        assert!(
+            (ax(i)[1].abs() - 1.0).abs() < 1e-5,
+            "joint{} 轴 {:?} 应竖直",
+            i + 1,
+            ax(i)
+        );
     }
     for i in [1, 3, 5] {
-        assert!(ax(i)[1].abs() < 1e-5, "joint{} 轴 {:?} 应横向", i + 1, ax(i));
+        assert!(
+            ax(i)[1].abs() < 1e-5,
+            "joint{} 轴 {:?} 应横向",
+            i + 1,
+            ax(i)
+        );
     }
 
     // mesh 诚实降级：8/8 链体降级（.obj/.stl 无 mesh_base_dir 可解析）、
     // mesh_uri 全 None、URI 进 skipped（M2 起给 mesh_base_dir 的 STL 走凸包）
     let mesh_rows: Vec<&String> = opts.skipped.iter().filter(|s| s.contains("mesh")).collect();
-    assert_eq!(mesh_rows.len(), spec.links.len(), "mesh 降级计数 = 链节数：{:?}", opts.skipped);
-    assert!(mesh_rows.iter().any(|s| s.contains("link5_collision_0.obj")));
+    assert_eq!(
+        mesh_rows.len(),
+        spec.links.len(),
+        "mesh 降级计数 = 链节数：{:?}",
+        opts.skipped
+    );
+    assert!(mesh_rows
+        .iter()
+        .any(|s| s.contains("link5_collision_0.obj")));
     assert!(spec.links.iter().all(|l| l.mesh_uri.is_none()));
 
     // <inertial> 全张量直进 LinkSpec.inertial（M2 U-1）：质量逐项 == URDF，
@@ -141,7 +183,10 @@ fn panda7_maps_to_a_full_robot_spec() {
         1.2516e-2 + 1.0027e-2 + 4.815e-3,
     ];
     for (k, (l, m)) in spec.links.iter().zip(PANDA_MASS).enumerate() {
-        let i = l.inertial.as_ref().unwrap_or_else(|| panic!("link {} 缺 inertial", l.name));
+        let i = l
+            .inertial
+            .as_ref()
+            .unwrap_or_else(|| panic!("link {} 缺 inertial", l.name));
         assert_eq!(i.mass, m, "link {} 质量 == URDF 逐项", l.name);
         let tr = i.ixx + i.iyy + i.izz;
         assert!(
@@ -151,11 +196,18 @@ fn panda7_maps_to_a_full_robot_spec() {
             PANDA_TRACE[k]
         );
         assert_eq!(l.added_mass, 0.0, "有 <inertial> 不再加质量");
-        assert_eq!(l.density, preset.links[1].density, "inertial 直给 → 密度簿记缺省");
+        assert_eq!(
+            l.density, preset.links[1].density,
+            "inertial 直给 → 密度簿记缺省"
+        );
     }
     // FK：link1 = mount + (0,0.333,0)（Z-up 旋成 OriEra +Y）
     assert!((spec.links[0].origin[1] - 0.0).abs() < 1e-6);
-    assert!((spec.links[1].origin[1] - 0.333).abs() < 1e-5, "{:?}", spec.links[1].origin);
+    assert!(
+        (spec.links[1].origin[1] - 0.333).abs() < 1e-5,
+        "{:?}",
+        spec.links[1].origin
+    );
     assert!(spec.links[1].origin[0].abs() < 1e-6 && spec.links[1].origin[2].abs() < 1e-6);
     // 链一致性（robot.rs 契约）：origin[child] == origin[parent] + anchor
     for j in &spec.joints {
@@ -226,13 +278,21 @@ fn panda7_enters_the_multibody_and_tracks_in_limit_targets() {
         if err > worst.1 {
             worst = (i, err);
         }
-        assert!(err < 0.15, "joint{} 跟踪误差 {err} rad ≥ 0.15（got {got}, want {want}）", i + 1);
+        assert!(
+            err < 0.15,
+            "joint{} 跟踪误差 {err} rad ≥ 0.15（got {got}, want {want}）",
+            i + 1
+        );
     }
     assert!(
         tel.velocities.iter().all(|v| v.is_finite()) && tel.ee_pos.iter().all(|v| v.is_finite()),
         "遥测有限"
     );
-    eprintln!("panda7 跟踪最差关节：{}（误差 {:.4} rad）", worst.0 + 1, worst.1);
+    eprintln!(
+        "panda7 跟踪最差关节：{}（误差 {:.4} rad）",
+        worst.0 + 1,
+        worst.1
+    );
 }
 
 #[test]
@@ -245,29 +305,47 @@ fn gripper2f_is_detected_and_mounts_on_the_panda() {
     // 单独导入：夹爪本体 descriptor（0 臂关节 + GripperSpec，validate 会拒绝
     // 构建——这正是「移植前」形态）
     let mut gopts = RobotSpecOpts::default();
-    let grip_only = grip_rep.to_robot_spec(&mut gopts).expect("gripper-only descriptor");
+    let grip_only = grip_rep
+        .to_robot_spec(&mut gopts)
+        .expect("gripper-only descriptor");
     assert!(grip_only.joints.is_empty());
     let g0 = grip_only.gripper.as_ref().expect("GripperSpec 检出");
     assert_eq!(g0.attach_link, 0);
-    assert!((g0.gap_closed - 0.008).abs() < 1e-4, "闭位 = 指板半厚 ×2：{}", g0.gap_closed);
+    assert!(
+        (g0.gap_closed - 0.008).abs() < 1e-4,
+        "闭位 = 指板半厚 ×2：{}",
+        g0.gap_closed
+    );
     assert!(
         (g0.gap_open - g0.gap_closed - 0.08).abs() < 1e-4,
         "行程 = 限位 0.04 × (1+multiplier 1)：{} − {}",
         g0.gap_open,
         g0.gap_closed
     );
-    assert_eq!(g0.finger_half, [0.0085, 0.0085, 0.004], "板半尺寸 = 挂载系 AABB（r_up 置换 y↔z，指垫对称 → 数值同旧重排）");
+    assert_eq!(
+        g0.finger_half,
+        [0.0085, 0.0085, 0.004],
+        "板半尺寸 = 挂载系 AABB（r_up 置换 y↔z，指垫对称 → 数值同旧重排）"
+    );
     // M2 朝向接线：接近/开合方向经 r_up·mount.r 旋到挂载体系——
     // 手系接近 +Z → OriEra +Y（上轴换算）、开合 +Y → OriEra −Z。
-    let near = |a: [f32; 3], b: [f32; 3], tol: f32| {
-        a.iter().zip(b).all(|(x, y)| (x - y).abs() < tol)
-    };
-    assert!(near(g0.approach_axis.unwrap(), [0.0, 1.0, 0.0], 1e-6),
-        "approach_axis {:?}", g0.approach_axis);
-    assert!(near(g0.gap_axis.unwrap(), [0.0, 0.0, -1.0], 1e-6),
-        "gap_axis {:?}", g0.gap_axis);
+    let near =
+        |a: [f32; 3], b: [f32; 3], tol: f32| a.iter().zip(b).all(|(x, y)| (x - y).abs() < tol);
+    assert!(
+        near(g0.approach_axis.unwrap(), [0.0, 1.0, 0.0], 1e-6),
+        "approach_axis {:?}",
+        g0.approach_axis
+    );
+    assert!(
+        near(g0.gap_axis.unwrap(), [0.0, 0.0, -1.0], 1e-6),
+        "gap_axis {:?}",
+        g0.gap_axis
+    );
     assert_eq!(g0.effort, 20.0, "手指 <limit effort>");
-    assert!((g0.gap_rate - 0.2 * 2.0 / 60.0).abs() < 1e-6, "<limit velocity>→gap_rate");
+    assert!(
+        (g0.gap_rate - 0.2 * 2.0 / 60.0).abs() < 1e-6,
+        "<limit velocity>→gap_rate"
+    );
     assert_eq!(g0.kind, oriera_subsys::GripperKind::ParallelPlates);
 
     // 挂到 panda7：arm + 外部夹爪 → 一份 spec
@@ -280,7 +358,11 @@ fn gripper2f_is_detected_and_mounts_on_the_panda() {
     assert_eq!(spec.joints.len(), 7, "夹爪不进关节链");
     let g = spec.gripper.as_ref().expect("夹爪挂上");
     assert_eq!(g.attach_link, 7, "末体（attachment 吸收进 link7）");
-    assert!((g.finger_x - 0.1029).abs() < 1e-3, "接近轴距离：{}", g.finger_x);
+    assert!(
+        (g.finger_x - 0.1029).abs() < 1e-3,
+        "接近轴距离：{}",
+        g.finger_x
+    );
     // TCP = link7 法兰下 0.107 + 手指 0.1029 → (0, −0.2099, 0)（OriEra −Y 即下）
     assert!(
         (g.tcp_offset[1] - (-0.2099)).abs() < 2e-3
@@ -294,21 +376,32 @@ fn gripper2f_is_detected_and_mounts_on_the_panda() {
     // 接近 +Z → OriEra −Y（垂直向下 ✓），开合 +Y → 水平 (−√2/2, 0, −√2/2)；
     // finger_half = 手系 AABB 经同一旋转 → 135° 非整倍角 → 保守包络
     // （0.0085/0.004 → 0.70711·(0.0085+0.004) = 0.0088388 行）。
-    let near = |a: [f32; 3], b: [f32; 3], tol: f32| {
-        a.iter().zip(b).all(|(x, y)| (x - y).abs() < tol)
-    };
-    assert!(near(g.approach_axis.unwrap(), [0.0, -1.0, 0.0], 1e-5),
-        "approach_axis {:?}", g.approach_axis);
+    let near =
+        |a: [f32; 3], b: [f32; 3], tol: f32| a.iter().zip(b).all(|(x, y)| (x - y).abs() < tol);
+    assert!(
+        near(g.approach_axis.unwrap(), [0.0, -1.0, 0.0], 1e-5),
+        "approach_axis {:?}",
+        g.approach_axis
+    );
     let s = std::f32::consts::FRAC_1_SQRT_2;
-    assert!(near(g.gap_axis.unwrap(), [-s, 0.0, -s], 1e-5),
-        "gap_axis {:?}", g.gap_axis);
+    assert!(
+        near(g.gap_axis.unwrap(), [-s, 0.0, -s], 1e-5),
+        "gap_axis {:?}",
+        g.gap_axis
+    );
     let half_want = [s * 0.0125, 0.0085, s * 0.0125];
     assert!(
-        g.finger_half.iter().zip(half_want).all(|(a, b)| (a - b).abs() < 1e-5),
+        g.finger_half
+            .iter()
+            .zip(half_want)
+            .all(|(a, b)| (a - b).abs() < 1e-5),
         "finger_half {:?} vs 保守 AABB {half_want:?}",
         g.finger_half
     );
-    assert!(!opts.skipped.iter().any(|s| s.contains("覆盖")), "panda7 无自带夹爪");
+    assert!(
+        !opts.skipped.iter().any(|s| s.contains("覆盖")),
+        "panda7 无自带夹爪"
+    );
 
     // from_robot 构建 + 指板按 spec（板系朝向数据）落位
     let scene = Scene3D {
@@ -356,9 +449,15 @@ fn gripper2f_is_detected_and_mounts_on_the_panda() {
         origin7[1] + g.finger_x * ap[1],
         origin7[2] + g.finger_x * ap[2],
     ];
-    let d = ((mid[0] - want_mid[0]).powi(2) + (mid[1] - want_mid[1]).powi(2) + (mid[2] - want_mid[2]).powi(2)).sqrt();
+    let d = ((mid[0] - want_mid[0]).powi(2)
+        + (mid[1] - want_mid[1]).powi(2)
+        + (mid[2] - want_mid[2]).powi(2))
+    .sqrt();
     // 容差 = 板跟随后挂体的 kinematic 位姿（settle 残余 sag 的小角度摆动）
-    assert!(d < 0.02, "板中心 {mid:?} vs 末体+finger_x·approach {want_mid:?}（差 {d}）");
+    assert!(
+        d < 0.02,
+        "板中心 {mid:?} vs 末体+finger_x·approach {want_mid:?}（差 {d}）"
+    );
     // 板间距方向 ≈ gap_axis（sag 后小角度容差 → 点积 > 0.99）
     let sep = [
         plates[0][0] - plates[1][0],
@@ -370,9 +469,19 @@ fn gripper2f_is_detected_and_mounts_on_the_panda() {
     assert!(dot > 0.99, "板间距方向应沿 gap_axis：dot={dot}");
     // TCP 遥测 = 末体 + tcp_offset（sag 后小角度容差）
     let tip = sys.ee_pose().0;
-    let tcp_want = [origin7[0] + g.tcp_offset[0], origin7[1] + g.tcp_offset[1], origin7[2] + g.tcp_offset[2]];
-    let dtip = ((tip[0] - tcp_want[0]).powi(2) + (tip[1] - tcp_want[1]).powi(2) + (tip[2] - tcp_want[2]).powi(2)).sqrt();
-    assert!(dtip < 0.05, "TCP {tip:?} vs {tcp_want:?}（差 {dtip}，sag 容差内）");
+    let tcp_want = [
+        origin7[0] + g.tcp_offset[0],
+        origin7[1] + g.tcp_offset[1],
+        origin7[2] + g.tcp_offset[2],
+    ];
+    let dtip = ((tip[0] - tcp_want[0]).powi(2)
+        + (tip[1] - tcp_want[1]).powi(2)
+        + (tip[2] - tcp_want[2]).powi(2))
+    .sqrt();
+    assert!(
+        dtip < 0.05,
+        "TCP {tip:?} vs {tcp_want:?}（差 {dtip}，sag 容差内）"
+    );
 }
 
 #[test]
@@ -426,7 +535,11 @@ fn four_axis_fixture_joint_count_matches_the_legacy_projection() {
         r#"<joint name="j4" type="fixed">"#,
     );
     let rep3 = UrdfReport::parse(&xml3).unwrap();
-    let n3 = rep3.to_robot_spec(&mut RobotSpecOpts::default()).unwrap().joints.len();
+    let n3 = rep3
+        .to_robot_spec(&mut RobotSpecOpts::default())
+        .unwrap()
+        .joints
+        .len();
     assert_eq!(n3, 3, "全链导入按实得轴数，不再 4 轴投影");
 }
 
@@ -464,13 +577,30 @@ fn panda7_inertials_reach_the_rigid_bodies() {
     // URDF 原始张量（fixture 逐字面值）：(ixx, iyy, izz, ixy, ixz, iyz)
     const PANDA_TENSOR: [[f32; 6]; 8] = [
         [0.00315, 0.00388, 0.004285, 8.2904e-7, 0.00015, 8.2299e-6],
-        [0.70337, 0.70661, 0.0091170, -0.00013900, 0.0067720, 0.019169],
-        [0.0079620, 2.8110e-2, 2.5995e-2, -3.925e-3, 1.0254e-2, 7.04e-4],
-        [3.7242e-2, 3.6155e-2, 1.083e-2, -4.761e-3, -1.1396e-2, -1.2805e-2],
-        [2.5853e-2, 1.9552e-2, 2.8323e-2, 7.796e-3, -1.332e-3, 8.641e-3],
-        [3.5549e-2, 2.9474e-2, 8.627e-3, -2.117e-3, -4.037e-3, 2.29e-4],
+        [
+            0.70337,
+            0.70661,
+            0.0091170,
+            -0.00013900,
+            0.0067720,
+            0.019169,
+        ],
+        [
+            0.0079620, 2.8110e-2, 2.5995e-2, -3.925e-3, 1.0254e-2, 7.04e-4,
+        ],
+        [
+            3.7242e-2, 3.6155e-2, 1.083e-2, -4.761e-3, -1.1396e-2, -1.2805e-2,
+        ],
+        [
+            2.5853e-2, 1.9552e-2, 2.8323e-2, 7.796e-3, -1.332e-3, 8.641e-3,
+        ],
+        [
+            3.5549e-2, 2.9474e-2, 8.627e-3, -2.117e-3, -4.037e-3, 2.29e-4,
+        ],
         [1.964e-3, 4.354e-3, 5.433e-3, 1.09e-4, -1.158e-3, 3.41e-4],
-        [1.2516e-2, 1.0027e-2, 4.815e-3, -4.28e-4, -1.196e-3, -7.41e-4],
+        [
+            1.2516e-2, 1.0027e-2, 4.815e-3, -4.28e-4, -1.196e-3, -7.41e-4,
+        ],
     ];
     // URDF inertial origin（link 系）模长——旋系不变量（fixture 逐项实算，
     // f32 三角噪声容差 2e-3）
@@ -485,7 +615,9 @@ fn panda7_inertials_reach_the_rigid_bodies() {
             + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
     };
     let frob2 = |m: [[f32; 3]; 3]| {
-        (0..3).map(|a| (0..3).map(|b| m[a][b] * m[a][b]).sum::<f32>()).sum::<f32>()
+        (0..3)
+            .map(|a| (0..3).map(|b| m[a][b] * m[a][b]).sum::<f32>())
+            .sum::<f32>()
     };
     for (k, l) in spec.links.iter().enumerate().skip(1) {
         // link0 = 固定根：rapier 把 fixed 体质量归零（求解器不消费），
@@ -513,18 +645,29 @@ fn panda7_inertials_reach_the_rigid_bodies() {
         let f2_u = frob2(u);
         let rel = |a: f32, b: f32| (a - b).abs() / b.abs().max(1e-9);
         assert!(rel(tr, tr_u) < 1e-4, "link {} 迹 {tr} vs {tr_u}", l.name);
-        assert!(rel(det, det_u) < 2e-3, "link {} 行列式 {det} vs {det_u}", l.name);
-        assert!(rel(f2, f2_u) < 1e-4, "link {} Frobenius² {f2} vs {f2_u}", l.name);
+        assert!(
+            rel(det, det_u) < 2e-3,
+            "link {} 行列式 {det} vs {det_u}",
+            l.name
+        );
+        assert!(
+            rel(f2, f2_u) < 1e-4,
+            "link {} Frobenius² {f2} vs {f2_u}",
+            l.name
+        );
         // 质心：模长旋系不变（方向由 r_up∘R_link 决定，urdf.rs 的
         // rotate_inertia 单测钉死；这里钉模长与有限性）
-        let com_norm = (mp.com[0] * mp.com[0] + mp.com[1] * mp.com[1] + mp.com[2] * mp.com[2]).sqrt();
+        let com_norm =
+            (mp.com[0] * mp.com[0] + mp.com[1] * mp.com[1] + mp.com[2] * mp.com[2]).sqrt();
         assert!(
             (com_norm - PANDA_COM_NORM[k]).abs() < 2e-3,
             "link {} |com| {com_norm} vs URDF ≈{}",
             l.name,
             PANDA_COM_NORM[k]
         );
-        assert!(mp.com.iter().all(|v| v.is_finite()) && mp.principal_inertia.iter().all(|v| *v >= 0.0));
+        assert!(
+            mp.com.iter().all(|v| v.is_finite()) && mp.principal_inertia.iter().all(|v| *v >= 0.0)
+        );
     }
     // armature：opts.default_armature 真进 multibody 的 per-DoF 槽位
     for (k, j) in spec.joints.iter().enumerate() {
@@ -585,16 +728,30 @@ const SLIDE_ARM_URDF: &str = r#"<?xml version="1.0"?>
 fn prismatic_rail_urdf_imports_into_the_multibody_and_tracks() {
     let rep = UrdfReport::parse(SLIDE_ARM_URDF).expect("滑轨臂 URDF 解析");
     let mut opts = RobotSpecOpts::default();
-    let spec = rep.to_robot_spec(&mut opts).expect("prismatic 链真导入（不再断链报错）");
+    let spec = rep
+        .to_robot_spec(&mut opts)
+        .expect("prismatic 链真导入（不再断链报错）");
     assert_eq!(spec.joint_names(), ["rail_x", "yaw", "pitch"]);
     let rail = &spec.joints[0];
     assert_eq!(rail.kind, oriera_subsys::JointKind::Prismatic);
     assert_eq!(rail.limits, (-0.1, 0.3), "米制限位直接接");
-    assert_eq!((rail.effort, rail.velocity_limit, rail.damping), (Some(200.0), Some(0.5), 2.0));
+    assert_eq!(
+        (rail.effort, rail.velocity_limit, rail.damping),
+        (Some(200.0), Some(0.5), 2.0)
+    );
     assert_eq!(rail.axis, [1.0, 0.0, 0.0], "URDF +X 滑向 → OriEra +X");
-    assert_eq!((rail.kp, rail.kd), (opts.default_kp_prismatic, opts.default_kd_prismatic));
-    assert!(spec.joints[1..].iter().all(|j| j.kind == oriera_subsys::JointKind::Revolute));
-    assert_eq!(spec.joints[1].axis, [0.0, 1.0, 0.0], "URDF +Z 转轴 → OriEra +Y");
+    assert_eq!(
+        (rail.kp, rail.kd),
+        (opts.default_kp_prismatic, opts.default_kd_prismatic)
+    );
+    assert!(spec.joints[1..]
+        .iter()
+        .all(|j| j.kind == oriera_subsys::JointKind::Revolute));
+    assert_eq!(
+        spec.joints[1].axis,
+        [0.0, 1.0, 0.0],
+        "URDF +Z 转轴 → OriEra +Y"
+    );
     spec.validate().expect("滑轨臂 RobotSpec 合法");
 
     // 无家具世界（M3 from_robot_fixtures 空列表 = 纯铰接动力学）
@@ -625,10 +782,17 @@ fn prismatic_rail_urdf_imports_into_the_multibody_and_tracks() {
     let b = hold([0.2, 0.4, 0.3], 300, 300, &mut world);
     for (k, (got, want)) in b.angles.iter().zip([0.2f32, 0.4, 0.3]).enumerate() {
         let tol = if k == 0 { 5e-3 } else { 0.06 };
-        assert!((got - want).abs() < tol, "{}: got {got}, want {want}", spec.joints[k].name);
+        assert!(
+            (got - want).abs() < tol,
+            "{}: got {got}, want {want}",
+            spec.joints[k].name
+        );
     }
     let dx = b.ee_pos[0] - a.ee_pos[0];
-    eprintln!("slide-arm URDF: rail 0→0.2 m, TCP Δx {dx:.4} m, rail readout {:.4} m", b.angles[0]);
+    eprintln!(
+        "slide-arm URDF: rail 0→0.2 m, TCP Δx {dx:.4} m, rail readout {:.4} m",
+        b.angles[0]
+    );
     assert!((dx - 0.2).abs() < 0.01, "TCP rides the rail: Δx {dx}");
 }
 
@@ -652,23 +816,45 @@ fn mobile_arm_preset_json_loads_validates_and_drives() {
     let kinds: Vec<_> = spec.robot.joints.iter().map(|j| j.kind).collect();
     assert_eq!(
         &kinds[..2],
-        &[oriera_subsys::JointKind::Prismatic, oriera_subsys::JointKind::Prismatic]
+        &[
+            oriera_subsys::JointKind::Prismatic,
+            oriera_subsys::JointKind::Prismatic
+        ]
     );
-    assert!(kinds[2..].iter().all(|k| *k == oriera_subsys::JointKind::Revolute));
+    assert!(kinds[2..]
+        .iter()
+        .all(|k| *k == oriera_subsys::JointKind::Revolute));
     assert_eq!(spec.scene.fixtures.len(), 1, "只有地面");
     assert_eq!(spec.task.id, "pick_place@v1");
     let v = serde_json::to_value(&spec.robot).expect("robot 序列化");
     let joints = v["joints"].as_array().expect("joints");
     assert_eq!(joints[0]["kind"], "Prismatic");
-    assert!(joints[2].get("kind").is_none(), "revolute 的 kind 省略（旧 JSON 语义）");
+    assert!(
+        joints[2].get("kind").is_none(),
+        "revolute 的 kind 省略（旧 JSON 语义）"
+    );
 
     let mut env = spec.to_env();
     let obs = env.reset(1000);
     assert_eq!(obs.len(), env.spec().obs_dim);
     let names = env.obs_names();
-    let at = |n: &str| names.iter().position(|s| s == n).unwrap_or_else(|| panic!("缺 {n}"));
-    let (sx, sz, ee, rel) = (at("slide_x.pos"), at("slide_z.pos"), at("ee.x"), at("obj_rel.x"));
-    let cube = [obs[ee] + obs[rel], obs[ee + 1] + obs[rel + 1], obs[ee + 2] + obs[rel + 2]];
+    let at = |n: &str| {
+        names
+            .iter()
+            .position(|s| s == n)
+            .unwrap_or_else(|| panic!("缺 {n}"))
+    };
+    let (sx, sz, ee, rel) = (
+        at("slide_x.pos"),
+        at("slide_z.pos"),
+        at("ee.x"),
+        at("obj_rel.x"),
+    );
+    let cube = [
+        obs[ee] + obs[rel],
+        obs[ee + 1] + obs[rel + 1],
+        obs[ee + 2] + obs[rel + 2],
+    ];
     assert!(
         (0.14 - 0.03..=0.22 + 0.03).contains(&cube[0])
             && (-0.52 - 0.03..=-0.46 + 0.03).contains(&cube[2])
@@ -683,6 +869,14 @@ fn mobile_arm_preset_json_loads_validates_and_drives() {
     for _ in 0..240 {
         last = env.step(&action).obs;
     }
-    assert!((last[sx] - 0.1).abs() < 5e-3, "slide_x 到位（米）：{}", last[sx]);
-    assert!((last[sz] + 0.3).abs() < 5e-3, "slide_z 到位（米）：{}", last[sz]);
+    assert!(
+        (last[sx] - 0.1).abs() < 5e-3,
+        "slide_x 到位（米）：{}",
+        last[sx]
+    );
+    assert!(
+        (last[sz] + 0.3).abs() < 5e-3,
+        "slide_z 到位（米）：{}",
+        last[sz]
+    );
 }

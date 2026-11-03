@@ -74,37 +74,105 @@ fn seven_axis_down_gripper_spec(criterion: HoldingCriterion) -> RobotSpec {
         },
         link("carrier", [0.015; 3], [sx, sy, 0.0], [0.0; 3]),
         link("upper_arm", [0.07, r, r], [sx, sy, 0.0], [0.07, 0.0, 0.0]),
-        link("forearm", [0.06, r, r], [sx + 0.14, sy, 0.0], [0.06, 0.0, 0.0]),
-        link("wrist", [0.03, r, r], [sx + 0.26, sy, 0.0], [0.03, 0.0, 0.0]),
-        link("roll_seg", [0.015, r, r], [sx + 0.32, sy, 0.0], [0.015, 0.0, 0.0]),
-        link("yaw_seg", [0.015, r, r], [sx + 0.35, sy, 0.0], [0.015, 0.0, 0.0]),
-        link("flange", [0.01, r, r], [sx + 0.38, sy, 0.0], [0.01, 0.0, 0.0]),
+        link(
+            "forearm",
+            [0.06, r, r],
+            [sx + 0.14, sy, 0.0],
+            [0.06, 0.0, 0.0],
+        ),
+        link(
+            "wrist",
+            [0.03, r, r],
+            [sx + 0.26, sy, 0.0],
+            [0.03, 0.0, 0.0],
+        ),
+        link(
+            "roll_seg",
+            [0.015, r, r],
+            [sx + 0.32, sy, 0.0],
+            [0.015, 0.0, 0.0],
+        ),
+        link(
+            "yaw_seg",
+            [0.015, r, r],
+            [sx + 0.35, sy, 0.0],
+            [0.015, 0.0, 0.0],
+        ),
+        link(
+            "flange",
+            [0.01, r, r],
+            [sx + 0.38, sy, 0.0],
+            [0.01, 0.0, 0.0],
+        ),
     ];
-    let j = |name: &str, p: usize, c: usize, anchor: [f32; 3], axis: [f32; 3], limits: (f32, f32)| {
-        JointSpec {
-            name: name.into(),
-            kind: oriera_subsys::JointKind::Revolute,
-            parent_link: p,
-            child_link: c,
-            anchor,
-            axis,
-            limits,
-            effort: None,
-            velocity_limit: None,
-            kp: 400.0,
-            kd: 20.0,
-            armature: 0.02,
-            damping: 0.05,
-        }
-    };
+    let j =
+        |name: &str, p: usize, c: usize, anchor: [f32; 3], axis: [f32; 3], limits: (f32, f32)| {
+            JointSpec {
+                name: name.into(),
+                kind: oriera_subsys::JointKind::Revolute,
+                parent_link: p,
+                child_link: c,
+                anchor,
+                axis,
+                limits,
+                effort: None,
+                velocity_limit: None,
+                kp: 400.0,
+                kd: 20.0,
+                armature: 0.02,
+                damping: 0.05,
+            }
+        };
     let joints = vec![
-        j("base_yaw", 0, 1, [0.0, 0.12 - base_h, 0.0], [0.0, 1.0, 0.0], (-PI, PI)),
+        j(
+            "base_yaw",
+            0,
+            1,
+            [0.0, 0.12 - base_h, 0.0],
+            [0.0, 1.0, 0.0],
+            (-PI, PI),
+        ),
         j("shoulder", 1, 2, [0.0; 3], [0.0, 0.0, 1.0], (-0.35, 1.45)),
-        j("elbow", 2, 3, [0.14, 0.0, 0.0], [0.0, 0.0, 1.0], (-2.5, 0.35)),
-        j("wrist_pitch", 3, 4, [0.12, 0.0, 0.0], [0.0, 0.0, 1.0], (-2.0, 2.0)),
-        j("wrist_roll", 4, 5, [0.06, 0.0, 0.0], [1.0, 0.0, 0.0], (-PI, PI)),
-        j("wrist_yaw", 5, 6, [0.03, 0.0, 0.0], [0.0, 1.0, 0.0], (-2.0, 2.0)),
-        j("tool_pitch", 6, 7, [0.03, 0.0, 0.0], [0.0, 0.0, 1.0], (-2.0, 2.0)),
+        j(
+            "elbow",
+            2,
+            3,
+            [0.14, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            (-2.5, 0.35),
+        ),
+        j(
+            "wrist_pitch",
+            3,
+            4,
+            [0.12, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            (-2.0, 2.0),
+        ),
+        j(
+            "wrist_roll",
+            4,
+            5,
+            [0.06, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            (-PI, PI),
+        ),
+        j(
+            "wrist_yaw",
+            5,
+            6,
+            [0.03, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            (-2.0, 2.0),
+        ),
+        j(
+            "tool_pitch",
+            6,
+            7,
+            [0.03, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            (-2.0, 2.0),
+        ),
     ];
     let gripper = GripperSpec {
         attach_link: 7,
@@ -192,7 +260,12 @@ fn run_episode(criterion: HoldingCriterion) -> (Vec<(bool, bool, f32)>, [usize; 
     };
     let phases: Vec<(Vec<f32>, u64, f32, bool)> = vec![
         (pose_targets(60.0, 0.0), 80, 0.0, false),
-        (pose_targets(60.0, -std::f32::consts::FRAC_PI_2), 80, 0.0, false),
+        (
+            pose_targets(60.0, -std::f32::consts::FRAC_PI_2),
+            80,
+            0.0,
+            false,
+        ),
         (home_targets(), 120, 0.0, false),
         (home_targets(), 80, 1.0, true),   // close
         (lift_targets(), 150, 1.0, true),  // lift
@@ -216,7 +289,10 @@ fn run_episode(criterion: HoldingCriterion) -> (Vec<(bool, bool, f32)>, [usize; 
                 .get::<JointTelemetry>(arm)
                 .map(|t| t.holding)
                 .unwrap_or(false);
-            let cube_y = world.get::<Pose3>(obj).map(|p| p.pos[1]).unwrap_or(f32::NAN);
+            let cube_y = world
+                .get::<Pose3>(obj)
+                .map(|p| p.pos[1])
+                .unwrap_or(f32::NAN);
             timeline.push((holding, *is_hold_phase, cube_y));
         }
         let _ = is_hold_phase;
@@ -260,7 +336,10 @@ fn contact_criterion_labels_the_grasp_by_real_contact() {
     // 2. Squeeze established: over the last 30 close ticks the contact
     //    criterion must read held.
     let close_end = b[1];
-    let squeeze = tl[close_end - 30..close_end].iter().filter(|(h, _, _)| *h).count();
+    let squeeze = tl[close_end - 30..close_end]
+        .iter()
+        .filter(|(h, _, _)| *h)
+        .count();
     assert!(
         squeeze >= 25,
         "contact holding must be stable once the squeeze is established, got {squeeze}/30"
@@ -304,10 +383,7 @@ fn contact_criterion_labels_the_grasp_by_real_contact() {
         min_normal_force: MIN_NORMAL_FORCE,
         max_slip: MAX_SLIP,
     });
-    assert_eq!(
-        tl, tl2,
-        "same spec+seed ⇒ bit-identical holding timeline"
-    );
+    assert_eq!(tl, tl2, "same spec+seed ⇒ bit-identical holding timeline");
 }
 
 /// The spec-level gate: validation refuses a Contact criterion with a
@@ -319,13 +395,17 @@ fn contact_criterion_is_opt_in_and_validated() {
     assert!(ok.validate().is_ok());
     let h0 = oriera_subsys::rigid3d::robot_identity_hash(&ok);
     let mut bad = ok.clone();
-    bad.gripper.as_mut().unwrap().holding_criterion =
-        HoldingCriterion::Contact { min_normal_force: -1.0, max_slip: 0.0 };
+    bad.gripper.as_mut().unwrap().holding_criterion = HoldingCriterion::Contact {
+        min_normal_force: -1.0,
+        max_slip: 0.0,
+    };
     assert!(bad.validate().is_err(), "negative force threshold refused");
 
     let mut contact = ok.clone();
-    contact.gripper.as_mut().unwrap().holding_criterion =
-        HoldingCriterion::Contact { min_normal_force: 1.0, max_slip: 0.05 };
+    contact.gripper.as_mut().unwrap().holding_criterion = HoldingCriterion::Contact {
+        min_normal_force: 1.0,
+        max_slip: 0.05,
+    };
     contact.validate().expect("valid contact criterion");
     assert_ne!(
         oriera_subsys::rigid3d::robot_identity_hash(&contact),

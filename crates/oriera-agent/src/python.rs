@@ -64,9 +64,8 @@ impl PickPlaceEnv {
     #[staticmethod]
     #[pyo3(signature = (path, seed = Some(1000)))]
     fn from_spec(path: &str, seed: Option<u64>) -> PyResult<Self> {
-        let loaded = SceneSpec::load_file(std::path::Path::new(path)).map_err(|e| {
-            PyErr::new::<PyValueError, _>(format!("spec 加载失败（{path}）：{e}"))
-        })?;
+        let loaded = SceneSpec::load_file(std::path::Path::new(path))
+            .map_err(|e| PyErr::new::<PyValueError, _>(format!("spec 加载失败（{path}）：{e}")))?;
         loaded
             .spec
             .validate()

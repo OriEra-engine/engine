@@ -79,13 +79,49 @@ fn mobile_arm_spec() -> RobotSpec {
             inertial: None,
             mesh_uri: None,
         },
-        link("carriage_x", [0.02, 0.01, 0.02], [-0.03, 0.03, 0.0], [0.0; 3], 0.5),
-        link("carriage_z", [0.02, 0.01, 0.02], [-0.03, 0.03, 0.0], [0.0; 3], 0.5),
-        link("chassis", [0.10, 0.03, 0.08], [-0.03, 0.05, 0.0], [0.0; 3], 1.0),
+        link(
+            "carriage_x",
+            [0.02, 0.01, 0.02],
+            [-0.03, 0.03, 0.0],
+            [0.0; 3],
+            0.5,
+        ),
+        link(
+            "carriage_z",
+            [0.02, 0.01, 0.02],
+            [-0.03, 0.03, 0.0],
+            [0.0; 3],
+            0.5,
+        ),
+        link(
+            "chassis",
+            [0.10, 0.03, 0.08],
+            [-0.03, 0.05, 0.0],
+            [0.0; 3],
+            1.0,
+        ),
         link("yaw_carrier", [0.015; 3], [0.02, 0.12, 0.0], [0.0; 3], 0.2),
-        link("upper_arm", [0.1, 0.022, 0.022], [0.02, 0.12, 0.0], [0.1, 0.0, 0.0], 0.2),
-        link("forearm", [0.09, 0.022, 0.022], [0.22, 0.12, 0.0], [0.09, 0.0, 0.0], 0.2),
-        link("wrist", [0.045, 0.022, 0.022], [0.40, 0.12, 0.0], [0.045, 0.0, 0.0], 0.2),
+        link(
+            "upper_arm",
+            [0.1, 0.022, 0.022],
+            [0.02, 0.12, 0.0],
+            [0.1, 0.0, 0.0],
+            0.2,
+        ),
+        link(
+            "forearm",
+            [0.09, 0.022, 0.022],
+            [0.22, 0.12, 0.0],
+            [0.09, 0.0, 0.0],
+            0.2,
+        ),
+        link(
+            "wrist",
+            [0.045, 0.022, 0.022],
+            [0.40, 0.12, 0.0],
+            [0.045, 0.0, 0.0],
+            0.2,
+        ),
     ];
     #[allow(clippy::too_many_arguments)]
     let j = |name: &str,
@@ -116,8 +152,30 @@ fn mobile_arm_spec() -> RobotSpec {
     let slide = (500.0, 80.0, 0.5, 5.0); // N/m, N·s/m, kg, N·s/m
     let arm = (60.0, 4.0, 0.02, 0.05); // the tabletop preset's servo
     let joints = vec![
-        j("slide_x", Prismatic, 0, 1, [0.0; 3], [1.0, 0.0, 0.0], (-0.20, 0.20), Some(150.0), Some(0.5), slide),
-        j("slide_z", Prismatic, 1, 2, [0.0; 3], [0.0, 0.0, 1.0], (-0.45, 0.45), Some(150.0), Some(0.5), slide),
+        j(
+            "slide_x",
+            Prismatic,
+            0,
+            1,
+            [0.0; 3],
+            [1.0, 0.0, 0.0],
+            (-0.20, 0.20),
+            Some(150.0),
+            Some(0.5),
+            slide,
+        ),
+        j(
+            "slide_z",
+            Prismatic,
+            1,
+            2,
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            (-0.45, 0.45),
+            Some(150.0),
+            Some(0.5),
+            slide,
+        ),
         j(
             "chassis_yaw",
             Revolute,
@@ -130,10 +188,54 @@ fn mobile_arm_spec() -> RobotSpec {
             Some(1.5),
             (80.0, 8.0, 0.05, 0.1),
         ),
-        j("base_yaw", Revolute, 3, 4, [0.05, 0.07, 0.0], [0.0, 1.0, 0.0], (-PI, PI), None, None, arm),
-        j("shoulder", Revolute, 4, 5, [0.0; 3], [0.0, 0.0, 1.0], (-0.35, 1.45), None, None, arm),
-        j("elbow", Revolute, 5, 6, [0.2, 0.0, 0.0], [0.0, 0.0, 1.0], (-2.5, 0.35), None, None, arm),
-        j("wrist_pitch", Revolute, 6, 7, [0.18, 0.0, 0.0], [0.0, 0.0, 1.0], (-2.0, 2.0), None, None, arm),
+        j(
+            "base_yaw",
+            Revolute,
+            3,
+            4,
+            [0.05, 0.07, 0.0],
+            [0.0, 1.0, 0.0],
+            (-PI, PI),
+            None,
+            None,
+            arm,
+        ),
+        j(
+            "shoulder",
+            Revolute,
+            4,
+            5,
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            (-0.35, 1.45),
+            None,
+            None,
+            arm,
+        ),
+        j(
+            "elbow",
+            Revolute,
+            5,
+            6,
+            [0.2, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            (-2.5, 0.35),
+            None,
+            None,
+            arm,
+        ),
+        j(
+            "wrist_pitch",
+            Revolute,
+            6,
+            7,
+            [0.18, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            (-2.0, 2.0),
+            None,
+            None,
+            arm,
+        ),
     ];
     let mut gripper = preset.gripper.clone().expect("preset gripper");
     gripper.attach_link = 7;
@@ -182,7 +284,10 @@ fn hold(
         }
         sys.run(&ctx(i), world);
     }
-    world.get::<JointTelemetry>(arm).cloned().expect("telemetry")
+    world
+        .get::<JointTelemetry>(arm)
+        .cloned()
+        .expect("telemetry")
 }
 
 /// Shoulder (= `yaw_carrier` origin) in the XZ plane: `chain_points`
@@ -212,16 +317,32 @@ fn mobile_preset_mirror_is_valid_and_settles_at_home() {
 
     let (mut world, mut sys, arm) = bench();
     let tel = hold(&mut world, &mut sys, arm, &[0.0; 7], 0, 180);
-    assert!(tel.angles.iter().chain(&tel.velocities).all(|v| v.is_finite()));
-    assert!(tel.angles[0].abs() < 3e-3 && tel.angles[1].abs() < 3e-3, "base parked: {:?}", tel.angles);
-    assert!(tel.angles[2].abs() < 0.02, "chassis yaw parked: {}", tel.angles[2]);
+    assert!(tel
+        .angles
+        .iter()
+        .chain(&tel.velocities)
+        .all(|v| v.is_finite()));
+    assert!(
+        tel.angles[0].abs() < 3e-3 && tel.angles[1].abs() < 3e-3,
+        "base parked: {:?}",
+        tel.angles
+    );
+    assert!(
+        tel.angles[2].abs() < 0.02,
+        "chassis yaw parked: {}",
+        tel.angles[2]
+    );
     assert!(
         tel.velocities.iter().all(|v| v.abs() < 0.05),
         "settled: {:?}",
         tel.velocities
     );
     // The chassis floats on its gantry: never sinks into the floor.
-    assert!(tel.ee_pos[1] > 0.05, "TCP above the floor: {:?}", tel.ee_pos);
+    assert!(
+        tel.ee_pos[1] > 0.05,
+        "TCP above the floor: {:?}",
+        tel.ee_pos
+    );
 }
 
 #[test]
@@ -233,9 +354,21 @@ fn mobile_base_tracks_drive_targets_and_carries_the_arm() {
     let mut targets = vec![0.0f32; 7];
     targets[..3].copy_from_slice(&drive);
     let tel = hold(&mut world, &mut sys, arm, &targets, 180, 360);
-    assert!((tel.angles[0] - drive[0]).abs() < 5e-3, "slide_x: {}", tel.angles[0]);
-    assert!((tel.angles[1] - drive[1]).abs() < 5e-3, "slide_z: {}", tel.angles[1]);
-    assert!((tel.angles[2] - drive[2]).abs() < 0.03, "chassis_yaw: {}", tel.angles[2]);
+    assert!(
+        (tel.angles[0] - drive[0]).abs() < 5e-3,
+        "slide_x: {}",
+        tel.angles[0]
+    );
+    assert!(
+        (tel.angles[1] - drive[1]).abs() < 5e-3,
+        "slide_z: {}",
+        tel.angles[1]
+    );
+    assert!(
+        (tel.angles[2] - drive[2]).abs() < 0.03,
+        "chassis_yaw: {}",
+        tel.angles[2]
+    );
     // TCP = pivot' + R_y(θ)·(TCP_home − pivot): the parked arm rides the
     // base rigidly (same posture ⇒ same sag).
     let (s, c) = drive[2].sin_cos();
@@ -250,7 +383,11 @@ fn mobile_base_tracks_drive_targets_and_carries_the_arm() {
         tel.ee_pos, want[0], want[1], err
     );
     assert!(err < 0.02, "TCP must ride the base: err {err} m");
-    assert!((tel.ee_pos[1] - home.ee_pos[1]).abs() < 0.02, "height kept: {:?}", tel.ee_pos);
+    assert!(
+        (tel.ee_pos[1] - home.ee_pos[1]).abs() < 0.02,
+        "height kept: {:?}",
+        tel.ee_pos
+    );
 
     // Arm stages still track on the moved base.
     let mut reach = targets.clone();
@@ -258,7 +395,10 @@ fn mobile_base_tracks_drive_targets_and_carries_the_arm() {
     let tel = hold(&mut world, &mut sys, arm, &reach, 540, 300);
     for (k, (got, want)) in tel.angles.iter().zip(&reach).enumerate() {
         let tol = if k < 2 { 5e-3 } else { 0.08 };
-        assert!((got - want).abs() < tol, "joint {k}: got {got}, want {want}");
+        assert!(
+            (got - want).abs() < tol,
+            "joint {k}: got {got}, want {want}"
+        );
     }
 }
 
@@ -275,8 +415,14 @@ fn cube_and_goal_are_reachable_only_after_the_base_moves() {
     let (cube_near, _) = band_dist(home, CUBE_X, CUBE_Z);
     let (goal_near, _) = band_dist(home, GOAL_X, GOAL_Z);
     eprintln!("parked shoulder {home:?}: cube ≥ {cube_near:.3} m, goal ≥ {goal_near:.3} m (reach {stretched})");
-    assert!(cube_near > stretched, "cube must be out of the parked arm's reach");
-    assert!(goal_near > stretched, "goal must be out of the parked arm's reach");
+    assert!(
+        cube_near > stretched,
+        "cube must be out of the parked arm's reach"
+    );
+    assert!(
+        goal_near > stretched,
+        "goal must be out of the parked arm's reach"
+    );
 
     // Drive to the cube side (−Z): the whole cube band enters the
     // tool-down reach; then to the goal side (+Z): the goal band does.
@@ -287,7 +433,15 @@ fn cube_and_goal_are_reachable_only_after_the_base_moves() {
     t[1] = 0.40;
     hold(&mut world, &mut sys, arm, &t, 360, 300);
     let (_, goal_far) = band_dist(shoulder_xz(&sys), GOAL_X, GOAL_Z);
-    eprintln!("moved: cube ≤ {cube_far:.3} m, goal ≤ {goal_far:.3} m (tool-down reach {tool_down})");
-    assert!(cube_far < tool_down, "after slide_z −0.40 the cube band is reachable");
-    assert!(goal_far < tool_down, "after slide_z +0.40 the goal band is reachable");
+    eprintln!(
+        "moved: cube ≤ {cube_far:.3} m, goal ≤ {goal_far:.3} m (tool-down reach {tool_down})"
+    );
+    assert!(
+        cube_far < tool_down,
+        "after slide_z −0.40 the cube band is reachable"
+    );
+    assert!(
+        goal_far < tool_down,
+        "after slide_z +0.40 the goal band is reachable"
+    );
 }

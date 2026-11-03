@@ -411,12 +411,18 @@ impl PinholeCam {
     ) -> Result<Self, String> {
         let bad = |v: f32| !v.is_finite() || v <= 0.0;
         if bad(fx) || bad(fy) {
-            return Err(format!("camera fx/fy 须为有限正数（像素），当前 fx={fx} fy={fy}"));
+            return Err(format!(
+                "camera fx/fy 须为有限正数（像素），当前 fx={fx} fy={fy}"
+            ));
         }
         if width == 0 || height == 0 {
             return Err(format!("camera width/height 须 ≥ 1，当前 {width}×{height}"));
         }
-        let d = [look_at[0] - pos[0], look_at[1] - pos[1], look_at[2] - pos[2]];
+        let d = [
+            look_at[0] - pos[0],
+            look_at[1] - pos[1],
+            look_at[2] - pos[2],
+        ];
         if norm(d) <= 0.0 {
             return Err("camera look_at == pos：视线方向为零向量".into());
         }
@@ -468,7 +474,9 @@ impl PinholeCam {
         let u = self.fx * c[0] / c[2] + self.cx;
         let v = self.fy * c[1] / c[2] + self.cy;
         if self.dist.any() {
-            let (xn, yn) = self.dist.distort((u - self.cx) / self.fx, (v - self.cy) / self.fy);
+            let (xn, yn) = self
+                .dist
+                .distort((u - self.cx) / self.fx, (v - self.cy) / self.fy);
             return Some((self.fx * xn + self.cx, self.fy * yn + self.cy, c[2]));
         }
         Some((u, v, c[2]))
@@ -479,10 +487,11 @@ impl PinholeCam {
 /// 5 rings (φ = ±60°/±30°/0°) → 4 bands + 2 pole fans, fixed counts.
 fn sphere_tris(center: [f32; 3], r: f32, out: &mut Vec<[[f32; 3]; 3]>) {
     const SIDES: usize = 8;
-    let quad = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], out: &mut Vec<[[f32; 3]; 3]>| {
-        out.push([a, b, c]);
-        out.push([a, c, d]);
-    };
+    let quad =
+        |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], out: &mut Vec<[[f32; 3]; 3]>| {
+            out.push([a, b, c]);
+            out.push([a, c, d]);
+        };
     let pt = |phi_deg: i32, k: usize| -> [f32; 3] {
         let phi = (phi_deg as f32) * (std::f32::consts::PI / 180.0);
         let th = (k as f32) * (std::f32::consts::TAU / SIDES as f32);
@@ -514,10 +523,11 @@ fn sphere_tris(center: [f32; 3], r: f32, out: &mut Vec<[[f32; 3]; 3]>) {
 /// counts — coarse low-poly is the honest contract here).
 fn prim_tris(p: Prim, out: &mut Vec<[[f32; 3]; 3]>) {
     const SIDES: usize = 8;
-    let quad = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], out: &mut Vec<[[f32; 3]; 3]>| {
-        out.push([a, b, c]);
-        out.push([a, c, d]);
-    };
+    let quad =
+        |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], out: &mut Vec<[[f32; 3]; 3]>| {
+            out.push([a, b, c]);
+            out.push([a, c, d]);
+        };
     match p {
         Prim::Cuboid { center, half, .. } => {
             let (cx, cy, cz) = (center[0], center[1], center[2]);
@@ -540,10 +550,7 @@ fn prim_tris(p: Prim, out: &mut Vec<[[f32; 3]; 3]>) {
             }
         }
         Prim::BoxQ {
-            center,
-            rot,
-            half,
-            ..
+            center, rot, half, ..
         } => {
             let corner = |sx: f32, sy: f32, sz: f32| -> [f32; 3] {
                 let l = [sx * half[0], sy * half[1], sz * half[2]];
@@ -577,18 +584,17 @@ fn prim_tris(p: Prim, out: &mut Vec<[[f32; 3]; 3]>) {
                 );
             }
         }
-        Prim::Capsule {
-            a,
-            b,
-            radius,
-            ..
-        } => {
+        Prim::Capsule { a, b, radius, .. } => {
             let axis = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
             let n = unit(axis);
             if norm(n) <= 0.0 {
                 return;
             }
-            let helper = if n[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+            let helper = if n[1].abs() < 0.9 {
+                [0.0, 1.0, 0.0]
+            } else {
+                [1.0, 0.0, 0.0]
+            };
             let u1 = unit(cross(n, helper));
             let u2 = cross(n, u1);
             let ring = |base: [f32; 3], k: usize| -> [f32; 3] {
@@ -599,19 +605,23 @@ fn prim_tris(p: Prim, out: &mut Vec<[[f32; 3]; 3]>) {
                     radius * (u1[1] * c + u2[1] * s),
                     radius * (u1[2] * c + u2[2] * s),
                 ];
-                [
-                    base[0] + off[0],
-                    base[1] + off[1],
-                    base[2] + off[2],
-                ]
+                [base[0] + off[0], base[1] + off[1], base[2] + off[2]]
             };
             for k in 0..SIDES {
                 let k1 = (k + 1) % SIDES;
                 let (a0, a1) = (ring(a, k), ring(a, k1));
                 let (b0, b1) = (ring(b, k), ring(b, k1));
                 quad(a0, a1, b1, b0, out);
-                let apex_a = [a[0] - n[0] * radius, a[1] - n[1] * radius, a[2] - n[2] * radius];
-                let apex_b = [b[0] + n[0] * radius, b[1] + n[1] * radius, b[2] + n[2] * radius];
+                let apex_a = [
+                    a[0] - n[0] * radius,
+                    a[1] - n[1] * radius,
+                    a[2] - n[2] * radius,
+                ];
+                let apex_b = [
+                    b[0] + n[0] * radius,
+                    b[1] + n[1] * radius,
+                    b[2] + n[2] * radius,
+                ];
                 out.push([apex_a, a0, a1]);
                 out.push([apex_b, b1, b0]);
             }
@@ -625,7 +635,11 @@ fn prim_tris(p: Prim, out: &mut Vec<[[f32; 3]; 3]>) {
         } => {
             let axis = quat_rot(rot, [0.0, 1.0, 0.0]);
             let n = unit(axis);
-            let helper = if n[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+            let helper = if n[1].abs() < 0.9 {
+                [0.0, 1.0, 0.0]
+            } else {
+                [1.0, 0.0, 0.0]
+            };
             let u1 = unit(cross(n, helper));
             let u2 = cross(n, u1);
             let ring = |s: f32, k: usize| -> [f32; 3] {
@@ -654,7 +668,13 @@ fn prim_tris(p: Prim, out: &mut Vec<[[f32; 3]; 3]>) {
             ];
             for k in 0..SIDES {
                 let k1 = (k + 1) % SIDES;
-                quad(ring(-1.0, k), ring(-1.0, k1), ring(1.0, k1), ring(1.0, k), out);
+                quad(
+                    ring(-1.0, k),
+                    ring(-1.0, k1),
+                    ring(1.0, k1),
+                    ring(1.0, k),
+                    out,
+                );
                 out.push([bot, ring(-1.0, k), ring(-1.0, k1)]);
                 out.push([top, ring(1.0, k1), ring(1.0, k)]);
             }
@@ -670,11 +690,7 @@ fn prim_tris(p: Prim, out: &mut Vec<[[f32; 3]; 3]>) {
                 let rim = |k: usize| -> [f32; 3] {
                     let th = (k as f32) * (std::f32::consts::TAU / SIDES as f32);
                     let (c, s) = (th.cos(), th.sin());
-                    [
-                        center[0] + radius * c,
-                        y,
-                        center[2] + radius * s,
-                    ]
+                    [center[0] + radius * c, y, center[2] + radius * s]
                 };
                 let c = [center[0], y, center[2]];
                 for k in 0..SIDES {
@@ -703,11 +719,7 @@ fn clip_near(tri: &[[f32; 3]; 3]) -> Vec<[f32; 3]> {
         }
         if ain != bin {
             let t = (NEAR - a[2]) / (b[2] - a[2]);
-            out.push([
-                a[0] + t * (b[0] - a[0]),
-                a[1] + t * (b[1] - a[1]),
-                NEAR,
-            ]);
+            out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), NEAR]);
         }
     }
     poly.clear();
@@ -765,21 +777,30 @@ pub fn render_pinhole(cam: &PinholeCam, scene: &SceneView) -> PinholeFrame {
             let unlit = is_beacon;
             for tw in &tris {
                 // near clip in camera space
-                let cam_tri: Vec<[f32; 3]> = tw
-                    .iter()
-                    .map(|p| cam.to_cam(*p))
-                    .collect::<Vec<_>>();
+                let cam_tri: Vec<[f32; 3]> = tw.iter().map(|p| cam.to_cam(*p)).collect::<Vec<_>>();
                 let poly: Vec<[f32; 3]> = clip_near(&[cam_tri[0], cam_tri[1], cam_tri[2]]);
                 if poly.len() < 3 {
                     continue;
                 }
                 // flat shade: head-light along the optical axis, two-sided
                 // (beacons are emissive — the calibration targets stay raw)
-                let e1 = [tw[1][0] - tw[0][0], tw[1][1] - tw[0][1], tw[1][2] - tw[0][2]];
-                let e2 = [tw[2][0] - tw[0][0], tw[2][1] - tw[0][1], tw[2][2] - tw[0][2]];
+                let e1 = [
+                    tw[1][0] - tw[0][0],
+                    tw[1][1] - tw[0][1],
+                    tw[1][2] - tw[0][2],
+                ];
+                let e2 = [
+                    tw[2][0] - tw[0][0],
+                    tw[2][1] - tw[0][1],
+                    tw[2][2] - tw[0][2],
+                ];
                 let nrm = cross(e1, e2);
                 let nl = norm(nrm);
-                let lam = if nl > 0.0 { dot(unit(nrm), cam.fwd).abs() } else { 0.0 };
+                let lam = if nl > 0.0 {
+                    dot(unit(nrm), cam.fwd).abs()
+                } else {
+                    0.0
+                };
                 let shade = if unlit { 1.0 } else { 0.45 + 0.55 * lam };
                 let col = [
                     ((base[0] as f32) * shade).round().min(255.0) as u8,
@@ -789,7 +810,11 @@ pub fn render_pinhole(cam: &PinholeCam, scene: &SceneView) -> PinholeFrame {
                 // project (ideal pinhole) the clipped polygon as a fan
                 let mut pj: Vec<(f32, f32, f32)> = Vec::with_capacity(poly.len());
                 for c in &poly {
-                    pj.push((cam.fx * c[0] / c[2] + cam.cx, cam.fy * c[1] / c[2] + cam.cy, c[2]));
+                    pj.push((
+                        cam.fx * c[0] / c[2] + cam.cx,
+                        cam.fy * c[1] / c[2] + cam.cy,
+                        c[2],
+                    ));
                 }
                 let v0 = pj[0];
                 for k in 1..pj.len() - 1 {
@@ -870,10 +895,9 @@ pub fn render_pinhole(cam: &PinholeCam, scene: &SceneView) -> PinholeFrame {
         let mut ideal_xy: Vec<(i64, i64)> = Vec::with_capacity(n);
         for yy in 0..h {
             for xx in 0..w {
-                let (xn, yn) = cam.dist.undistort(
-                    (xx as f32 - cam.cx) / cam.fx,
-                    (yy as f32 - cam.cy) / cam.fy,
-                );
+                let (xn, yn) = cam
+                    .dist
+                    .undistort((xx as f32 - cam.cx) / cam.fx, (yy as f32 - cam.cy) / cam.fy);
                 let ui = (cam.fx * xn + cam.cx).round() as i64;
                 let vi = (cam.fy * yn + cam.cy).round() as i64;
                 let inside = ui >= 0 && vi >= 0 && ui < w as i64 && vi < h as i64;
@@ -1042,7 +1066,10 @@ mod pinhole_tests {
         )
         .expect("cam builds");
         let (u, v, z) = cam.project([0.0, 0.0, 0.0]).expect("in front");
-        assert!((u - 80.0).abs() < 1e-4 && (v - 60.0).abs() < 1e-4, "{u} {v}");
+        assert!(
+            (u - 80.0).abs() < 1e-4 && (v - 60.0).abs() < 1e-4,
+            "{u} {v}"
+        );
         assert!((z - 2.0).abs() < 1e-5, "Z is the camera-frame depth");
         // a point above the axis projects above the principal point
         let (_, v_up, _) = cam.project([0.0, 0.4, 0.0]).expect("in front");
@@ -1127,7 +1154,11 @@ mod pinhole_tests {
                 }
             }
         }
-        assert_eq!(best.1, [255, 206, 110], "cube colour within 1 px of the projection");
+        assert_eq!(
+            best.1,
+            [255, 206, 110],
+            "cube colour within 1 px of the projection"
+        );
         // depth: the point sits 5 cm inside the cube, the surface 2.5 cm
         // closer along the ray — the z-buffer holds the SURFACE, not the
         // interior point (camera is 0.575 m above, face at 0.55).
@@ -1294,7 +1325,10 @@ mod disc_probe {
             let i = (y * w + x) * 3;
             [rgb[i], rgb[i + 1], rgb[i + 2]]
         };
-        println!("centre px = {:?}", at(u.round() as usize, v.round() as usize));
+        println!(
+            "centre px = {:?}",
+            at(u.round() as usize, v.round() as usize)
+        );
         assert!(count > 0, "the disc must render");
     }
 }
@@ -1321,18 +1355,20 @@ mod clipped_sliver_regression {
         )
         .unwrap();
         // ground top face tri(2,6,7): verts (−2,0,−1.5) (2,0,−1.5) (2,0,1.5)
-        let tri = [
-            [-2.0f32, 0.0, -1.5],
-            [2.0, 0.0, -1.5],
-            [2.0, 0.0, 1.5],
-        ];
+        let tri = [[-2.0f32, 0.0, -1.5], [2.0, 0.0, -1.5], [2.0, 0.0, 1.5]];
         let cam_tri: Vec<[f32; 3]> = tri.iter().map(|p| cam.to_cam(*p)).collect();
         println!("cam verts: {cam_tri:?}");
         let poly = clip_near(&[cam_tri[0], cam_tri[1], cam_tri[2]]);
         println!("clipped: {poly:?}");
         let pj: Vec<(f32, f32, f32)> = poly
             .iter()
-            .map(|c| (cam.fx * c[0] / c[2] + cam.cx, cam.fy * c[1] / c[2] + cam.cy, c[2]))
+            .map(|c| {
+                (
+                    cam.fx * c[0] / c[2] + cam.cx,
+                    cam.fy * c[1] / c[2] + cam.cy,
+                    c[2],
+                )
+            })
             .collect();
         println!("projected: {pj:?}");
         // The centre pixel ray hits the ground at ~1110 mm. Regression:

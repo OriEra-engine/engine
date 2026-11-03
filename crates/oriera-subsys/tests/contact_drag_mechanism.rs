@@ -113,6 +113,8 @@ fn kinematic_plates_drag_cube_via_friction() {
     // 摩擦承载成立的最小证据：夹板 2s 走 0.161 m，方块必须被拖走大半程
     //（实测 ≈0.160 全程贴合）；带上界——JS 侧实测过「接触炮」（方块被
     // 挤压弹射数米）也能过纯下限闸，上下界把弹射挡在门外（审查 P2）。
-    assert!((0.10..0.25).contains(&rise),
-        "friction drag out of band: cube rose {rise:.4} m (expect 0.10..0.25)");
+    assert!(
+        (0.10..0.25).contains(&rise),
+        "friction drag out of band: cube rose {rise:.4} m (expect 0.10..0.25)"
+    );
 }

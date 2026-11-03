@@ -40,9 +40,9 @@ use oriera_subsys::{
     ArmDescription, GripperKind, GripperSpec, Inertial, JointKind, JointSpec, LinkShape, LinkSpec,
     RobotSpec,
 };
-use std::f32::consts::PI;
 use roxmltree::Document;
 use std::collections::BTreeMap;
+use std::f32::consts::PI;
 use std::path::{Path, PathBuf};
 
 /// One parsed link (kinematic frame + primitive geometry, if any).
@@ -209,7 +209,11 @@ impl UrdfReport {
             iner_data.mass = m.attribute("value")?.parse().ok()?;
         }
         if let Some(i) = iner.children().find(|c| c.has_tag_name("inertia")) {
-            let attr = |name: &str| i.attribute(name).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            let attr = |name: &str| {
+                i.attribute(name)
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0.0)
+            };
             iner_data.ixx = attr("ixx");
             iner_data.iyy = attr("iyy");
             iner_data.izz = attr("izz");
@@ -410,10 +414,7 @@ impl UrdfReport {
                 continue;
             };
             match crate::meshres::load_urdf_mesh(uri, base_dir, packages) {
-                Ok(crate::meshres::UrdfMesh::Stl {
-                    mesh,
-                    source_bytes,
-                }) => {
+                Ok(crate::meshres::UrdfMesh::Stl { mesh, source_bytes }) => {
                     let [mn, mx] = mesh.bounds;
                     out.push(format!(
                         "mesh {}：{} → {} 三角形（{} 顶点）· 包围盒 {:.3}×{:.3}×{:.3} m · 源 {} KiB",
@@ -427,10 +428,7 @@ impl UrdfReport {
                         source_bytes.div_ceil(1024)
                     ));
                 }
-                Ok(crate::meshres::UrdfMesh::Probed {
-                    info,
-                    source_bytes,
-                }) => {
+                Ok(crate::meshres::UrdfMesh::Probed { info, source_bytes }) => {
                     out.push(format!(
                         "mesh {}：{} → GLB 探针 {} meshes / {} primitives（全量解码走 L4）· 源 {} KiB",
                         l.name,
@@ -661,7 +659,8 @@ fn v_normalize(a: V3) -> V3 {
 /// |R|·half：旋转后盒体的轴对齐包围半尺寸（90° 整数倍旋转时精确，
 /// 其他角度保守）。
 fn aabb_half(r: &Mat3, half: V3) -> V3 {
-    let row = |i: usize| r[i][0].abs() * half[0] + r[i][1].abs() * half[1] + r[i][2].abs() * half[2];
+    let row =
+        |i: usize| r[i][0].abs() * half[0] + r[i][1].abs() * half[1] + r[i][2].abs() * half[2];
     [row(0), row(1), row(2)]
 }
 
@@ -971,7 +970,11 @@ impl UrdfReport {
             if !visited.insert(cur_link.to_string()) {
                 return Err(format!("检测到环：link {cur_link} 被访问两次"));
             }
-            let cands: Vec<&UrdfJoint> = self.joints.iter().filter(|j| j.parent == cur_link).collect();
+            let cands: Vec<&UrdfJoint> = self
+                .joints
+                .iter()
+                .filter(|j| j.parent == cur_link)
+                .collect();
             if site.is_none() && cands.iter().any(|j| is_finger(j)) {
                 site = Some(GripperSite {
                     body: cur_body,
@@ -1045,9 +1048,8 @@ impl UrdfReport {
         let rho = ctx.preset_dyn.density;
         let r_body = mat_mul(&ctx.r_up, &body.frame.r);
         // 链段（OriEra 世界）：到下一关节原点；末体退用最深吸收 fixed 子系；再无则零。
-        let seg_end = next_p.or_else(|| {
-            (v_len(v_sub(body.tip.p, body.frame.p)) > 1e-6).then_some(body.tip.p)
-        });
+        let seg_end = next_p
+            .or_else(|| (v_len(v_sub(body.tip.p, body.frame.p)) > 1e-6).then_some(body.tip.p));
         let seg = mat_vec(
             &ctx.r_up,
             seg_end.map_or([0.0; 3], |p| v_sub(p, body.frame.p)),
@@ -1086,26 +1088,32 @@ impl UrdfReport {
                 let half = [*radius; 3];
                 (LinkShape::Box { half }, col_off, box_volume(half), None)
             }
-            Some(UrdfGeom::Mesh { uri }) => match self.resolve_mesh_hull(uri, &r_body, col_off, ctx)
-            {
-                Some(points) => {
-                    let (_, _, vol) = envelope(seg, mass, rho, ctx.default_radius);
-                    skipped.push(format!(
+            Some(UrdfGeom::Mesh { uri }) => {
+                match self.resolve_mesh_hull(uri, &r_body, col_off, ctx) {
+                    Some(points) => {
+                        let (_, _, vol) = envelope(seg, mass, rho, ctx.default_radius);
+                        skipped.push(format!(
                         "link {} mesh {uri} → ConvexHull（{} 点，STL 顶点旋到体轴；凸包≈网格的保守近似）",
                         l.name,
                         points.len()
                     ));
-                    (LinkShape::ConvexHull { points }, col_off, vol, Some(uri.clone()))
-                }
-                None => {
-                    skipped.push(format!(
+                        (
+                            LinkShape::ConvexHull { points },
+                            col_off,
+                            vol,
+                            Some(uri.clone()),
+                        )
+                    }
+                    None => {
+                        skipped.push(format!(
                         "link {} mesh {uri} → 链段包络降级（GLB→探针仅 M3 全量解码 / 文件缺失或格式不支持 / 未给 opts.mesh_base_dir）",
                         l.name
                     ));
-                    let (s, o, v) = envelope(seg, mass, rho, ctx.default_radius);
-                    (s, o, v, None)
+                        let (s, o, v) = envelope(seg, mass, rho, ctx.default_radius);
+                        (s, o, v, None)
+                    }
                 }
-            },
+            }
             None => {
                 skipped.push(format!("link {} 无 <collision> → 链段包络", l.name));
                 let (s, o, v) = envelope(seg, mass, rho, ctx.default_radius);
@@ -1128,9 +1136,8 @@ impl UrdfReport {
             {
                 return None;
             }
-            let (ixx, iyy, izz, ixy, ixz, iyz) = rotate_inertia(
-                &r_body, i.ixx, i.iyy, i.izz, i.ixy, i.ixz, i.iyz,
-            );
+            let (ixx, iyy, izz, ixy, ixz, iyz) =
+                rotate_inertia(&r_body, i.ixx, i.iyy, i.izz, i.ixy, i.ixz, i.iyz);
             Some(Inertial {
                 mass: i.mass,
                 com: mat_vec(&r_body, i.origin_xyz),
@@ -1469,9 +1476,7 @@ impl UrdfReport {
                     ext_walk.joints.len()
                 ));
             }
-            let es = ext_walk
-                .site
-                .ok_or("外部夹爪：手指父 link 不在其根链上")?;
+            let es = ext_walk.site.ok_or("外部夹爪：手指父 link 不在其根链上")?;
             if site.is_some() {
                 skipped.push("臂 URDF 自带夹爪被外部夹爪覆盖".into());
             }
@@ -1710,10 +1715,8 @@ mod tests {
     #[test]
     fn mesh_assets_enter_the_chain_report() {
         let t = TempDir::new("chain_mesh");
-        let packages = std::collections::BTreeMap::from([(
-            "oriera_arm".to_string(),
-            t.0.join("oriera_arm"),
-        )]);
+        let packages =
+            std::collections::BTreeMap::from([("oriera_arm".to_string(), t.0.join("oriera_arm"))]);
         std::fs::create_dir_all(t.0.join("oriera_arm/meshes")).unwrap();
         let stl_path = t.0.join("oriera_arm/meshes/base.stl");
         std::fs::write(&stl_path, tetra_stl_bytes()).unwrap();
@@ -1731,7 +1734,10 @@ mod tests {
             issues[0].contains("base.stl") && issues[0].contains("4 三角形"),
             "STL 行需带三角形计数：{issues:?}"
         );
-        assert!(issues[0].contains("包围盒"), "STL 行需带包围盒尺寸：{issues:?}");
+        assert!(
+            issues[0].contains("包围盒"),
+            "STL 行需带包围盒尺寸：{issues:?}"
+        );
         assert!(
             issues[1].contains("l1.gltf") && issues[1].contains("primitives"),
             "探针行需带 primitives 计数：{issues:?}"
@@ -1750,7 +1756,11 @@ mod tests {
         let rep = UrdfReport::parse(FIXTURE).unwrap();
         assert_eq!(rep.name, "oriera_test_arm");
         let j1 = rep.joints.iter().find(|j| j.name == "j1").unwrap();
-        assert_eq!(j1.velocity, Some(2.0), "<limit velocity> 此前被丢弃——U4 补齐");
+        assert_eq!(
+            j1.velocity,
+            Some(2.0),
+            "<limit velocity> 此前被丢弃——U4 补齐"
+        );
         let j4 = rep.joints.iter().find(|j| j.name == "j4").unwrap();
         assert_eq!(j4.velocity, None, "fixed 关节无 <limit>");
     }
@@ -1768,15 +1778,22 @@ mod tests {
         let rep = UrdfReport::parse(xml).unwrap();
         let f2 = rep.joints.iter().find(|j| j.name == "finger_2").unwrap();
         let m = f2.mimic.as_ref().expect("mimic parsed into the joint");
-        assert_eq!((m.joint.as_str(), m.multiplier, m.offset), ("finger_1", -1.0, 0.001));
+        assert_eq!(
+            (m.joint.as_str(), m.multiplier, m.offset),
+            ("finger_1", -1.0, 0.001)
+        );
         // 既有输出面不变：skipped 仍登记一条 <mimic> 行
-        assert!(rep.skipped.iter().any(|s| s.contains("<mimic>") && s.contains("finger_2")));
+        assert!(rep
+            .skipped
+            .iter()
+            .any(|s| s.contains("<mimic>") && s.contains("finger_2")));
         assert_eq!(
             rep.gripper_finger_joints(),
             Some(("finger_1".into(), "finger_2".into()))
         );
         // multiplier 缺省 1、offset 缺省 0
-        let rep2 = UrdfReport::parse(&xml.replace(r#" multiplier="-1" offset="0.001""#, "")).unwrap();
+        let rep2 =
+            UrdfReport::parse(&xml.replace(r#" multiplier="-1" offset="0.001""#, "")).unwrap();
         let m2 = rep2.joints[1].mimic.as_ref().unwrap();
         assert_eq!((m2.multiplier, m2.offset), (1.0, 0.0));
     }
@@ -1797,7 +1814,10 @@ mod tests {
         // 任务书钉死 60 / 4 / 0.02；与 ArmDescription 预设同源，漂移即红
         let o = RobotSpecOpts::default();
         let preset = RobotSpec::from(&ArmDescription::default());
-        assert_eq!((o.default_kp, o.default_kd), (preset.joints[0].kp, preset.joints[0].kd));
+        assert_eq!(
+            (o.default_kp, o.default_kd),
+            (preset.joints[0].kp, preset.joints[0].kd)
+        );
         assert_eq!(o.default_armature, preset.joints[0].armature);
         assert_eq!(o.up_axis, UpAxis::Z);
     }
@@ -1807,7 +1827,10 @@ mod tests {
         // Rx(−90°)·ez = +Y（Panda joint2 的轴进父系）
         let r = rpy_to_mat([-PI / 2.0, 0.0, 0.0]);
         let v = mat_vec(&r, [0.0, 0.0, 1.0]);
-        assert!((v[0]).abs() < 1e-6 && (v[1] - 1.0).abs() < 1e-6 && v[2].abs() < 1e-6, "{v:?}");
+        assert!(
+            (v[0]).abs() < 1e-6 && (v[1] - 1.0).abs() < 1e-6 && v[2].abs() < 1e-6,
+            "{v:?}"
+        );
         // Rz(90°)·ex = +Y
         let r = rpy_to_mat([0.0, 0.0, PI / 2.0]);
         let v = mat_vec(&r, [1.0, 0.0, 0.0]);
@@ -1834,7 +1857,11 @@ mod tests {
         let spec = rep.to_robot_spec(&mut opts).expect("fixture → RobotSpec");
         assert_eq!(spec.name, "oriera_test_arm");
         assert_eq!(spec.joints.len(), 3, "{:?}", spec.joint_names());
-        assert_eq!(spec.links.len(), 4, "base, l1, l2, l3（tool 被 fixed 吸收进 l3）");
+        assert_eq!(
+            spec.links.len(),
+            4,
+            "base, l1, l2, l3（tool 被 fixed 吸收进 l3）"
+        );
         assert!(spec.gripper.is_none());
         spec.validate().expect("valid chain");
         // j1：anchor = (0,0,0.12)（Y-up 不旋转）、轴 +Y、限位/effort/velocity/damping 全接
@@ -1843,20 +1870,34 @@ mod tests {
         assert_eq!(j1.axis, [0.0, 1.0, 0.0]);
         // 限位 = URDF 字面值回环（fixture 写的是 ±3.14，不是 π）
         let u1 = rep.joints.iter().find(|j| j.name == "j1").unwrap();
-        assert_eq!(j1.limits, (u1.limit_lower.unwrap(), u1.limit_upper.unwrap()));
+        assert_eq!(
+            j1.limits,
+            (u1.limit_lower.unwrap(), u1.limit_upper.unwrap())
+        );
         assert_eq!((j1.effort, j1.velocity_limit), (Some(80.0), Some(2.0)));
         assert_eq!(j1.damping, 0.05);
         assert_eq!((j1.kp, j1.kd, j1.armature), (60.0, 4.0, 0.02));
         // j2 无 <dynamics> → 引擎默认阻尼（预设 0.05）
-        assert_eq!(spec.joints[1].damping, RobotSpec::from(&ArmDescription::default()).joints[0].damping);
+        assert_eq!(
+            spec.joints[1].damping,
+            RobotSpec::from(&ArmDescription::default()).joints[0].damping
+        );
         // origin 沿链累加：base=mount，l1 = base + anchor
         assert_eq!(spec.links[0].origin, [0.0, 0.5, 0.0]);
         assert_eq!(spec.links[1].origin, [0.0, 0.5, 0.12]);
         assert_eq!(spec.links[2].origin, [0.2, 0.5, 0.12]);
         // 碰撞体：base box 直映（半尺寸）；l1 cylinder 沿 link-Z、非 ±X → Box 包络（登记）
-        assert_eq!(spec.links[0].shape, LinkShape::Box { half: [0.04, 0.06, 0.06] });
+        assert_eq!(
+            spec.links[0].shape,
+            LinkShape::Box {
+                half: [0.04, 0.06, 0.06]
+            }
+        );
         assert!(matches!(spec.links[1].shape, LinkShape::Box { .. }));
-        assert!(opts.skipped.iter().any(|s| s.contains("cylinder") && s.contains("l1")));
+        assert!(opts
+            .skipped
+            .iter()
+            .any(|s| s.contains("cylinder") && s.contains("l1")));
         // 无 <inertial> → 引擎默认密度 / added_mass
         let preset = RobotSpec::from(&ArmDescription::default());
         assert_eq!(spec.links[1].density, preset.links[1].density);
@@ -1879,7 +1920,11 @@ mod tests {
         let j1 = &spec.joints[0];
         assert_eq!(j1.anchor, [0.0, 0.12, 0.0]);
         assert_eq!(j1.axis, [0.0, 0.0, -1.0]);
-        assert_eq!(spec.joints[1].axis, [0.0, 1.0, 0.0], "URDF +Z 轴 → OriEra +Y");
+        assert_eq!(
+            spec.joints[1].axis,
+            [0.0, 1.0, 0.0],
+            "URDF +Z 轴 → OriEra +Y"
+        );
     }
 
     #[test]
@@ -1899,16 +1944,24 @@ mod tests {
         let rep = UrdfReport::parse(xml).unwrap();
         let mut opts = RobotSpecOpts::default();
         let spec = rep.to_robot_spec(&mut opts).unwrap();
-        spec.validate().expect("mesh_uri stays None so validate passes");
+        spec.validate()
+            .expect("mesh_uri stays None so validate passes");
         assert!(spec.links.iter().all(|l| l.mesh_uri.is_none()));
         let mesh_rows: Vec<_> = opts.skipped.iter().filter(|s| s.contains("mesh")).collect();
         assert_eq!(mesh_rows.len(), 2, "{:?}", opts.skipped);
         assert!(mesh_rows.iter().any(|s| s.contains("package://x/l1.stl")));
-        assert!(opts.skipped.iter().any(|s| s.contains("l2") && s.contains("无 <collision>")));
+        assert!(opts
+            .skipped
+            .iter()
+            .any(|s| s.contains("l2") && s.contains("无 <collision>")));
         // l1：链段 (0.3,0,0) 沿 X → Capsule；`<inertial>` 全张量直进
         // LinkSpec.inertial（M2 U-1），density 退为簿记缺省、added_mass=0
         let l1 = &spec.links[1];
-        let LinkShape::Capsule { half_len, radius: _ } = l1.shape else {
+        let LinkShape::Capsule {
+            half_len,
+            radius: _,
+        } = l1.shape
+        else {
             panic!("X 向链段应为 Capsule：{:?}", l1.shape)
         };
         assert!((half_len - 0.15).abs() < 1e-6);
@@ -1916,8 +1969,14 @@ mod tests {
         assert_eq!(i.mass, 3.0);
         // Z-up→Y-up 是共轭：I_body = M·I_urdf·Mᵀ——对角置换 (1,3,2)，
         // ixy(0.1) 落到体 (0,2) 分量带符号翻 → ixz' = −0.1。
-        assert_eq!((i.ixx, i.iyy, i.izz, i.ixy, i.ixz, i.iyz), (1.0, 3.0, 2.0, 0.0, -0.1, 0.0));
-        assert_eq!(l1.density, RobotSpec::from(&ArmDescription::default()).links[1].density);
+        assert_eq!(
+            (i.ixx, i.iyy, i.izz, i.ixy, i.ixz, i.iyz),
+            (1.0, 3.0, 2.0, 0.0, -0.1, 0.0)
+        );
+        assert_eq!(
+            l1.density,
+            RobotSpec::from(&ArmDescription::default()).links[1].density
+        );
         assert_eq!(l1.added_mass, 0.0);
         assert_eq!(l1.collider_offset, [0.15, 0.0, 0.0]);
         // l2：末体、无链段 → 包络立方；inertial 直给
@@ -1941,8 +2000,7 @@ mod tests {
         // Z-up→Y-up 置换 M：(x,y,z) ↦ (x,z,−y)。I = diag(1,2,3) + ixy:
         // M·I·Mᵀ 对角 = (1, 3, 2)；ixy 分量 (0,1) ← 老 (0,2)=ixz 带符号。
         let m = MAT_Z_UP_TO_Y_UP;
-        let (ixx, iyy, izz, ixy, ixz, iyz) =
-            rotate_inertia(&m, 1.0, 2.0, 3.0, 0.0, 0.5, 0.0);
+        let (ixx, iyy, izz, ixy, ixz, iyz) = rotate_inertia(&m, 1.0, 2.0, 3.0, 0.0, 0.5, 0.0);
         assert!((ixx - 1.0).abs() < 1e-6 && (iyy - 3.0).abs() < 1e-6 && (izz - 2.0).abs() < 1e-6);
         // M 把 ey ↦ −ez、ez ↦ ey：I[0][1]' = Σ R[0][k] λ_k R[1][k]；
         // 直接对照手算：新 ixz'（体 (0,2)）= −老 ixy？——不手推符号，
@@ -1951,7 +2009,10 @@ mod tests {
         assert!((tr - 6.0).abs() < 1e-5, "trace invariant: {tr}");
         let frob = ixx * ixx + iyy * iyy + izz * izz + 2.0 * (ixy * ixy + ixz * ixz + iyz * iyz);
         let want = 1.0 + 4.0 + 9.0 + 2.0 * 0.25;
-        assert!((frob - want).abs() < 1e-4, "Frobenius invariant: {frob} vs {want}");
+        assert!(
+            (frob - want).abs() < 1e-4,
+            "Frobenius invariant: {frob} vs {want}"
+        );
     }
 
     /// M2 U-3：给了 `opts.mesh_base_dir` 的 STL mesh → ConvexHull（顶点
@@ -1977,7 +2038,8 @@ mod tests {
             ..RobotSpecOpts::default()
         };
         let spec = rep.to_robot_spec(&mut opts).expect("全链导入");
-        spec.validate().expect("hull spec 合法（mesh_uri 是 metadata）");
+        spec.validate()
+            .expect("hull spec 合法（mesh_uri 是 metadata）");
         let l1 = &spec.links[1];
         let LinkShape::ConvexHull { points } = &l1.shape else {
             panic!("STL 应解析为 ConvexHull：{:?}", l1.shape)
@@ -2002,11 +2064,16 @@ mod tests {
         assert_eq!(l1.mesh_uri.as_deref(), Some("cube.stl"), "provenance 保留");
         // GLB：探针-only → 包络降级、mesh_uri None
         let l2 = &spec.links[2];
-        assert!(!matches!(l2.shape, LinkShape::ConvexHull { .. }), "{:?}", l2.shape);
+        assert!(
+            !matches!(l2.shape, LinkShape::ConvexHull { .. }),
+            "{:?}",
+            l2.shape
+        );
         assert!(l2.mesh_uri.is_none());
         assert!(opts.skipped.iter().any(|s| s.contains("hand.glb")));
         // 构建过闸：from_robot 接受 hull 链体
-        let sys = oriera_subsys::MultibodySystem::from_robot(spec, oriera_subsys::Scene3D::default());
+        let sys =
+            oriera_subsys::MultibodySystem::from_robot(spec, oriera_subsys::Scene3D::default());
         assert!(sys.is_ok(), "hull builds: {:?}", sys.err());
     }
 
@@ -2064,12 +2131,18 @@ mod tests {
         </robot>"#;
         let rep = UrdfReport::parse(xml).unwrap();
         let mut opts = RobotSpecOpts::default();
-        let spec = rep.to_robot_spec(&mut opts).expect("prismatic 链关节真导入");
+        let spec = rep
+            .to_robot_spec(&mut opts)
+            .expect("prismatic 链关节真导入");
         assert_eq!(spec.joints.len(), 2, "{:?}", spec.joint_names());
         let s = &spec.joints[0];
         assert_eq!(s.kind, JointKind::Prismatic);
         assert_eq!(s.limits, (0.0, 0.1), "限位按米直接接");
-        assert_eq!((s.effort, s.velocity_limit), (Some(1.0), Some(1.0)), "N / m/s");
+        assert_eq!(
+            (s.effort, s.velocity_limit),
+            (Some(1.0), Some(1.0)),
+            "N / m/s"
+        );
         assert_eq!(s.axis, [1.0, 0.0, 0.0], "URDF +X 经 Z-up→Y-up 仍为 +X");
         assert_eq!(
             (s.kp, s.kd),
@@ -2099,14 +2172,25 @@ mod tests {
           <joint name="j""#,
         );
         let mut o3 = RobotSpecOpts::default();
-        let spec3 = UrdfReport::parse(&no_lim).unwrap().to_robot_spec(&mut o3).unwrap();
+        let spec3 = UrdfReport::parse(&no_lim)
+            .unwrap()
+            .to_robot_spec(&mut o3)
+            .unwrap();
         assert_eq!(spec3.joints[0].limits, (-1.0, 1.0));
-        assert!(o3.skipped.iter().any(|s| s.contains("slide") && s.contains("±1 m")), "{:?}", o3.skipped);
+        assert!(
+            o3.skipped
+                .iter()
+                .any(|s| s.contains("slide") && s.contains("±1 m")),
+            "{:?}",
+            o3.skipped
+        );
         spec3.validate().expect("兜底限位有限");
 
         let xml2 = xml.replace(r#"type="prismatic""#, r#"type="floating""#);
         let rep2 = UrdfReport::parse(&xml2).unwrap();
-        let err2 = rep2.to_robot_spec(&mut RobotSpecOpts::default()).unwrap_err();
+        let err2 = rep2
+            .to_robot_spec(&mut RobotSpecOpts::default())
+            .unwrap_err();
         assert!(err2.contains("floating") && err2.contains("断开"), "{err2}");
         // 无关节无夹爪 → 人话错
         let rep3 = UrdfReport::parse(r#"<robot name="e"><link name="only"/></robot>"#).unwrap();

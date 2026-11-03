@@ -47,8 +47,12 @@ fn main() {
     };
 
     let mut args = std::env::args().skip(1);
-    let urdf_path = args.next().unwrap_or_else(|| fail("缺参数：<robot.urdf> <targets.json>"));
-    let targets_path = args.next().unwrap_or_else(|| fail("缺参数：<targets.json>"));
+    let urdf_path = args
+        .next()
+        .unwrap_or_else(|| fail("缺参数：<robot.urdf> <targets.json>"));
+    let targets_path = args
+        .next()
+        .unwrap_or_else(|| fail("缺参数：<targets.json>"));
     let mut stride: u64 = 30;
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -156,8 +160,12 @@ fn main() {
         );
         let done = tick + 1;
         if done % stride == 0 {
-            let tel = world.get::<JointTelemetry>(arm).cloned().unwrap_or_default();
-            samples.push(serde_json::json!({ "tick": done, "q": tel.angles, "qd": tel.velocities }));
+            let tel = world
+                .get::<JointTelemetry>(arm)
+                .cloned()
+                .unwrap_or_default();
+            samples
+                .push(serde_json::json!({ "tick": done, "q": tel.angles, "qd": tel.velocities }));
         }
     }
     let wall = started.elapsed().as_secs_f64();

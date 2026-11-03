@@ -67,9 +67,7 @@
 //!         `<out>/eval_report.json` + `<out>/run_manifest.json`
 
 use oriera_agent::embodied_env::{EmbodiedEnv, ObsLayout, TableTopEnv, TaskKind};
-use oriera_agent::eval::{
-    self, EpisodeOutcome, EpisodeRow, EvalProtocol, EvalResult, Gate,
-};
+use oriera_agent::eval::{self, EpisodeOutcome, EpisodeRow, EvalProtocol, EvalResult, Gate};
 use oriera_agent::lerobot::LeRobotV21;
 use oriera_agent::manifest::{write_run_manifest_opts, ManifestExtra};
 use oriera_agent::spec::SceneSpec;
@@ -220,7 +218,11 @@ impl IkArm {
         Ok(Self {
             base: r.base,
             shoulder_y: r.links[shoulder_link].origin[1],
-            links: [r.joints[2].anchor[0], r.joints[3].anchor[0], g.tcp_offset[0]],
+            links: [
+                r.joints[2].anchor[0],
+                r.joints[3].anchor[0],
+                g.tcp_offset[0],
+            ],
             limits: [
                 r.joints[0].limits,
                 r.joints[1].limits,
@@ -269,9 +271,9 @@ struct ObsIdx {
 impl ObsIdx {
     fn from_layout(layout: &ObsLayout) -> Self {
         let find = |n: &str| {
-            layout
-                .index_of(n)
-                .unwrap_or_else(|| panic!("obs layout 缺少 {n}（脚本基线需要 ee/obj_rel/goal_rel）"))
+            layout.index_of(n).unwrap_or_else(|| {
+                panic!("obs layout 缺少 {n}（脚本基线需要 ee/obj_rel/goal_rel）")
+            })
         };
         Self {
             ee: find("ee.x"),
@@ -464,7 +466,9 @@ fn parse_args() -> Args {
                 };
             }
             "--runs-root" => a.runs_root = Some(it.next().expect("--runs-root 需要一个目录")),
-            "--fingerprints" => a.fingerprints = Some(it.next().expect("--fingerprints 需要一个文件路径")),
+            "--fingerprints" => {
+                a.fingerprints = Some(it.next().expect("--fingerprints 需要一个文件路径"))
+            }
             "--sanitize" => a.sanitize = true,
             "--force" => a.force = true,
             "--out" => a.out = it.next().expect("--out 需要一个值"),
@@ -478,9 +482,7 @@ fn parse_args() -> Args {
                     .unwrap_or_else(|| fail("--export 需要一个格式：npz"));
                 a.export_npz |= parse_export(&v);
             }
-            other => {
-                fail(&format!("未知参数 {other}（可用 {USAGE}）"))
-            }
+            other => fail(&format!("未知参数 {other}（可用 {USAGE}）")),
         }
     }
     a
@@ -533,7 +535,10 @@ struct RunResult {
     redraws: u64,
 }
 
-fn make_env(spec: &SceneSpec, #[cfg_attr(not(feature = "cam"), allow(unused_variables))] cam: bool) -> TableTopEnv {
+fn make_env(
+    spec: &SceneSpec,
+    #[cfg_attr(not(feature = "cam"), allow(unused_variables))] cam: bool,
+) -> TableTopEnv {
     #[cfg_attr(not(feature = "cam"), allow(unused_mut))]
     let mut env: TableTopEnv = spec.to_env();
     #[cfg(feature = "cam")]
@@ -734,8 +739,12 @@ fn import_urdf(args: &Args) {
     let mut spec = SceneSpec::preset(TaskKind::PickPlace);
     spec.robot = RobotSpec::from(&desc);
     spec.meta.name = "urdf-import".into();
-    spec.meta.notes = Some(format!("URDF 导入：{}（skipped: {skipped:?}）", args.urdf.as_ref().unwrap()));
-    spec.validate().unwrap_or_else(|e| fail(&format!("导入的 spec 校验失败：{e}")));
+    spec.meta.notes = Some(format!(
+        "URDF 导入：{}（skipped: {skipped:?}）",
+        args.urdf.as_ref().unwrap()
+    ));
+    spec.validate()
+        .unwrap_or_else(|e| fail(&format!("导入的 spec 校验失败：{e}")));
     let out_dir = std::path::Path::new(&args.out);
     std::fs::create_dir_all(out_dir).unwrap();
     let path = out_dir.join("scene_spec.json");
@@ -760,7 +769,11 @@ fn migrate_spec(args: &Args) {
         "  ✓ {} → {}（{}，spec_hash {}）",
         path,
         dst.display(),
-        if loaded.migrated { "v1 → oriera.scene/2" } else { "已是 oriera.scene/2，原样规范化" },
+        if loaded.migrated {
+            "v1 → oriera.scene/2"
+        } else {
+            "已是 oriera.scene/2，原样规范化"
+        },
         loaded.spec.spec_hash_hex()
     );
 }
@@ -779,7 +792,11 @@ fn validate_spec(args: &Args) {
         loaded.spec.robot.dof(),
         loaded.spec.scene.props.len(),
         loaded.spec.spec_hash_hex(),
-        if loaded.migrated { "［v1 草案，已按迁移规则解释］" } else { "" }
+        if loaded.migrated {
+            "［v1 草案，已按迁移规则解释］"
+        } else {
+            ""
+        }
     );
 }
 
@@ -895,7 +912,8 @@ fn main() {
     let r1 = collect(&args, &spec, &protocol).unwrap_or_else(|e| fail(&format!("采集失败：{e}")));
     match args.verify {
         Verify::Full => {
-            let r2 = collect(&args, &spec, &protocol).unwrap_or_else(|e| fail(&format!("采集失败：{e}")));
+            let r2 = collect(&args, &spec, &protocol)
+                .unwrap_or_else(|e| fail(&format!("采集失败：{e}")));
             assert_eq!(
                 r1.hashes, r2.hashes,
                 "#66+#67: episode fingerprints must match"
@@ -928,7 +946,13 @@ fn main() {
             };
             let orig = r1.rows.first().unwrap();
             assert_eq!(
-                (re.seed, re.steps, re.success, re.reward_sum, re.fingerprint_v1),
+                (
+                    re.seed,
+                    re.steps,
+                    re.success,
+                    re.reward_sum,
+                    re.fingerprint_v1
+                ),
                 (orig.0, orig.2, orig.1, orig.3, r1.hashes[0]),
                 "sample 复核：首集逐位不一致"
             );
@@ -992,8 +1016,7 @@ fn main() {
     if matches!(verdict, eval::GateVerdict::NotApplied) {
         println!(
             "  · 闸：本协议/任务不设硬闸（{} × {:?}），只记录",
-            protocol.id,
-            protocol.gate
+            protocol.id, protocol.gate
         );
     }
 
@@ -1203,9 +1226,15 @@ fn main() {
             transitions: r1.ds.total_frames() as u64,
             fingerprints: fps,
         };
-        std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(&golden).unwrap()))
-            .unwrap_or_else(|e| fail(&format!("--fingerprints 写入失败：{e}")));
-        println!("  ✓ 指纹金标（scheme {}）已写出 {}", golden.fingerprints.fingerprint_scheme, path);
+        std::fs::write(
+            path,
+            format!("{}\n", serde_json::to_string_pretty(&golden).unwrap()),
+        )
+        .unwrap_or_else(|e| fail(&format!("--fingerprints 写入失败：{e}")));
+        println!(
+            "  ✓ 指纹金标（scheme {}）已写出 {}",
+            golden.fingerprints.fingerprint_scheme, path
+        );
     }
 
     println!(

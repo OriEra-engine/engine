@@ -181,11 +181,9 @@ impl LeRobotV21 {
             rgb_png,
             depth_png,
         } = frame;
-        let track = self
-            .cameras
-            .iter()
-            .find(|c| c.name == cam)
-            .ok_or_else(|| format!("push_frame：相机 {cam:?} 未声明（先 set_camera/add_camera）"))?;
+        let track = self.cameras.iter().find(|c| c.name == cam).ok_or_else(|| {
+            format!("push_frame：相机 {cam:?} 未声明（先 set_camera/add_camera）")
+        })?;
         let ep = self
             .current
             .as_mut()
@@ -346,7 +344,12 @@ impl LeRobotV21 {
         let total_videos = self
             .cameras
             .iter()
-            .map(|c| self.episodes.iter().filter(|e| !track_rgb(e, &c.name).is_empty()).count())
+            .map(|c| {
+                self.episodes
+                    .iter()
+                    .filter(|e| !track_rgb(e, &c.name).is_empty())
+                    .count()
+            })
             .sum::<usize>()
             .to_string();
         format!(
@@ -527,7 +530,11 @@ impl LeRobotV21 {
         let v2_field = if v2_hashes.is_empty() {
             String::new()
         } else {
-            format!("\"fingerprint_scheme\":\"{}\",\"episode_fingerprints_v2\":[{}],", scheme, v2s.join(","))
+            format!(
+                "\"fingerprint_scheme\":\"{}\",\"episode_fingerprints_v2\":[{}],",
+                scheme,
+                v2s.join(",")
+            )
         };
         write!(
             f,
@@ -965,7 +972,9 @@ impl LeRobotV21 {
         // atomic commit, same as v2.1
         let mut manifest = String::new();
         for (rel, hash) in &files {
-            manifest.push_str(&format!("{{\"file\":\"{rel}\",\"hash\":\"{hash:016x}\"}}\n"));
+            manifest.push_str(&format!(
+                "{{\"file\":\"{rel}\",\"hash\":\"{hash:016x}\"}}\n"
+            ));
         }
         let manifest_path = root.join("MANIFEST.jsonl");
         let tmp = root.join("MANIFEST.jsonl.tmp");
@@ -1378,10 +1387,19 @@ mod tests {
         ] {
             assert!(root.join(rel).exists(), "missing {rel}");
         }
-        LeRobotV21::write_receipt(&root, "test/0.1", "rigid3d", 1.0 / 60.0, "abc123", &[0xbeef], 1, "v1", &[])
-            .expect("receipt");
-        let receipt =
-            std::fs::read_to_string(root.join("meta/oriera_receipt.json")).unwrap();
+        LeRobotV21::write_receipt(
+            &root,
+            "test/0.1",
+            "rigid3d",
+            1.0 / 60.0,
+            "abc123",
+            &[0xbeef],
+            1,
+            "v1",
+            &[],
+        )
+        .expect("receipt");
+        let receipt = std::fs::read_to_string(root.join("meta/oriera_receipt.json")).unwrap();
         assert!(receipt.contains("\"spec_hash\":\"abc123\""), "{receipt}");
         assert!(root.join("meta/oriera_receipt.json").exists());
         LeRobotV21::write_card(&root, "pick up the cube").expect("card");
@@ -1435,7 +1453,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("oriera-modality-{}", std::process::id()));
         ds.write_modality(&root).expect("write_modality");
         let body = std::fs::read_to_string(root.join("meta/modality.json")).unwrap();
-        assert_eq!(body, LEGACY_MODALITY_21_5, "derived modality must be byte-identical");
+        assert_eq!(
+            body, LEGACY_MODALITY_21_5,
+            "derived modality must be byte-identical"
+        );
         // info.json: names/shapes/robot_type all from the layout
         let info = ds.info_json();
         assert!(info.contains("\"robot_type\":\"tabletop-4dof\""), "{info}");
@@ -1462,8 +1483,7 @@ mod tests {
         ds.start_episode("pick up the cube");
         ds.push_step(&[0.2], &[0.3]).unwrap();
         ds.finish_episode();
-        let root =
-            std::env::temp_dir().join(format!("oriera-lerobot-v3-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("oriera-lerobot-v3-{}", std::process::id()));
         let n = ds.write_dir_v3(&root).expect("write_dir_v3");
         assert_eq!(n, 2);
         for rel in [
@@ -1490,8 +1510,8 @@ mod tests {
         ] {
             assert!(info.contains(key), "missing {key} in {info}");
         }
-        let ep0 = std::fs::read_to_string(root.join("meta/episodes/chunk-000/file-000.jsonl"))
-            .unwrap();
+        let ep0 =
+            std::fs::read_to_string(root.join("meta/episodes/chunk-000/file-000.jsonl")).unwrap();
         for col in [
             "\"episode_index\":0",
             "\"length\":2",
@@ -1513,8 +1533,7 @@ mod tests {
         assert!(ep1_row.contains("\"dataset_from_index\":2"), "{ep1_row}");
         assert!(ep1_row.contains("\"dataset_to_index\":3"), "{ep1_row}");
         // consolidated data file holds every row
-        let data =
-            std::fs::read_to_string(root.join("data/chunk-000/file-000.jsonl")).unwrap();
+        let data = std::fs::read_to_string(root.join("data/chunk-000/file-000.jsonl")).unwrap();
         assert_eq!(data.lines().count(), 3);
         LeRobotV21::write_card_v3(&root, "pick up the cube").expect("card v3");
         assert!(root.join("README.md").exists());
