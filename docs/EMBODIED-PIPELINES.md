@@ -139,6 +139,118 @@ articulation，Rust 绑定青年期）。马达三坑（都踩过）：`motor_ax
   `scripts/plot_results.py` 画均值 + **分层 bootstrap 95% CI**（seed 层 × episode 层两级重抽）+ IQM。
 - 字段中文速查表（G-7）：`crates/oriera-agent/specs/official/README.md`。
 
+### 6.3 npz 裸出口 × Studio 三库工作台（M2-C，PLAN-embodied-general §四 M2 / §9.1 U-8 / G-10 / 拍板项 3）
+
+**npz 裸出口（U-8）**——不想装 LeRobot、只要 numpy 数组时用：
+
+```bash
+cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- \
+  --task pick_place --episodes 12 --export npz          # 与 --lerobot-v3 可并存，各写各的目录
+# → out/embodied-sim/npz/episode_000000.npz …（+ meta/oriera_receipt.json、meta/oriera_spec.json、MANIFEST.jsonl）
+```
+
+```python
+import json, numpy as np
+z = np.load("out/embodied-sim/npz/episode_000003.npz")   # z.files == ['obs_3', 'act_3', 'meta.json']
+meta = json.loads(z["meta.json"])                          # 非 .npy 成员 = 原始字节
+obs, act = z[meta["obs_key"]], z[meta["act_key"]]          # float32 [N, obs_dim] / [N, act_dim]
+```
+
+- **同一份行，另一种编码**：数组就是写 `lerobot-v21/`（及 `lerobot-v30/`）的那批 `Row`，按
+  little-endian f32 原样落盘（不经文本往返）；同一次采集里 npz 与两棵 LeRobot 树逐集逐值
+  （float32 位模式）一致——验收用 numpy 对拍 12 集 4198 行全等。`meta.json` 带 `obs_names` /
+  `action_names`、shape、`dataset_from/to_index`、`fps`、`robot_type`、`task` 与 modality 切片
+  （不用 LeRobot 也能按 arm / gripper / ee / object / goal 切向量）。相机帧不进 npz（PNG/mp4 轨走 LeRobot 出口）。
+- **零新依赖**：`.npz` 就是成员为 `.npy` 的 ZIP（`np.savez` 自己也写 ZIP_STORED）；
+  `lerobot.rs` 手写 stored ZIP（local header / central directory / EOCD）+ NPY v1.0 头（64 字节对齐）
+  + CRC-32 查表，固定 DOS 时间戳 ⇒ 重导字节一致。ZIP32 上限（4 GiB / 65535 项）超了报错不写坏文件
+  （单集 ~60 KB，远够）。行宽与声明不符 = 契约错误，**一个文件都不写**。
+- **没有 `--export parquet`**：Rust 侧没有零依赖的 parquet 写器，不为它引 crate（依赖纪律）——
+  parquet 一律走现有转换器 `python scripts/jsonl_to_lerobot_v21.py <lerobot-v21 目录>`（pyarrow）；
+  `--export parquet` 会给出这句人话并退出。
+- 不加 `--export` 时零行为变化：默认路径产物（lerobot-v21 整棵树，含 PNG 帧与 MANIFEST）与改动前逐字节一致。
+
+**Studio 三库工作台（G-10 / 拍板项 3）**——`/sim` 首屏 = 官方预设卡片墙（五预设，默认选中作业基线
+`tabletop-4dof-pick`），卡片 = 名称 / 一句话 / 难度（`meta.difficulty`，金标文件不带该字段时回退「入门」）/
+任务与机器人；点卡片 = 整份 spec 换装、**不重载 iframe**。
+
+- **spec 服务管线**：Studio 仓 `node scripts/sync-engine-snapshot.mjs` 把 `crates/oriera-agent/specs/`
+  的 `official/*.json` + `INDEX.json` 逐字同步进 `engine-snapshot/specs/`，并生成 `resolved/<name>.json`
+  （`extends` 展开版，`merge_overlay` 的 JS 逐条移植）。浏览器里的 wasm 没有文件系统，
+  `resolve_extends` 读不到基 spec，所以**发给内核的是展开版**；展开不改身份——五预设 raw(extends) /
+  resolved 在 CLI `--validate` 与浏览器 wasm 里 spec_hash 与 `INDEX.json` 四方一致。
+- **换装协议**：沿用 M1 kernel 的 postMessage `{source:"oriera-sim", cmd:"spec", json, seed:1000}` →
+  内核 `applySpec + buildSceneFromSpec + buildSliders + envReset` → 回 `{type:"state", note:"spec-applied", specHash}`。
+  Studio 4 秒等不到回执 = 「画面内核待重建」兜底（选中态退回画面里真实那份 + CLI 命令）；
+  录制中/有未导出的集时先确认（不同预设的数据不混进一个数据集）。
+- **内核版本守卫**：同步器用快照里的 oriera-wasm 逐个加载 resolved spec、核对 spec_hash == INDEX，
+  并核对内核自带默认实验 = 作业基线；不过就 WARN（重建 oriera-wasm 后重跑同步器）。
+- **参数微调（G-3 升级）**：物体 / 目标位置数字框 → 生成一份新 spec（固定出生点）经同一 postMessage
+  换装；**改了 = 新实验**，画面显示新 spec_hash，「复制这份 spec JSON」存文件后 CLI `--spec` 算出同一个号
+  （与 §9.2 G-B1「自由滑块与指纹冲突」的化解：不做不计指纹的沙盒，每次微调都是有身份的实验）。
+- 已知缺口：渲染器只摆 `props[0]`（`TableTopEnv` 只公开它的位姿，M1 已登记）——叠方块的底座 B、
+  料箱的四面墙在物理和判据里都在、画面里暂时看不见；Studio 在这两个预设上如实提示。
+
+### 6.4 相机规格化：针孔内参 × 畸变 × 外参（M3-A，PLAN-embodied-general §四 M3 / §9.1 U-5）
+
+相机从「正交示意」升级为**标定模型**：`scene.cameras` 进 spec（`deny_unknown_fields`
+继承 spec 规则；缺省空 = 旧 `--cam` 俯视逐字节不变，也不动 spec_hash——`cameras`
+为空时整体跳过序列化）。
+
+```json
+"cameras": [{
+  "name": "wrist",
+  "kind": { "pinhole": {
+    "width": 160, "height": 120,
+    "fx": 90.0, "fy": 90.0, "cx": 80.0, "cy": 60.0,
+    "dist": { "k1": 0.15, "k2": 0.02, "p1": 0.0, "p2": 0.001 },
+    "pos": [-0.07, 0.075, 0.0], "look_at": [0.08, -0.04, 0.0], "up": [0.0, 0.0, -1.0],
+    "channels": { "rgb": true, "depth": true },
+    "attach": "ee"
+  }}
+}]
+```
+
+**语义（真机标定对接说明）**：
+
+- **内参**：OpenCV 约定——`u = fx·X/Z + cx`（像素下标即连续坐标，主点 ≈ 图像中心），
+  与 `cv2.calibrateCamera` 的相机矩阵逐字段对应；spec 内只存 k1/k2/p1/p2 四系数
+  （Brown–Conrady：径向 + 切向），更高阶系数真机标定后再说（研究模式自行扩展）。
+- **外参**：`pos`/`look_at`/`up` 是相机位姿（光轴 = look_at−pos，图像右 = up×光轴，
+  图像下 = right×光轴）。`attach: "ee"` 时三者是**末端（TCP）系偏移**：原点 =
+  `telemetry.ee_pos`、旋转 = `telemetry.ee_rot`（四元数 [x,y,z,w]），外参每 tick 重算
+  ——腕相机随臂动，语义与真机「眼在手」标定一致（手眼方程的仿真版）。
+- **深度**：相机系前方距离，**毫米 u16 灰度 PNG**，0 = 无回波（传感器惯例）；
+  `depth.{name}` 轨与 `observation.images.{name}` 同名配对。
+- **畸变应用点**：渲染先按理想针孔光栅化（z-buffer 三角光栅、逐面片 flat shading +
+  头灯方向光、1/z 透视插值），畸变作为**纯后处理**（逆映射最近邻重采样）；`project()`
+  用同一条正映射——所以「世界点 → project() → 渲染像素」自洽，量化门槛
+  **重投影误差 < 2 px**（三点 × N 相机：夹爪 tip / 方块中心 / 目标心，颜色 + z-buffer
+  深度双重核对）——U-5 标定板思路的仿真版，`embodied_cam_capture` 示例每步自检。
+  畸变系数全 0 时后处理整段跳过（与无畸变路径逐字节一致）。
+- **不做清单**：纹理级 wgpu 渲染明确不做（PLAN §八「RTX 渲染 不做」）——渲染是
+  诚实的状态图像（cuboid/capsule/cylinder/disc 低面数解析体），不是照片仿真；真机
+  侧拿这份数据当「已知外参内参的合成相机」用，不声称域外观零差距。
+
+**腕相机示例**：`specs/lab/wrist-cam-demo.json`（extends 金标 + wrist 160×120
+RGB+depth 带畸变 + top 320×240 RGB 俯拍）：
+
+```bash
+cargo run -p oriera-agent --example embodied_cam_capture --features rigid3d,cam,spec -- --spec crates/oriera-agent/specs/lab/wrist-cam-demo.json --episodes 2
+# → out/embodied-cam/lerobot-v21/ + lerobot-v30/ + eval_report.json（含标定表与吞吐行）
+```
+
+**LeRobot 多视频轨**：每台相机一条 `observation.images.{name}` 视频轨 +
+一条 `depth.{name}` 图像轨（u16 PNG 序列，v2.1 树 `videos/chunk-000/depth.{name}/…`、
+v3 树 `videos/depth.{name}/chunk-000/file-000/…`）；`features_json` / `write_dir(v3)`
+按声明顺序展开，深度轨不进 episodes 元数据的视频指针列（image dtype 无视频时间戳，
+转换脚本按帧目录拼装）。批量采集同款能力：`embodied_sim_collect --cameras-from-spec`
+（用 spec.cameras 替换默认俯视；`--cam` 默认俯视不变）。
+
+**定位**：这是**研究模式**的能力（PLAN §9.2 U-5 挂起项的 M3 兑现）——学生作业基线
+仍是 21 维状态向量 + 正交俯视；真机标定板全流程（拍照→cv2 标定→回填 spec）属于
+该模式下的工作流，引擎提供 spec 字段、渲染管线与 <2px 自检门槛三件事。
+
 ## 5. 定位声明
 
 OriEra 提供的是「便宜、可复位、可回放」的**世界层**：确定性 tick（#66）、

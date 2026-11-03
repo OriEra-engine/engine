@@ -46,7 +46,42 @@ use oriera_subsys::{
 };
 
 #[cfg(feature = "cam")]
-use oriera_subsys::camera::{capture_png, encode_png, render_top_down, CameraView};
+use oriera_subsys::camera::{
+    capture_png, encode_depth_png, encode_png, render_pinhole, render_top_down, CameraView,
+    Distortion, PinholeCam, Prim, SceneView,
+};
+
+/// One captured camera frame (per tick, per camera): PNG bytes of the
+/// channels the camera exports. The legacy top-down `--cam` view emits
+/// `cam = "top"` with RGB only; spec cameras emit RGB and/or a
+/// millimetre u16 depth PNG. Drained by [`TableTopEnv::take_frames`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraFrame {
+    /// LeRobot feature suffix (`observation.images.{cam}` / `depth.{cam}`).
+    pub cam: String,
+    /// RGB8 PNG bytes, when the camera exports RGB.
+    pub rgb_png: Option<Vec<u8>>,
+    /// 16-bit grayscale PNG (millimetres, 0 = no return), when the
+    /// camera exports depth.
+    pub depth_png: Option<Vec<u8>>,
+}
+
+/// One raw (unencoded) spec-camera render — the calibration probe's
+/// input (feature `cam`): pixel buffers plus the camera that produced
+/// them, so a caller can `project()` world points onto the same image.
+#[cfg(feature = "cam")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CameraShot {
+    pub cam: String,
+    pub w: u32,
+    pub h: u32,
+    /// Row-major RGB8.
+    pub rgb: Option<Vec<u8>>,
+    /// Row-major millimetre depth.
+    pub depth: Option<Vec<u16>>,
+    /// The calibrated camera (resolved extrinsics) this frame came from.
+    pub pinhole: PinholeCam,
+}
 
 /// Static description of an environment: identity, rates, dimensions.
 #[derive(Debug, Clone)]
@@ -176,15 +211,175 @@ pub struct PropSpec {
     pub placement: Placement,
 }
 
-/// The scene as data: static fixtures + dynamic props. The default is
-/// exactly the pre-M0a hardcoded bench (ground slab + table + 5 cm cube
-/// at `OBJ_RANGE`).
+// ---------------------------------------------------------------------------
+// Cameras (M3-A, PLAN §四 M3 / §9.1 U-5): calibrated pinhole cameras live
+// in the spec — intrinsics + Brown–Conrady distortion + extrinsics, with
+// an optional end-effector mount. Empty (the default) keeps the legacy
+// `--cam` orthographic top view byte-for-byte; anything here renders
+// through `oriera_subsys::camera::render_pinhole` and exports as extra
+// LeRobot video/depth tracks. The serde derives ride the `spec` feature
+// like the neighbours; the *rendering* additionally needs the `cam`
+// feature — a spec with cameras loads and validates either way.
+// ---------------------------------------------------------------------------
+
+/// Brown–Conrady lens distortion (radial `k1`/`k2` + tangential
+/// `p1`/`p2`). All-zero (the default) = ideal pinhole.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "spec", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "spec", serde(default, deny_unknown_fields))]
+pub struct DistortionSpec {
+    pub k1: f32,
+    pub k2: f32,
+    pub p1: f32,
+    pub p2: f32,
+}
+
+impl Default for DistortionSpec {
+    fn default() -> Self {
+        Self { k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0 }
+    }
+}
+
+/// Output channels of a camera (at least one must be on — validate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "spec", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "spec", serde(default, deny_unknown_fields))]
+pub struct CamChannels {
+    /// RGB8 PNG track `observation.images.{name}`.
+    pub rgb: bool,
+    /// Millimetre u16 PNG track `depth.{name}` (0 = no return).
+    pub depth: bool,
+}
+
+impl Default for CamChannels {
+    fn default() -> Self {
+        Self { rgb: true, depth: false }
+    }
+}
+
+/// Where `pos`/`look_at`/`up` are expressed. `world` = metres in the
+/// world frame; `ee` = offsets in the **end-effector (TCP) frame** —
+/// origin at `telemetry.ee_pos`, rotation `telemetry.ee_rot`, so a
+/// wrist camera rides the arm and the extrinsics are recomputed every
+/// tick. The telemetry frame's +X is the gripper approach axis of the
+/// 4-DoF preset (world-down at the pick posture).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "spec", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "spec", serde(rename_all = "snake_case"))]
+pub enum CamAttach {
+    /// Fixed world-frame mount (overhead shots).
+    #[default]
+    World,
+    /// Wrist mount: `pos`/`look_at`/`up` are EE-frame offsets.
+    Ee,
+}
+
+/// The payload of [`CameraKind::Pinhole`]: intrinsics + extrinsics +
+/// channels of one calibrated camera. Pixel convention is OpenCV's
+/// (`u = fx·X/Z + cx` is the pixel index, `(cx, cy)` ≈ centre), depth
+/// is camera-frame forward distance in millimetres as u16 PNG.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "spec", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "spec", serde(default, deny_unknown_fields))]
+pub struct PinholeSpec {
+    /// Image width in pixels (≤ 640 — a soft memory cap, validate).
+    pub width: u32,
+    /// Image height in pixels (≤ 640).
+    pub height: u32,
+    /// Focal length in horizontal pixels (> 0).
+    pub fx: f32,
+    /// Focal length in vertical pixels (> 0).
+    pub fy: f32,
+    /// Principal point column (pixels).
+    pub cx: f32,
+    /// Principal point row (pixels).
+    pub cy: f32,
+    /// Lens distortion (default ideal).
+    pub dist: DistortionSpec,
+    /// Camera origin — world frame, or EE-frame offset when
+    /// `attach: "ee"` (metres).
+    pub pos: [f32; 3],
+    /// The point the optical axis aims at (same frame as `pos`).
+    pub look_at: [f32; 3],
+    /// Head-up hint (same frame as `pos`; must not be parallel to the
+    /// view direction — the image-right direction is `up × look`).
+    pub up: [f32; 3],
+    /// Which tracks this camera exports (at least one).
+    pub channels: CamChannels,
+    /// Frame of `pos`/`look_at`/`up` (default world).
+    pub attach: CamAttach,
+}
+
+impl Default for PinholeSpec {
+    /// A sane default: a 160×120 overhead photo of the bench centre.
+    fn default() -> Self {
+        Self {
+            width: 160,
+            height: 120,
+            fx: 140.0,
+            fy: 140.0,
+            cx: 80.0,
+            cy: 60.0,
+            dist: DistortionSpec::default(),
+            pos: [0.32, 1.10, 0.0],
+            look_at: [0.32, 0.50, 0.0],
+            up: [0.0, 0.0, 1.0],
+            channels: CamChannels::default(),
+            attach: CamAttach::World,
+        }
+    }
+}
+
+/// The camera model. One variant today (`pinhole`); externally tagged
+/// like `Placement`/`LinkShape` so `extends` overlays can swap models
+/// wholesale (`merge_overlay`'s single-key replacement rule).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "spec", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "spec", serde(rename_all = "snake_case"))]
+pub enum CameraKind {
+    Pinhole(PinholeSpec),
+}
+
+/// One spec-declared camera (`scene.cameras[i]`): a name (the LeRobot
+/// feature suffix) + its model.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "spec", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "spec", serde(deny_unknown_fields))]
+pub struct CameraSpec {
+    /// LeRobot feature suffix: `observation.images.{name}` /
+    /// `depth.{name}`. Must be non-empty and unique in the scene.
+    pub name: String,
+    /// The camera model (pinhole intrinsics/extrinsics).
+    pub kind: CameraKind,
+}
+
+impl CameraSpec {
+    /// The pinhole payload (`kind` is `pinhole` today; the accessor
+    /// keeps call sites honest if a second model ever lands).
+    pub fn pinhole(&self) -> &PinholeSpec {
+        match &self.kind {
+            CameraKind::Pinhole(p) => p,
+        }
+    }
+}
+
+/// The scene as data: static fixtures + dynamic props + cameras. The
+/// default is exactly the pre-M0a hardcoded bench (ground slab + table +
+/// 5 cm cube at `OBJ_RANGE`); `cameras` is omitted from the serialized
+/// form when empty so every pre-M3 spec keeps its spec_hash.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "spec", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "spec", serde(deny_unknown_fields))]
 pub struct SceneGraph {
     pub fixtures: Vec<Fixture>,
     pub props: Vec<PropSpec>,
+    /// Calibrated cameras (M3-A). Empty/absent ⇒ the legacy `--cam`
+    /// orthographic top view and an unchanged spec hash.
+    #[cfg_attr(
+        feature = "spec",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub cameras: Vec<CameraSpec>,
 }
 
 /// Legacy spawn range of the default cube (x ∈ [0.14, 0.22], y = 0.55
@@ -218,6 +413,7 @@ impl Default for SceneGraph {
                 phys: PropPhys::default(),
                 placement: OBJ_RANGE,
             }],
+            cameras: Vec::new(),
         }
     }
 }
@@ -230,6 +426,18 @@ impl SceneGraph {
         let ground = (self.fixtures[0].center, self.fixtures[0].half);
         let table = self.fixtures.get(1).map(|f| (f.center, f.half));
         Scene3D { ground, table }
+    }
+
+    /// Full fixture list as L6 slabs（M3：from_robot_fixtures 用）。
+    pub fn to_fixture_slabs(&self) -> Vec<oriera_subsys::rigid3d::FixtureSlab> {
+        self.fixtures
+            .iter()
+            .map(|f| oriera_subsys::rigid3d::FixtureSlab {
+                center: f.center,
+                half: f.half,
+                friction: f.friction,
+            })
+            .collect()
     }
 
     /// Lift a legacy `Scene3D` (ground + optional table) into a
@@ -262,12 +470,11 @@ impl SceneGraph {
     /// told about honestly).
     pub fn validate(&self) -> Result<(), String> {
         let ok = |v: f32| v.is_finite() && v > 0.0;
-        if self.fixtures.is_empty() || self.fixtures.len() > 2 {
-            return Err(format!(
-                "scene.fixtures: 目前 {} 个 —— M0a 只支持 1–2 个 fixture（ground[+table]，shelf/bin 在 M2）",
-                self.fixtures.len()
-            ));
+        if self.fixtures.is_empty() {
+            return Err("scene.fixtures: 至少要有一个 fixture（fixtures[0] 是地面）".into());
         }
+        // M3：from_robot_fixtures 吃任意个数、各自摩擦的 fixture（M0a
+        // 的 1–2 限制随引擎面解锁一并解除）。
         for (i, f) in self.fixtures.iter().enumerate() {
             if !(f.center.iter().all(|v| v.is_finite()) && f.half.iter().all(|v| ok(*v))) {
                 return Err(format!(
@@ -275,9 +482,9 @@ impl SceneGraph {
                     f.name, f.half
                 ));
             }
-            if f.friction != 0.9 {
+            if !(f.friction.is_finite() && f.friction >= 0.0) {
                 return Err(format!(
-                    "scene.fixtures[{i}]（{}）.friction = {}: M0a 后端固定 0.9（L6 build_scene 硬编码），其他值 M2 开放",
+                    "scene.fixtures[{i}]（{}）.friction = {}: 须为有限非负数",
                     f.name, f.friction
                 ));
             }
@@ -311,6 +518,74 @@ impl SceneGraph {
                         p.name, x, z
                     ));
                 }
+            }
+        }
+        // M3-A cameras: intrinsics sane, ≤640 px (soft memory cap),
+        // at least one channel, names unique (they are LeRobot feature
+        // keys), extrinsics non-degenerate (frame-invariant — the
+        // checks hold for `attach: "ee"` offsets too).
+        let mut cam_names: Vec<&str> = Vec::new();
+        for (i, c) in self.cameras.iter().enumerate() {
+            if c.name.trim().is_empty() {
+                return Err(format!(
+                    "scene.cameras[{i}].name：不能为空（相机名是 LeRobot 特性键后缀 observation.images.<name> / depth.<name>）"
+                ));
+            }
+            if cam_names.contains(&c.name.as_str()) {
+                return Err(format!(
+                    "scene.cameras[{i}].name = {:?}：重复——相机名必须唯一（已有 {cam_names:?}）",
+                    c.name
+                ));
+            }
+            cam_names.push(&c.name);
+            let p = c.pinhole();
+            let px = |v: f32| v.is_finite() && v > 0.0;
+            if !px(p.fx) || !px(p.fy) {
+                return Err(format!(
+                    "scene.cameras[{i}]（{}）.fx/fy = {}/{}：须为有限正数（像素焦距；缺省 140）",
+                    c.name, p.fx, p.fy
+                ));
+            }
+            if p.width == 0 || p.height == 0 || p.width > 640 || p.height > 640 {
+                return Err(format!(
+                    "scene.cameras[{i}]（{}）.width/height = {}×{}：须在 1..=640（软上限防内存；更大分辨率属研究模式自渲染，不入 spec）",
+                    c.name, p.width, p.height
+                ));
+            }
+            if !p.channels.rgb && !p.channels.depth {
+                return Err(format!(
+                    "scene.cameras[{i}]（{}）.channels：rgb/depth 至少开一个（当前两个都 false，渲染不出任何轨）",
+                    c.name
+                ));
+            }
+            let finite3 = |v: [f32; 3]| v.iter().all(|x| x.is_finite());
+            if !finite3(p.pos) || !finite3(p.look_at) || !finite3(p.up) {
+                return Err(format!(
+                    "scene.cameras[{i}]（{}）.pos/look_at/up：须为有限坐标（世界系，或 attach: \"ee\" 时的末端系偏移）",
+                    c.name
+                ));
+            }
+            let view = [
+                p.look_at[0] - p.pos[0],
+                p.look_at[1] - p.pos[1],
+                p.look_at[2] - p.pos[2],
+            ];
+            if view.iter().all(|v| v.abs() <= 1e-9) {
+                return Err(format!(
+                    "scene.cameras[{i}]（{}）.look_at == pos：视线方向为零向量（look_at 须与 pos 不同点）",
+                    c.name
+                ));
+            }
+            let up_cross = [
+                p.up[1] * view[2] - p.up[2] * view[1],
+                p.up[2] * view[0] - p.up[0] * view[2],
+                p.up[0] * view[1] - p.up[1] * view[0],
+            ];
+            if up_cross.iter().all(|v| v.abs() <= 1e-6) {
+                return Err(format!(
+                    "scene.cameras[{i}]（{}）.up 与视线平行：图像右方向不定（换一个 up，俯拍常用 [0,0,1]）",
+                    c.name
+                ));
             }
         }
         Ok(())
@@ -1869,9 +2144,13 @@ pub struct TableTopEnv {
     /// the control rate (30 Hz under the 60 Hz loop).
     #[cfg(feature = "cam")]
     cam: Option<CameraView>,
-    /// (tick, PNG bytes) of the open episode; drained by
+    /// Spec cameras (M3-A): rendered through the pinhole pipeline at
+    /// the control rate when the `cam` feature is on. Empty (the
+    /// default) keeps the legacy `--cam` path byte-for-byte.
+    pub spec_cameras: Vec<CameraSpec>,
+    /// (tick, camera frame) of the open episode; drained by
     /// [`TableTopEnv::take_frames`] on export.
-    frames: Vec<(u64, Vec<u8>)>,
+    frames: Vec<(u64, CameraFrame)>,
 }
 
 impl TableTopEnv {
@@ -1950,6 +2229,7 @@ impl TableTopEnv {
             actions,
             #[cfg(feature = "cam")]
             cam: None,
+            spec_cameras: Vec::new(),
             frames: Vec::new(),
         }
     }
@@ -2011,9 +2291,223 @@ impl TableTopEnv {
         self.cam = view;
     }
 
-    /// Drain the open episode's captured PNG frames: `(tick, bytes)`.
-    pub fn take_frames(&mut self) -> Vec<(u64, Vec<u8>)> {
+    /// Mount the spec's calibrated cameras (M3-A). They render through
+    /// the pinhole pipeline at the control rate — alongside, never
+    /// instead of, the legacy `--cam` top view (that one is mounted
+    /// separately via [`Self::set_camera`]).
+    pub fn set_cameras(&mut self, cams: Vec<CameraSpec>) {
+        self.spec_cameras = cams;
+    }
+
+    /// Drain the open episode's captured frames: `(tick, CameraFrame)`.
+    /// The legacy top view arrives as `cam = "top"` (RGB only); spec
+    /// cameras carry RGB and/or depth PNG bytes by name.
+    pub fn take_frames(&mut self) -> Vec<(u64, CameraFrame)> {
         std::mem::take(&mut self.frames)
+    }
+
+    /// The resolved world-frame pose of one spec camera
+    /// (`(pos, look_at, up)`): verbatim for `attach: "world"`, or the
+    /// EE-frame offsets rotated by the telemetry quaternion for
+    /// `attach: "ee"` — the per-tick extrinsics of a wrist camera.
+    #[cfg(feature = "cam")]
+    pub fn cam_axes(&self, cam: &CameraSpec) -> ([f32; 3], [f32; 3], [f32; 3]) {
+        let p = cam.pinhole();
+        match p.attach {
+            CamAttach::World => (p.pos, p.look_at, p.up),
+            CamAttach::Ee => {
+                let tel = self
+                    .world
+                    .get::<JointTelemetry>(self.arm)
+                    .cloned()
+                    .unwrap_or_default();
+                let rot = |v: [f32; 3]| quat_rotate(tel.ee_rot, v);
+                let rel = |v: [f32; 3]| {
+                    let r = rot(v);
+                    [
+                        tel.ee_pos[0] + r[0],
+                        tel.ee_pos[1] + r[1],
+                        tel.ee_pos[2] + r[2],
+                    ]
+                };
+                (rel(p.pos), rel(p.look_at), rot(p.up))
+            }
+        }
+    }
+
+    /// The calibrated [`PinholeCam`] for one spec camera at the current
+    /// tick (extrinsics resolved; validation already made failures
+    /// impossible, the panic names the spec field otherwise).
+    #[cfg(feature = "cam")]
+    pub fn pinhole_for(&self, cam: &CameraSpec) -> PinholeCam {
+        let p = cam.pinhole();
+        let (pos, look, up) = self.cam_axes(cam);
+        PinholeCam::from_look(
+            pos,
+            look,
+            up,
+            p.width,
+            p.height,
+            p.fx,
+            p.fy,
+            p.cx,
+            p.cy,
+            Distortion {
+                k1: p.dist.k1,
+                k2: p.dist.k2,
+                p1: p.dist.p1,
+                p2: p.dist.p2,
+            },
+            p.channels.rgb,
+            p.channels.depth,
+        )
+        .unwrap_or_else(|e| panic!("scene.cameras（{}）：{e}（应已被 validate 拦下）", cam.name))
+    }
+
+    /// The world as the pinhole renderer sees it (M3-A): fixtures as
+    /// boxes, props as oriented primitives, the arm skeleton as capsule
+    /// segments between joint origins, the gripper plates as two small
+    /// balls, the goal as a ground disc. Flat colours double as the
+    /// calibration targets (prop / arm / goal each have one exact RGB).
+    #[cfg(feature = "cam")]
+    pub fn scene_view(&self) -> SceneView {
+        let mut prims = Vec::with_capacity(16 + self.prop_ents.len());
+        let robot = &self.robot_working;
+        for (i, f) in self.scene.fixtures.iter().enumerate() {
+            let color = if i == 0 { [38, 42, 52] } else { [56, 68, 88] };
+            prims.push(Prim::Cuboid {
+                center: f.center,
+                half: f.half,
+                color,
+            });
+        }
+        // the fixed base link (its box never moves)
+        if let Some(l) = robot.links.first() {
+            let half = match l.shape {
+                oriera_subsys::LinkShape::Box { half } => half,
+                _ => [0.03; 3],
+            };
+            prims.push(Prim::Cuboid {
+                center: [
+                    l.origin[0] + l.collider_offset[0],
+                    l.origin[1] + l.collider_offset[1],
+                    l.origin[2] + l.collider_offset[2],
+                ],
+                half,
+                color: [70, 76, 96],
+            });
+        }
+        // arm skeleton: capsules between consecutive chain points,
+        // radius read off the link geometry the segment belongs to
+        let pts = self.sys.chain_points();
+        for (k, w) in pts.windows(2).enumerate() {
+            let radius = robot
+                .joints
+                .get(k + 1)
+                .and_then(|j| robot.links.get(j.child_link))
+                .map(|l| link_radius(&l.shape))
+                .unwrap_or(0.012);
+            prims.push(Prim::Capsule {
+                a: w[0],
+                b: w[1],
+                radius,
+                color: [91, 141, 239],
+            });
+        }
+        // gripper plates as two small balls (plate centres from the sys)
+        if let Some([a, b]) = self.sys.plate_positions() {
+            for p in [a, b] {
+                prims.push(Prim::Sphere {
+                    center: p,
+                    r: 0.006,
+                    color: [210, 214, 224],
+                });
+            }
+        }
+        // props (pos + quaternion from the world; shapes from the spec)
+        for (i, prop) in self.scene.props.iter().enumerate() {
+            let Some(pose) = self.prop_pose(i) else { continue };
+            match prop.shape {
+                PropShape::Cuboid { half } => prims.push(Prim::BoxQ {
+                    center: pose.pos,
+                    rot: pose.rot,
+                    half,
+                    color: [255, 206, 110],
+                }),
+                PropShape::Cylinder { half_h, radius } => prims.push(Prim::Cylinder {
+                    center: pose.pos,
+                    rot: pose.rot,
+                    half_h,
+                    radius,
+                    color: [255, 206, 110],
+                }),
+                PropShape::Sphere { r } => prims.push(Prim::Sphere {
+                    center: pose.pos,
+                    r,
+                    color: [255, 206, 110],
+                }),
+            }
+        }
+        // the goal marker (a hair above the surface so the z-buffer
+        // keeps it over the table slab)
+        prims.push(Prim::Disc {
+            center: [self.goal[0], self.goal[1] + 0.002, self.goal[2]],
+            radius: 0.045,
+            color: [64, 200, 132],
+        });
+        // the calibration beacon (U-5): an unlit LED-like marker on the
+        // gripper tip — the reprojection gate's exact-colour target
+        // (everything else in the frame is flat-shaded, angle-dependent)
+        if let Some(tip) = pts.last() {
+            prims.push(Prim::Beacon {
+                center: *tip,
+                r: 0.008,
+                color: [91, 141, 239],
+            });
+        }
+        SceneView { prims }
+    }
+
+    /// Render every spec camera at the current tick (raw buffers — the
+    /// PNG encoding happens in the capture path; the calibration probe
+    /// consumes the raw pixels directly).
+    #[cfg(feature = "cam")]
+    pub fn render_cameras(&self) -> Vec<CameraShot> {
+        let view = self.scene_view();
+        self.spec_cameras
+            .iter()
+            .map(|c| {
+                let pin = self.pinhole_for(c);
+                let frame = render_pinhole(&pin, &view);
+                CameraShot {
+                    cam: c.name.clone(),
+                    w: pin.width,
+                    h: pin.height,
+                    rgb: frame.rgb,
+                    depth: frame.depth,
+                    pinhole: pin,
+                }
+            })
+            .collect()
+    }
+
+    /// Encode one spec-camera shot into the export frame (`cam`, RGB
+    /// PNG, depth PNG) — the per-tick capture path.
+    #[cfg(feature = "cam")]
+    fn spec_camera_frame(&self, shot: &CameraShot) -> Result<CameraFrame, String> {
+        let rgb_png = match &shot.rgb {
+            Some(buf) => Some(encode_png(buf, shot.w, shot.h)?),
+            None => None,
+        };
+        let depth_png = match &shot.depth {
+            Some(buf) => Some(encode_depth_png(buf, shot.w, shot.h)?),
+            None => None,
+        };
+        Ok(CameraFrame {
+            cam: shot.cam.clone(),
+            rgb_png,
+            depth_png,
+        })
     }
 
     /// The randomization receipt of the current/last reset.
@@ -2109,6 +2603,37 @@ impl Default for TableTopEnv {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Quaternion `[x, y, z, w]` rotate a vector — the EE-frame mount math
+/// (mirrors `oriera_subsys::camera`'s private helper; kept here so the
+/// env never reaches into the renderer's internals).
+#[cfg(feature = "cam")]
+fn quat_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let qv = [q[0], q[1], q[2]];
+    let t = [
+        2.0 * (qv[1] * v[2] - qv[2] * v[1]),
+        2.0 * (qv[2] * v[0] - qv[0] * v[2]),
+        2.0 * (qv[0] * v[1] - qv[1] * v[0]),
+    ];
+    [
+        v[0] + q[3] * t[0] + (qv[1] * t[2] - qv[2] * t[1]),
+        v[1] + q[3] * t[1] + (qv[2] * t[0] - qv[0] * t[2]),
+        v[2] + q[3] * t[2] + (qv[0] * t[1] - qv[1] * t[0]),
+    ]
+}
+
+/// Skeleton capsule radius of one link: the shape's thin dimension
+/// (capsule radius / box min-half), floored so hairline links stay
+/// visible in the perspective render.
+#[cfg(feature = "cam")]
+fn link_radius(shape: &oriera_subsys::LinkShape) -> f32 {
+    let r = match shape {
+        oriera_subsys::LinkShape::Capsule { radius, .. } => *radius,
+        oriera_subsys::LinkShape::Box { half } => half.iter().cloned().fold(f32::MAX, f32::min),
+        _ => 0.012,
+    };
+    r.max(0.008)
 }
 
 /// Stamp a non-default prop footprint onto a rendered RGB frame
@@ -2303,8 +2828,11 @@ impl EmbodiedEnv for TableTopEnv {
             self.prop_ents.push(e);
         }
         self.world.insert_resource(self.physics);
-        self.sys = MultibodySystem::from_robot(self.robot_working.clone(), self.scene.to_scene3d())
-            .unwrap_or_else(|e| panic!("reset：robot 构建失败：{e}"));
+        self.sys = MultibodySystem::from_robot_fixtures(
+            self.robot_working.clone(),
+            &self.scene.to_fixture_slabs(),
+        )
+        .unwrap_or_else(|e| panic!("reset：robot 构建失败：{e}"));
 
         // Settle: let the cube land and the chain stabilize, so every
         // episode starts from the same resting posture.
@@ -2344,16 +2872,34 @@ impl EmbodiedEnv for TableTopEnv {
         // Top-down camera at the control rate — frame t shows state_t,
         // the same state obs row t describes; one capture per step ⇒
         // frame count == row count by construction (the off-by-one of
-        // the previous placement is gone).
+        // the previous placement is gone). Spec cameras (M3-A) capture
+        // the same state through the pinhole pipeline, after the
+        // legacy view so its bytes never move.
         #[cfg(feature = "cam")]
-        if let Some(view) = &self.cam {
-            let obj_now = self
-                .world
-                .get::<Pose3>(self.obj)
-                .copied()
-                .unwrap_or_default();
-            if let Ok(png) = self.frame_png(view, obj_now.pos) {
-                self.frames.push((self.tick, png));
+        {
+            if let Some(view) = &self.cam {
+                let obj_now = self
+                    .world
+                    .get::<Pose3>(self.obj)
+                    .copied()
+                    .unwrap_or_default();
+                if let Ok(png) = self.frame_png(view, obj_now.pos) {
+                    self.frames.push((
+                        self.tick,
+                        CameraFrame {
+                            cam: "top".into(),
+                            rgb_png: Some(png),
+                            depth_png: None,
+                        },
+                    ));
+                }
+            }
+            if !self.spec_cameras.is_empty() {
+                for shot in self.render_cameras() {
+                    if let Ok(frame) = self.spec_camera_frame(&shot) {
+                        self.frames.push((self.tick, frame));
+                    }
+                }
             }
         }
 
@@ -2905,10 +3451,19 @@ mod tests {
             half: [0.2, 0.02, 0.2],
             friction: 0.9,
         });
-        let err = g.validate().unwrap_err();
-        assert!(err.contains("M0a"), "{err}");
+        // M3：>2 个 fixture 与任意非负摩擦已解锁（from_robot_fixtures）
+        // ——旧「M0a 只支持 1–2 个」报错退场；负摩擦仍拒绝。
         let mut g = SceneGraph::default();
+        g.fixtures.push(Fixture {
+            name: "shelf".into(),
+            center: [0.4, 0.9, 0.0],
+            half: [0.2, 0.02, 0.2],
+            friction: 0.9,
+        });
         g.fixtures[1].friction = 0.5;
+        assert!(g.validate().is_ok(), "M3: 3 fixtures + friction 0.5 legal");
+        let mut g = SceneGraph::default();
+        g.fixtures[1].friction = -0.1;
         assert!(g.validate().unwrap_err().contains("friction"));
         let mut g = SceneGraph::default();
         g.props[0].shape = PropShape::Cylinder {
@@ -3265,7 +3820,9 @@ mod tests {
         assert!(f1.len() >= 2, "12 ticks @ 30 Hz must capture ≥2 frames");
         assert!(f1.windows(2).all(|w| w[0].0 < w[1].0), "ticks must ascend");
         // PNG signature: deterministic bytes start with the magic.
-        assert_eq!(&f1[0].1[0..8], b"\x89PNG\r\n\x1a\n");
+        let png = f1[0].1.rgb_png.as_ref().expect("top view is RGB");
+        assert_eq!(&png[0..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(f1[0].1.cam, "top", "the legacy track keeps its name");
         let drained = e1.take_frames();
         assert!(drained.is_empty(), "take_frames must drain");
     }

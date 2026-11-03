@@ -567,6 +567,27 @@ fn unknown_key_report(input: &serde_json::Value, roundtrip: &serde_json::Value) 
                         }
                     }
                     None => {
+                        // 显式写出「skip_serializing_if 省略的默认值」（如
+                        // kind:"Revolute"、self_collision:"Off"）会从
+                        // roundtrip 里消失。纯「去掉键后全等」判定会把
+                        // halfx 这类拼错键也误放行（删掉后同样全等）——
+                        // 加一层已知 skip-默认键允许清单：键在清单内且
+                        // 去除后全等才放行；清单外一律报错。
+                        const SKIPPED_DEFAULT_KEYS: [&str; 8] = [
+                            "kind",
+                            "self_collision",
+                            "approach_axis",
+                            "gap_axis",
+                            "contact_mesh",
+                            "holding_criterion",
+                            "difficulty",
+                            "friction",
+                        ];
+                        let mut a_wo = a.clone();
+                        a_wo.remove(k);
+                        if SKIPPED_DEFAULT_KEYS.contains(&k.as_str()) && a_wo == *b {
+                            continue;
+                        }
                         let mut legal: Vec<&String> = b.keys().collect();
                         legal.sort();
                         let names: Vec<String> = legal.iter().map(|s| format!("\"{s}\"")).collect();
@@ -902,6 +923,19 @@ mod tests {
         v["scene"]["props"][0]["halfx"] = serde_json::json!(1.0);
         let err = SceneSpec::from_value(v).unwrap_err();
         assert!(err.contains("halfx"), "{err}");
+        // M3：显式写「skip 序列化省略的默认值」不再误报（audit 放行——
+        // 去掉该键后与 roundtrip 全等即显式默认），拼错仍报。
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["robot"]["joints"][0]["kind"] = serde_json::json!("Revolute");
+        assert!(SceneSpec::from_value(v).is_ok(), "explicit default is legal");
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["robot"]["joints"][0]["kind"] = serde_json::json!("Revolote");
+        let err = SceneSpec::from_value(v).unwrap_err();
+        assert!(err.contains("Revolote") || err.contains("非法"), "typo'd kind value rejected: {err}");
+        // 清单外的拼错键（halfx）不因「去除后全等」被误放行
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["scene"]["props"][0]["halfx"] = serde_json::json!(1.0);
+        assert!(SceneSpec::from_value(v).unwrap_err().contains("halfx"));
     }
 
     #[cfg(feature = "json")]
@@ -1183,5 +1217,137 @@ mod tests {
             .apply_sets(&["task.id=stack@v1".into()])
             .expect_err("single-prop stack must be refused");
         assert!(err.contains("stack") && err.contains("2 个 prop"), "{err}");
+    }
+
+    // --- M3-A: calibrated cameras in the spec (U-5) --------------------
+
+    /// One spec camera as JSON — the wrist-cam-demo shape.
+    #[cfg(feature = "json")]
+    fn cam_json(name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "kind": {"pinhole": {
+                "width": 160, "height": 120,
+                "fx": 140.0, "fy": 140.0, "cx": 80.0, "cy": 60.0,
+                "dist": {"k1": 0.0, "k2": 0.0, "p1": 0.0, "p2": 0.0},
+                "pos": [0.32, 1.10, 0.0],
+                "look_at": [0.32, 0.50, 0.0],
+                "up": [0.0, 0.0, 1.0],
+                "channels": {"rgb": true, "depth": true}
+            }}
+        })
+    }
+
+    /// Absent cameras keep the golden hash; present cameras parse
+    /// (incl. `attach: "ee"`) and are experiment identity; typos inside
+    /// the camera block are named errors (P-4 audit covers the new tree).
+    #[cfg(feature = "json")]
+    #[test]
+    fn cameras_parse_hash_and_round_trip() {
+        let spec = golden();
+        assert!(spec.scene.cameras.is_empty(), "golden has no cameras");
+        assert_eq!(
+            spec.spec_hash_hex(),
+            GOLDEN_SPEC_HASH_HEX,
+            "cameras absent ⇒ the M0a identity anchor stands"
+        );
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["scene"]["cameras"] = serde_json::json!([cam_json("wrist")]);
+        let with_cam = SceneSpec::from_value(v).expect("camera spec parses");
+        assert_eq!(with_cam.scene.cameras.len(), 1);
+        assert_eq!(with_cam.scene.cameras[0].name, "wrist");
+        let p = with_cam.scene.cameras[0].pinhole();
+        assert_eq!((p.width, p.height), (160, 120));
+        assert!(p.channels.rgb && p.channels.depth);
+        assert_ne!(
+            with_cam.spec_hash_hex(),
+            GOLDEN_SPEC_HASH_HEX,
+            "cameras are experiment identity"
+        );
+        // a world camera written at its defaults serializes them (they
+        // are the typed struct's fields — no canonicalization needed:
+        // omitting `cameras` entirely is the default form)
+        let mut v = serde_json::to_value(golden()).unwrap();
+        let mut cam = cam_json("wrist");
+        cam["kind"]["pinhole"]["attach"] = serde_json::json!("ee");
+        cam["kind"]["pinhole"]["pos"] = serde_json::json!([-0.07, 0.03, 0.0]);
+        cam["kind"]["pinhole"]["look_at"] = serde_json::json!([0.10, 0.0, 0.0]);
+        cam["kind"]["pinhole"]["up"] = serde_json::json!([0.0, 0.0, -1.0]);
+        v["scene"]["cameras"] = serde_json::json!([cam]);
+        let ee = SceneSpec::from_value(v).expect("ee-mounted camera parses");
+        let p = ee.scene.cameras[0].pinhole();
+        assert!(format!("{:?}", p.attach).contains("Ee"), "{:?}", p.attach);
+        // typo inside the camera block is reported with its path
+        let mut v = serde_json::to_value(golden()).unwrap();
+        let mut cam = cam_json("wrist");
+        cam["kind"]["pinhole"]["focal"] = serde_json::json!(1.0);
+        v["scene"]["cameras"] = serde_json::json!([cam]);
+        let err = SceneSpec::from_value(v).unwrap_err();
+        assert!(err.contains("focal"), "{err}");
+    }
+
+    /// validate names the offending camera field: fx/fy, the 640 px
+    /// soft cap, at least one channel, unique names, degenerate
+    /// extrinsics (frame-invariant — the same checks gate `ee` mounts).
+    #[cfg(feature = "json")]
+    #[test]
+    fn camera_validation_names_the_offender() {
+        let from_cams = |cams: serde_json::Value| {
+            let mut v = serde_json::to_value(golden()).unwrap();
+            v["scene"]["cameras"] = cams;
+            SceneSpec::from_value(v)
+        };
+        let mut c = cam_json("wrist");
+        c["kind"]["pinhole"]["fx"] = serde_json::json!(0.0);
+        assert!(from_cams(serde_json::json!([c])).unwrap_err().contains("fx"));
+        let mut c = cam_json("wrist");
+        c["kind"]["pinhole"]["width"] = serde_json::json!(800);
+        let err = from_cams(serde_json::json!([c])).unwrap_err();
+        assert!(err.contains("width/height") && err.contains("640"), "{err}");
+        let mut c = cam_json("wrist");
+        c["kind"]["pinhole"]["channels"] = serde_json::json!({"rgb": false, "depth": false});
+        let err = from_cams(serde_json::json!([c])).unwrap_err();
+        assert!(err.contains("channels"), "{err}");
+        let mut c2 = cam_json("top");
+        c2["kind"]["pinhole"]["up"] = serde_json::json!([0.0, 1.0, 0.0]);
+        let err = from_cams(serde_json::json!([cam_json("wrist"), c2])).unwrap_err();
+        assert!(err.contains("平行") && err.contains("top"), "{err}");
+        let mut c2 = cam_json("wrist");
+        c2["kind"]["pinhole"]["look_at"] = serde_json::json!([0.32, 1.10, 0.0]);
+        let err = from_cams(serde_json::json!([c2])).unwrap_err();
+        assert!(err.contains("look_at"), "{err}");
+        let err = from_cams(serde_json::json!([cam_json("cam"), cam_json("cam")]))
+            .unwrap_err();
+        assert!(err.contains("唯一") || err.contains("重复"), "{err}");
+        let err = from_cams(serde_json::json!([cam_json(" ")]))
+            .unwrap_err();
+        assert!(err.contains("name"), "{err}");
+    }
+
+    /// The lab route: `extends` + a `scene.cameras` overlay resolves
+    /// against the official golden — the overlay's cameras land, the
+    /// rest is inherited, identity moves.
+    #[cfg(feature = "json")]
+    #[test]
+    fn cameras_enter_via_extends_overlay() {
+        let v = serde_json::json!({
+            "extends": "tabletop-4dof-pick",
+            "meta": {"name": "lab-wrist-cam"},
+            "scene": {"cameras": [cam_json("wrist")]}
+        });
+        let loaded = SceneSpec::load(&serde_json::to_string(&v).unwrap())
+            .expect("overlay resolves against the official library");
+        assert!(!loaded.migrated);
+        let s = loaded.spec;
+        assert_eq!(s.scene.cameras.len(), 1, "the overlay's cameras land");
+        assert_eq!(s.scene.cameras[0].name, "wrist");
+        // inherited, not overridden
+        assert_eq!(s.robot.dof(), golden().robot.dof());
+        assert_eq!(s.max_steps, golden().max_steps);
+        assert_ne!(
+            s.spec_hash_hex(),
+            GOLDEN_SPEC_HASH_HEX,
+            "adding a camera moves the experiment identity"
+        );
     }
 }

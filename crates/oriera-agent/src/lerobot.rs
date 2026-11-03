@@ -18,6 +18,13 @@
 //! ├── README.md                       # dataset card
 //! └── data/chunk-000/episode_000000.jsonl → .parquet (via script)
 //! ```
+//!
+//! **npz bare export (M2, PLAN-embodied-general §9.1 U-8)**:
+//! [`LeRobotV21::write_npz`] writes the same rows as one `numpy.load`-able
+//! `.npz` per episode (`obs_{i}.npy` / `act_{i}.npy` float32 + a
+//! `meta.json` text member) — hand-written stored ZIP + NPY v1.0, zero
+//! new crates. There is no parquet bare export: Rust has no std-only
+//! parquet writer, so parquet stays on the pyarrow converter above.
 
 use std::io::Write as _;
 use std::path::Path;
@@ -34,12 +41,29 @@ pub struct Row {
 pub struct Episode {
     pub task_index: u32,
     pub rows: Vec<Row>,
-    /// Top-down camera PNG frames of this episode (feature `cam`),
-    /// captured at the camera cadence by the env.
-    pub frames: Vec<Vec<u8>>,
+    /// Camera tracks of this episode (feature `cam` + M3-A): one entry
+    /// per camera, frames captured at the camera cadence by the env.
+    /// Index order follows recorder declaration, not push order.
+    pub tracks: Vec<CamTrackData>,
 }
 
-/// Camera track declaration (feature `cam`): one fixed top-down view.
+/// One camera track's frames within one episode: RGB PNG bytes and —
+/// when the camera exports depth — the parallel millimetre u16 PNG
+/// (`depth.{name}`) bytes.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CamTrackData {
+    /// Camera name = LeRobot feature suffix.
+    pub cam: String,
+    /// RGB8 PNG bytes, one per captured tick.
+    pub rgb: Vec<Vec<u8>>,
+    /// Depth PNG bytes (16-bit grayscale, millimetres, 0 = no return),
+    /// one per captured tick.
+    pub depth: Vec<Vec<u8>>,
+}
+
+/// Camera track declaration (feature `cam`): the legacy fixed top-down
+/// view, or one spec camera (M3-A). `depth` adds the `depth.{name}`
+/// millimetre u16 PNG track next to `observation.images.{name}`.
 #[derive(Debug, Clone)]
 pub struct CameraTrack {
     /// LeRobot feature key suffix: `observation.images.<name>`.
@@ -48,6 +72,8 @@ pub struct CameraTrack {
     pub h: u32,
     /// Frame rate of the track (Hz) — half the control rate by default.
     pub fps: f32,
+    /// Also export `depth.<name>` (16-bit grayscale PNG, millimetres).
+    pub depth: bool,
 }
 
 /// A dataset under construction. Features: `observation.state`
@@ -65,8 +91,10 @@ pub struct LeRobotV21 {
     pub tasks: Vec<String>,
     pub episodes: Vec<Episode>,
     current: Option<Episode>,
-    /// Camera track (feature `cam`); None ⇒ state-only dataset.
-    pub camera: Option<CameraTrack>,
+    /// Camera tracks (feature `cam`; M3-A multi-camera): each becomes
+    /// `observation.images.{name}` (+ `depth.{name}` when declared).
+    /// Empty ⇒ state-only dataset.
+    pub cameras: Vec<CameraTrack>,
     /// `(slice name, start, end)` runs over the state vector and the
     /// action vector — the modality.json / v3-metadata source. Empty ⇒
     /// the legacy fixed-layout fallback (byte-stable 21/5 output).
@@ -91,7 +119,7 @@ impl LeRobotV21 {
             tasks: Vec::new(),
             episodes: Vec::new(),
             current: None,
-            camera: None,
+            cameras: Vec::new(),
             obs_slices: Vec::new(),
             action_slices: Vec::new(),
             next_index: 0,
@@ -118,24 +146,72 @@ impl LeRobotV21 {
             tasks: Vec::new(),
             episodes: Vec::new(),
             current: None,
-            camera: None,
+            cameras: Vec::new(),
             next_index: 0,
         }
     }
 
-    /// Attach a camera track to the dataset (must be set before the
-    /// first `start_episode`).
+    /// Attach a single camera track (the legacy one-view form; must be
+    /// set before the first `start_episode`). Multi-camera datasets
+    /// use [`Self::add_camera`].
     pub fn set_camera(&mut self, track: CameraTrack) {
-        self.camera = Some(track);
+        self.cameras = vec![track];
     }
 
-    /// Record one camera frame (PNG bytes) for the open episode.
-    pub fn push_frame(&mut self, png: Vec<u8>) -> Result<(), String> {
+    /// Add one camera track (M3-A multi-video: one entry per spec
+    /// camera, declaration order = feature order). Duplicate names are
+    /// a contract error — they are LeRobot feature keys.
+    pub fn add_camera(&mut self, track: CameraTrack) -> Result<(), String> {
+        if self.cameras.iter().any(|c| c.name == track.name) {
+            return Err(format!(
+                "相机轨 {:?} 重复：camera 名是 LeRobot 特性键，必须唯一",
+                track.name
+            ));
+        }
+        self.cameras.push(track);
+        Ok(())
+    }
+
+    /// Record one camera frame (the env's [`CameraFrame`]) for the open
+    /// episode: RGB and/or depth PNG bytes, routed by camera name. The
+    /// name must be declared via `set_camera`/`add_camera` first.
+    pub fn push_frame(&mut self, frame: crate::embodied_env::CameraFrame) -> Result<(), String> {
+        let crate::embodied_env::CameraFrame {
+            cam,
+            rgb_png,
+            depth_png,
+        } = frame;
+        let track = self
+            .cameras
+            .iter()
+            .find(|c| c.name == cam)
+            .ok_or_else(|| format!("push_frame：相机 {cam:?} 未声明（先 set_camera/add_camera）"))?;
         let ep = self
             .current
             .as_mut()
             .ok_or("push_frame 前须 start_episode")?;
-        ep.frames.push(png);
+        if depth_png.is_some() && !track.depth {
+            return Err(format!(
+                "push_frame：相机 {cam:?} 送来 depth 帧但未声明 depth 轨（CameraTrack.depth = false）"
+            ));
+        }
+        let data = match ep.tracks.iter_mut().find(|t| t.cam == cam) {
+            Some(t) => t,
+            None => {
+                ep.tracks.push(CamTrackData {
+                    cam: cam.clone(),
+                    rgb: Vec::new(),
+                    depth: Vec::new(),
+                });
+                ep.tracks.last_mut().expect("just pushed")
+            }
+        };
+        if let Some(png) = rgb_png {
+            data.rgb.push(png);
+        }
+        if let Some(png) = depth_png {
+            data.depth.push(png);
+        }
         Ok(())
     }
 
@@ -152,7 +228,7 @@ impl LeRobotV21 {
         self.current = Some(Episode {
             task_index,
             rows: Vec::new(),
-            frames: Vec::new(),
+            tracks: Vec::new(),
         });
     }
 
@@ -214,27 +290,36 @@ impl LeRobotV21 {
     }
 
     /// The `features` block shared by the v2.1 and v3.0 info.json
-    /// (dtypes/shapes/names derive from the layouts — M0a P-8).
+    /// (dtypes/shapes/names derive from the layouts — M0a P-8). One
+    /// video entry per camera + one image entry per declared depth
+    /// track (M3-A multi-video).
     fn features_json(&self) -> String {
         let state_shape = self.obs_names.len().to_string();
         let action_shape = self.action_names.len().to_string();
         let obs_names = json_string_array(&self.obs_names);
         let action_names = json_string_array(&self.action_names);
-        // Camera feature (feature `cam`): a video entry whose frames
-        // the converter assembles into mp4.
-        let cam_feat = self
-            .camera
-            .as_ref()
-            .map(|c| {
-                format!(
-                    ",\"observation.images.{name}\":{{\"dtype\":\"video\",\"shape\":[{h},{w},3],\"names\":null,\"info\":{{\"video.fps\":{fps},\"video.codec\":\"libx264\",\"video.pix_fmt\":\"yuv420p\",\"has_audio\":false}}}}",
+        // Camera features (feature `cam`): video entries whose frames
+        // the converter assembles into mp4; depth tracks ride as u16
+        // PNG sequences (dtype "image" — no mp4 for depth).
+        let mut cam_feats = String::new();
+        for c in &self.cameras {
+            cam_feats.push_str(&format!(
+                ",\"observation.images.{name}\":{{\"dtype\":\"video\",\"shape\":[{h},{w},3],\"names\":null,\"info\":{{\"video.fps\":{fps},\"video.codec\":\"libx264\",\"video.pix_fmt\":\"yuv420p\",\"has_audio\":false}}}}",
+                name = c.name,
+                h = c.h,
+                w = c.w,
+                fps = c.fps
+            ));
+            if c.depth {
+                cam_feats.push_str(&format!(
+                    ",\"depth.{name}\":{{\"dtype\":\"image\",\"shape\":[{h},{w},1],\"names\":null,\"info\":{{\"png.bit_depth\":16,\"png.color_type\":\"grayscale\",\"oriera.unit\":\"millimetre\",\"oriera.no_return\":0}}}}",
                     name = c.name,
                     h = c.h,
-                    w = c.w,
-                    fps = c.fps
-                )
-            })
-            .unwrap_or_default();
+                    w = c.w
+                ));
+            }
+        }
+        let cam_feat = cam_feats.as_str();
         format!(
             concat!(
                 "\"observation.state\":{{\"dtype\":\"float32\",\"shape\":[{sd}],\"names\":{{\"joints\":{on}}}}},",
@@ -259,14 +344,10 @@ impl LeRobotV21 {
     fn info_json(&self) -> String {
         let n_eps = self.episodes.len();
         let total_videos = self
-            .camera
-            .as_ref()
-            .map_or(0, |_| {
-                self.episodes
-                    .iter()
-                    .filter(|e| !e.frames.is_empty())
-                    .count()
-            })
+            .cameras
+            .iter()
+            .map(|c| self.episodes.iter().filter(|e| !track_rgb(e, &c.name).is_empty()).count())
+            .sum::<usize>()
             .to_string();
         format!(
             concat!(
@@ -362,11 +443,13 @@ impl LeRobotV21 {
                 body.as_bytes(),
             )?;
         }
-        // Camera track: PNG frame dirs — the converter assembles mp4
-        // (v2.1 video features live outside the parquet tables).
-        if let Some(cam) = &self.camera {
+        // Camera tracks: PNG frame dirs — the converter assembles mp4
+        // (v2.1 video features live outside the parquet tables). Depth
+        // tracks land as `depth.{name}` dirs of u16 PNGs (M3-A).
+        for cam in &self.cameras {
             for (i, ep) in self.episodes.iter().enumerate() {
-                if ep.frames.is_empty() {
+                let track = track_rgb(ep, &cam.name);
+                if track.is_empty() {
                     continue;
                 }
                 let dir = root.join(format!(
@@ -374,9 +457,24 @@ impl LeRobotV21 {
                     cam.name
                 ));
                 std::fs::create_dir_all(&dir)?;
-                for (k, png) in ep.frames.iter().enumerate() {
+                for (k, png) in track.iter().enumerate() {
                     let rel = format!(
                         "videos/chunk-000/observation.images.{}/episode_{i:06}/frame_{k:06}.png",
+                        cam.name
+                    );
+                    put(&rel, png)?;
+                }
+                let depth = track_depth(ep, &cam.name);
+                if !depth.is_empty() {
+                    let ddir = root.join(format!(
+                        "videos/chunk-000/depth.{}/episode_{i:06}",
+                        cam.name
+                    ));
+                    std::fs::create_dir_all(&ddir)?;
+                }
+                for (k, png) in depth.iter().enumerate() {
+                    let rel = format!(
+                        "videos/chunk-000/depth.{}/episode_{i:06}/frame_{k:06}.png",
                         cam.name
                     );
                     put(&rel, png)?;
@@ -458,7 +556,13 @@ impl LeRobotV21 {
     pub fn write_modality(&self, root: &Path) -> std::io::Result<()> {
         let meta = root.join("meta");
         std::fs::create_dir_all(&meta)?;
-        let body = if !self.obs_slices.is_empty() || !self.action_slices.is_empty() {
+        std::fs::write(meta.join("modality.json"), self.modality_json())
+    }
+
+    /// The `modality.json` body (shared by [`Self::write_modality`] and the
+    /// npz `meta.json`, which embeds it as `"modality"`).
+    fn modality_json(&self) -> String {
+        if !self.obs_slices.is_empty() || !self.action_slices.is_empty() {
             let group = |slices: &[(String, usize, usize)]| -> String {
                 slices
                     .iter()
@@ -495,8 +599,112 @@ impl LeRobotV21 {
                     "{{\"state\":{{\"full\":{{\"start\":0,\"end\":{obs_n}}}}},\"action\":{{\"full\":{{\"start\":0,\"end\":{act_n}}}}}}}\n"
                 )
             }
-        };
-        std::fs::write(meta.join("modality.json"), body)
+        }
+    }
+
+    // ===================== npz bare export (M2, PLAN §9.1 U-8) =====================
+    //
+    // `numpy.load` reads an `.npz` = a plain ZIP archive whose members are
+    // `.npy` arrays; members without the NPY magic come back as raw bytes.
+    // No compression is required — `np.savez` itself writes ZIP_STORED —
+    // so the whole format is two fixed-layout headers, hand-written below
+    // ([`npy_f32_2d`], [`zip_stored`], [`crc32`]; std only, the #80 house
+    // style). One file per episode:
+    //
+    //   <root>/episode_000000.npz
+    //     ├── obs_0.npy   float32 [N, obs_dim]   observation.state rows
+    //     ├── act_0.npy   float32 [N, act_dim]   action rows
+    //     └── meta.json   UTF-8 JSON (np.load(p)["meta.json"] → bytes)
+    //   <root>/MANIFEST.jsonl                    content hashes, written last
+    //
+    // The arrays are the SAME `Row`s the LeRobot trees serialize (one
+    // dataset, several encodings), as raw little-endian f32 — no text
+    // round-trip, so `obs_i[k]` equals `observation.state` of row k of
+    // episode i bit for bit. Camera frames are not part of the npz (the
+    // PNG/mp4 track stays on the LeRobot exports).
+
+    /// Per-episode `meta.json` of the npz export: which member is which,
+    /// shapes, dim names and the modality slices (no LeRobot needed to
+    /// slice the vectors), plus the episode's place in the dataset.
+    fn npz_meta_json(&self, ep_index: usize, ep: &Episode, from_index: u64) -> String {
+        let n = ep.rows.len();
+        format!(
+            concat!(
+                "{{\"format\":\"oriera-npz/1\",\"episode_index\":{i},",
+                "\"obs_key\":\"obs_{i}\",\"act_key\":\"act_{i}\",\"dtype\":\"float32\",",
+                "\"obs_shape\":[{n},{od}],\"act_shape\":[{n},{ad}],\"length\":{n},",
+                "\"dataset_from_index\":{from},\"dataset_to_index\":{to},",
+                "\"fps\":{fps},\"robot_type\":\"{robot}\",\"task_index\":{ti},\"task\":\"{task}\",",
+                "\"obs_names\":{on},\"action_names\":{an},\"modality\":{modality}}}\n"
+            ),
+            i = ep_index,
+            n = n,
+            od = self.obs_names.len(),
+            ad = self.action_names.len(),
+            from = from_index,
+            to = from_index + n as u64,
+            fps = self.fps,
+            robot = json_escape(&self.robot_type),
+            ti = ep.task_index,
+            task = json_escape(&self.tasks[ep.task_index as usize]),
+            on = json_string_array(&self.obs_names),
+            an = json_string_array(&self.action_names),
+            modality = self.modality_json().trim_end(),
+        )
+    }
+
+    /// Write one `.npz` per episode under `root` (`episode_{i:06}.npz`
+    /// holding `obs_{i}.npy`, `act_{i}.npy`, `meta.json`) and commit a
+    /// `MANIFEST.jsonl` last via tmp+rename — the same protocol as
+    /// [`Self::write_dir`]. Output is byte-deterministic (fixed ZIP
+    /// timestamps), so re-exports are idempotent. Returns the number of
+    /// episodes written.
+    pub fn write_npz(&self, root: &Path) -> std::io::Result<u32> {
+        // Contract first (rows are pub — push_step's check can be
+        // bypassed): a ragged row must fail before any file is written.
+        let (od, ad) = (self.obs_names.len(), self.action_names.len());
+        for (i, ep) in self.episodes.iter().enumerate() {
+            for (k, row) in ep.rows.iter().enumerate() {
+                for (what, got, want) in [
+                    ("state", row.state.len(), od),
+                    ("action", row.action.len(), ad),
+                ] {
+                    if got != want {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("npz：第 {i} 集第 {k} 行 {what} 维度 {got} ≠ {want}"),
+                        ));
+                    }
+                }
+            }
+        }
+        std::fs::create_dir_all(root)?;
+        let mut files: Vec<(String, u64)> = Vec::new();
+        let mut from_index = 0u64;
+        for (i, ep) in self.episodes.iter().enumerate() {
+            let n = ep.rows.len();
+            let obs = npy_f32_2d(n, od, ep.rows.iter().map(|r| r.state.as_slice()));
+            let act = npy_f32_2d(n, ad, ep.rows.iter().map(|r| r.action.as_slice()));
+            let meta = self.npz_meta_json(i, ep, from_index);
+            let zip = zip_stored(&[
+                (format!("obs_{i}.npy"), obs),
+                (format!("act_{i}.npy"), act),
+                ("meta.json".to_string(), meta.into_bytes()),
+            ])?;
+            let rel = format!("episode_{i:06}.npz");
+            std::fs::write(root.join(&rel), &zip)?;
+            files.push((rel, content_hash(&zip)));
+            from_index += n as u64;
+        }
+        let mut manifest = String::new();
+        for (rel, hash) in &files {
+            let line = format!("{{\"file\":\"{rel}\",\"hash\":\"{hash:016x}\"}}\n");
+            manifest.push_str(&line);
+        }
+        let tmp = root.join("MANIFEST.jsonl.tmp");
+        std::fs::write(&tmp, manifest.as_bytes())?;
+        std::fs::rename(&tmp, root.join("MANIFEST.jsonl"))?;
+        Ok(self.episodes.len() as u32)
     }
 
     /// Dataset card — what this is and the exact training recipe.
@@ -556,16 +764,11 @@ impl LeRobotV21 {
     ///   total_chunks/total_videos; `video_path` null without a camera.
     fn info_json_v3(&self) -> String {
         let n_eps = self.episodes.len();
-        let video_path = self
-            .camera
-            .as_ref()
-            .map_or_else(
-                || "null".to_string(),
-                |_| {
-                    "\"videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4\""
-                        .to_string()
-                },
-            );
+        let video_path = if self.cameras.is_empty() {
+            "null".to_string()
+        } else {
+            "\"videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4\"".to_string()
+        };
         format!(
             concat!(
                 "{{\"codebase_version\":\"v3.0\",\"robot_type\":\"{robot}\",\"license\":\"apache-2.0\",",
@@ -603,11 +806,15 @@ impl LeRobotV21 {
         let st = stats_of(&rows);
         let ac = stats_of(&acts);
         let ts = stats_of(&stamps.iter().map(|v| vec![*v]).collect::<Vec<_>>());
-        let video_meta = match self.camera.as_ref() {
-            Some(c) if !ep.frames.is_empty() => {
-                let from_t = from_index as f32 / self.fps;
-                let to_t = to_index as f32 / self.fps;
-                format!(
+        let video_meta = {
+            let from_t = from_index as f32 / self.fps;
+            let to_t = to_index as f32 / self.fps;
+            let mut meta = String::new();
+            for c in &self.cameras {
+                if track_rgb(ep, &c.name).is_empty() {
+                    continue;
+                }
+                meta.push_str(&format!(
                     ",\"videos/observation.images.{name}/chunk_index\":0,\
                      \"videos/observation.images.{name}/file_index\":0,\
                      \"videos/observation.images.{name}/from_timestamp\":{ft:.6},\
@@ -615,9 +822,9 @@ impl LeRobotV21 {
                     name = c.name,
                     ft = from_t,
                     tt = to_t
-                )
+                ));
             }
-            _ => String::new(),
+            meta
         };
         let task = json_escape(&self.tasks[ep.task_index as usize]);
         format!(
@@ -719,8 +926,9 @@ impl LeRobotV21 {
 
         // camera: one shared PNG frame dir per video file; the
         // converter concatenates every episode's run into the single
-        // mp4 the episodes metadata points into.
-        if let Some(cam) = &self.camera {
+        // mp4 the episodes metadata points into. Depth tracks get a
+        // parallel `depth.{name}` dir of the same u16 PNG frames.
+        for cam in &self.cameras {
             let dir = root.join(format!(
                 "videos/observation.images.{}/chunk-000/file-000",
                 cam.name
@@ -728,13 +936,28 @@ impl LeRobotV21 {
             std::fs::create_dir_all(&dir)?;
             let mut k = 0u64;
             for ep in &self.episodes {
-                for png in &ep.frames {
+                for png in track_rgb(ep, &cam.name) {
                     let rel = format!(
                         "videos/observation.images.{}/chunk-000/file-000/frame_{k:06}.png",
                         cam.name
                     );
                     put(&rel, png)?;
                     k += 1;
+                }
+            }
+            if cam.depth {
+                let ddir = root.join(format!("videos/depth.{}/chunk-000/file-000", cam.name));
+                std::fs::create_dir_all(&ddir)?;
+                let mut k = 0u64;
+                for ep in &self.episodes {
+                    for png in track_depth(ep, &cam.name) {
+                        let rel = format!(
+                            "videos/depth.{}/chunk-000/file-000/frame_{k:06}.png",
+                            cam.name
+                        );
+                        put(&rel, png)?;
+                        k += 1;
+                    }
                 }
             }
         }
@@ -778,6 +1001,25 @@ impl LeRobotV21 {
     }
 }
 
+/// An episode's RGB frames for one camera (empty when that camera
+/// captured nothing this episode).
+fn track_rgb<'a>(ep: &'a Episode, cam: &str) -> &'a [Vec<u8>] {
+    ep.tracks
+        .iter()
+        .find(|t| t.cam == cam)
+        .map(|t| t.rgb.as_slice())
+        .unwrap_or(&[])
+}
+
+/// An episode's depth frames for one camera (empty without depth).
+fn track_depth<'a>(ep: &'a Episode, cam: &str) -> &'a [Vec<u8>] {
+    ep.tracks
+        .iter()
+        .find(|t| t.cam == cam)
+        .map(|t| t.depth.as_slice())
+        .unwrap_or(&[])
+}
+
 /// Content hash for MANIFEST (splitmix64 byte-fold - corruption
 /// detection, not cryptographic; swap to sha2 for public distribution).
 /// Self-contained: lerobot.rs is a vendored single-file module (studio
@@ -799,6 +1041,140 @@ fn content_hash(bytes: &[u8]) -> u64 {
         h = mix64(h, u64::from_le_bytes(buf));
     }
     mix64(h, bytes.len() as u64)
+}
+
+/// NPY v1.0 encoding of a C-order little-endian float32 `[rows, cols]`
+/// array (numpy `format.py`): 6-byte magic `\x93NUMPY`, version 1.0,
+/// u16-LE header length, then a Python-literal dict padded with spaces
+/// and closed by `\n` so magic+header is a multiple of 64 bytes (numpy's
+/// ARRAY_ALIGN), then the raw values. The dict text is the one `np.save`
+/// writes (numpy pads a little differently; any 64-aligned padding is
+/// valid NPY). Rows must already be `cols` wide (checked by the caller).
+fn npy_f32_2d<'a>(rows: usize, cols: usize, data: impl Iterator<Item = &'a [f32]>) -> Vec<u8> {
+    let dict = format!("{{'descr': '<f4', 'fortran_order': False, 'shape': ({rows}, {cols}), }}");
+    // 10 = magic(6) + version(2) + header_len(2); +1 for the closing '\n'.
+    let pad = (64 - (10 + dict.len() + 1) % 64) % 64;
+    let header_len = (dict.len() + pad + 1) as u16; // < 128 B: fits v1.0's u16
+    let mut out = Vec::with_capacity(10 + header_len as usize + rows * cols * 4);
+    out.extend_from_slice(b"\x93NUMPY\x01\x00");
+    out.extend_from_slice(&header_len.to_le_bytes());
+    out.extend_from_slice(dict.as_bytes());
+    out.resize(out.len() + pad, b' ');
+    out.push(b'\n');
+    for row in data {
+        for v in row {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// A minimal ZIP32 archive of STORED (uncompressed) members — all that
+/// `numpy.load` needs for an `.npz`. Layout per PKWARE APPNOTE 4.3:
+/// `[local file header + name + data]*`, then `[central directory
+/// header + name]*`, then the end-of-central-directory record. All
+/// integers little-endian; no data descriptors (sizes and CRC are known
+/// up front, flag bit 3 clear), no extra fields, ASCII names. A fixed
+/// DOS timestamp (1980-01-01 00:00) keeps the bytes deterministic.
+/// Past the ZIP32 limits (4 GiB member/archive offsets, 65535 entries)
+/// this errors instead of writing a corrupt file — ZIP64 is not worth
+/// hand-writing for a per-episode file of ~60 KB.
+fn zip_stored(members: &[(String, Vec<u8>)]) -> std::io::Result<Vec<u8>> {
+    const VERSION: u16 = 20; // 2.0 = "needed to extract"; "made by" MS-DOS 2.0
+    const DOS_TIME: u16 = 0; // 00:00:00
+    const DOS_DATE: u16 = (1 << 5) | 1; // (year-1980)<<9 | month<<5 | day = 1980-01-01
+    let limit = |what: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("npz：{what} 超出 ZIP32 上限（4 GiB / 65535 项）——大数据请走 LeRobot 出口"),
+        )
+    };
+    let le16 = |out: &mut Vec<u8>, v: u16| out.extend_from_slice(&v.to_le_bytes());
+    let le32 = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_le_bytes());
+    let (mut out, mut central) = (Vec::new(), Vec::new());
+    for (name, data) in members {
+        let crc = crc32(data);
+        let size = u32::try_from(data.len()).map_err(|_| limit(name))?;
+        let offset = u32::try_from(out.len()).map_err(|_| limit("归档"))?;
+        let name_len = u16::try_from(name.len()).map_err(|_| limit(name))?;
+        // Local file header (30 B + name), then the member bytes.
+        le32(&mut out, 0x0403_4b50); // "PK\x03\x04"
+        le16(&mut out, VERSION); // version needed to extract
+        le16(&mut out, 0); // general-purpose flags
+        le16(&mut out, 0); // compression method 0 = stored
+        le16(&mut out, DOS_TIME);
+        le16(&mut out, DOS_DATE);
+        le32(&mut out, crc);
+        le32(&mut out, size); // compressed size (= uncompressed: stored)
+        le32(&mut out, size); // uncompressed size
+        le16(&mut out, name_len);
+        le16(&mut out, 0); // extra field length
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(data);
+        // Central directory header (46 B + name) — same facts + the offset.
+        le32(&mut central, 0x0201_4b50); // "PK\x01\x02"
+        le16(&mut central, VERSION); // version made by
+        le16(&mut central, VERSION); // version needed to extract
+        le16(&mut central, 0); // flags
+        le16(&mut central, 0); // method
+        le16(&mut central, DOS_TIME);
+        le16(&mut central, DOS_DATE);
+        le32(&mut central, crc);
+        le32(&mut central, size);
+        le32(&mut central, size);
+        le16(&mut central, name_len);
+        le16(&mut central, 0); // extra field length
+        le16(&mut central, 0); // file comment length
+        le16(&mut central, 0); // disk number start
+        le16(&mut central, 0); // internal attributes
+        le32(&mut central, 0); // external attributes
+        le32(&mut central, offset); // where the local header starts
+        central.extend_from_slice(name.as_bytes());
+    }
+    let count = u16::try_from(members.len()).map_err(|_| limit("成员数"))?;
+    let cd_offset = u32::try_from(out.len()).map_err(|_| limit("归档"))?;
+    let cd_size = u32::try_from(central.len()).map_err(|_| limit("中央目录"))?;
+    out.extend_from_slice(&central);
+    // End of central directory record (22 B, no archive comment).
+    le32(&mut out, 0x0605_4b50); // "PK\x05\x06"
+    le16(&mut out, 0); // number of this disk
+    le16(&mut out, 0); // disk where the central directory starts
+    le16(&mut out, count); // entries on this disk
+    le16(&mut out, count); // entries in total
+    le32(&mut out, cd_size);
+    le32(&mut out, cd_offset);
+    le16(&mut out, 0); // comment length
+    Ok(out)
+}
+
+/// CRC-32 (IEEE 802.3 / ZIP: reflected polynomial 0xEDB88320, init and
+/// final XOR 0xFFFFFFFF), table-driven; the table is built at compile
+/// time. Check value: `crc32(b"123456789") == 0xCBF43926`.
+fn crc32(bytes: &[u8]) -> u32 {
+    const TABLE: [u32; 256] = {
+        let mut t = [0u32; 256];
+        let mut i = 0;
+        while i < 256 {
+            let mut c = i as u32;
+            let mut k = 0;
+            while k < 8 {
+                c = if c & 1 != 0 {
+                    0xEDB8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+                k += 1;
+            }
+            t[i] = c;
+            i += 1;
+        }
+        t
+    };
+    let mut c = 0xFFFF_FFFFu32;
+    for &b in bytes {
+        c = TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
+    }
+    c ^ 0xFFFF_FFFF
 }
 
 fn json_escape(s: &str) -> String {
@@ -923,6 +1299,15 @@ mod tests {
         ds.push_step(&[0.1, 0.9], &[-0.5]).unwrap();
         ds.finish_episode();
         ds
+    }
+
+    /// RGB-only [`CameraFrame`] (the legacy top view's shape).
+    fn rgb_frame(cam: &str, png: Vec<u8>) -> crate::embodied_env::CameraFrame {
+        crate::embodied_env::CameraFrame {
+            cam: cam.into(),
+            rgb_png: Some(png),
+            depth_png: None,
+        }
     }
 
     #[test]
@@ -1067,11 +1452,12 @@ mod tests {
             w: 4,
             h: 4,
             fps: 60.0,
+            depth: false,
         });
         ds.start_episode("pick up the cube");
         ds.push_step(&[0.0], &[0.5]).unwrap();
         ds.push_step(&[0.1], &[0.4]).unwrap();
-        ds.push_frame(vec![1, 2, 3]).unwrap();
+        ds.push_frame(rgb_frame("top", vec![1, 2, 3])).unwrap();
         ds.finish_episode();
         ds.start_episode("pick up the cube");
         ds.push_step(&[0.2], &[0.3]).unwrap();
@@ -1133,5 +1519,268 @@ mod tests {
         LeRobotV21::write_card_v3(&root, "pick up the cube").expect("card v3");
         assert!(root.join("README.md").exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ----- M3-A: multi-camera video + depth tracks -----
+
+    /// The single-camera features block must stay byte-identical to the
+    /// pre-M3 form (the golden collect datasets hang on it).
+    #[test]
+    fn single_camera_features_stay_byte_stable() {
+        let mut ds = LeRobotV21::new(60.0, "t", vec!["s".into()], vec!["a".into()]);
+        ds.set_camera(CameraTrack {
+            name: "top".into(),
+            w: 168,
+            h: 168,
+            fps: 60.0,
+            depth: false,
+        });
+        let info = ds.info_json();
+        let want = ",\"observation.images.top\":{\"dtype\":\"video\",\"shape\":[168,168,3],\"names\":null,\"info\":{\"video.fps\":60,\"video.codec\":\"libx264\",\"video.pix_fmt\":\"yuv420p\",\"has_audio\":false}}";
+        assert!(info.contains(want), "{info}");
+        assert!(!info.contains("depth."), "no depth track declared");
+    }
+
+    #[test]
+    fn multi_camera_tracks_declare_route_and_write() {
+        let mut ds = LeRobotV21::new(60.0, "t", vec!["s".into()], vec!["a".into()]);
+        ds.add_camera(CameraTrack {
+            name: "top".into(),
+            w: 8,
+            h: 6,
+            fps: 60.0,
+            depth: false,
+        })
+        .unwrap();
+        ds.add_camera(CameraTrack {
+            name: "wrist".into(),
+            w: 4,
+            h: 4,
+            fps: 60.0,
+            depth: true,
+        })
+        .unwrap();
+        assert!(
+            ds.add_camera(CameraTrack {
+                name: "wrist".into(),
+                w: 4,
+                h: 4,
+                fps: 60.0,
+                depth: true,
+            })
+            .is_err(),
+            "duplicate camera names are a contract error"
+        );
+        ds.start_episode("pick up the cube");
+        ds.push_frame(rgb_frame("top", vec![1])).unwrap();
+        ds.push_frame(crate::embodied_env::CameraFrame {
+            cam: "wrist".into(),
+            rgb_png: Some(vec![2]),
+            depth_png: Some(vec![3]),
+        })
+        .unwrap();
+        // undeclared camera / undeclared depth are contract errors
+        assert!(ds.push_frame(rgb_frame("nope", vec![9])).is_err());
+        ds.finish_episode();
+
+        let info = ds.info_json_v3();
+        assert!(info.contains("\"observation.images.top\""), "{info}");
+        assert!(info.contains("\"observation.images.wrist\""), "{info}");
+        assert!(info.contains("\"depth.wrist\""), "{info}");
+        assert!(
+            !info.contains("\"depth.top\""),
+            "depth only where declared: {info}"
+        );
+
+        let root = std::env::temp_dir().join(format!("oriera-multicam-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        ds.write_dir_v3(&root).expect("v3 tree");
+        for rel in [
+            "videos/observation.images.top/chunk-000/file-000/frame_000000.png",
+            "videos/observation.images.wrist/chunk-000/file-000/frame_000000.png",
+            "videos/depth.wrist/chunk-000/file-000/frame_000000.png",
+        ] {
+            assert!(root.join(rel).exists(), "missing {rel}");
+        }
+        assert!(
+            !root.join("videos/depth.top").exists(),
+            "no depth dir for a depth=false camera"
+        );
+        // v2.1 tree: per-episode dirs incl. depth
+        let root21 = std::env::temp_dir().join(format!("oriera-multicam21-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root21);
+        ds.write_dir(&root21).expect("v21 tree");
+        for rel in [
+            "videos/chunk-000/observation.images.top/episode_000000/frame_000000.png",
+            "videos/chunk-000/observation.images.wrist/episode_000000/frame_000000.png",
+            "videos/chunk-000/depth.wrist/episode_000000/frame_000000.png",
+        ] {
+            assert!(root21.join(rel).exists(), "missing {rel}");
+        }
+        // MANIFEST covers the depth frames too
+        let manifest = std::fs::read_to_string(root21.join("MANIFEST.jsonl")).unwrap();
+        assert!(
+            manifest.contains("videos/chunk-000/depth.wrist/episode_000000/frame_000000.png"),
+            "{manifest}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&root21);
+    }
+
+    // ----- M2: npz bare export (U-8) -----
+
+    #[test]
+    fn crc32_matches_the_ieee_check_value() {
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32(b""), 0);
+    }
+
+    /// Test-side reader (an independent walk of the format): EOCD →
+    /// central directory → local headers; asserts the two headers agree,
+    /// the member is STORED and its CRC matches. Returns (name, bytes).
+    fn unzip_stored(zip: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let u16_at = |p: usize| u16::from_le_bytes([zip[p], zip[p + 1]]) as usize;
+        let u32_at = |p: usize| u32::from_le_bytes(zip[p..p + 4].try_into().unwrap());
+        assert_eq!(
+            &zip[..4],
+            b"PK\x03\x04",
+            "numpy detects an npz by this prefix"
+        );
+        let eocd = zip.len() - 22;
+        assert_eq!(u32_at(eocd), 0x0605_4b50, "EOCD signature");
+        let (count, cd_size, cd_off) = (
+            u16_at(eocd + 10),
+            u32_at(eocd + 12) as usize,
+            u32_at(eocd + 16) as usize,
+        );
+        assert_eq!(cd_off + cd_size, eocd, "central directory ends at the EOCD");
+        let (mut p, mut out) = (cd_off, Vec::new());
+        for _ in 0..count {
+            assert_eq!(u32_at(p), 0x0201_4b50, "central header signature");
+            let (crc, size) = (u32_at(p + 16), u32_at(p + 20) as usize);
+            assert_eq!(
+                size,
+                u32_at(p + 24) as usize,
+                "stored: compressed == uncompressed"
+            );
+            let name_len = u16_at(p + 28);
+            let local = u32_at(p + 42) as usize;
+            let name = String::from_utf8(zip[p + 46..p + 46 + name_len].to_vec()).unwrap();
+            assert_eq!(u32_at(local), 0x0403_4b50, "local header signature");
+            assert_eq!(u16_at(local + 8), 0, "method 0 = stored");
+            assert_eq!(u32_at(local + 14), crc, "local CRC == central CRC");
+            assert_eq!(&zip[local + 30..local + 30 + name_len], name.as_bytes());
+            let start = local + 30 + name_len;
+            let data = zip[start..start + size].to_vec();
+            assert_eq!(crc32(&data), crc, "CRC of {name}");
+            out.push((name, data));
+            p += 46 + name_len;
+        }
+        out
+    }
+
+    /// Decode a float32 NPY v1.0 payload → (header dict text, values).
+    fn npy_decode_f32(npy: &[u8]) -> (String, Vec<f32>) {
+        assert_eq!(&npy[..8], b"\x93NUMPY\x01\x00", "magic + version 1.0");
+        let hl = u16::from_le_bytes([npy[8], npy[9]]) as usize;
+        assert_eq!((10 + hl) % 64, 0, "header is 64-byte aligned");
+        assert_eq!(npy[10 + hl - 1], b'\n', "header ends with a newline");
+        let header = String::from_utf8(npy[10..10 + hl].to_vec()).unwrap();
+        let body = &npy[10 + hl..];
+        assert_eq!(body.len() % 4, 0);
+        let vals = body
+            .chunks(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        (header, vals)
+    }
+
+    #[test]
+    fn write_npz_round_trips_rows_bit_exact_and_deterministically() {
+        let mut ds = sample(); // ep 0: 2 rows, state 2-D, action 1-D
+        ds.start_episode("place the cube");
+        // bit-pattern edge cases a text round-trip could blur
+        ds.push_step(&[f32::MIN_POSITIVE, -0.0], &[1.0e-30])
+            .unwrap();
+        ds.finish_episode();
+        let root = std::env::temp_dir().join(format!("oriera-npz-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(ds.write_npz(&root).expect("write_npz"), 2);
+        let mut from = 0usize;
+        for (i, ep) in ds.episodes.iter().enumerate() {
+            let zip = std::fs::read(root.join(format!("episode_{i:06}.npz"))).unwrap();
+            let members = unzip_stored(&zip);
+            let names: Vec<String> = members.iter().map(|(n, _)| n.clone()).collect();
+            assert_eq!(
+                names,
+                [
+                    format!("obs_{i}.npy"),
+                    format!("act_{i}.npy"),
+                    "meta.json".into()
+                ]
+            );
+            let (oh, obs) = npy_decode_f32(&members[0].1);
+            let (ah, act) = npy_decode_f32(&members[1].1);
+            let n = ep.rows.len();
+            assert!(
+                oh.starts_with("{'descr': '<f4', 'fortran_order': False, 'shape': ("),
+                "{oh}"
+            );
+            assert!(oh.contains(&format!("'shape': ({n}, 2), }}")), "{oh}");
+            assert!(ah.contains(&format!("'shape': ({n}, 1), }}")), "{ah}");
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            let want_obs: Vec<f32> = ep.rows.iter().flat_map(|r| r.state.clone()).collect();
+            let want_act: Vec<f32> = ep.rows.iter().flat_map(|r| r.action.clone()).collect();
+            assert_eq!(bits(&obs), bits(&want_obs), "obs bit-exact (ep {i})");
+            assert_eq!(bits(&act), bits(&want_act), "act bit-exact (ep {i})");
+            let meta: serde_json::Value = serde_json::from_slice(&members[2].1).unwrap();
+            assert_eq!(meta["format"], "oriera-npz/1");
+            assert_eq!(meta["episode_index"], i);
+            assert_eq!(meta["obs_key"], format!("obs_{i}"));
+            assert_eq!(meta["act_key"], format!("act_{i}"));
+            assert_eq!(meta["length"], n);
+            assert_eq!(meta["obs_shape"], serde_json::json!([n, 2]));
+            assert_eq!(meta["dataset_from_index"], from);
+            assert_eq!(meta["dataset_to_index"], from + n);
+            assert_eq!(meta["task"], ds.tasks[ep.task_index as usize].as_str());
+            assert_eq!(meta["obs_names"], serde_json::json!(["j0", "j1"]));
+            assert!(meta["modality"]["state"].is_object(), "{meta}");
+            from += n;
+        }
+        // MANIFEST is the commit point; no tmp left behind.
+        let manifest = std::fs::read_to_string(root.join("MANIFEST.jsonl")).unwrap();
+        assert_eq!(manifest.lines().count(), 2, "{manifest}");
+        assert!(!root.join("MANIFEST.jsonl.tmp").exists());
+        // Deterministic: a second export is byte-identical.
+        let first = std::fs::read(root.join("episode_000001.npz")).unwrap();
+        ds.write_npz(&root).expect("re-export");
+        assert_eq!(
+            std::fs::read(root.join("episode_000001.npz")).unwrap(),
+            first
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_npz_rejects_a_ragged_row_instead_of_writing_garbage() {
+        let mut ds = sample();
+        // bypass push_step's contract check through the pub fields
+        ds.episodes.push(Episode {
+            task_index: 0,
+            rows: vec![Row {
+                state: vec![1.0],
+                action: vec![0.0],
+            }],
+            tracks: Vec::new(),
+        });
+        let root = std::env::temp_dir().join(format!("oriera-npz-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let err = ds.write_npz(&root).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("第 1 集第 0 行 state 维度 1 ≠ 2"),
+            "{err}"
+        );
+        assert!(!root.exists(), "contract errors write nothing");
     }
 }

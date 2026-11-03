@@ -24,6 +24,20 @@
    ],
    "tier": "lab"
   },
+  "lab-wrist-cam-demo": {
+   "hash": "77b054545861ce80",
+   "files": [
+    "lab/wrist-cam-demo.json"
+   ],
+   "tier": "lab"
+  },
+  "mobile-arm-4dof": {
+   "hash": "9ee15317e14788f5",
+   "files": [
+    "official/mobile-arm-4dof.json"
+   ],
+   "tier": "official"
+  },
   "panda-7dof-pick": {
    "hash": "b5535a74f18fb57b",
    "files": [

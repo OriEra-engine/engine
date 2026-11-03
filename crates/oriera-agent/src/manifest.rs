@@ -364,11 +364,30 @@ pub fn write_run_manifest(
     spec: &SceneSpec,
     extra: &ManifestExtra,
 ) -> std::io::Result<()> {
+    write_run_manifest_opts(path, spec, extra, false)
+}
+
+/// 脱敏变体（P-B3 挂起项落地，M3）：`sanitize=true` 时 manifest 不带
+/// resolved spec 全文（商业机型参数保密场景），只留 `spec_hash`——
+/// 仍可对账身份，但**不再声称逐位可复现**（复现需要完整 spec）。
+pub fn write_run_manifest_opts(
+    path: impl AsRef<Path>,
+    spec: &SceneSpec,
+    extra: &ManifestExtra,
+    sanitize: bool,
+) -> std::io::Result<()> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, RunManifest::new(spec, extra).to_json_pretty())?;
+    let mut m = RunManifest::new(spec, extra);
+    if sanitize {
+        m.spec = serde_json::json!({
+            "redacted": true,
+            "reason": "sanitized export: proprietary parameters withheld; identity is verifiable via spec_hash, but byte-exact reproduction is NOT claimed without the full spec",
+        });
+    }
+    std::fs::write(path, m.to_json_pretty())?;
     Ok(())
 }
 

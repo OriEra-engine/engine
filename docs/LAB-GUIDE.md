@@ -205,6 +205,26 @@ spec 库（P-9）：官方金标在 `crates/oriera-agent/specs/official/`（改�
 - reward：reach/pick_place/push 三任务各有密集塑形 + 成功大额奖励；
   `info["success"]` 是评测判据。
 
+### 4.1 图像策略路线（腕相机示例，进阶选做）
+
+想做视觉策略（图像 → 动作）而不只是状态向量时，从腕相机示例开始：
+`specs/lab/wrist-cam-demo.json` 在官方金标上加了两台**标定相机**（内参
+fx/fy/cx/cy + 镜头畸变 + 外参；`attach: "ee"` 的腕相机随臂转动），采集出
+LeRobot 多视频轨数据集，且每步都做过「投影 ↔ 渲染像素」自检（重投影误差
+< 2 px，语义见 EMBODIED-PIPELINES §6.4）：
+
+```bash
+cargo run -p oriera-agent --example embodied_cam_capture --features rigid3d,cam,spec -- --spec crates/oriera-agent/specs/lab/wrist-cam-demo.json --episodes 2
+# → out/embodied-cam/lerobot-v21/（observation.images.wrist + depth.wrist + observation.images.top）
+```
+
+采集器自带脚本抓放基线，不需要你先写策略；换物体/换相机 = 改 spec JSON
+（`scene.cameras` 加一台、`scene.props[0].shape` 换形状），跑通后把
+lerobot 目录交给 §5 的训练命令即可（图像轨喂 ACT 前先过转换脚本）。深度
+图是毫米 u16 PNG（0 = 无回波）。真机标定的内外参对接是**研究模式**的入口
+（EMBODIED-PIPELINES §6.4）；作业基线仍是 §4 的 21 维状态向量，两条路线
+互不影响。
+
 ## 5. 训练作业（二选一）
 
 - **模仿学习**：先用 §1 第 4 条采集，再转成训练框架认的格式（任意终端）：

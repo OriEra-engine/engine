@@ -16,7 +16,7 @@
 //! 纯函数浮点数学，不碰物理后端——同输入必同输出（确定性契约）。
 
 use oriera_subsys::robot::GRIPPER_GAP_DEFAULT;
-use oriera_subsys::{RobotSpec, GRIPPER_APPROACH_DEFAULT};
+use oriera_subsys::{RobotSpec, GRIPPER_APPROACH_DEFAULT, JointKind};
 
 /// 3×3 row-major.
 type Mat3 = [[f32; 3]; 3];
@@ -93,7 +93,6 @@ pub fn fk_pose(robot: &RobotSpec, q: &[f32]) -> FkPose {
             j.axis[1] / axis_len,
             j.axis[2] / axis_len,
         ];
-        let local = axis_rotation(axis, angle);
         let parent = j.parent_link;
         let child = j.child_link;
         p[child] = [
@@ -104,7 +103,20 @@ pub fn fk_pose(robot: &RobotSpec, q: &[f32]) -> FkPose {
             p[parent][2] + r[parent][2][0] * j.anchor[0] + r[parent][2][1] * j.anchor[1]
                 + r[parent][2][2] * j.anchor[2],
         ];
-        r[child] = mat_mul(&r[parent], &local);
+        // prismatic（M3-WPB 遗留）：子体不旋转、位置沿父系轴平移 q 米
+        //（revolute 才有轴旋转）。mobile-arm 底盘的两个滑轨因此进 FK。
+        if j.kind == JointKind::Prismatic {
+            p[child][0] += r[parent][0][0] * axis[0] * angle + r[parent][0][1] * axis[1] * angle
+                + r[parent][0][2] * axis[2] * angle;
+            p[child][1] += r[parent][1][0] * axis[0] * angle + r[parent][1][1] * axis[1] * angle
+                + r[parent][1][2] * axis[2] * angle;
+            p[child][2] += r[parent][2][0] * axis[0] * angle + r[parent][2][1] * axis[1] * angle
+                + r[parent][2][2] * axis[2] * angle;
+            r[child] = r[parent];
+        } else {
+            let local = axis_rotation(axis, angle);
+            r[child] = mat_mul(&r[parent], &local);
+        }
     }
     let ee_link = robot
         .gripper

@@ -1,0 +1,49 @@
+{
+  "extends": "tabletop-4dof-pick",
+  "meta": {
+    "name": "lab-wrist-cam-demo",
+    "author": "lab-example",
+    "notes": "M3-A 腕相机示例（PLAN §四 M3 / §9.1 U-5）：继承官方金标 tabletop-4dof-pick，只加两台标定相机——wrist（EE 系挂载 160×120 RGB+depth，随动外参每 tick 从 JointTelemetry 算）+ top（世界系俯拍 320×240 RGB）。机器人/场景/任务全部沿用金标；cameras 进 spec_hash。自检：cargo run -p oriera-agent --example embodied_cam_capture --features rigid3d,cam,spec"
+  },
+  "scene": {
+    "cameras": [
+      {
+        "name": "wrist",
+        "kind": {
+          "pinhole": {
+            "width": 160,
+            "height": 120,
+            "fx": 90.0,
+            "fy": 90.0,
+            "cx": 80.0,
+            "cy": 60.0,
+            "dist": { "k1": 0.15, "k2": 0.02, "p1": 0.0, "p2": 0.001 },
+            "pos": [-0.07, 0.075, 0.0],
+            "look_at": [0.08, -0.04, 0.0],
+            "up": [0.0, 0.0, -1.0],
+            "channels": { "rgb": true, "depth": true },
+            "attach": "ee"
+          }
+        }
+      },
+      {
+        "name": "top",
+        "kind": {
+          "pinhole": {
+            "width": 320,
+            "height": 240,
+            "fx": 240.0,
+            "fy": 240.0,
+            "cx": 160.0,
+            "cy": 120.0,
+            "dist": { "k1": 0.0, "k2": 0.0, "p1": 0.0, "p2": 0.0 },
+            "pos": [0.32, 1.10, 0.0],
+            "look_at": [0.32, 0.50, 0.0],
+            "up": [0.0, 0.0, 1.0],
+            "channels": { "rgb": true, "depth": false }
+          }
+        }
+      }
+    ]
+  }
+}

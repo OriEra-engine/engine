@@ -33,6 +33,9 @@
 //!   skip-if-done resume, `--fingerprints FILE` → the scheme-v2 golden
 //!   fingerprint file (`contracts/golden/embodied_fingerprints.v2.json`
 //!   is generated with exactly this flag);
+//! - 脱敏导出（P-B3）：`--sanitize` 让 manifest 不带 resolved spec 全文，
+//!   只留 spec_hash；oriera_spec.json 不落盘。对外交换数据用。
+//!
 //! - `eval_report.json` carries the three fingerprint views
 //!   (`episode_state_hashes` pure-state, `_v1` legacy, `_v2`
 //!   identity-complete) plus the Wilson interval and gate verdict.
@@ -41,16 +44,26 @@
 //! outcome plus the success rate with a Wilson 95% interval — the
 //! reporting format lab experiments are held to.
 //!
+//! **M2 (PLAN §9.1 U-8)**: `--export npz` additionally writes the same
+//! rows as bare numpy archives (`<out>/npz/episode_{i:06}.npz`:
+//! `obs_{i}.npy` / `act_{i}.npy` float32 + `meta.json`; hand-written
+//! stored ZIP, zero new crates) next to — not instead of — the LeRobot
+//! trees. Without `--export` nothing changes. There is no
+//! `--export parquet`: parquet stays on the pyarrow converter
+//! (`scripts/jsonl_to_lerobot_v21.py`), Rust adds no parquet crate.
+//!
 //! Run:
 //! `cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- --task pick_place --episodes 12 --cam`
 //! `… -- --spec crates/oriera-agent/specs/tabletop-4dof-pick.json --episodes 12`
 //! Args: `--task reach|pick_place|push` · `--spec FILE` · `--set a.b=v`
 //!       `--episodes N` · `--seed0 S` / `--seed N` · `--cam` / `--no-cam`
-//!       `--out DIR` · `--runs-root DIR` · `--lerobot-v3` · `--migrate FILE`
-//!       `--validate FILE` · `--urdf FILE` · `--protocol ID`
+//!       `--cameras-from-spec` (M3-A: render spec.scene.cameras —
+//!       multi RGB/depth video tracks — instead of the top view)
+//!       `--out DIR` · `--runs-root DIR` · `--lerobot-v3` · `--export npz`
+//!       `--migrate FILE` · `--validate FILE` · `--urdf FILE` · `--protocol ID`
 //!       `--gate hard|report` · `--verify-determinism full|sample|off`
 //!       `--fingerprints FILE` · `--force`
-//! Output: `<out>/lerobot-v21/` [+ `<out>/lerobot-v30/`] +
+//! Output: `<out>/lerobot-v21/` [+ `<out>/lerobot-v30/`] [+ `<out>/npz/`] +
 //!         `<out>/eval_report.json` + `<out>/run_manifest.json`
 
 use oriera_agent::embodied_env::{EmbodiedEnv, ObsLayout, TableTopEnv, TaskKind};
@@ -58,13 +71,8 @@ use oriera_agent::eval::{
     self, EpisodeOutcome, EpisodeRow, EvalProtocol, EvalResult, Gate,
 };
 use oriera_agent::lerobot::LeRobotV21;
-use oriera_agent::manifest::{write_run_manifest, ManifestExtra};
+use oriera_agent::manifest::{write_run_manifest_opts, ManifestExtra};
 use oriera_agent::spec::SceneSpec;
-// CameraTrack 只被 cam 腿消费（set_camera 两个 cfg 块）——无 cam 特性下
-// 不引入，否则 `--features urdf,spec --all-targets` 的 clippy -D warnings
-// 以 unused-imports 红灯。
-#[cfg(feature = "cam")]
-use oriera_agent::lerobot::CameraTrack;
 use oriera_subsys::rigid3d::robot_identity_hash;
 use oriera_subsys::RobotSpec;
 
@@ -322,6 +330,8 @@ struct Args {
     out: String,
     /// Also write the LeRobot v3.0 tree (`<out>/lerobot-v30/`).
     lerobot_v3: bool,
+    /// `--export npz`: also write the bare numpy archives (`<out>/npz/`).
+    export_npz: bool,
     /// U1: URDF→SceneSpec 导出路径（设置即只做导入不采集）。
     urdf: Option<String>,
     /// `--migrate FILE`: v1 → v2 spec 落盘（不采集）。
@@ -341,11 +351,39 @@ struct Args {
     /// file (the `contracts/golden/embodied_fingerprints.v2.json`
     /// generator flag).
     fingerprints: Option<String>,
+    /// `--cameras-from-spec`: render the spec's `scene.cameras`
+    /// (M3-A pinhole pipeline, multi RGB/depth tracks) instead of the
+    /// legacy top view. Needs `--features cam`.
+    cameras_from_spec: bool,
+    /// `--sanitize`（P-B3 脱敏导出）：manifest 不带 resolved spec 全文，
+    /// 只留 spec_hash；oriera_spec.json 不落盘。
+    sanitize: bool,
     /// `--force`: re-run even when the runs-layout directory is done.
     force: bool,
 }
 
-const USAGE: &str = "--task/--phrase/--spec/--set/--episodes/--seed0/--seed/--cam/--no-cam/--out/--runs-root/--lerobot-v3/--migrate/--validate/--urdf/--protocol/--gate/--verify-determinism/--fingerprints/--force";
+const USAGE: &str = "--task/--phrase/--spec/--set/--episodes/--seed0/--seed/--cam/--no-cam/--cameras-from-spec/--out/--runs-root/--lerobot-v3/--export/--migrate/--validate/--urdf/--protocol/--gate/--verify-determinism/--fingerprints/--sanitize/--force";
+
+/// `--export FMT[,FMT]` → whether npz was requested. `parquet` is
+/// refused with the converter route (no parquet crate in Rust — the
+/// dependency discipline); anything else names the legal values.
+fn parse_export(v: &str) -> bool {
+    let mut npz = false;
+    for fmt in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        match fmt {
+            "npz" => npz = true,
+            "parquet" => fail(
+                "--export parquet：引擎不直接写 parquet（Rust 侧没有零依赖的 parquet 写器，不为此引新 crate）——\
+                 请走现有转换器：python scripts/jsonl_to_lerobot_v21.py <out>/lerobot-v21/（pyarrow 落 parquet）",
+            ),
+            other => fail(&format!("--export {other:?}：可选值只有 npz（numpy 直读的裸数组）")),
+        }
+    }
+    if !npz {
+        fail("--export 需要一个格式：npz");
+    }
+    npz
+}
 
 fn parse_args() -> Args {
     let mut a = Args {
@@ -357,6 +395,7 @@ fn parse_args() -> Args {
         cam: true,
         out: "out/embodied-sim".into(),
         lerobot_v3: false,
+        export_npz: false,
         urdf: None,
         migrate: None,
         validate: None,
@@ -365,6 +404,8 @@ fn parse_args() -> Args {
         verify: Verify::Full,
         runs_root: None,
         fingerprints: None,
+        cameras_from_spec: false,
+        sanitize: false,
         force: false,
     };
     let mut it = std::env::args().skip(1);
@@ -424,11 +465,19 @@ fn parse_args() -> Args {
             }
             "--runs-root" => a.runs_root = Some(it.next().expect("--runs-root 需要一个目录")),
             "--fingerprints" => a.fingerprints = Some(it.next().expect("--fingerprints 需要一个文件路径")),
+            "--sanitize" => a.sanitize = true,
             "--force" => a.force = true,
             "--out" => a.out = it.next().expect("--out 需要一个值"),
             "--cam" => a.cam = true,
             "--no-cam" => a.cam = false,
+            "--cameras-from-spec" => a.cameras_from_spec = true,
             "--lerobot-v3" => a.lerobot_v3 = true,
+            "--export" => {
+                let v = it
+                    .next()
+                    .unwrap_or_else(|| fail("--export 需要一个格式：npz"));
+                a.export_npz |= parse_export(&v);
+            }
             other => {
                 fail(&format!("未知参数 {other}（可用 {USAGE}）"))
             }
@@ -484,13 +533,72 @@ struct RunResult {
     redraws: u64,
 }
 
-fn make_env(spec: &SceneSpec, cam: bool) -> TableTopEnv {
+fn make_env(spec: &SceneSpec, #[cfg_attr(not(feature = "cam"), allow(unused_variables))] cam: bool) -> TableTopEnv {
+    #[cfg_attr(not(feature = "cam"), allow(unused_mut))]
     let mut env: TableTopEnv = spec.to_env();
     #[cfg(feature = "cam")]
     if cam {
         env.set_camera(Some(oriera_subsys::camera::CameraView::default()));
     }
     env
+}
+
+/// Mount the camera tracks: `--cameras-from-spec` puts the spec's
+/// `scene.cameras` through the pinhole pipeline (multi RGB/depth
+/// tracks, M3-A); the default `--cam` keeps the legacy top view
+/// (byte-frozen). Returns the env ready to collect.
+fn make_env_with_cameras(spec: &SceneSpec, args: &Args) -> Result<TableTopEnv, String> {
+    #[cfg_attr(not(feature = "cam"), allow(unused_mut))]
+    let mut env = spec.to_env();
+    #[cfg(feature = "cam")]
+    if args.cam && args.cameras_from_spec {
+        if spec.scene.cameras.is_empty() {
+            return Err(
+                "--cameras-from-spec：spec.scene.cameras 为空——该 spec 没有声明相机（用带 cameras 字段的 spec，或去掉该 flag 走默认俯视）".into(),
+            );
+        }
+        env.set_cameras(spec.scene.cameras.clone());
+    } else if args.cam {
+        env.set_camera(Some(oriera_subsys::camera::CameraView::default()));
+    }
+    #[cfg(not(feature = "cam"))]
+    let _ = args;
+    Ok(env)
+}
+
+/// The dataset's camera-track declarations mirror the env's mounts.
+fn declare_camera_tracks(
+    ds: &mut LeRobotV21,
+    env: &TableTopEnv,
+    spec: &SceneSpec,
+    args: &Args,
+) -> Result<(), String> {
+    #[cfg(feature = "cam")]
+    if args.cam && args.cameras_from_spec {
+        for c in &spec.scene.cameras {
+            let p = c.pinhole();
+            ds.add_camera(oriera_agent::lerobot::CameraTrack {
+                name: c.name.clone(),
+                w: p.width,
+                h: p.height,
+                fps: (1.0 / env.dt).round(),
+                depth: p.channels.depth,
+            })?;
+        }
+    } else if args.cam {
+        ds.set_camera(oriera_agent::lerobot::CameraTrack {
+            name: "top".into(),
+            w: 168,
+            h: 168,
+            fps: (1.0 / env.dt).round(), // 与控制率同频（60Hz 双轨错位修复）
+            depth: false,
+        });
+    }
+    #[cfg(not(feature = "cam"))]
+    {
+        let _ = (ds, env, spec, args);
+    }
+    Ok(())
 }
 
 /// One episode, exactly as the pre-M0b loop drove it: env.reset(seed),
@@ -522,8 +630,8 @@ fn run_episode_once(
         if let Some(ds) = ds.as_deref_mut() {
             ds.push_step(&obs, &action)?;
             #[cfg(feature = "cam")]
-            for (_ft, png) in env.take_frames() {
-                ds.push_frame(png)?;
+            for (_ft, frame) in env.take_frames() {
+                ds.push_frame(frame)?;
             }
         }
         obs = out.obs;
@@ -572,7 +680,7 @@ fn run_episode_once(
 /// seed band, degenerate redraw policy and episode budget all live in
 /// `oriera_agent::eval`; this closure only knows how to run an episode.
 fn collect(args: &Args, spec: &SceneSpec, protocol: &EvalProtocol) -> Result<RunResult, String> {
-    let mut env = make_env(spec, args.cam);
+    let mut env = make_env_with_cameras(spec, args)?;
     let arm = IkArm::from_robot(&env.robot)?;
     let idx = ObsIdx::from_layout(env.obs_layout());
     // Dataset metadata derives from the env's layouts (P-8): dim names
@@ -584,15 +692,7 @@ fn collect(args: &Args, spec: &SceneSpec, protocol: &EvalProtocol) -> Result<Run
         env.obs_layout(),
         env.action_layout(),
     );
-    #[cfg(feature = "cam")]
-    if args.cam {
-        ds.set_camera(CameraTrack {
-            name: "top".into(),
-            w: 168,
-            h: 168,
-            fps: (1.0 / env.dt).round(), // 与控制率同频（60Hz 双轨错位修复）
-        });
-    }
+    declare_camera_tracks(&mut ds, &env, spec, args)?;
     let phases = match env.task {
         TaskKind::Reach => reach_phases(),
         TaskKind::PickPlace => pick_place_phases(),
@@ -738,7 +838,7 @@ fn main() {
     std::fs::create_dir_all(&out).unwrap();
 
     // Provenance first (P-3): even a crashed run leaves its manifest.
-    write_run_manifest(
+    write_run_manifest_opts(
         out.join("run_manifest.json"),
         &spec,
         &ManifestExtra {
@@ -747,12 +847,20 @@ fn main() {
             method: "scripted".into(),
             seed: Some(protocol.seed0),
         },
+        args.sanitize,
     )
     .unwrap_or_else(|e| fail(&format!("run_manifest.json 写入失败：{e}")));
 
     let task = TaskKind::parse(&spec.task.id).expect("validated task id");
+    if args.cameras_from_spec && args.cam && !cfg!(feature = "cam") {
+        fail("--cameras-from-spec 需要 --features cam（无该特性引擎不渲染图像轨）");
+    }
     let feat = if cfg!(feature = "cam") && args.cam {
-        "rigid3d+cam"
+        if args.cameras_from_spec {
+            "rigid3d+cam+spec-cameras"
+        } else {
+            "rigid3d+cam"
+        }
     } else {
         "rigid3d"
     };
@@ -796,7 +904,7 @@ fn main() {
             for (i, (e1, e2)) in r1.ds.episodes.iter().zip(r2.ds.episodes.iter()).enumerate() {
                 assert_eq!(e1.rows, e2.rows, "dataset rows must be bit-equal (ep {i})");
                 assert_eq!(
-                    e1.frames, e2.frames,
+                    e1.tracks, e2.tracks,
                     "camera frames must be bit-equal (ep {i})"
                 );
             }
@@ -909,11 +1017,15 @@ fn main() {
     .unwrap();
     LeRobotV21::write_card(&root, task.phrase()).unwrap();
     // The resolved spec rides with the dataset — the file IS the experiment.
-    std::fs::write(
-        root.join("meta/oriera_spec.json"),
-        serde_json::to_string_pretty(&spec).unwrap(),
-    )
-    .unwrap();
+    // 脱敏导出（--sanitize）不落盘：身份只经 manifest/receipt 的 spec_hash
+    // 对账，不声称逐位可复现（P-B3）。
+    if !args.sanitize {
+        std::fs::write(
+            root.join("meta/oriera_spec.json"),
+            serde_json::to_string_pretty(&spec).unwrap(),
+        )
+        .unwrap();
+    }
 
     // LeRobot v3.0 tree (P-7): lerobot ≥ 0.4 reads only this layout.
     let root_v3 = out.join("lerobot-v30");
@@ -933,11 +1045,42 @@ fn main() {
         )
         .unwrap();
         LeRobotV21::write_card_v3(&root_v3, task.phrase()).unwrap();
-        std::fs::write(
-            root_v3.join("meta/oriera_spec.json"),
-            serde_json::to_string_pretty(&spec).unwrap(),
+        if !args.sanitize {
+            std::fs::write(
+                root_v3.join("meta/oriera_spec.json"),
+                serde_json::to_string_pretty(&spec).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    // npz bare export (U-8): the SAME r1.ds rows as raw float32 arrays —
+    // one numpy.load-able archive per episode, receipt + spec alongside
+    // (the identity travels with every encoding). Opt-in only.
+    let root_npz = out.join("npz");
+    if args.export_npz {
+        r1.ds
+            .write_npz(&root_npz)
+            .unwrap_or_else(|e| fail(&format!("npz 写出失败：{e}")));
+        LeRobotV21::write_receipt(
+            &root_npz,
+            engine,
+            feat,
+            spec.dt,
+            &spec_hash,
+            &r1.hashes,
+            successes as u32,
+            &fps.fingerprint_scheme,
+            &fps.episode_fingerprints_v2,
         )
         .unwrap();
+        if !args.sanitize {
+            std::fs::write(
+                root_npz.join("meta/oriera_spec.json"),
+                serde_json::to_string_pretty(&spec).unwrap(),
+            )
+            .unwrap();
+        }
     }
 
     // eval_report.json — the lab reporting format, now with protocol
@@ -1021,6 +1164,13 @@ fn main() {
             "  ✓ 已写出 {}/（LeRobot v3.0 布局；结构自检：python scripts/lerobot_v3_selfcheck.py {}）",
             root_v3.display(),
             root_v3.display()
+        );
+    }
+    if args.export_npz {
+        println!(
+            "  ✓ 已写出 {}/（{} 个 episode_*.npz：obs_<i>/act_<i> float32 + meta.json，numpy.load 直读）",
+            root_npz.display(),
+            r1.ds.episodes.len()
         );
     }
 
