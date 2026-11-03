@@ -138,7 +138,7 @@
   "successes": 10,
   "task": "pull the drawer handle out by the target distance",
   "task_id": "drawer@v1",
-  "throughput_steps_per_s": 626.6688631780492,
+  "throughput_steps_per_s": 756.2579091598953,
   "verify_determinism": "full",
   "wilson95_at_end": [
     0.5519691377470266,

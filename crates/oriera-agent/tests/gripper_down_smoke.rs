@@ -149,6 +149,7 @@ fn seven_axis_down_gripper_spec() -> RobotSpec {
         |name: &str, p: usize, c: usize, anchor: [f32; 3], axis: [f32; 3], limits: (f32, f32)| {
             JointSpec {
                 name: name.into(),
+                kind: oriera_subsys::JointKind::Revolute, // M3 field (revolute = legacy)
                 parent_link: p,
                 child_link: c,
                 anchor,

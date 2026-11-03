@@ -27,9 +27,18 @@
 //! `<mimic>` 对）→ [`GripperSpec`] 运动学双板近似。入口
 //! [`UrdfReport::to_robot_spec`] / [`UrdfReport::to_robot_spec_with_gripper`]；
 //! 既有 `first_revolute_chain`/`validate_chain` 一字不动。
+//!
+//! **M3（PLAN-embodied-general §四 M3「移动底盘（prismatic）」）**：串联链
+//! 上的 `<joint type="prismatic">` 不再断链报错，而是真导入为
+//! [`JointKind::Prismatic`] 的 [`JointSpec`]（限位/effort/velocity 按 URDF
+//! 原单位 m / N / m/s 直接接；PD 增益取 `opts.default_kp_prismatic` /
+//! `default_kd_prismatic`（N/m、N·s/m，与转动关节的 N·m/rad 量纲分开），
+//! `per_joint` 按名覆盖照旧）。两指夹爪的 prismatic 手指对仍由 GripperSpec
+//! 检测消费、不入链；`<transmission>` 等非动力学元素继续忽略。
 
 use oriera_subsys::{
-    ArmDescription, GripperKind, GripperSpec, Inertial, JointSpec, LinkShape, LinkSpec, RobotSpec,
+    ArmDescription, GripperKind, GripperSpec, Inertial, JointKind, JointSpec, LinkShape, LinkSpec,
+    RobotSpec,
 };
 use std::f32::consts::PI;
 use roxmltree::Document;
@@ -366,7 +375,7 @@ impl UrdfReport {
                 }
             } else if j.kind == "floating" {
                 issues.push(format!(
-                    "关节 {} 类型 {}（OriEra 仅支持 revolute/continuous/fixed——prismatic U2 后期）",
+                    "关节 {} 类型 {}（OriEra 支持 revolute/continuous/prismatic/fixed——floating/planar 不在范围）",
                     j.name, j.kind
                 ));
             }
@@ -537,15 +546,22 @@ pub enum UpAxis {
 
 /// [`UrdfReport::to_robot_spec`] 的输入旋钮 + 输出清单。
 ///
-/// URDF 1.0 没有 PD 增益 / armature 语义，这三项只能来自调用方（缺省即
-/// `ArmDescription` 预设同款 60 / 4 / 0.02）；`per_joint` 按关节名覆盖
-/// `(kp, kd)`。
+/// URDF 1.0 没有 PD 增益 / armature 语义，这几项只能来自调用方（转动关节
+/// 缺省即 `ArmDescription` 预设同款 60 / 4 / 0.02）；`per_joint` 按关节名
+/// 覆盖 `(kp, kd)`。**M3**：prismatic 链关节的增益量纲是 N/m、N·s/m（与
+/// 转动关节的 N·m/rad 不是一回事——不做隐式换算），缺省取独立字段
+/// `default_kp_prismatic` / `default_kd_prismatic`。
 #[derive(Debug, Clone, PartialEq)]
 pub struct RobotSpecOpts {
-    /// ForceBased PD 刚度 / 阻尼缺省（N·m/rad, N·m·s/rad）。
+    /// ForceBased PD 刚度 / 阻尼缺省（N·m/rad, N·m·s/rad）——转动关节。
     pub default_kp: f32,
     pub default_kd: f32,
-    /// 转子反射惯量缺省（kg·m²）。
+    /// prismatic 链关节的 ForceBased PD 缺省（N/m, N·s/m）。缺省
+    /// 2000 / 200：10 kg 级滑台 ω≈14 rad/s、ζ≈0.7（载荷差异大时用
+    /// `per_joint` 按名覆盖）。
+    pub default_kp_prismatic: f32,
+    pub default_kd_prismatic: f32,
+    /// 转子反射惯量缺省（kg·m²；prismatic 关节按 kg 解读同一数值）。
     pub default_armature: f32,
     /// 按关节名覆盖 `(kp, kd)`。
     pub per_joint: BTreeMap<String, (f32, f32)>,
@@ -573,6 +589,8 @@ impl Default for RobotSpecOpts {
         Self {
             default_kp: 60.0,
             default_kd: 4.0,
+            default_kp_prismatic: 2000.0,
+            default_kd_prismatic: 200.0,
             default_armature: 0.02,
             per_joint: BTreeMap::new(),
             mount: [0.0; 3],
@@ -780,6 +798,15 @@ fn joint_limits(j: &UrdfJoint, skipped: &mut Vec<String>) -> (f32, f32) {
     }
     match (j.limit_lower, j.limit_upper) {
         (Some(lo), Some(hi)) if lo.is_finite() && hi.is_finite() => (lo.min(hi), lo.max(hi)),
+        // URDF 规范：prismatic 必须带 <limit>；缺了不虚构 ±π 米——给一个
+        // 有限的 ±1 m 行程并登记（RobotSpec 要求 prismatic 限位有限）。
+        _ if j.kind == "prismatic" => {
+            skipped.push(format!(
+                "prismatic 关节 {} 缺 <limit lower/upper>（URDF 规范要求）→ ±1 m",
+                j.name
+            ));
+            (-1.0, 1.0)
+        }
         _ => {
             skipped.push(format!("关节 {} 缺 <limit lower/upper> → ±π", j.name));
             (-PI, PI)
@@ -831,8 +858,9 @@ impl UrdfReport {
     ///   `<axis>`（非 ±单位轴也接受，归一化）；`<limit effort/velocity>`
     ///   → `effort`/`velocity_limit`；`<dynamics damping>` → 被动阻尼
     ///   （缺省引擎默认）；kp/kd/armature 来自 `opts`。**prismatic 链关节
-    ///   报错**（RobotSpec M0a 的 JointSpec 仅 revolute——缺字段，见
-    ///   docs/URDF-IMPORT.md）；floating/planar 断链报错。
+    ///   （M3）→ [`JointKind::Prismatic`]**：限位 m（缺 `<limit>` → ±1 m 并
+    ///   登记）、effort N、velocity m/s、增益取 `opts.default_kp_prismatic`
+    ///   / `default_kd_prismatic`（N/m、N·s/m）；floating/planar 断链报错。
     /// - **link**：`<collision>` box → Box（旋转后取轴对齐包络）、
     ///   cylinder → Capsule（世界轴 ≈ ±X 时）否则 Box 包络、sphere →
     ///   Box 包络、**mesh → STL 且给了 `opts.mesh_base_dir` 时经
@@ -916,7 +944,7 @@ impl UrdfReport {
         None
     }
 
-    /// 根向下走串联链：fixed 吸收、revolute/continuous 成体、手指关节处
+    /// 根向下走串联链：fixed 吸收、revolute/continuous/prismatic（M3）成体、手指关节处
     /// 记挂点并止步（手指不入链）、同父多关节取文档序首个其余入 skipped。
     fn walk_chain<'a>(
         &'a self,
@@ -962,7 +990,9 @@ impl UrdfReport {
             let child_frame = cur_frame.child(j.origin_xyz, j.origin_rpy);
             match j.kind.as_str() {
                 "fixed" => bodies[cur_body].tip = child_frame,
-                "revolute" | "continuous" => {
+                // M3：prismatic 链关节与 revolute 同样成体入链（JointKind 在
+                // `build` 里按 `j.kind` 区分）——不再断链报错。
+                "revolute" | "continuous" | "prismatic" => {
                     let child_idx = link_index(&j.child).ok_or_else(|| {
                         format!("关节 {} 的 child link `{}` 未定义", j.name, j.child)
                     })?;
@@ -980,17 +1010,10 @@ impl UrdfReport {
                     });
                     cur_body = c;
                 }
-                "prismatic" => {
-                    return Err(format!(
-                        "关节 {} 为 prismatic 链关节：RobotSpec（M0a）的 JointSpec 仅 revolute——\
-                         prismatic 链关节待 M0b 增 kind 字段；两指 prismatic 手指须同父或 <mimic> \
-                         配对才会被 GripperSpec 检测消费",
-                        j.name
-                    ))
-                }
                 other => {
                     return Err(format!(
-                        "关节 {} 类型 `{other}`：串联链在此断开（floating/planar 不在 M0a 范围）",
+                        "关节 {} 类型 `{other}`：串联链在此断开（floating/planar 不在范围——\
+                         OriEra 支持 revolute/continuous/prismatic/fixed）",
                         j.name
                     ))
                 }
@@ -1367,7 +1390,7 @@ impl UrdfReport {
         } = self.walk_chain(fingers.as_ref(), &mut skipped)?;
         if chain.is_empty() && site.is_none() && external.is_none() {
             return Err(format!(
-                "URDF 链提取失败：根 {} 下无可用的 revolute/continuous 关节，也未检测到两指夹爪",
+                "URDF 链提取失败：根 {} 下无可用的 revolute/continuous/prismatic 关节，也未检测到两指夹爪",
                 self.root
             ));
         }
@@ -1399,14 +1422,26 @@ impl UrdfReport {
             // <axis> 在关节/子系；经子系旋转到父系（= 世界）后归一化
             let axis = v_normalize(mat_vec(&ctx.r_up, mat_vec(&cj.child_frame.r, axis_urdf)));
             let limits = joint_limits(j, &mut skipped);
+            let kind = if j.kind == "prismatic" {
+                JointKind::Prismatic
+            } else {
+                JointKind::Revolute
+            };
+            // 增益量纲随关节类型（N·m/rad vs N/m）：两套缺省互不换算，
+            // `per_joint` 按名覆盖对两类都生效。
+            let default_gains = match kind {
+                JointKind::Revolute => (opts.default_kp, opts.default_kd),
+                JointKind::Prismatic => (opts.default_kp_prismatic, opts.default_kd_prismatic),
+            };
             let (kp, kd) = opts
                 .per_joint
                 .get(&j.name)
                 .copied()
-                .unwrap_or((opts.default_kp, opts.default_kd));
+                .unwrap_or(default_gains);
             links[cj.child].origin = v_add(links[cj.parent].origin, anchor);
             joints.push(JointSpec {
                 name: j.name.clone(),
+                kind,
                 parent_link: cj.parent,
                 child_link: cj.child,
                 anchor,
@@ -2015,8 +2050,11 @@ mod tests {
         out
     }
 
+    /// M3：串联链上的 prismatic 关节真导入（不再断链报错）——类型、米制限位、
+    /// N 制 effort、m/s 速度、独立的 N/m 增益缺省、per_joint 覆盖、缺
+    /// `<limit>` 的有限兜底；floating 仍断链报错，空 URDF 仍人话报错。
     #[test]
-    fn prismatic_chain_joint_and_broken_chain_are_errors() {
+    fn prismatic_chain_joint_imports_and_broken_chain_errors() {
         let xml = r#"<robot name="p">
           <link name="a"/><link name="b"/><link name="c"/>
           <joint name="slide" type="prismatic"><parent link="a"/><child link="b"/>
@@ -2025,8 +2063,47 @@ mod tests {
             <axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>
         </robot>"#;
         let rep = UrdfReport::parse(xml).unwrap();
-        let err = rep.to_robot_spec(&mut RobotSpecOpts::default()).unwrap_err();
-        assert!(err.contains("prismatic") && err.contains("M0b"), "{err}");
+        let mut opts = RobotSpecOpts::default();
+        let spec = rep.to_robot_spec(&mut opts).expect("prismatic 链关节真导入");
+        assert_eq!(spec.joints.len(), 2, "{:?}", spec.joint_names());
+        let s = &spec.joints[0];
+        assert_eq!(s.kind, JointKind::Prismatic);
+        assert_eq!(s.limits, (0.0, 0.1), "限位按米直接接");
+        assert_eq!((s.effort, s.velocity_limit), (Some(1.0), Some(1.0)), "N / m/s");
+        assert_eq!(s.axis, [1.0, 0.0, 0.0], "URDF +X 经 Z-up→Y-up 仍为 +X");
+        assert_eq!(
+            (s.kp, s.kd),
+            (opts.default_kp_prismatic, opts.default_kd_prismatic),
+            "prismatic 增益取独立的 N/m 缺省"
+        );
+        assert_eq!((s.kp, s.kd), (2000.0, 200.0));
+        let r = &spec.joints[1];
+        assert_eq!(r.kind, JointKind::Revolute);
+        assert_eq!((r.kp, r.kd), (opts.default_kp, opts.default_kd));
+        spec.validate().expect("prismatic + revolute 链合法");
+        assert!(
+            oriera_subsys::MultibodySystem::from_robot(spec, oriera_subsys::Scene3D::default())
+                .is_ok(),
+            "prismatic 链能进 multibody"
+        );
+        // per_joint 按名覆盖对 prismatic 同样生效
+        let mut o2 = RobotSpecOpts::default();
+        o2.per_joint.insert("slide".into(), (750.0, 55.0));
+        let spec2 = rep.to_robot_spec(&mut o2).unwrap();
+        assert_eq!((spec2.joints[0].kp, spec2.joints[0].kd), (750.0, 55.0));
+        // 缺 <limit> 的 prismatic：有限 ±1 m 兜底并登记（不虚构 ±π 米）
+        let no_lim = xml.replace(
+            r#"<limit lower="0" upper="0.1" effort="1" velocity="1"/></joint>
+          <joint name="j""#,
+            r#"</joint>
+          <joint name="j""#,
+        );
+        let mut o3 = RobotSpecOpts::default();
+        let spec3 = UrdfReport::parse(&no_lim).unwrap().to_robot_spec(&mut o3).unwrap();
+        assert_eq!(spec3.joints[0].limits, (-1.0, 1.0));
+        assert!(o3.skipped.iter().any(|s| s.contains("slide") && s.contains("±1 m")), "{:?}", o3.skipped);
+        spec3.validate().expect("兜底限位有限");
+
         let xml2 = xml.replace(r#"type="prismatic""#, r#"type="floating""#);
         let rep2 = UrdfReport::parse(&xml2).unwrap();
         let err2 = rep2.to_robot_spec(&mut RobotSpecOpts::default()).unwrap_err();

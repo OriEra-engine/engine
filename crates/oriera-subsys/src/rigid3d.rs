@@ -86,8 +86,29 @@
 //!   Contact { min_normal_force, max_slip }` decides `holding` from
 //!   the solver's per-tick plate→prop normal impulses and relative
 //!   speed instead of the `GRASP_RADIUS` tip heuristic.
+//!
+//! **M3 扩展体 (PLAN §四 M3 移动底盘 / 真 fixture 通用化)** — again
+//! opt-in, defaults bit-identical:
+//! - **Prismatic joints**: [`crate::robot::JointKind::Prismatic`] builds
+//!   a rapier multibody *prismatic* joint (free DoF `LinX` along the
+//!   spec axis, limits in metres) with the same ForceBased position
+//!   motor, effort clamp, armature and damping wiring as a revolute
+//!   stage — every scalar in the slide's own units (N/m, N, kg, N·s/m;
+//!   table on `JointSpec`). The readout is the slide displacement: the
+//!   link's `local_to_parent` translation, minus the joint anchor,
+//!   projected on the unit axis — the same frame the motor acts in.
+//!   Telemetry `angles`/`velocities` therefore carry metres / m/s in a
+//!   prismatic slot.
+//! - **Fixtures**: [`MultibodySystem::from_robot_fixtures`] builds any
+//!   number of static slabs ([`FixtureSlab`]), each with its own
+//!   friction. [`Scene3D`] stays the legacy two-slab description and
+//!   projects onto that list ([`Scene3D::fixture_slabs`]: ground, then
+//!   table, both at [`LEGACY_FIXTURE_FRICTION`]) — `from_robot` goes
+//!   through it, so the default build sequence is the pre-M3 one.
 
-use crate::robot::{HoldingCriterion, Inertial, LinkShape, RobotSpec, RobotSpecError, SelfCollision};
+use crate::robot::{
+    HoldingCriterion, Inertial, JointKind, LinkShape, RobotSpec, RobotSpecError, SelfCollision,
+};
 use crate::{Gravity, TimeScale};
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Entity, World};
@@ -320,6 +341,62 @@ impl Default for Scene3D {
             ground: ([0.0, -0.05, 0.0], [2.0, 0.05, 1.5]),
             table: Some(([0.32, 0.25, 0.0], [0.28, 0.25, 0.32])),
         }
+    }
+}
+
+/// Contact friction of the legacy ground/table slabs — the value the
+/// pre-M3 `build_scene` hardcoded for both.
+pub const LEGACY_FIXTURE_FRICTION: f32 = 0.9;
+
+/// One static furniture slab (M3 真 fixture 通用化, the M2 leftover
+/// "每 fixture friction"): an axis-aligned box, world frame, metres,
+/// with its own contact friction. [`MultibodySystem::from_robot_fixtures`]
+/// builds any number of them in list order (rails, shelves, bins,
+/// cabinet walls, a drawer runner…); the agent-side `SceneGraph.fixtures`
+/// maps onto this list one to one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FixtureSlab {
+    /// Slab centre, world frame (m).
+    pub center: [f32; 3],
+    /// Half extents (m), all > 0.
+    pub half: [f32; 3],
+    /// Contact friction coefficient (≥ 0).
+    pub friction: f32,
+}
+
+impl FixtureSlab {
+    /// Why this slab cannot be built (`None` = buildable): finite
+    /// centre, finite positive half extents, finite non-negative
+    /// friction.
+    pub fn problem(&self) -> Option<String> {
+        if !self.center.iter().all(|v| v.is_finite()) {
+            return Some(format!("center {:?} must be finite", self.center));
+        }
+        if !self.half.iter().all(|v| v.is_finite() && *v > 0.0) {
+            return Some(format!("half {:?} must be finite and > 0", self.half));
+        }
+        if !(self.friction.is_finite() && self.friction >= 0.0) {
+            return Some(format!("friction {} must be finite and >= 0", self.friction));
+        }
+        None
+    }
+}
+
+impl Scene3D {
+    /// The legacy pair as the generic fixture list, in the pre-M3 build
+    /// order: `ground`, then `table` (when present), both at
+    /// [`LEGACY_FIXTURE_FRICTION`]. `from_robot(robot, scene)` builds
+    /// exactly this list — bit-identical to the old hardcoded path.
+    pub fn fixture_slabs(&self) -> Vec<FixtureSlab> {
+        let slab = |(center, half): ([f32; 3], [f32; 3])| FixtureSlab {
+            center,
+            half,
+            friction: LEGACY_FIXTURE_FRICTION,
+        };
+        std::iter::once(slab(self.ground))
+            .chain(self.table.map(slab))
+            .collect()
     }
 }
 
@@ -594,16 +671,24 @@ fn shape_aabb_half(s: &LinkShape) -> [f32; 3] {
     [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]].map(|v| v * 0.5)
 }
 
-/// One actuated revolute stage: its multibody joint handle, the
-/// revolute axis in the parent's local frame (angle readout) and the
-/// generic-joint axis slot the motor drives. Index `i` pairs with
-/// `RobotSpec::joints[i]` for limits/gains/velocity limit.
+/// One actuated stage: its multibody joint handle, the joint axis in
+/// the parent's local frame (readout) and the generic-joint axis slot
+/// the motor drives. Index `i` pairs with `RobotSpec::joints[i]` for
+/// limits/gains/velocity limit.
 #[derive(Clone, Copy)]
 struct Stage {
     handle: MultibodyJointHandle,
+    /// Revolute: the axis exactly as written in the spec (the legacy
+    /// angle readout, bit-pinned). Prismatic: the *unit* slide direction.
     axis_vec: Vec3,
-    /// The revolute free DoF is always `ANG_X` in the joint frame.
+    /// The free DoF slot in the joint frame: `AngX` (revolute) /
+    /// `LinX` (prismatic).
     axis: JointAxis,
+    /// Prismatic only: the joint anchor in the parent frame — removed
+    /// from `local_to_parent`'s translation before the axis projection
+    /// (zero and unused for revolute stages).
+    anchor: Vec3,
+    prismatic: bool,
 }
 
 /// Deterministic fingerprint of the sim state (#67 semantics): folds
@@ -703,7 +788,8 @@ fn bits_opt(h: u64, v: Option<f32>) -> u64 {
 /// provenance since M2). **M2 fields fold only when non-default**
 /// (`inertial` Some, `ConvexHull`/`Mesh` shapes, `contact_mesh`,
 /// `Contact` criterion, `AdjacentExempt`), so every pre-M2 identity
-/// hash — and the pinned goldens — are bit-stable.
+/// hash — and the pinned goldens — are bit-stable. **M3**: a prismatic
+/// joint folds a kind tag (revolute folds nothing, same discipline).
 pub fn robot_identity_hash(r: &RobotSpec) -> u64 {
     let mut h = mix(0x0000_6f72_6965_7261, 0x0052_4f42_4f54); // "ROBOT"
     h = mix(h, r.joints.len() as u64);
@@ -723,6 +809,11 @@ pub fn robot_identity_hash(r: &RobotSpec) -> u64 {
         h = bits(h, j.kd);
         h = bits(h, j.armature);
         h = bits(h, j.damping);
+        // M3: the joint kind folds ONLY when non-default (prismatic) —
+        // a revolute joint (every pre-M3 robot) hashes exactly as before.
+        if j.kind == JointKind::Prismatic {
+            h = mix(h, 0x9815_3A71); // "PRISMATIC" tag
+        }
     }
     for l in &r.links {
         match &l.shape {
@@ -970,9 +1061,30 @@ impl MultibodySystem {
     /// Build an arbitrary [`RobotSpec`] (validated first — an
     /// unbuildable collider shape is a named [`RobotSpecError::BadShape`],
     /// never a silently dropped collider; a `mesh_uri` is provenance
-    /// metadata and never an error since M2).
+    /// metadata and never an error since M2) into the legacy two-slab
+    /// [`Scene3D`] — i.e. [`Self::from_robot_fixtures`] over
+    /// [`Scene3D::fixture_slabs`] (bit-identical to the pre-M3 build).
     pub fn from_robot(robot: RobotSpec, scene: Scene3D) -> Result<Self, RobotSpecError> {
+        Self::from_robot_fixtures(robot, &scene.fixture_slabs())
+    }
+
+    /// Build a [`RobotSpec`] into a world of arbitrary static
+    /// [`FixtureSlab`]s (M3 真 fixture 通用化): any count — including
+    /// none, a furniture-free world for pure articulated dynamics — each
+    /// slab with its own friction, built in list order. An unbuildable
+    /// slab is a named [`RobotSpecError::BadFixture`].
+    pub fn from_robot_fixtures(
+        robot: RobotSpec,
+        fixtures: &[FixtureSlab],
+    ) -> Result<Self, RobotSpecError> {
         robot.validate()?;
+        if let Some((index, reason)) = fixtures
+            .iter()
+            .enumerate()
+            .find_map(|(i, f)| f.problem().map(|p| (i, p)))
+        {
+            return Err(RobotSpecError::BadFixture { index, reason });
+        }
         let n = robot.joints.len();
         let gap0 = robot.gripper.as_ref().map_or(0.0, |g| g.gap_open);
         let unit = |a: [f32; 3]| Vec3::new(a[0], a[1], a[2]).normalize();
@@ -1015,7 +1127,7 @@ impl MultibodySystem {
             last_substep_dt: (1.0 / 60.0) / SUBSTEPS as f32,
             last_ee: ([0.0; 3], [0.0, 0.0, 0.0, 1.0]),
         };
-        sys.build_scene(&scene);
+        sys.build_scene(fixtures);
         sys.build_arm()?;
         Ok(sys)
     }
@@ -1032,15 +1144,17 @@ impl MultibodySystem {
         self.colliders.insert_with_parent(col, h, &mut self.bodies);
     }
 
-    fn build_scene(&mut self, scene: &Scene3D) {
+    /// Static furniture, one fixed body + cuboid collider per slab, in
+    /// list order with the slab's own friction (M3). The legacy
+    /// [`Scene3D`] reaches here as `[ground@0.9, table@0.9]` — the exact
+    /// pre-M3 call sequence, so the default world is bit-identical.
+    fn build_scene(&mut self, fixtures: &[FixtureSlab]) {
         let world = match self.robot.self_collision {
             SelfCollision::Off => world_groups(),
             SelfCollision::AdjacentExempt => exempt_world_groups(&self.robot),
         };
-        let (c, half) = scene.ground;
-        self.fixed_slab(c, half, 0.9, world);
-        if let Some((c, half)) = scene.table {
-            self.fixed_slab(c, half, 0.9, world);
+        for f in fixtures {
+            self.fixed_slab(f.center, f.half, f.friction, world);
         }
     }
 
@@ -1203,38 +1317,59 @@ impl MultibodySystem {
         self.plate_prev_centre = None;
 
         // 4. Multibody joints in spec (topological) order. Positive
-        //    angle about the axis follows the right-hand rule.
+        //    angle about the axis follows the right-hand rule; a
+        //    prismatic joint (M3) slides along the unit axis, positive
+        //    displacement along +axis, limits in metres.
+        //    Adjacent stages overlap at the anchors at build time —
+        //    their mutual contact would fight the joint and inject
+        //    energy. Joints constrain the pair; the contact between them
+        //    is noise (and arm↔arm contact is group-disabled anyway).
         self.stages.clear();
         for j in &r.joints {
-            let axis = v3(j.axis);
-            let builder = RevoluteJointBuilder::new(axis)
-                .local_anchor1(v3(j.anchor))
-                .limits([j.limits.0, j.limits.1])
-                // Adjacent stages overlap at the anchors at build time —
-                // their mutual contact would fight the joint and inject
-                // energy. Joints constrain the pair; the contact between
-                // them is noise (and arm↔arm contact is group-disabled
-                // anyway).
-                .contacts_enabled(false)
-                .build();
+            let (generic, slot, axis_vec, anchor, prismatic): (GenericJoint, _, _, _, _) =
+                match j.kind {
+                    // The legacy revolute stage, call for call (the
+                    // golden tests pin this path).
+                    JointKind::Revolute => {
+                        let axis = v3(j.axis);
+                        let builder = RevoluteJointBuilder::new(axis)
+                            .local_anchor1(v3(j.anchor))
+                            .limits([j.limits.0, j.limits.1])
+                            .contacts_enabled(false)
+                            .build();
+                        (builder.into(), JointAxis::AngX, axis, Vec3::ZERO, false)
+                    }
+                    JointKind::Prismatic => {
+                        let axis = v3(j.axis).normalize();
+                        let builder = PrismaticJointBuilder::new(axis)
+                            .local_anchor1(v3(j.anchor))
+                            .limits([j.limits.0, j.limits.1])
+                            .contacts_enabled(false)
+                            .build();
+                        (builder.into(), JointAxis::LinX, axis, v3(j.anchor), true)
+                    }
+                };
             if let Some(h) = self.mbody_joints.insert(
                 self.chain[j.parent_link],
                 self.chain[j.child_link],
-                builder,
+                generic,
                 true,
             ) {
                 self.stages.push(Stage {
                     handle: h,
-                    axis_vec: axis,
-                    axis: JointAxis::AngX,
+                    axis_vec,
+                    axis: slot,
+                    anchor,
+                    prismatic,
                 });
             }
         }
 
         // 5. Per-stage servo config: enable the position motor on the
-        //    revolute DoF (rapier leaves `motor_axes` empty — motors are
-        //    dead until the axis bit is set), ForceBased torque model and
-        //    the effort clamp; plus this joint's rotor inertia (armature)
+        //    stage's free DoF (rapier leaves `motor_axes` empty — motors
+        //    are dead until the axis bit is set; `ANG_X` for revolute,
+        //    `LIN_X` for prismatic), ForceBased force model and the
+        //    effort clamp; plus this joint's rotor inertia (armature)
         //    and viscous friction on its own DoF slice. (At build time
         //    the root still carries a 6-DoF free joint; rapier drops
         //    those rows on the first step, so the slices below are the
@@ -1246,7 +1381,12 @@ impl MultibodySystem {
                     a..a + link.joint().ndofs()
                 });
                 if let Some(link) = mb.link_mut(link_id) {
-                    link.joint.data.motor_axes.insert(JointAxesMask::ANG_X);
+                    let motor_bit = if s.prismatic {
+                        JointAxesMask::LIN_X
+                    } else {
+                        JointAxesMask::ANG_X
+                    };
+                    link.joint.data.motor_axes.insert(motor_bit);
                     link.joint
                         .data
                         .set_motor_model(s.axis, MotorModel::ForceBased);
@@ -1284,9 +1424,13 @@ impl MultibodySystem {
         self.last_ee
     }
 
-    /// Measured joint angles (rad), read from each link's
-    /// `local_to_parent` rotation — the multibody's own generalized
+    /// Measured joint coordinates, read from each link's
+    /// `local_to_parent` pose — the multibody's own generalized
     /// coordinates, in the same sign convention the joint motors use.
+    /// Revolute: the angle about the axis (rad). Prismatic (M3): the
+    /// slide displacement (m) — `local_to_parent` translation minus the
+    /// joint anchor, projected on the unit axis (the joint frame has no
+    /// rotation for a slide, so this is exactly the motor's coordinate).
     pub fn angles(&self) -> Vec<f32> {
         self.stages
             .iter()
@@ -1294,7 +1438,14 @@ impl MultibodySystem {
                 self.mbody_joints
                     .get(s.handle)
                     .and_then(|(mb, link_id)| mb.link(link_id))
-                    .map(|link| angle_about(link.local_to_parent().rotation, s.axis_vec))
+                    .map(|link| {
+                        let l2p = link.local_to_parent();
+                        if s.prismatic {
+                            (l2p.translation - s.anchor).dot(s.axis_vec)
+                        } else {
+                            angle_about(l2p.rotation, s.axis_vec)
+                        }
+                    })
                     .unwrap_or(0.0)
             })
             .collect()
@@ -2406,6 +2557,7 @@ mod tests {
         let j = |name: &str, p: usize, c: usize, anchor: [f32; 3], axis: [f32; 3], limits: (f32, f32), kp: f32, kd: f32| {
             JointSpec {
                 name: name.into(),
+                kind: JointKind::Revolute,
                 parent_link: p,
                 child_link: c,
                 anchor,
@@ -3108,5 +3260,162 @@ mod tests {
         renamed.links[1].name = "carrier-renamed".into();
         renamed.joints[0].name = "yaw".into();
         assert_eq!(robot_identity_hash(&renamed), h0, "names are not physics");
+    }
+
+    // --- M3: generic fixtures (any count, per-slab friction) ------------
+
+    /// The legacy `Scene3D` is the two-slab list at 0.9 (one slab
+    /// without a table), and building that list through the generic
+    /// entry point is trajectory-identical to `from_robot(.., Scene3D)`
+    /// — the default world did not move a bit.
+    #[test]
+    fn legacy_scene_is_the_two_slab_fixture_list() {
+        let scene = Scene3D::default();
+        let slabs = scene.fixture_slabs();
+        assert_eq!(slabs.len(), 2);
+        assert_eq!((slabs[0].center, slabs[0].half), scene.ground);
+        assert_eq!(Some((slabs[1].center, slabs[1].half)), scene.table);
+        assert!(slabs.iter().all(|s| s.friction == LEGACY_FIXTURE_FRICTION));
+        assert_eq!(LEGACY_FIXTURE_FRICTION, 0.9);
+        let no_table = Scene3D {
+            table: None,
+            ..Scene3D::default()
+        };
+        assert_eq!(no_table.fixture_slabs().len(), 1);
+
+        let script = |arm: Entity| {
+            move |i: u64, w: &mut World| {
+                if i.is_multiple_of(30) {
+                    let a = (i as f32) * 0.004;
+                    if let Some(tg) = w.get_mut::<JointTargets>(arm) {
+                        tg.angles = vec![a, 0.5 + a, -0.8 - a, 0.2];
+                        tg.gripper = if (i / 30) % 2 == 1 { 1.0 } else { 0.0 };
+                    }
+                }
+            }
+        };
+        let (mut w1, mut s1, arm1, _) = bench([0.30, 0.55, 0.0]);
+        let (h1, cps1) = fold_episode(&mut s1, &mut w1, 240, &script(arm1));
+        let (mut w2, _old, arm2, _) = bench([0.30, 0.55, 0.0]);
+        let mut s2 = MultibodySystem::from_robot_fixtures(
+            RobotSpec::from(&ArmDescription::default()),
+            &Scene3D::default().fixture_slabs(),
+        )
+        .expect("legacy slabs build");
+        let (h2, cps2) = fold_episode(&mut s2, &mut w2, 240, &script(arm2));
+        assert_eq!((hex(h1), hexs(&cps1)), (hex(h2), hexs(&cps2)), "generic ≠ legacy path");
+    }
+
+    /// Fixture friction of every built slab, in insertion order (the
+    /// fixed bodies' colliders) — the structural readback.
+    fn slab_frictions(sys: &MultibodySystem) -> Vec<f32> {
+        let mut out = Vec::new();
+        for (h, b) in sys.bodies.iter() {
+            if !b.is_fixed() || sys.chain.contains(&h) {
+                continue;
+            }
+            for c in b.colliders() {
+                if let Some(col) = sys.colliders.get(*c) {
+                    out.push(col.friction());
+                }
+            }
+        }
+        out
+    }
+
+    /// Any number of slabs, each with its own friction: a raised shelf
+    /// carries a prop at its own top, and a cube kicked along a
+    /// slippery slab slides measurably farther than on a grippy one.
+    #[test]
+    fn extra_fixtures_build_with_their_own_friction() {
+        // A shelf out of the arm's reach (z = 0.8), top at y = 0.3.
+        let shelf = |friction: f32| FixtureSlab {
+            center: [0.0, 0.25, 0.8],
+            half: [0.4, 0.05, 0.15],
+            friction,
+        };
+        let world_with = |friction: f32| {
+            let mut slabs = Scene3D::default().fixture_slabs();
+            slabs.push(shelf(friction));
+            // a 4th and 5th slab just to exercise "any count"
+            slabs.push(FixtureSlab {
+                center: [-0.8, 0.1, -0.8],
+                half: [0.1, 0.1, 0.1],
+                friction: 0.3,
+            });
+            slabs.push(FixtureSlab {
+                center: [-0.8, 0.1, 0.8],
+                half: [0.1, 0.1, 0.1],
+                friction: 1.7,
+            });
+            slabs
+        };
+        let run = |friction: f32| {
+            let (mut world, _sys, _arm, obj) = bench([0.0, 0.33, 0.8]);
+            let mut sys = MultibodySystem::from_robot_fixtures(
+                RobotSpec::from(&ArmDescription::default()),
+                &world_with(friction),
+            )
+            .expect("five slabs build");
+            assert_eq!(
+                slab_frictions(&sys),
+                vec![0.9, 0.9, friction, 0.3, 1.7],
+                "every slab keeps its own friction, in list order"
+            );
+            for i in 0..90u64 {
+                sys.run(&ctx(i), &mut world);
+            }
+            let rest = pose(&world, obj);
+            // shelf top 0.3 + cube half 0.025
+            assert!(
+                (rest.pos[1] - 0.325).abs() < 0.01,
+                "cube must rest on the shelf slab, y = {}",
+                rest.pos[1]
+            );
+            // Kick it along +X and let friction stop it.
+            let h = *sys.map.values().next().expect("prop body");
+            if let Some(b) = sys.bodies.get_mut(h) {
+                b.set_linvel(Vec3::new(1.0, 0.0, 0.0), true);
+            }
+            for i in 90..150u64 {
+                sys.run(&ctx(i), &mut world);
+            }
+            pose(&world, obj).pos[0] - rest.pos[0]
+        };
+        let slippery = run(0.05);
+        let grippy = run(1.2);
+        eprintln!("kick travel: slippery {slippery:.3} m vs grippy {grippy:.3} m");
+        assert!(
+            slippery > grippy * 1.5 && grippy > 0.0,
+            "per-slab friction must change the slide: slippery {slippery} vs grippy {grippy}"
+        );
+    }
+
+    /// An unbuildable slab is a named error carrying its list index;
+    /// an empty list is a legal furniture-free world.
+    #[test]
+    fn bad_fixture_is_a_named_error_and_empty_world_builds() {
+        let robot = RobotSpec::from(&ArmDescription::default());
+        let mut slabs = Scene3D::default().fixture_slabs();
+        slabs.push(FixtureSlab {
+            center: [0.0; 3],
+            half: [0.1, -0.1, 0.1],
+            friction: 0.5,
+        });
+        match MultibodySystem::from_robot_fixtures(robot.clone(), &slabs) {
+            Err(RobotSpecError::BadFixture { index, reason }) => {
+                assert_eq!(index, 2);
+                assert!(reason.contains("half"), "{reason}");
+            }
+            Err(e) => panic!("expected BadFixture, got {e}"),
+            Ok(_) => panic!("negative half extent must be refused"),
+        }
+        slabs[2].half = [0.1; 3];
+        slabs[2].friction = f32::NAN;
+        assert!(matches!(
+            MultibodySystem::from_robot_fixtures(robot.clone(), &slabs),
+            Err(RobotSpecError::BadFixture { index: 2, .. })
+        ));
+        assert!(MultibodySystem::from_robot_fixtures(robot, &[]).is_ok());
     }
 }

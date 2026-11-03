@@ -537,3 +537,152 @@ fn panda7_inertials_reach_the_rigid_bodies() {
         );
     }
 }
+
+// ── M3（PLAN-embodied-general §四 M3 移动底盘）：prismatic 链关节真导入 ──
+
+/// 手写滑轨臂 URDF（REP-103 Z-up）：固定 base → `rail_x`（prismatic，沿
+/// URDF +X，限位米）→ 滑台 → `yaw`（revolute 绕 Z）→ `pitch`（revolute 绕
+/// Y）→ fixed 工具。公开 Panda 没有 prismatic 链关节——这就是任务书说的
+/// 「合成滑轨臂 fixture」的 URDF 版。
+const SLIDE_ARM_URDF: &str = r#"<?xml version="1.0"?>
+<robot name="slide_arm">
+  <link name="base"><collision><geometry><box size="0.6 0.1 0.04"/></geometry></collision></link>
+  <link name="carriage">
+    <inertial><mass value="2.0"/><inertia ixx="0.004" iyy="0.004" izz="0.006"/></inertial>
+    <collision><geometry><box size="0.12 0.12 0.04"/></geometry></collision>
+  </link>
+  <link name="l1">
+    <inertial><origin xyz="0 0 0.05"/><mass value="1.0"/><inertia ixx="0.002" iyy="0.002" izz="0.001"/></inertial>
+    <collision><origin xyz="0 0 0.05"/><geometry><box size="0.05 0.05 0.1"/></geometry></collision>
+  </link>
+  <link name="l2">
+    <inertial><origin xyz="0.1 0 0"/><mass value="0.5"/><inertia ixx="0.0005" iyy="0.002" izz="0.002"/></inertial>
+    <collision><origin xyz="0.1 0 0"/><geometry><box size="0.2 0.04 0.04"/></geometry></collision>
+  </link>
+  <link name="tool"/>
+  <joint name="rail_x" type="prismatic">
+    <parent link="base"/><child link="carriage"/>
+    <origin xyz="0 0 0.05"/><axis xyz="1 0 0"/>
+    <limit lower="-0.1" upper="0.3" effort="200" velocity="0.5"/>
+    <dynamics damping="2.0"/>
+  </joint>
+  <joint name="yaw" type="revolute">
+    <parent link="carriage"/><child link="l1"/>
+    <origin xyz="0 0 0.02"/><axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="40" velocity="2"/>
+  </joint>
+  <joint name="pitch" type="revolute">
+    <parent link="l1"/><child link="l2"/>
+    <origin xyz="0 0 0.1"/><axis xyz="0 1 0"/>
+    <limit lower="-1.5" upper="1.5" effort="40" velocity="2"/>
+  </joint>
+  <joint name="tool_fix" type="fixed">
+    <parent link="l2"/><child link="tool"/><origin xyz="0.2 0 0"/>
+  </joint>
+</robot>"#;
+
+#[test]
+fn prismatic_rail_urdf_imports_into_the_multibody_and_tracks() {
+    let rep = UrdfReport::parse(SLIDE_ARM_URDF).expect("滑轨臂 URDF 解析");
+    let mut opts = RobotSpecOpts::default();
+    let spec = rep.to_robot_spec(&mut opts).expect("prismatic 链真导入（不再断链报错）");
+    assert_eq!(spec.joint_names(), ["rail_x", "yaw", "pitch"]);
+    let rail = &spec.joints[0];
+    assert_eq!(rail.kind, oriera_subsys::JointKind::Prismatic);
+    assert_eq!(rail.limits, (-0.1, 0.3), "米制限位直接接");
+    assert_eq!((rail.effort, rail.velocity_limit, rail.damping), (Some(200.0), Some(0.5), 2.0));
+    assert_eq!(rail.axis, [1.0, 0.0, 0.0], "URDF +X 滑向 → OriEra +X");
+    assert_eq!((rail.kp, rail.kd), (opts.default_kp_prismatic, opts.default_kd_prismatic));
+    assert!(spec.joints[1..].iter().all(|j| j.kind == oriera_subsys::JointKind::Revolute));
+    assert_eq!(spec.joints[1].axis, [0.0, 1.0, 0.0], "URDF +Z 转轴 → OriEra +Y");
+    spec.validate().expect("滑轨臂 RobotSpec 合法");
+
+    // 无家具世界（M3 from_robot_fixtures 空列表 = 纯铰接动力学）
+    let mut sys =
+        MultibodySystem::from_robot_fixtures(spec.clone(), &[]).expect("prismatic 链进 multibody");
+    let mut world = World::new();
+    world.insert_resource(oriera_subsys::Gravity(9.8));
+    world.insert_resource(TimeScale(1.0));
+    let arm = world.spawn();
+    world.insert(
+        arm,
+        JointTargets {
+            angles: spec.home.clone(),
+            gripper: 0.0,
+        },
+    );
+    world.insert(arm, JointTelemetry::default());
+    let mut hold = |targets: [f32; 3], t0: u64, n: u64, world: &mut World| {
+        for i in t0..t0 + n {
+            if let Some(t) = world.get_mut::<JointTargets>(arm) {
+                t.angles = targets.to_vec();
+            }
+            sys.run(&ctx(i), world);
+        }
+        world.get::<JointTelemetry>(arm).unwrap().clone()
+    };
+    let a = hold([0.0, 0.4, 0.3], 0, 300, &mut world);
+    let b = hold([0.2, 0.4, 0.3], 300, 300, &mut world);
+    for (k, (got, want)) in b.angles.iter().zip([0.2f32, 0.4, 0.3]).enumerate() {
+        let tol = if k == 0 { 5e-3 } else { 0.06 };
+        assert!((got - want).abs() < tol, "{}: got {got}, want {want}", spec.joints[k].name);
+    }
+    let dx = b.ee_pos[0] - a.ee_pos[0];
+    eprintln!("slide-arm URDF: rail 0→0.2 m, TCP Δx {dx:.4} m, rail readout {:.4} m", b.angles[0]);
+    assert!((dx - 0.2).abs() < 0.01, "TCP rides the rail: Δx {dx}");
+}
+
+/// 官方移动底盘预设 JSON 端到端：经 SceneSpec 真加载（extends/schema/未知键
+/// 审计/validate 全链）→ prismatic 关节类型与米制字段 → `kind` 只在
+/// prismatic 关节上序列化（revolute 省略 = 旧 JSON 语义）→ env reset 后
+/// 方块落在 −Z 带的地面上 → 绝对目标动作把底盘开到位（观测里 slide
+/// 关节是米）。
+#[cfg(all(feature = "spec", feature = "json"))]
+#[test]
+fn mobile_arm_preset_json_loads_validates_and_drives() {
+    use oriera_agent::embodied_env::EmbodiedEnv;
+    use oriera_agent::spec::SceneSpec;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("specs/official/mobile-arm-4dof.json");
+    let loaded = SceneSpec::load_file(&path).expect("移动底盘预设加载");
+    assert!(!loaded.migrated, "v2 原生 spec");
+    let spec = loaded.spec;
+    spec.validate().expect("spec 合法");
+    assert_eq!(spec.robot.dof(), 7);
+    let kinds: Vec<_> = spec.robot.joints.iter().map(|j| j.kind).collect();
+    assert_eq!(
+        &kinds[..2],
+        &[oriera_subsys::JointKind::Prismatic, oriera_subsys::JointKind::Prismatic]
+    );
+    assert!(kinds[2..].iter().all(|k| *k == oriera_subsys::JointKind::Revolute));
+    assert_eq!(spec.scene.fixtures.len(), 1, "只有地面");
+    assert_eq!(spec.task.id, "pick_place@v1");
+    let v = serde_json::to_value(&spec.robot).expect("robot 序列化");
+    let joints = v["joints"].as_array().expect("joints");
+    assert_eq!(joints[0]["kind"], "Prismatic");
+    assert!(joints[2].get("kind").is_none(), "revolute 的 kind 省略（旧 JSON 语义）");
+
+    let mut env = spec.to_env();
+    let obs = env.reset(1000);
+    assert_eq!(obs.len(), env.spec().obs_dim);
+    let names = env.obs_names();
+    let at = |n: &str| names.iter().position(|s| s == n).unwrap_or_else(|| panic!("缺 {n}"));
+    let (sx, sz, ee, rel) = (at("slide_x.pos"), at("slide_z.pos"), at("ee.x"), at("obj_rel.x"));
+    let cube = [obs[ee] + obs[rel], obs[ee + 1] + obs[rel + 1], obs[ee + 2] + obs[rel + 2]];
+    assert!(
+        (0.14 - 0.03..=0.22 + 0.03).contains(&cube[0])
+            && (-0.52 - 0.03..=-0.46 + 0.03).contains(&cube[2])
+            && (cube[1] - 0.025).abs() < 0.01,
+        "方块落在 −Z 带地面上：{cube:?}"
+    );
+    // 动作 = 绝对关节目标（slide 为米）+ 夹爪
+    let mut action = vec![0.0f32; env.spec().action_dim];
+    action[0] = 0.1;
+    action[1] = -0.3;
+    let mut last = obs;
+    for _ in 0..240 {
+        last = env.step(&action).obs;
+    }
+    assert!((last[sx] - 0.1).abs() < 5e-3, "slide_x 到位（米）：{}", last[sx]);
+    assert!((last[sz] + 0.3).abs() < 5e-3, "slide_z 到位（米）：{}", last[sz]);
+}

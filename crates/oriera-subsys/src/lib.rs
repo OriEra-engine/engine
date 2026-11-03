@@ -14,20 +14,22 @@ pub use rigid::RigidBodySystem;
 pub mod rigid3d;
 #[cfg(feature = "rigid3d")]
 pub use rigid3d::{
-    collision_report, sim_fingerprint, ArmDescription, JointTargets, JointTelemetry,
+    collision_report, sim_fingerprint, ArmDescription, FixtureSlab, JointTargets, JointTelemetry,
     LinkMassReadback, MultibodySystem, PhysicsParams, Pose3, PropPhys, Scene3D, SimObject,
-    GRASP_RADIUS, JOINT_NAMES, PROP_HALF,
+    GRASP_RADIUS, JOINT_NAMES, LEGACY_FIXTURE_FRICTION, PROP_HALF,
 };
 // PLAN-embodied-general M0a: the generic robot specification the 3D
 // backend builds from (`ArmDescription` is its 4-DoF preset). M2 adds
 // the physics-fidelity knobs (Inertial / SelfCollision /
-// HoldingCriterion) — all opt-in, defaults = the legacy behaviour.
+// HoldingCriterion) — all opt-in, defaults = the legacy behaviour. M3
+// adds the joint kind (`JointKind::Prismatic`, mobile bases / slides)
+// and the generic fixture list (`FixtureSlab`, per-slab friction).
 #[cfg(feature = "rigid3d")]
 pub mod robot;
 #[cfg(feature = "rigid3d")]
 pub use robot::{
-    GripperKind, GripperSpec, HoldingCriterion, Inertial, JointSpec, LinkShape, LinkSpec,
-    RobotSpec, RobotSpecError, SelfCollision, GRIPPER_APPROACH_DEFAULT};
+    GripperKind, GripperSpec, HoldingCriterion, Inertial, JointKind, JointSpec, LinkShape,
+    LinkSpec, RobotSpec, RobotSpecError, SelfCollision, GRIPPER_APPROACH_DEFAULT};
 
 #[cfg(feature = "cam")]
 pub mod camera;

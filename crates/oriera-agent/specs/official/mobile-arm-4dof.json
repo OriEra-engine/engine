@@ -1,0 +1,92 @@
+{
+  "schema": "oriera.scene/2",
+  "meta": {
+    "name": "mobile-arm-4dof",
+    "author": "oriera-embodied-maintainers",
+    "notes": "M3 移动底盘预设（PLAN-embodied-general §四 M3）：固定 rail_mount 根 → slide_x / slide_z 两个 prismatic（OriEra Y-up：地面平面是 XZ，即俯视/ROS 习惯里的 x,y）→ chassis_yaw（revolute Y，底盘 box 0.20×0.06×0.16 m）→ 上装 tabletop 4 轴臂（From<&ArmDescription> 的 4 级同参同几何，原底座立柱并入底盘体——RobotSpec 无 fixed 关节）。底盘是龙门式抽象：靠 prismatic 关节悬离地面 2 cm，不建轮地接触（诚实边界）。prismatic 量纲：限位/home/动作目标/遥测为 m、m/s；kp/kd 为 N/m、N·s/m（500/80，载 ~7 kg、ζ≈0.64）；effort 150 N；armature 0.5 kg；action_scale 0.1 m/单位动作。放置把「移动后才能抓」写进 placement：方块在 −Z 侧 (x 0.14–0.22, z −0.52…−0.46)、目标在 +Z 侧 (x 0.14–0.22, z 0.48–0.54)，二者离停车位肩轴都 ≥0.475 m（> 伸直臂展 0.47、远超工具朝下臂展 0.38）；slide_z 开到 ∓0.40 后两处都落进 0.13–0.24 m 的老作业带——任务仍 pick_place@v1（放到可达目标即可），成功高度带改为地面级 [0, 0.12]。场景只有地面一个 fixture（无桌子）。DLS 基线暂不可用：ik.rs 的 fk_pose 只会转动关节（prismatic 当转轴算），验收以 --validate + settle/跟踪测试替代（crates/oriera-subsys/tests/prismatic_mobile_base.rs 与 crates/oriera-agent/tests/urdf_robot_spec.rs）。",
+    "difficulty": "挑战"
+  },
+  "robot": {
+    "name": "mobile-arm-4dof",
+    "base": [-0.03, 0.0, 0.0],
+    "links": [
+      { "name": "rail_mount", "shape": { "Box": { "half": [0.02, 0.02, 0.02] } }, "origin": [-0.03, 0.03, 0.0], "collider_offset": [0.0, 0.0, 0.0], "density": 1.0, "friction": 0.5, "added_mass": 0.0, "mesh_uri": null },
+      { "name": "carriage_x", "shape": { "Box": { "half": [0.02, 0.01, 0.02] } }, "origin": [-0.03, 0.03, 0.0], "collider_offset": [0.0, 0.0, 0.0], "density": 1500.0, "friction": 0.7, "added_mass": 0.5, "mesh_uri": null },
+      { "name": "carriage_z", "shape": { "Box": { "half": [0.02, 0.01, 0.02] } }, "origin": [-0.03, 0.03, 0.0], "collider_offset": [0.0, 0.0, 0.0], "density": 1500.0, "friction": 0.7, "added_mass": 0.5, "mesh_uri": null },
+      { "name": "chassis", "shape": { "Box": { "half": [0.1, 0.03, 0.08] } }, "origin": [-0.03, 0.05, 0.0], "collider_offset": [0.0, 0.0, 0.0], "density": 1500.0, "friction": 0.7, "added_mass": 1.0, "mesh_uri": null },
+      { "name": "yaw_carrier", "shape": { "Box": { "half": [0.015, 0.015, 0.015] } }, "origin": [0.02, 0.12, 0.0], "collider_offset": [0.0, 0.0, 0.0], "density": 1500.0, "friction": 0.7, "added_mass": 0.2, "mesh_uri": null },
+      { "name": "upper_arm", "shape": { "Box": { "half": [0.1, 0.022, 0.022] } }, "origin": [0.02, 0.12, 0.0], "collider_offset": [0.1, 0.0, 0.0], "density": 1500.0, "friction": 0.7, "added_mass": 0.2, "mesh_uri": null },
+      { "name": "forearm", "shape": { "Box": { "half": [0.09, 0.022, 0.022] } }, "origin": [0.22, 0.12, 0.0], "collider_offset": [0.09, 0.0, 0.0], "density": 1500.0, "friction": 0.7, "added_mass": 0.2, "mesh_uri": null },
+      { "name": "wrist", "shape": { "Box": { "half": [0.045, 0.022, 0.022] } }, "origin": [0.4, 0.12, 0.0], "collider_offset": [0.045, 0.0, 0.0], "density": 1500.0, "friction": 0.7, "added_mass": 0.2, "mesh_uri": null }
+    ],
+    "joints": [
+      { "name": "slide_x", "kind": "Prismatic", "parent_link": 0, "child_link": 1, "anchor": [0.0, 0.0, 0.0], "axis": [1.0, 0.0, 0.0], "limits": [-0.2, 0.2], "effort": 150.0, "velocity_limit": 0.5, "kp": 500.0, "kd": 80.0, "armature": 0.5, "damping": 5.0 },
+      { "name": "slide_z", "kind": "Prismatic", "parent_link": 1, "child_link": 2, "anchor": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "limits": [-0.45, 0.45], "effort": 150.0, "velocity_limit": 0.5, "kp": 500.0, "kd": 80.0, "armature": 0.5, "damping": 5.0 },
+      { "name": "chassis_yaw", "parent_link": 2, "child_link": 3, "anchor": [0.0, 0.02, 0.0], "axis": [0.0, 1.0, 0.0], "limits": [-3.1415927, 3.1415927], "effort": null, "velocity_limit": 1.5, "kp": 80.0, "kd": 8.0, "armature": 0.05, "damping": 0.1 },
+      { "name": "base_yaw", "parent_link": 3, "child_link": 4, "anchor": [0.05, 0.07, 0.0], "axis": [0.0, 1.0, 0.0], "limits": [-3.1415927, 3.1415927], "effort": null, "velocity_limit": null, "kp": 60.0, "kd": 4.0, "armature": 0.02, "damping": 0.05 },
+      { "name": "shoulder", "parent_link": 4, "child_link": 5, "anchor": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "limits": [-0.35, 1.45], "effort": null, "velocity_limit": null, "kp": 60.0, "kd": 4.0, "armature": 0.02, "damping": 0.05 },
+      { "name": "elbow", "parent_link": 5, "child_link": 6, "anchor": [0.2, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "limits": [-2.5, 0.35], "effort": null, "velocity_limit": null, "kp": 60.0, "kd": 4.0, "armature": 0.02, "damping": 0.05 },
+      { "name": "wrist_pitch", "parent_link": 6, "child_link": 7, "anchor": [0.18, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "limits": [-2.0, 2.0], "effort": null, "velocity_limit": null, "kp": 60.0, "kd": 4.0, "armature": 0.02, "damping": 0.05 }
+    ],
+    "gripper": {
+      "attach_link": 7,
+      "finger_x": 0.135,
+      "tcp_offset": [0.09, 0.0, 0.0],
+      "finger_half": [0.03, 0.045, 0.006],
+      "gap_open": 0.075,
+      "gap_closed": 0.046,
+      "friction": 1.4,
+      "effort": 20.0,
+      "gap_rate": 0.004,
+      "kind": "ParallelPlates"
+    },
+    "home": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "mass_scale": 1.0,
+    "action_scale": [0.1, 0.1, 2.0, 2.0, 2.0, 2.0, 2.0]
+  },
+  "scene": {
+    "fixtures": [
+      { "name": "ground", "center": [0.0, -0.05, 0.0], "half": [2.0, 0.05, 1.5], "friction": 0.9 }
+    ],
+    "props": [
+      {
+        "name": "cube",
+        "shape": { "kind": "cuboid", "half": [0.025, 0.025, 0.025] },
+        "phys": { "density": 400.0, "friction": 0.8 },
+        "placement": { "range": { "x": [0.14, 0.22], "y": 0.03, "z": [-0.52, -0.46] } }
+      }
+    ]
+  },
+  "task": {
+    "id": "pick_place@v1",
+    "params": {
+      "goal_xz_tol": 0.09,
+      "goal_y_min": 0.0,
+      "goal_y_max": 0.12,
+      "reach_radius": 0.055,
+      "min_separation": 0.12,
+      "max_redraws": 8,
+      "goal": { "range": { "x": [0.14, 0.22], "y": 0.0, "z": [0.48, 0.54] } }
+    }
+  },
+  "control": {
+    "mode": "joint_pos",
+    "action_scale": null
+  },
+  "dt": 0.016666668,
+  "max_steps": 1200,
+  "randomization": {
+    "enabled": true,
+    "kp_jitter": 0.0,
+    "mass_jitter": 0.0,
+    "obs_noise": 0.0,
+    "prop_density": [240.0, 640.0],
+    "prop_friction": [0.5, 1.1]
+  },
+  "physics": {
+    "solver_iterations": null,
+    "substeps": null,
+    "contact_softness_hz": null,
+    "warmstart_coefficient": null
+  }
+}

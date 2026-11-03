@@ -31,6 +31,26 @@ with a root-cause note — listed, not counted toward the verdict.
 Output: out/mjcf-crosscheck/report.json + a console table, ending with a
 single PASS/FAIL summary line.
 
+v2 (M3, PLAN-embodied-general §四 M3 / §9.1 P-12) adds a DYNAMICS section
+on top of the kinematic/parameter cross-check: the same Panda driven by the
+same fixed 7-joint target sequence on both sides, joint trajectories compared
+tick by tick — MEASUREMENT ONLY (no tuning; the exit code stays the
+kinematic verdict, the dynamics verdict rides the SUMMARY line):
+
+  MuJoCo side: menagerie panda_nohand.xml with its general actuators turned
+    into position servos at the OriEra panda-7dof-pick preset gains
+    (kp/kd = 300/30, forcerange = the preset efforts 87 x4 / 12 x3 — the
+    menagerie values, identical), armature set to the preset's 0.05
+    (menagerie ships 0.1), damping 1 (both), gravity 9.8, contacts off,
+    timestep 1/120 s x 2 per 1/60 s tick (= OriEra's 2 substeps),
+    integrator as shipped (implicitfast).
+  Rust side: cargo run --example urdf_traj_dump -p oriera-agent --features
+    urdf  (panda_converted.urdf -> RobotSpec with the same preset gains ->
+    MultibodySystem with NO fixtures -> per-tick JointTargets -> joint
+    angles every --stride ticks; this script asks for every tick).
+  Both start from q = 0 (the rapier build pose; joint4's range excludes 0,
+  so both limit constraints push it back during the first ticks).
+
 Dependencies: mujoco + numpy + stdlib only.
 """
 
@@ -78,6 +98,26 @@ TOL_EFFORT_REL = 0.10
 TOL_AXIS_RAD = 0.02
 TOL_ROT_RAD = 0.02
 TOL_FK_M = 0.005
+
+# ------------------------------------------------- v2 dynamics section ----
+# Fixed in-limit 7-joint target sequence (rad), held DYN_TICKS_PER_WAYPOINT
+# ticks each at 60 Hz: Franka ready pose -> three excursions -> ready.
+# Joint ranges: j2 ±1.7628, j4 [-3.0718, -0.0698], j6 [-0.0175, 3.7525],
+# the rest ±2.8973 — every value below sits inside with margin.
+DYN_WAYPOINTS = [
+    [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785],
+    [0.5, -0.3, 0.3, -1.8, 0.4, 1.9, 0.2],
+    [-0.6, 0.2, -0.4, -2.6, -0.5, 2.4, 1.2],
+    [0.3, -1.0, 0.6, -1.2, 0.8, 1.2, -0.6],
+    [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785],
+]
+DYN_TICKS_PER_WAYPOINT = 120          # 2 s per waypoint, 600 ticks total
+DYN_TICK_DT = 1.0 / 60.0
+DYN_SUBSTEPS = 2                      # OriEra SUBSTEPS -> MuJoCo 1/120 s
+DYN_KP, DYN_KD, DYN_ARMATURE = 300.0, 30.0, 0.05   # panda-7dof-pick preset
+DYN_GRAVITY = 9.8                     # OriEra Gravity resource
+DYN_SETTLE_TAIL = 10                  # last ticks of each waypoint = "settled"
+TOL_DYN_SETTLED_RAD = 0.05            # equilibrium agreement (PASS rule)
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -651,6 +691,149 @@ def fk_check(model, data, site_id, dump) -> list[dict]:
     return out
 
 
+# ------------------------------------------------- v2: dynamics (P-12) ----
+
+
+def run_rust_traj(urdf_path: Path, targets_path: Path) -> dict:
+    """cargo run --example urdf_traj_dump (every tick; build-lock retry)."""
+    cmd = ["cargo", "run", "--example", "urdf_traj_dump",
+           "-p", "oriera-agent", "--features", "urdf", "--quiet", "--",
+           str(urdf_path), str(targets_path), "--stride", "1"]
+    for attempt in range(4):
+        p = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=1800)
+        if p.returncode == 0:
+            return json.loads(p.stdout)
+        blob = (p.stderr or "") + (p.stdout or "")
+        low = blob.lower()
+        if ("file lock" in low or "blocking waiting" in low
+                or "another cargo" in low):
+            log(f"[rust] build lock busy (attempt {attempt + 1}/4), wait 30s")
+            time.sleep(30)
+            continue
+        sys.stderr.write(blob[-4000:])
+        raise RuntimeError("urdf_traj_dump failed (see stderr above)")
+    raise RuntimeError("urdf_traj_dump: build-lock retry exhausted")
+
+
+def mujoco_traj(mjcf_path: Path) -> dict:
+    """Same Panda, same targets, same time base on the MuJoCo side.
+
+    The menagerie `general` actuators (gain kp, bias [0, -kp, -kv]) become
+    position servos at the OriEra preset gains; forcerange is kept (it IS
+    the preset's 87/12 effort); armature is set to the preset value; gravity
+    to the OriEra resource; contacts off (OriEra side has no fixtures).
+    """
+    model = mujoco.MjModel.from_xml_path(str(mjcf_path))
+    shipped = {
+        "gain_kp": [float(x) for x in model.actuator_gainprm[:, 0]],
+        "armature": [float(x) for x in model.dof_armature],
+        "timestep": float(model.opt.timestep),
+        "gravity": [float(x) for x in model.opt.gravity],
+    }
+    model.actuator_gainprm[:, 0] = DYN_KP
+    model.actuator_biasprm[:, 0] = 0.0
+    model.actuator_biasprm[:, 1] = -DYN_KP
+    model.actuator_biasprm[:, 2] = -DYN_KD
+    model.dof_armature[:] = DYN_ARMATURE
+    model.opt.gravity[:] = [0.0, 0.0, -DYN_GRAVITY]
+    model.opt.timestep = DYN_TICK_DT / DYN_SUBSTEPS
+    model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_CONTACT)
+    data = mujoco.MjData(model)
+    data.qpos[:] = 0.0
+    data.qvel[:] = 0.0
+    mujoco.mj_forward(model, data)
+
+    adr = [int(model.jnt_qposadr[mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_JOINT, f"joint{k}")]) for k in range(1, CHAIN_LEN + 1)]
+    act = [next(a for a in range(model.nu) if model.actuator_trnid[a, 0] == mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_JOINT, f"joint{k}")) for k in range(1, CHAIN_LEN + 1)]
+    forcerange = [float(model.actuator_forcerange[a, 1]) for a in act]
+    total = DYN_TICKS_PER_WAYPOINT * len(DYN_WAYPOINTS)
+    qs = [[float(data.qpos[i]) for i in adr]]
+    saturated = [0] * CHAIN_LEN
+    t0 = time.perf_counter()
+    for tick in range(total):
+        w = DYN_WAYPOINTS[tick // DYN_TICKS_PER_WAYPOINT]
+        for k, a in enumerate(act):
+            data.ctrl[a] = w[k]
+        for _ in range(DYN_SUBSTEPS):
+            mujoco.mj_step(model, data)
+        for k, a in enumerate(act):
+            if abs(float(data.actuator_force[a])) >= forcerange[k] - 1e-6:
+                saturated[k] += 1
+        qs.append([float(data.qpos[i]) for i in adr])
+    wall = time.perf_counter() - t0
+    return {
+        "q": qs,
+        "saturated_ticks": saturated,
+        "forcerange": forcerange,
+        "integrator": int(model.opt.integrator),
+        "timestep": float(model.opt.timestep),
+        "shipped": shipped,
+        "steps_per_s": total / max(wall, 1e-9),
+    }
+
+
+def compare_dynamics(rust: dict, mj: dict) -> dict:
+    """Tick-aligned joint trajectory deviation (rad)."""
+    r = np.asarray([s["q"] for s in rust["samples"]], float)
+    m = np.asarray(mj["q"], float)
+    ticks = [s["tick"] for s in rust["samples"]]
+    if r.shape != m.shape or ticks != list(range(len(ticks))):
+        raise RuntimeError(f"trajectory grids differ: rust {r.shape} / mujoco {m.shape}")
+    d = np.abs(r - m)
+    per = DYN_TICKS_PER_WAYPOINT
+    settled_rows = [k * per + per - j for k in range(len(DYN_WAYPOINTS))
+                    for j in range(DYN_SETTLE_TAIL)]
+    ds = d[settled_rows]
+    grid30 = d[::30]
+    worst_flat = int(np.argmax(d))
+    wt, wj = divmod(worst_flat, d.shape[1])
+    return {
+        "max_rad": float(d.max()),
+        "mean_rad": float(d.mean()),
+        "per_joint_max_rad": [float(x) for x in d.max(axis=0)],
+        "per_joint_mean_rad": [float(x) for x in d.mean(axis=0)],
+        "worst": {"tick": int(wt), "joint": f"joint{wj + 1}",
+                  "rust": float(r[wt, wj]), "mujoco": float(m[wt, wj])},
+        "settled_max_rad": float(ds.max()),
+        "settled_mean_rad": float(ds.mean()),
+        "settled_per_joint_max_rad": [float(x) for x in ds.max(axis=0)],
+        "grid30_max_rad": float(grid30.max()),
+        "grid30_mean_rad": float(grid30.mean()),
+        "samples": int(d.shape[0]),
+        "verdict": "PASS" if ds.max() <= TOL_DYN_SETTLED_RAD else "DEVIATION",
+        "rust_settled_q": [[float(x) for x in r[k * per + per]]
+                           for k in range(len(DYN_WAYPOINTS))],
+        "mujoco_settled_q": [[float(x) for x in m[k * per + per]]
+                             for k in range(len(DYN_WAYPOINTS))],
+    }
+
+
+DYN_ROOT_CAUSE = [
+    "Servo formulation: OriEra/rapier ForceBased motors are soft velocity "
+    "constraints (ERP/CFM from kp/kd, i.e. an implicit spring-damper) solved "
+    "by the PGS solver with the effort as an impulse clamp; MuJoCo's position "
+    "actuator is an explicit force kp*(ctrl-q) - kv*qdot, clamped by "
+    "forcerange, with only the velocity-dependent part treated implicitly "
+    "(implicitfast). Same equilibrium, different transient damping.",
+    "Saturation: right after every waypoint step kp*error exceeds the "
+    "effort clamp (87 / 12 N*m; see mujoco.saturated_ticks per joint); a "
+    "clamped constraint impulse (rapier) and a clamped explicit force "
+    "(MuJoCo) shape the slew differently - transient deviations peak in the "
+    "first ticks after each target step, then decay to the shared "
+    "equilibrium.",
+    "Integrator / solver: rapier integrates reduced coordinates with "
+    "symplectic Euler per substep and iterative PGS constraint solving (4 "
+    "solver iterations default); MuJoCo's implicitfast factorizes the full "
+    "joint-space mass matrix (Cholesky) and, with contacts off, only solves "
+    "joint-limit constraints. f32 (rapier) vs f64 (MuJoCo).",
+    "Joint limits: joint4 starts outside its range (q=0 > -0.0698) on both "
+    "sides; rapier's limit is an ERP-softened constraint, MuJoCo's a soft "
+    "solref/solimp constraint - the first-ticks transient differs.",
+]
+
 # ---------------------------------------------------------------- main ----
 
 
@@ -682,6 +865,36 @@ def main() -> int:
     # OriEra ArmDescription reduction (informational; structural finding)
     arm = dump.get("arm_description")
 
+    # ---- v2: dynamics section (P-12, measurement only) --------------------
+    targets_path = OUT / "dyn_targets.json"
+    targets_path.write_text(json.dumps({
+        "ticks_per_waypoint": DYN_TICKS_PER_WAYPOINT,
+        "waypoints": DYN_WAYPOINTS,
+        "kp": DYN_KP, "kd": DYN_KD, "armature": DYN_ARMATURE,
+    }), encoding="utf-8")
+    log("[rust] dynamics probe (cargo run --example urdf_traj_dump, every tick)")
+    rust_traj = run_rust_traj(URDF, targets_path)
+    mj_traj = mujoco_traj(MJCF)
+    dyn = compare_dynamics(rust_traj, mj_traj)
+    dyn_meta = {
+        "waypoints": DYN_WAYPOINTS,
+        "ticks_per_waypoint": DYN_TICKS_PER_WAYPOINT,
+        "tick_dt": DYN_TICK_DT,
+        "substeps": DYN_SUBSTEPS,
+        "gains": {"kp": DYN_KP, "kd": DYN_KD, "armature": DYN_ARMATURE},
+        "gravity": DYN_GRAVITY,
+        "settle_tail_ticks": DYN_SETTLE_TAIL,
+        "tol_settled_rad": TOL_DYN_SETTLED_RAD,
+        "rule": "PASS = settled (last ticks of every waypoint) max |dq| <= tol; "
+                "transient numbers are measured and reported, never tuned",
+        "rust_probe": "cargo run --example urdf_traj_dump -p oriera-agent --features urdf "
+                      "-- panda_converted.urdf dyn_targets.json --stride 1",
+        "rust_joints": rust_traj.get("joints"),
+        "rust_steps_per_s": rust_traj.get("steps_per_s"),
+        "mujoco": {k: v for k, v in mj_traj.items() if k != "q"},
+        "root_cause": DYN_ROOT_CAUSE,
+    }
+
     n_pass = sum(1 for r in ROWS if r["status"] == "PASS")
     n_tol = sum(1 for r in ROWS if r["status"] == "TOLERANCE")
     n_fail = sum(1 for r in ROWS if r["status"] == "FAIL")
@@ -704,6 +917,17 @@ def main() -> int:
         log(f"ArmDescription reduction (informational): links={arm['links']} "
             f"limits={arm['limits']} passive_damping={arm['passive_damping']} "
             f"(7 DoF arm mapped onto 4-DoF planar stages — see doc appendix)")
+    pj = ", ".join(f"j{k + 1} {v:.4f}" for k, v in enumerate(dyn["per_joint_max_rad"]))
+    log(f"DYNAMICS (P-12, measurement only): {dyn['samples']} ticks x 7 joints, "
+        f"|dq| max={dyn['max_rad']:.4f} rad mean={dyn['mean_rad']:.4f} rad; "
+        f"settled max={dyn['settled_max_rad']:.4f} rad (tol {TOL_DYN_SETTLED_RAD}); "
+        f"30-tick grid max={dyn['grid30_max_rad']:.4f} rad")
+    log(f"  per-joint max |dq|: {pj}")
+    log(f"  worst: {dyn['worst']['joint']} @ tick {dyn['worst']['tick']} "
+        f"(rust {dyn['worst']['rust']:.4f} vs mujoco {dyn['worst']['mujoco']:.4f}); "
+        f"MuJoCo force-saturated ticks per joint: {mj_traj['saturated_ticks']}")
+    log(f"  throughput: rust probe {rust_traj.get('steps_per_s', 0):.0f} ticks/s (debug build, "
+        f"incl. JSON), mujoco {mj_traj['steps_per_s']:.0f} ticks/s")
     log("")
 
     report = {
@@ -723,7 +947,7 @@ def main() -> int:
                 "provenance": "7-joint minimal URDF converted 1:1 from the "
                               "menagerie panda_nohand.xml listed above",
             },
-            "rust_probe": "cargo run --example urdf_chain_dump -p oriera-agent --features urdf",
+            "rust_probe": "cargo run --example urdf_chain_dump -p oriera-agent --features urdf (+ urdf_traj_dump for the v2 dynamics section)",
             "fk_algorithm": "URDF FK from urdf_chain_dump output: T = prod "
                             "Trans(origin_xyz)·Rz(y)Ry(p)Rx(r)·Rot(axis,q); "
                             "rpy extrinsic XYZ; ends at fixed attachment "
@@ -744,15 +968,24 @@ def main() -> int:
         "params": ROWS,
         "fk": fk_rows,
         "arm_description_reduction": arm,
+        "dynamics": {"meta": dyn_meta, "result": dyn},
         "summary": {"pass": n_pass, "tolerance": n_tol, "fail": n_fail,
-                    "total": len(ROWS), "verdict": verdict},
+                    "total": len(ROWS), "verdict": verdict,
+                    "dynamics_verdict": dyn["verdict"],
+                    "dynamics_max_rad": dyn["max_rad"],
+                    "dynamics_mean_rad": dyn["mean_rad"],
+                    "dynamics_settled_max_rad": dyn["settled_max_rad"]},
     }
     REPORT.write_text(json.dumps(report, indent=2, ensure_ascii=False),
                       encoding="utf-8")
     log(f"[report] {REPORT}")
 
+    # Exit code = the kinematic/parameter verdict (CI gate unchanged); the
+    # dynamics section is measurement-only and rides the same line.
     log(f"SUMMARY: PASS={n_pass} TOLERANCE={n_tol} FAIL={n_fail} "
-        f"STRUCTURAL={n_struct} TOTAL={len(ROWS)} -> VERDICT: {verdict}")
+        f"STRUCTURAL={n_struct} TOTAL={len(ROWS)} -> VERDICT: {verdict} | "
+        f"DYNAMICS: max={dyn['max_rad']:.4f} rad mean={dyn['mean_rad']:.4f} rad "
+        f"settled_max={dyn['settled_max_rad']:.4f} rad -> {dyn['verdict']}")
     return 0 if n_fail == 0 else 1
 
 

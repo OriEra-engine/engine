@@ -25,6 +25,15 @@
 //! build. `effort` on the gripper feeds the
 //! [`HoldingCriterion::Contact`]-capable plate drive bookkeeping; the
 //! kinematic plates themselves stay kinematic.
+//!
+//! **M3 扩展体 (PLAN-embodied-general §四 M3「移动底盘（prismatic）」)**:
+//! [`JointSpec::kind`] adds [`JointKind::Prismatic`] next to the default
+//! [`JointKind::Revolute`]. The field is omitted from the serialized
+//! form when revolute, so every pre-M3 JSON spec (and its spec_hash /
+//! identity hash) is unchanged. A prismatic joint keeps the *same*
+//! per-joint scalar fields, read in the generalized units of its DoF
+//! (metres / newtons instead of radians / newton-metres) — see the unit
+//! table on [`JointSpec`].
 
 use crate::rigid3d::{
     ArmDescription, ARMATURE, FINGER_FRICTION, FINGER_GAP_CLOSED, FINGER_GAP_OPEN, FINGER_GAP_RATE,
@@ -147,34 +156,101 @@ pub struct LinkSpec {
     pub mesh_uri: Option<String>,
 }
 
-/// One actuated revolute joint: parent → child, anchor and axis in the
-/// parent link's frame (the child frame coincides with the parent's at
-/// home, so the axis is the same vector in both).
+/// The mechanism of one actuated joint (M3). The single DoF is either
+/// a rotation about [`JointSpec::axis`] (the legacy and default kind) or
+/// a translation along it.
+///
+/// Serialized as a bare tag (`"kind": "Prismatic"`, the PascalCase
+/// convention of the other RobotSpec enums; the URDF spelling
+/// `"prismatic"` / `"revolute"` is accepted as an alias). The revolute
+/// default is **omitted** from the serialized form, so a pre-M3 spec
+/// round-trips byte for byte and keeps its spec_hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum JointKind {
+    /// Rotation about the axis (rad). The legacy behaviour.
+    #[default]
+    #[cfg_attr(feature = "serde", serde(alias = "revolute"))]
+    Revolute,
+    /// Translation along the axis (m) — slides, linear rails, the x/z
+    /// gantry of a mobile base.
+    #[cfg_attr(feature = "serde", serde(alias = "prismatic"))]
+    Prismatic,
+}
+
+impl JointKind {
+    /// The legacy default (canonical form for hashing / serialization).
+    /// `&self` on purpose — serde's `skip_serializing_if` wants
+    /// `fn(&T) -> bool`.
+    pub fn is_revolute(&self) -> bool {
+        *self == Self::Revolute
+    }
+
+    /// Unit of the joint coordinate (`"rad"` / `"m"`) — for telemetry
+    /// labels and human reports.
+    pub fn unit(&self) -> &'static str {
+        match self {
+            Self::Revolute => "rad",
+            Self::Prismatic => "m",
+        }
+    }
+}
+
+/// One actuated joint: parent → child, anchor and axis in the parent
+/// link's frame (the child frame coincides with the parent's at home,
+/// so the axis is the same vector in both).
+///
+/// **Units follow the joint kind (M3)** — every per-joint scalar is in
+/// the generalized units of its single DoF, the URDF / MJCF convention
+/// (one gain field, no hidden conversion factor):
+///
+/// | field | [`JointKind::Revolute`] | [`JointKind::Prismatic`] |
+/// |---|---|---|
+/// | `limits` / `home` / targets / telemetry `angles` | rad | m |
+/// | `velocity_limit` / telemetry `velocities` | rad/s | m/s |
+/// | `kp` (ForceBased stiffness) | N·m/rad | N/m |
+/// | `kd` (ForceBased damping) | N·m·s/rad | N·s/m |
+/// | `effort` (motor clamp, default 80) | N·m | N |
+/// | `armature` (reflected rotor inertia / mass) | kg·m² | kg |
+/// | `damping` (passive viscous friction) | N·m·s/rad | N·s/m |
+///
+/// A gain copied verbatim from a revolute joint onto a prismatic one is
+/// therefore a *different* physical stiffness — pick prismatic gains in
+/// N/m for the carried mass (a 5 kg gantry at 400 N/m settles in
+/// ~0.5 s).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct JointSpec {
     pub name: String,
+    /// Revolute (default, omitted when serialized) or prismatic (M3).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "JointKind::is_revolute")
+    )]
+    pub kind: JointKind,
     pub parent_link: usize,
     pub child_link: usize,
     /// Joint position in the parent body's local frame.
     pub anchor: [f32; 3],
-    /// Revolute axis in the parent body's local frame (unit vector).
+    /// Joint axis in the parent body's local frame (unit vector): the
+    /// rotation axis (revolute) or the slide direction (prismatic).
     pub axis: [f32; 3],
-    /// Revolute limits (rad), `lo <= hi`.
+    /// Joint limits, `lo <= hi` (rad; prismatic: m, and finite).
     pub limits: (f32, f32),
-    /// Motor torque clamp (N·m). `None` ⇒ the legacy
-    /// [`crate::rigid3d::MOTOR_MAX_FORCE`] (80 N·m).
+    /// Motor force clamp (N·m; prismatic: N). `None` ⇒ the legacy
+    /// [`crate::rigid3d::MOTOR_MAX_FORCE`] (80).
     pub effort: Option<f32>,
-    /// Target-angle rate limit (rad/s): each tick the commanded target
-    /// may move at most `v · dt` from the previous command. `None` ⇒
-    /// unlimited (the legacy behaviour).
+    /// Target rate limit (rad/s; prismatic: m/s): each tick the
+    /// commanded target may move at most `v · dt` from the previous
+    /// command. `None` ⇒ unlimited (the legacy behaviour).
     pub velocity_limit: Option<f32>,
-    /// ForceBased PD gains (N·m/rad, N·m·s/rad).
+    /// ForceBased PD gains (N·m/rad, N·m·s/rad; prismatic: N/m, N·s/m).
     pub kp: f32,
     pub kd: f32,
-    /// Reflected rotor inertia on this DoF (kg·m²).
+    /// Reflected rotor inertia on this DoF (kg·m²; prismatic: kg).
     pub armature: f32,
-    /// Passive viscous joint friction on this DoF (N·m·s/rad).
+    /// Passive viscous joint friction on this DoF (N·m·s/rad; prismatic:
+    /// N·s/m).
     pub damping: f32,
 }
 
@@ -413,9 +489,9 @@ pub enum RobotSpecError {
     MultiParent { link: String },
     /// Joint order is not topological: its parent is not yet placed.
     NotTopological { joint: String },
-    /// Zero-length revolute axis.
+    /// Zero-length joint axis (rotation axis or slide direction).
     ZeroAxis { joint: String },
-    /// `limits.0 > limits.1`.
+    /// `limits.0 > limits.1` (or a non-finite prismatic limit).
     BadLimits { joint: String },
     /// `home` / `action_scale` length ≠ joint count (when non-empty).
     VectorLength { field: &'static str, got: usize, want: usize },
@@ -425,6 +501,11 @@ pub enum RobotSpecError {
     BadMass { what: String },
     /// Gripper attach link out of range / gap or rate inconsistent.
     BadGripper(String),
+    /// A scene fixture slab handed to
+    /// `MultibodySystem::from_robot_fixtures` is not buildable
+    /// (non-finite centre, non-positive half extent, negative friction).
+    /// M3; `index` is the slab's position in the fixture list.
+    BadFixture { index: usize, reason: String },
 }
 
 impl fmt::Display for RobotSpecError {
@@ -450,7 +531,10 @@ impl fmt::Display for RobotSpecError {
                 "joint `{joint}` is out of topological order (its parent link is not yet placed)"
             ),
             Self::ZeroAxis { joint } => write!(f, "joint `{joint}` has a zero-length axis"),
-            Self::BadLimits { joint } => write!(f, "joint `{joint}` has limits.0 > limits.1"),
+            Self::BadLimits { joint } => write!(
+                f,
+                "joint `{joint}` has limits.0 > limits.1 (prismatic limits must also be finite metres)"
+            ),
             Self::VectorLength { field, got, want } => {
                 write!(f, "`{field}` has {got} entries, expected {want} (one per joint)")
             }
@@ -460,6 +544,9 @@ impl fmt::Display for RobotSpecError {
             ),
             Self::BadMass { what } => write!(f, "{what} must be finite and positive"),
             Self::BadGripper(msg) => write!(f, "gripper: {msg}"),
+            Self::BadFixture { index, reason } => {
+                write!(f, "scene fixture #{index} is not buildable: {reason}")
+            }
         }
     }
 }
@@ -593,6 +680,16 @@ impl RobotSpec {
                 });
             }
             if j.limits.0 > j.limits.1 {
+                return Err(RobotSpecError::BadLimits {
+                    joint: j.name.clone(),
+                });
+            }
+            // A slide has no natural ±π wrap: its travel must be a real,
+            // finite interval (an unbounded rail would let the PD chase a
+            // target to infinity). Revolute limits keep the legacy check.
+            if j.kind == JointKind::Prismatic
+                && !(j.limits.0.is_finite() && j.limits.1.is_finite())
+            {
                 return Err(RobotSpecError::BadLimits {
                     joint: j.name.clone(),
                 });
@@ -764,6 +861,7 @@ impl From<&ArmDescription> for RobotSpec {
         let joint = |i: usize, parent: usize, child: usize, anchor: [f32; 3], axis: [f32; 3]| {
             JointSpec {
                 name: JOINT_NAMES[i].into(),
+                kind: JointKind::Revolute,
                 parent_link: parent,
                 child_link: child,
                 anchor,
@@ -942,6 +1040,39 @@ mod tests {
         bad_c.gripper.as_mut().unwrap().holding_criterion =
             HoldingCriterion::Contact { min_normal_force: -1.0, max_slip: 0.0 };
         assert!(matches!(bad_c.validate(), Err(RobotSpecError::BadGripper(_))));
+    }
+
+    /// M3 joint kind: the preset (and every pre-M3 spec) is revolute;
+    /// a prismatic joint validates with finite metre limits and is
+    /// refused with an unbounded / NaN travel.
+    #[test]
+    fn prismatic_kind_defaults_and_validates() {
+        assert_eq!(JointKind::default(), JointKind::Revolute);
+        assert!(JointKind::Revolute.is_revolute());
+        assert!(!JointKind::Prismatic.is_revolute());
+        assert_eq!((JointKind::Revolute.unit(), JointKind::Prismatic.unit()), ("rad", "m"));
+        let ok = RobotSpec::from(&ArmDescription::default());
+        assert!(ok.joints.iter().all(|j| j.kind == JointKind::Revolute));
+
+        let mut slide = ok.clone();
+        slide.joints[1].kind = JointKind::Prismatic;
+        slide.joints[1].limits = (-0.05, 0.10);
+        assert!(slide.validate().is_ok(), "{:?}", slide.validate());
+        for bad in [(-f32::INFINITY, 0.1), (0.0, f32::INFINITY), (f32::NAN, 0.1)] {
+            let mut s = slide.clone();
+            s.joints[1].limits = bad;
+            let err = s.validate().unwrap_err();
+            assert!(
+                matches!(err, RobotSpecError::BadLimits { .. }),
+                "prismatic limits {bad:?} must be refused, got {err}"
+            );
+            assert!(err.to_string().contains("finite"), "{err}");
+        }
+        // The legacy revolute ±∞ tolerance is untouched (no new refusal
+        // on the default path).
+        let mut rev = ok;
+        rev.joints[0].limits = (-f32::INFINITY, f32::INFINITY);
+        assert!(rev.validate().is_ok());
     }
 
     /// M0b plate frame: zero / non-finite / parallel axes are refused
