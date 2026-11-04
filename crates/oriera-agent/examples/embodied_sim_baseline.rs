@@ -71,6 +71,14 @@ struct PhaseGeom {
     ///   its corners (the Panda's ready pose has joint7 = 45°).
     sag_comp: bool,
     gap_align: Option<[f32; 3]>,
+    /// Heavy-arm grasp-depth offset (m; 0.0 for the 4-axis preset). The
+    /// Panda's TCP-centred finger blocks grip the cube's upper quarter
+    /// at the generic height (plate bottom 2.5 mm below the cube
+    /// centre) — a shallow band the cube slides out of on lift. A
+    /// −10 mm offset centres the plates on the cube (12.5 mm table
+    /// clearance kept), so the squeeze band covers the cube's mid and
+    /// the bottom edge can't lever a plate off its top.
+    grasp_depth: f32,
 }
 
 impl PhaseGeom {
@@ -103,6 +111,7 @@ impl PhaseGeom {
             plate_half: mm(f64::from(plate_half)),
             sag_comp: heavy,
             gap_align: heavy.then_some([0.0, 0.0, 1.0]),
+            grasp_depth: if heavy { -0.000 } else { 0.0 },
         }
     }
 
@@ -114,7 +123,10 @@ impl PhaseGeom {
     /// the object instead of half-buried in the table at the object's
     /// bottom edge — a buried plate wedges the cube and drags it.
     fn grasp(&self) -> f32 {
-        mm(f64::from(self.plate_drop) + 0.015 - f64::from(self.plate_half))
+        mm(
+            f64::from(self.plate_drop) + 0.015 - f64::from(self.plate_half)
+                + f64::from(self.grasp_depth),
+        )
     }
 
     /// Place over a zone whose `y` is the table-top reference: object
@@ -147,6 +159,22 @@ type TargetFn = fn(obj: [f32; 3], goal: [f32; 3], ee: [f32; 3], geom: &PhaseGeom
 struct Phase {
     gripper: f32,
     ticks: u64,
+    /// Heavy arms only: freeze the object anchor at this phase's first
+    /// tick. The live-object servo behind the closing/lift targets is a
+    /// positive feedback loop on the Panda — plate friction drags the
+    /// cube a few cm during closing and the target chases the dragged
+    /// cube, amplifying the drift (paper@v1: 40% timeouts showed the
+    /// cube shoved 2–8 cm off the grasp point). Pinning the anchor to
+    /// the closing-start measurement closes on where the cube *was* and
+    /// lifts from a fixed frame instead. 4-axis golden path: `false`.
+    pin_object: bool,
+    /// Heavy arms only: on this phase's LAST tick, re-measure the
+    /// command→measurement offset and replace the hover sag with it.
+    /// The hover calibration is one configuration sample; the steady
+    /// state offset at the *grasp* configuration is the one that decides
+    /// whether the plates land centred on the cube (measured 5–10 mm
+    /// horizontal shortfall = edge grip = slip on lift). 4-axis: `false`.
+    recal_sag: bool,
     /// Target TCP from the live object / goal / measured TCP positions.
     target: TargetFn,
 }
@@ -182,50 +210,167 @@ fn toward(p: [f32; 3], dir: [f32; 3], d: f32) -> [f32; 3] {
     [p[0] + dir[0] / n * d, p[1], p[2] + dir[2] / n * d]
 }
 
-/// pick / bin_pick / panda pick — the 8-phase grasp-carry-place script
-/// (heights = the collect baseline's, expressed through [`PhaseGeom`]
-/// so the golden preset reproduces them bit for bit and other grippers
-/// get the same plate/object geometry).
-fn pick_phases() -> Vec<Phase> {
+/// pick / bin_pick / panda pick — the grasp-carry-place script (heights
+/// = the collect baseline's, expressed through [`PhaseGeom`] so the
+/// golden preset reproduces them bit for bit and other grippers get the
+/// same plate/object geometry). `heavy` (≥6 DoF) switches on the
+/// Panda-tuned schedule: longer closing dwell, a two-stage lift and
+/// the closing-start object pin — the 4-axis golden path keeps its
+/// proven numbers byte for byte.
+fn pick_phases(heavy: bool) -> Vec<Phase> {
+    if heavy {
+        // Heavy-arm schedule (Panda paper@v1 tuning, 2026-11-04):
+        // - closing dwell 40 → 60 (plates seat + static friction builds);
+        // - an open-gripper SETTLE between descent and closing: the
+        //   descent-end recalibration (see [`Phase::recal_sag`]) steps
+        //   the command onto the measured shortfall, and that surge
+        //   must finish BEFORE the plates touch — a moving kinematic
+        //   plate wipes the cube along the table (measured +19 mm shove
+        //   during closing = close on empty);
+        // - closing pins the object anchor (see [`Phase::pin_object`]);
+        // - grasp 10 mm deeper than the generic law: the Panda's
+        //   TCP-centred finger blocks otherwise grip the cube's upper
+        //   quarter, a band the cube slides out of on lift;
+        // - the lift is staged (+5 / +11 / +20 cm) so a rate-limited
+        //   11 kg arm accelerates the held cube gently instead of
+        //   yanking it out of the plates (the old single-stage lift
+        //   slipped the cube mid-rise or dragged it off the table).
+        // Total 585 ticks < max_steps 700.
+        return vec![
+            Phase {
+                gripper: 0.0,
+                ticks: 90,
+                pin_object: false,
+                recal_sag: false,
+                target: |o, _g, _e, _m| above(o, 0.12),
+            },
+            Phase {
+                gripper: 0.0,
+                ticks: 80,
+                pin_object: false,
+                recal_sag: true,
+                target: |o, _g, _e, m| above(o, m.grasp()),
+            },
+            Phase {
+                gripper: 0.0,
+                ticks: 15,
+                pin_object: true,
+                recal_sag: false,
+                target: |o, _g, _e, m| above(o, m.grasp()),
+            },
+            Phase {
+                gripper: 1.0,
+                ticks: 80,
+                pin_object: true,
+                recal_sag: false,
+                target: |o, _g, _e, m| above(o, m.grasp()),
+            },
+            Phase {
+                gripper: 1.0,
+                ticks: 40,
+                pin_object: true,
+                recal_sag: false,
+                target: |o, _g, _e, _m| above(o, 0.05),
+            },
+            Phase {
+                gripper: 1.0,
+                ticks: 40,
+                pin_object: true,
+                recal_sag: false,
+                target: |o, _g, _e, _m| above(o, 0.11),
+            },
+            Phase {
+                gripper: 1.0,
+                ticks: 70,
+                pin_object: true,
+                recal_sag: false,
+                target: |o, _g, _e, _m| above(o, 0.20),
+            },
+            Phase {
+                gripper: 1.0,
+                ticks: 95,
+                pin_object: false,
+                recal_sag: false,
+                target: |_o, g, _e, _m| above(g, 0.20),
+            },
+            Phase {
+                gripper: 1.0,
+                ticks: 70,
+                pin_object: false,
+                recal_sag: false,
+                target: |_o, g, _e, m| above(g, m.place()),
+            },
+            Phase {
+                gripper: 0.0,
+                ticks: 35,
+                pin_object: false,
+                recal_sag: false,
+                target: |_o, g, _e, m| above(g, m.place()),
+            },
+            Phase {
+                gripper: 0.0,
+                ticks: 50,
+                pin_object: false,
+                recal_sag: false,
+                target: |_o, g, _e, _m| above(g, 0.22),
+            },
+        ];
+    }
     vec![
         Phase {
             gripper: 0.0,
             ticks: 70,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, _m| above(o, 0.12),
         },
         Phase {
             gripper: 0.0,
             ticks: 60,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, m| above(o, m.grasp()),
         },
         Phase {
             gripper: 1.0,
             ticks: 40,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, m| above(o, m.grasp()),
         },
         Phase {
             gripper: 1.0,
             ticks: 70,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, _m| above(o, 0.20),
         },
         Phase {
             gripper: 1.0,
             ticks: 95,
+            pin_object: false,
+            recal_sag: false,
             target: |_o, g, _e, _m| above(g, 0.20),
         },
         Phase {
             gripper: 1.0,
             ticks: 70,
+            pin_object: false,
+            recal_sag: false,
             target: |_o, g, _e, m| above(g, m.place()),
         },
         Phase {
             gripper: 0.0,
             ticks: 35,
+            pin_object: false,
+            recal_sag: false,
             target: |_o, g, _e, m| above(g, m.place()),
         },
         Phase {
             gripper: 0.0,
             ticks: 45,
+            pin_object: false,
+            recal_sag: false,
             target: |_o, g, _e, _m| above(g, 0.22),
         },
     ]
@@ -236,16 +381,22 @@ fn reach_phases() -> Vec<Phase> {
         Phase {
             gripper: 0.0,
             ticks: 70,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, _m| above(o, 0.12),
         },
         Phase {
             gripper: 0.0,
             ticks: 70,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, m| above(o, m.grasp()),
         },
         Phase {
             gripper: 0.0,
             ticks: 400,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, m| above(o, m.grasp()),
         },
     ]
@@ -270,31 +421,43 @@ fn stack_phases() -> Vec<Phase> {
         Phase {
             gripper: 0.0,
             ticks: 40,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, _m| [o[0] + 0.12, o[1] + 0.18, o[2]],
         },
         Phase {
             gripper: 0.0,
             ticks: 70,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, _m| above(o, 0.12),
         },
         Phase {
             gripper: 0.0,
             ticks: 60,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, m| above(o, m.stack_grasp()),
         },
         Phase {
             gripper: 1.0,
             ticks: 40,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, m| above(o, m.stack_grasp()),
         },
         Phase {
             gripper: 1.0,
             ticks: 70,
+            pin_object: false,
+            recal_sag: false,
             target: |o, g, e, _m| carry_to(o, e, lift_to(o, g, 0.12)),
         },
         Phase {
             gripper: 1.0,
             ticks: 70,
+            pin_object: false,
+            recal_sag: false,
             target: |o, g, e, _m| carry_to(o, e, above(g, 0.12)),
         },
         // Release from 1.5 cm above the stacked centre: XZ is servoed to
@@ -304,16 +467,22 @@ fn stack_phases() -> Vec<Phase> {
         Phase {
             gripper: 1.0,
             ticks: 80,
+            pin_object: false,
+            recal_sag: false,
             target: |o, g, e, _m| carry_to(o, e, above(g, 0.015)),
         },
         Phase {
             gripper: 0.0,
             ticks: 30,
+            pin_object: false,
+            recal_sag: false,
             target: |o, g, e, _m| carry_to(o, e, above(g, 0.015)),
         },
         Phase {
             gripper: 0.0,
             ticks: 45,
+            pin_object: false,
+            recal_sag: false,
             target: |_o, g, _e, _m| above(g, 0.22),
         },
     ]
@@ -329,21 +498,29 @@ fn drawer_phases() -> Vec<Phase> {
         Phase {
             gripper: 0.0,
             ticks: 70,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, _m| above(o, 0.12),
         },
         Phase {
             gripper: 0.0,
             ticks: 60,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, m| above(o, m.grasp()),
         },
         Phase {
             gripper: 1.0,
             ticks: 40,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, m| above(o, m.grasp()),
         },
         Phase {
             gripper: 1.0,
             ticks: 240,
+            pin_object: false,
+            recal_sag: false,
             target: |o, g, _e, m| {
                 // Aim 1 cm PAST the goal: with lead → 0 at the goal the block
                 // parks a millimetre short of `pull_distance` (seen 3/12).
@@ -355,20 +532,26 @@ fn drawer_phases() -> Vec<Phase> {
         Phase {
             gripper: 0.0,
             ticks: 30,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, m| above(o, m.grasp()),
         },
         Phase {
             gripper: 0.0,
             ticks: 45,
+            pin_object: false,
+            recal_sag: false,
             target: |o, _g, _e, _m| above(o, 0.22),
         },
     ]
 }
 
-fn phases_for(task_id: &str) -> Result<Vec<Phase>, String> {
+/// `heavy`（≥6 DoF）只换 pick 的排程（Panda 调参面）；reach/stack/drawer
+/// 四轴即官方口径，两种模式同一份。
+fn phases_for(task_id: &str, heavy: bool) -> Result<Vec<Phase>, String> {
     match task_id.split('@').next().unwrap_or(task_id) {
         "reach" => Ok(reach_phases()),
-        "pick_place" | "bin_pick" => Ok(pick_phases()),
+        "pick_place" | "bin_pick" => Ok(pick_phases(heavy)),
         "stack" => Ok(stack_phases()),
         "drawer" => Ok(drawer_phases()),
         other => Err(format!(
@@ -404,21 +587,31 @@ impl ObsIdx {
 /// joint targets + gripper demand. The solver warm-starts from its own
 /// previous solution (stored in `DlsIk.q`), so each tick is a short
 /// correction toward a slowly moving waypoint.
-/// Per-episode policy memory: the hover-sag calibration and the last
-/// command (rate limit).
+/// Per-episode policy memory: the hover-sag calibration, the closing
+/// phase's object pin and the last command (rate limit).
 #[derive(Debug, Clone, Default)]
 struct PolicyState {
     /// `target − measured TCP` captured on the approach hover's last tick
-    /// (zero unless `PhaseGeom::sag_comp`).
+    /// (zero unless `PhaseGeom::sag_comp`); refreshed at any
+    /// [`Phase::recal_sag`] phase's last tick.
     sag: [f32; 3],
+    /// Live object position captured on the first tick of a
+    /// [`Phase::pin_object`] phase (heavy arms): XZ/Y anchor for the
+    /// closing + lift phases, cleared on any other phase.
+    pin: Option<[f32; 3]>,
     /// Previous joint command (heavy-arm rate limit; empty = first tick).
     prev_cmd: Vec<f32>,
 }
 
-/// Heavy-arm per-tick joint command rate limit (rad/tick ≈ 4.8 rad/s at
-/// 60 Hz): a smooth path between IK solutions, so a solution that lands
-/// on another branch is walked, not jumped.
-const HEAVY_RATE_LIMIT: f32 = 0.035;
+/// Heavy-arm per-tick joint command rate limit (rad/tick ≈ 2.1 rad/s at
+/// 60 Hz with the 0.035 default): a smooth path between IK solutions,
+/// so a solution that lands on another branch is walked, not jumped.
+/// Panda tuning 2026-11-04: 0.035 → 0.026 — the loaded lift/carry was
+/// fast enough to slide the cube out of the 2 mm/side friction squeeze
+/// (paper@v1 failures lifted the arm cleanly while the cube stayed on
+/// the table); the gentler cap trades transit ticks for grip
+/// reliability (555-tick schedule vs 700-step budget still fits).
+const HEAVY_RATE_LIMIT: f32 = 0.028;
 
 #[allow(clippy::too_many_arguments)]
 fn policy(
@@ -438,20 +631,53 @@ fn policy(
     let obj = [ee[0] + obs[o], ee[1] + obs[o + 1], ee[2] + obs[o + 2]];
     let goal = [ee[0] + obs[g], ee[1] + obs[g + 1], ee[2] + obs[g + 2]];
     let mut ticks = 0u64;
-    let active = phases.iter().find(|p| {
+    let active_idx = phases.iter().position(|p| {
         ticks += p.ticks;
         step < ticks
     });
-    let (raw, demand) = match active {
+    let active = active_idx.map(|i| &phases[i]);
+    let (mut raw, demand) = match active {
         Some(p) => ((p.target)(obj, goal, ee, geom), p.gripper),
         // Past the script: hover above the goal, gripper open.
         None => (above(goal, 0.22), 0.0),
     };
+    let pin_active = geom.sag_comp && active.is_some_and(|p| p.pin_object);
+    if pin_active {
+        // Closing/lift anchor: the object position at this phase's first
+        // tick (see [`Phase::pin_object`]); obj-anchored targets are
+        // re-anchored to it by swapping the live object out of the law.
+        let p = state.pin.get_or_insert(obj);
+        raw = [
+            p[0] + (raw[0] - obj[0]),
+            p[1] + (raw[1] - obj[1]),
+            p[2] + (raw[2] - obj[2]),
+        ];
+    } else {
+        state.pin = None;
+    }
     // Hover-sag calibration (heavy arms): on the approach hover's last
     // tick, remember how far below the commanded tip the arm settled.
     let hover_end = phases.first().map_or(0, |p| p.ticks.saturating_sub(1));
     if geom.sag_comp && step == hover_end {
         state.sag = [raw[0] - ee[0], raw[1] - ee[1], raw[2] - ee[2]];
+    }
+    // Grasp-configuration recalibration (heavy arms): on a recal phase's
+    // last tick the arm has settled onto the grasp waypoint — the
+    // remaining command−measurement gap is the *configuration-specific*
+    // steady-state PD offset; fold it into the compensation so the
+    // closing phase physically lands on the pinned cube (the hover
+    // sample alone left a 5–10 mm horizontal shortfall = edge grip).
+    if geom.sag_comp && active.is_some_and(|p| p.recal_sag) && step == ticks - 1 {
+        let with_sag = [
+            raw[0] + state.sag[0],
+            raw[1] + state.sag[1],
+            raw[2] + state.sag[2],
+        ];
+        state.sag = [
+            with_sag[0] - ee[0],
+            with_sag[1] - ee[1],
+            with_sag[2] - ee[2],
+        ];
     }
     let target = if geom.sag_comp && step > hover_end {
         [
@@ -804,6 +1030,13 @@ fn run_episode_once(
                 e[0], e[1], e[2],
                 ik.last_pos_error
             );
+            if std::env::var("ORIERA_SIM_TRACE_FK").is_ok() {
+                let fk = oriera_agent::ik::fk_pose(&env.robot, &obs[..dof.min(obs.len())]);
+                eprintln!(
+                    "      fk gap=({:.3},{:.3},{:.3}) appr=({:.3},{:.3},{:.3})",
+                    fk.gap[0], fk.gap[1], fk.gap[2], fk.approach[0], fk.approach[1], fk.approach[2]
+                );
+            }
         }
         obs = out.obs;
         reward_sum += out.reward;
@@ -822,12 +1055,36 @@ fn run_episode_once(
         let c = env.cube_pos();
         let g = env.goal();
         let e = env.ee_pos();
+        // FK over the MEASURED angles: world approach/gap axes = the
+        // flange orientation the plates actually closed along (a tilted
+        // gap axis wedges the cube instead of gripping it).
+        let fk = oriera_agent::ik::fk_pose(&env.robot, &obs[..dof.min(obs.len())]);
         eprintln!(
             "seed {seed}: once={once} at_end={at_end} steps={step} hold={} obj=({:.3},{:.3},{:.3}) goal=({:.3},{:.3},{:.3}) ee=({:.3},{:.3},{:.3})",
             env.holding(),
             c[0], c[1], c[2],
             g[0], g[1], g[2],
             e[0], e[1], e[2]
+        );
+        eprintln!(
+            "  fk q=[{}]",
+            obs[..dof]
+                .iter()
+                .map(|v| format!("{v:.3}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        eprintln!(
+            "  fk approach=({:.3},{:.3},{:.3}) gap=({:.3},{:.3},{:.3}) tip=({:.3},{:.3},{:.3})",
+            fk.approach[0],
+            fk.approach[1],
+            fk.approach[2],
+            fk.gap[0],
+            fk.gap[1],
+            fk.gap[2],
+            fk.tip[0],
+            fk.tip[1],
+            fk.tip[2]
         );
     }
     let view = SuccessView { once, at_end };
@@ -847,9 +1104,9 @@ fn run_episode_once(
 fn collect(spec: &SceneSpec, protocol: &EvalProtocol) -> Result<RunResult, String> {
     let mut env = make_env(spec);
     let idx = ObsIdx::from_layout(env.obs_layout());
-    let phases = phases_for(spec.task.id.as_str())?;
-    let mut ik = DlsIk::new(&env.robot, &env.robot.home);
     let geom = PhaseGeom::from_robot(&env.robot);
+    let phases = phases_for(spec.task.id.as_str(), geom.sag_comp)?;
+    let mut ik = DlsIk::new(&env.robot, &env.robot.home);
     let mut total_steps = 0u64;
     let mut views: Vec<SuccessView> = Vec::new();
     let result = eval::evaluate(protocol, |seed, _draw| {
@@ -959,9 +1216,9 @@ fn main() {
             let seed0 = r1.rows.first().expect("at least one episode").seed;
             let mut env = make_env(&spec);
             let idx = ObsIdx::from_layout(env.obs_layout());
-            let phases = phases_for(&spec.task.id).unwrap_or_else(|e| fail(&e));
-            let mut ik = DlsIk::new(&env.robot, &env.robot.home);
             let geom = PhaseGeom::from_robot(&env.robot);
+            let phases = phases_for(&spec.task.id, geom.sag_comp).unwrap_or_else(|e| fail(&e));
+            let mut ik = DlsIk::new(&env.robot, &env.robot.home);
             let (re, _) = run_episode_once(&mut env, seed0, &phases, &mut ik, &idx, &geom)
                 .unwrap_or_else(|e| fail(&format!("sample 复核失败：{e}")));
             let row = match re {

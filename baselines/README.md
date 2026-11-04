@@ -24,11 +24,19 @@
 | 预设（spec_hash8） | method | once / at_end | Wilson 95% | 闸 | 吞吐（release） |
 |---|---|---|---|---|---|
 | tabletop-4dof-pick（c90869dc） | dls-ik | 11/12 · 11/12（91.7%） | [64.6%, 98.5%] | ≥90% **pass** | 781 steps/s |
-| panda-7dof-pick（b5535a74） | dls-ik | 9/12 · 9/12（75.0%） | [46.8%, 91.1%] | ≥75% **pass**（压线） | 435 steps/s |
+| panda-7dof-pick（b5535a74） | dls-ik | 10/12 · 10/12（83.3%） | [55.2%, 95.3%] | ≥75% **pass** | 1106 steps/s |
 | stack-4dof（ffc96325） | dls-ik | 11/12 · 11/12（91.7%） | [64.6%, 98.5%] | ≥75% **pass** | 1146 steps/s |
 | bin-pick-4dof（14fc9bf8） | dls-ik | 12/12 · 12/12（100%） | [75.8%, 100%] | ≥60% **pass** | 564 steps/s |
 | drawer-4dof（ef18ac07） | dls-ik | 10/12 · 10/12（83.3%） | [55.2%, 95.3%] | ≥60% **pass** | 627 steps/s |
 | tabletop-4dof-pick（c90869dc） | scripted-phases（collect，金标路） | 11/12（91.7%） | [64.6%, 98.5%] | ≥90% pass | 2575 steps/s（12 集 state hash = pre-m0a 锚逐个相等） |
+| panda-7dof-pick（b5535a74） | dls-ik · **paper@v1** | 80/100 · 80/100（80.0%） | [71.1%, 86.7%] | ≥75% 对应口径 **pass** | 1932 steps/s |
+
+Panda paper 口径（P1-B2，2026-11-04）：相位机 ≥6 DoF 专用机制调参后（悬停沉降标定 +
+下探末重标定 + 闭爪目标钉住 + 三级抬升 + 限幅 0.028 rad/tick），paper@v1 100 集
+60% → **80%**（种子带 1000..，`--verify-determinism sample` 首集逐位一致）；
+金标桌面与其余 4 轴预设的 course@v1 参考数逐位复现不变（heavy 路只对 ≥6 DoF 生效，
+spec_hash 未变 = 无新预设文件）。失败集中拼凑：方块落在近基区（x < 0.19）的折叠臂位，
+夹爪 1.7 cm 指块摩擦挤压余量不足——下一个调参假设是 preset 的抓取带/指块几何（新文件）。
 
 once 与 at_end 相同是因为五预设都走 `terminate_on_success = true`（首次满足即终止）；`--set task.params.terminate_on_success=false` 跑满 700 步才会分开。
 

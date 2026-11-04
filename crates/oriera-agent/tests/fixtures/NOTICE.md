@@ -9,6 +9,9 @@ exactly what it was derived from.
 |---|---|---|---|
 | `panda7.urdf` | Franka Emika Panda 7-DoF, "converted reference" | `out/mjcf-crosscheck/panda_converted.urdf` — itself the 1:1 conversion (`scripts/mjcf_crosscheck.py`) of `mujoco_menagerie/franka_emika_panda/panda_nohand.xml`, [google-deepmind/mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie) rev `b065505` | Apache-2.0 (menagerie); the Franka model data in menagerie is published by DeepMind under Apache-2.0 |
 | `gripper2f.urdf` | Generic external two-finger parallel gripper | Hand-written for this repo; dimensions *inspired by* the Franka Hand (finger slide 0..0.04 m, 17×8×17 mm pads) but no menagerie/Franka content is copied | Repository licence |
+| `six_axis_gripper.urdf` | Synthetic 6-DoF arm + integrated mimic two-finger gripper + one `<mesh>` link (P1-B1 `--urdf-robot` CLI acceptance; main axis along URDF +X per the documented base-orientation rule, `gap_closed` = 0.046 m = the tabletop preset) | Hand-written for this repo (PLAN-embodied-v3 §二 #12); pattern follows the synthetic `out/_review-user/pugc/arm6_gripper.urdf` review artifact, no vendor content | Repository licence |
+| `six_axis_gap_touch.urdf` | The gap-touch twin of `six_axis_gripper.urdf` (finger pads lose the 23 mm offset → `gap_closed` = 0): proves the PUGC-2 human-language warning fires | Generated from `six_axis_gripper.urdf` (pad offset removed), same authoring/licence | Repository licence |
+| `meshes/link5.stl` | ASCII STL cube (12 facets, AABB 0.06 m centred on link5's body) consumed through `package://sixaxis_meshes/link5.stl` + `--mesh-base` | Generated for this repo by a hand-written 12-triangle script | Repository licence |
 | `NOTICE.md` | This file | — | — |
 
 ## panda7.urdf — deltas against the crosscheck URDF

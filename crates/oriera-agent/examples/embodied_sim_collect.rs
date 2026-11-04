@@ -66,9 +66,32 @@
 //! `--export parquet`: parquet stays on the pyarrow converter
 //! (`scripts/jsonl_to_lerobot_v21.py`), Rust adds no parquet crate.
 //!
+//! **P1-B1 (PLAN-embodied-v3 §二 #12，PUGC 第一公里) — `--urdf-robot`
+//! 全链 CLI**：自家 URDF 一条命令进采集。`--urdf-robot <file.urdf>` 走
+//! `UrdfReport::to_robot_spec` 全链导入（N 轴串联链 + mimic/prismatic
+//! 两指夹爪 + mesh→凸包/包络诚实降级）并**替换**所选 preset（`--spec`/
+//! `--task`，默认金标）的 robot——scene/task/DR 沿用 preset，组合成 v2
+//! spec 后走同一 evaluate 管线（spec_hash 自然不同 = 新实验）。
+//! `--urdf-gripper <file.urdf>` 外部两指夹爪挂末体法兰；
+//! `--mesh-base <dir>` / `--mesh-package <name=dir>` 透传
+//! RobotSpecOpts（STL→凸包点集）；`--urdf-mount <x,y,z>` 落地安装位
+//! （默认 = 被替换 preset 的 base，即桌沿）；`--dump-robot-spec <file>`
+//! 导出解析后的 RobotSpec JSON（含 skipped 降级清单与坑位警告）。
+//! 与旧 `--urdf`（4 轴投影）互斥，同给即人话报错。
+//!
+//! 采集策略随 robot 走：4 轴预设臂保持解析 IK 脚本（金标路径逐位不动）；
+//! `--urdf-robot` 导入的构型没有标定好的解析 IK——自动切换「settle+
+//! 跟踪」smoke 策略（home 稳定 + 关节小行程正弦跟踪 + 夹爪开合），并
+//! 把 course@v1 的 90% 硬闸自动降为 report（除非显式 `--gate`）——
+//! smoke 不解决问题，成功率如实报告，跑的是导入链端到端的采集管线。
+//! 坑位治理（用户角色集群 PUGC-2/3/4）：gap_closed≈0 / home=URDF 零位
+//! 打人话警告（非致命），base 朝向（URDF 主轴须朝 OriEra +X，导入只
+//! 平移）固定提示 + docs/URDF-IMPORT.md 写明。
+//!
 //! Run:
 //! `cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- --task pick_place --episodes 12 --cam`
 //! `… -- --spec crates/oriera-agent/specs/tabletop-4dof-pick.json --episodes 12`
+//! `… -- --urdf-robot arm.urdf --mesh-base meshes/ --dump-robot-spec robot.json --episodes 2`
 //! Args: `--task reach|pick_place|push` · `--spec FILE` · `--set a.b=v`
 //!       `--episodes N` · `--seed0 S` / `--seed N` · `--cam` / `--no-cam`
 //!       `--cameras-from-spec` (M3-A: render spec.scene.cameras —
@@ -77,6 +100,9 @@
 //!       `--migrate FILE` · `--validate FILE` · `--urdf FILE` · `--protocol ID`
 //!       `--gate hard|report` · `--verify-determinism full|sample|off`
 //!       `--fingerprints FILE` · `--force`
+//!       `--urdf-robot FILE` · `--urdf-gripper FILE` · `--mesh-base DIR`
+//!       `--mesh-package name=dir` · `--urdf-mount x,y,z`
+//!       `--dump-robot-spec FILE` (P1-B1 URDF full-chain family)
 //! Output: `<out>/lerobot-v21/` [+ `<out>/lerobot-v30/`] [+ `<out>/npz/`] +
 //!         `<out>/eval_report.json` + `<out>/run_manifest.json`
 
@@ -202,6 +228,74 @@ fn push_phases() -> Vec<Phase> {
             target: |_o, g| above(g, 0.20),
         },
     ]
+}
+
+/// 采集策略（P1-B1）：二选一，`run_episode_once` 只对策略说话。
+/// - [`Policy::Scripted`]：解析 IK 脚本基线——只认 4 轴预设臂几何
+///   （金标路径，逐位不动）。
+/// - [`Policy::Smoke`]：`--urdf-robot` 导入构型的「settle+跟踪」smoke——
+///   前段稳在 home（settle），之后所有关节绕 home 做小行程正弦跟踪 +
+///   夹爪周期开合。它不解决问题（成功率如实报告、闸自动降 report），
+///   跑的是 N 轴导入链端到端的采集管线（env/数据集/指纹/续跑）。
+enum Policy {
+    Scripted {
+        arm: IkArm,
+        phases: Vec<Phase>,
+    },
+    Smoke {
+        home: Vec<f32>,
+        limits: Vec<(f32, f32)>,
+        dof: usize,
+    },
+}
+
+impl Policy {
+    /// 按 env 与入口选策略：`--urdf-robot` 导入的 robot 一律 smoke
+    /// （解析 IK 的几何假设——4 轴、锚沿 +X、tcp 沿 +X——对任意 URDF
+    /// 不成立，跑出来的数据是假的；宁可诚实地跑管线冒烟）。否则走
+    /// 原样脚本基线（相位机按 env.task 选，金标路径逐位不动）。
+    fn for_env(env: &TableTopEnv, urdf_import: bool) -> Result<Self, String> {
+        if urdf_import {
+            return Ok(Self::Smoke {
+                home: env.robot.home.clone(),
+                limits: env.robot.joints.iter().map(|j| j.limits).collect(),
+                dof: env.robot.dof(),
+            });
+        }
+        let phases = match env.task {
+            TaskKind::Reach => reach_phases(),
+            TaskKind::PickPlace => pick_place_phases(),
+            TaskKind::Push => push_phases(),
+        };
+        Ok(Self::Scripted {
+            arm: IkArm::from_robot(&env.robot)?,
+            phases,
+        })
+    }
+
+    /// 本步动作（关节目标 + 末位夹爪）。
+    fn action(&self, obs: &[f32], idx: &ObsIdx, step: u64) -> Vec<f32> {
+        match self {
+            Policy::Scripted { arm, phases } => policy(obs, idx, phases, step, arm).to_vec(),
+            Policy::Smoke { home, limits, dof } => {
+                // settle：前 120 tick 稳在 home；之后绕 home 的小行程
+                // 正弦跟踪（相位随关节错开），夹爪每 120 tick 开/合一次。
+                let mut a: Vec<f32> = home.clone();
+                if step >= 120 {
+                    let t = (step - 120) as f32;
+                    for (i, v) in a.iter_mut().enumerate() {
+                        *v += 0.12 * (std::f32::consts::TAU * t / 240.0 + i as f32 * 0.7).sin();
+                    }
+                }
+                for (v, lim) in a.iter_mut().zip(limits) {
+                    *v = v.clamp(lim.0, lim.1);
+                }
+                a.truncate(*dof);
+                a.push(if (step / 120) & 1 == 0 { 0.0 } else { 1.0 });
+                a
+            }
+        }
+    }
 }
 
 /// The arm geometry the analytic IK needs, read off the RobotSpec
@@ -354,6 +448,24 @@ struct Args {
     export_npz: bool,
     /// U1: URDF→SceneSpec 导出路径（设置即只做导入不采集）。
     urdf: Option<String>,
+    /// P1-B1 `--urdf-robot FILE`：RobotSpec 全链导入（to_robot_spec），
+    /// 替换所选 preset 的 robot；scene/task/DR 沿用 preset。
+    urdf_robot: Option<String>,
+    /// P1-B1 `--urdf-gripper FILE`：外部两指夹爪 URDF（可选拳手，
+    /// to_robot_spec_with_gripper 挂末体法兰）。
+    urdf_gripper: Option<String>,
+    /// P1-B1 `--mesh-base DIR`：STL mesh 解析根目录（透传
+    /// RobotSpecOpts.mesh_base_dir；STL→凸包点集）。
+    mesh_base: Option<String>,
+    /// P1-B1 `--mesh-package name=dir`（可多次）：`package://name/…`
+    /// 的包根表。
+    mesh_packages: Vec<String>,
+    /// P1-B1 `--urdf-mount x,y,z`：根 link 落地安装位（缺省 = 被替换
+    /// preset 的 robot.base，即桌沿）。
+    urdf_mount: Option<[f32; 3]>,
+    /// P1-B1 `--dump-robot-spec FILE`：导出解析后的 RobotSpec JSON
+    /// （含 skipped 降级清单与坑位警告）。需与 --urdf-robot 同用。
+    dump_robot_spec: Option<String>,
     /// `--migrate FILE`: v1 → v2 spec 落盘（不采集）。
     migrate: Option<String>,
     /// `--validate FILE`: 只校验 + 打印 spec_hash（不采集）。
@@ -384,7 +496,7 @@ struct Args {
     out_given: bool,
 }
 
-const USAGE: &str = "--task/--phrase/--spec/--set/--episodes/--seed0/--seed/--cam/--no-cam/--cameras-from-spec/--out/--runs-root/--lerobot-v3/--export/--migrate/--validate/--urdf/--protocol/--gate/--verify-determinism/--fingerprints/--sanitize/--force/--help（--help 看分节说明）";
+const USAGE: &str = "--task/--phrase/--spec/--set/--episodes/--seed0/--seed/--cam/--no-cam/--cameras-from-spec/--out/--runs-root/--lerobot-v3/--export/--migrate/--validate/--urdf/--urdf-robot/--urdf-gripper/--mesh-base/--mesh-package/--urdf-mount/--dump-robot-spec/--protocol/--gate/--verify-determinism/--fingerprints/--sanitize/--force/--help（--help 看分节说明）";
 
 /// `--export FMT[,FMT]` → whether npz was requested. `parquet` is
 /// refused with the converter route (no parquet crate in Rust — the
@@ -421,7 +533,23 @@ fn print_help() -> ! {
   --phrase \"...\"                  自然语言短语 → 任务（最小 NLU 桥）
   --spec FILE                     oriera.scene/2 JSON（v1 自动迁移；extends 对 specs/official/ 解析）
   --set a.b=v                     覆盖 spec 字段（进入 spec_hash）
-  --urdf FILE                     URDF → SceneSpec 落盘（不采集）
+  --urdf FILE                     URDF → SceneSpec 落盘（不采集；旧 4 轴投影，仅兼容保留）
+
+自家 URDF 全链采集（P1-B1——N 轴 + mimic 夹爪 + mesh，替换 preset 的 robot）
+  --urdf-robot FILE               RobotSpec 全链导入并采集（与 --urdf 互斥）；
+                                  scene/task/DR 沿用所选 preset（默认金标），spec_hash 即新实验
+  --urdf-gripper FILE             可选：外部两指夹爪 URDF（mimic/prismatic 对）挂臂末体法兰
+  --mesh-base DIR                 STL mesh 解析根目录（<collision><mesh> STL→凸包点集；不给则包络降级）
+  --mesh-package name=dir         package://name/… 的包根（可多次）
+  --urdf-mount x,y,z              根 link 落地安装位（缺省 = 被替换 preset 的 base，即桌沿）
+  --dump-robot-spec FILE          导出解析后的 RobotSpec JSON（含 skipped 降级清单 + 坑位警告）
+  （坑位警告，非致命：① 夹爪 gap_closed≈0 → 指板闭合位相触，运行时会挤飞方块，
+   参考 preset 的 0.046，--set robot.gripper.gap_closed=0.046 覆盖；
+   ② home 全零 = URDF 零位（可能竖直/奇异），--set \"robot.home=[q1,q2,...]\" 覆盖；
+   ③ base 朝向：URDF 主轴须朝 OriEra +X——导入只平移不旋转，详见 docs/URDF-IMPORT.md）
+  （采集策略：URDF 导入构型自动走 settle+跟踪 smoke——不解决问题、成功率如实报告，
+   course@v1 硬闸自动降为 report；显式 --gate 可覆盖）
+
   --migrate FILE / --validate FILE  spec v1→v2 落盘 / 只校验并打印 hash
 
 协议与预算
@@ -475,6 +603,12 @@ fn parse_args() -> Args {
         lerobot_v3: false,
         export_npz: false,
         urdf: None,
+        urdf_robot: None,
+        urdf_gripper: None,
+        mesh_base: None,
+        mesh_packages: Vec::new(),
+        urdf_mount: None,
+        dump_robot_spec: None,
         migrate: None,
         validate: None,
         protocol: None,
@@ -512,6 +646,63 @@ fn parse_args() -> Args {
             ),
             "--urdf" => {
                 a.urdf = Some(
+                    it.next()
+                        .unwrap_or_else(|| fail(&format!("{arg} 需要一个文件路径"))),
+                )
+            }
+            // P1-B1：自家 URDF 全链族。
+            "--urdf-robot" => {
+                a.urdf_robot = Some(
+                    it.next()
+                        .unwrap_or_else(|| fail(&format!("{arg} 需要一个文件路径"))),
+                )
+            }
+            "--urdf-gripper" => {
+                a.urdf_gripper = Some(
+                    it.next()
+                        .unwrap_or_else(|| fail(&format!("{arg} 需要一个文件路径"))),
+                )
+            }
+            "--mesh-base" => {
+                a.mesh_base = Some(
+                    it.next()
+                        .unwrap_or_else(|| fail(&format!("{arg} 需要一个目录"))),
+                )
+            }
+            "--mesh-package" => {
+                let v = it
+                    .next()
+                    .unwrap_or_else(|| fail(&format!("{arg} 需要 <包名>=<目录> 形式")));
+                if !v.contains('=') {
+                    fail(&format!(
+                        "--mesh-package {v:?}：须为 <包名>=<目录> 形式（package://<包名>/… 的包根）"
+                    ));
+                }
+                a.mesh_packages.push(v);
+            }
+            "--urdf-mount" => {
+                let v = it
+                    .next()
+                    .unwrap_or_else(|| fail(&format!("{arg} 需要 x,y,z（米）")));
+                let m: Vec<f32> = v
+                    .split(',')
+                    .map(|s| {
+                        s.trim().parse().unwrap_or_else(|_| {
+                            fail(&format!(
+                                "--urdf-mount {v:?}：须为三个逗号分隔的数（例：0.02,0.5,0）"
+                            ))
+                        })
+                    })
+                    .collect();
+                if m.len() != 3 {
+                    fail(&format!(
+                        "--urdf-mount {v:?}：须为三个逗号分隔的数（例：0.02,0.5,0）"
+                    ));
+                }
+                a.urdf_mount = Some([m[0], m[1], m[2]]);
+            }
+            "--dump-robot-spec" => {
+                a.dump_robot_spec = Some(
                     it.next()
                         .unwrap_or_else(|| fail(&format!("{arg} 需要一个文件路径"))),
                 )
@@ -629,8 +820,10 @@ fn parse_args() -> Args {
 /// Resolve the experiment spec: `--spec` (v2, or v1 auto-migrated,
 /// `extends` overlays resolved against `specs/official/`) + `--set`
 /// overrides, else the preset of `--task` (default pick_place). Both
-/// roads yield a validated [`SceneSpec`] — one code path.
-fn resolve_spec(args: &Args) -> SceneSpec {
+/// roads yield a validated [`SceneSpec`] — one code path. `sets` 参数
+/// 供 `--urdf-robot` 传空：robot.* 的覆盖要等 URDF robot 替换后才有
+/// 意义（6 轴的 `robot.home` 配 4 关节 preset 必炸），见 main。
+fn resolve_spec_with(args: &Args, sets: &[String]) -> SceneSpec {
     let mut spec = match &args.spec {
         Some(path) => {
             let loaded = SceneSpec::load_file(std::path::Path::new(path))
@@ -646,11 +839,15 @@ fn resolve_spec(args: &Args) -> SceneSpec {
         }
         None => SceneSpec::preset(args.task.unwrap_or(TaskKind::PickPlace)),
     };
-    spec.apply_sets(&args.sets)
+    spec.apply_sets(sets)
         .unwrap_or_else(|e| fail(&format!("--set 失败：{e}")));
     spec.validate()
         .unwrap_or_else(|e| fail(&format!("spec 校验失败：{e}")));
     spec
+}
+
+fn resolve_spec(args: &Args) -> SceneSpec {
+    resolve_spec_with(args, &args.sets)
 }
 
 /// Human-readable fatal error (no backtrace noise for students).
@@ -1108,14 +1305,14 @@ fn declare_camera_tracks(
 }
 
 /// One episode, exactly as the pre-M0b loop drove it: env.reset(seed),
-/// the phase script, dataset rows+frames, the degenerate check
-/// (spawn-in-goal ends on step ~1 → discard, redraw). When `ds` is
-/// `None` the episode runs "dry" (the `sample` determinism re-check).
+/// the policy (P1-B1: scripted analytic-IK phases or the settle+track
+/// smoke), dataset rows+frames, the degenerate check (spawn-in-goal
+/// ends on step ~1 → discard, redraw). When `ds` is `None` the episode
+/// runs "dry" (the `sample` determinism re-check).
 fn run_episode_once(
     env: &mut TableTopEnv,
     seed: u64,
-    phases: &[Phase],
-    arm: &IkArm,
+    strat: &Policy,
     idx: &ObsIdx,
     mut ds: Option<&mut LeRobotV21>,
 ) -> Result<EpisodeOutcome, String> {
@@ -1128,7 +1325,7 @@ fn run_episode_once(
     let mut reward_sum = 0.0f32;
     let max_steps = env.spec().max_steps;
     while step < max_steps && !terminated {
-        let action = policy(&obs, idx, phases, step, arm);
+        let action = strat.action(&obs, idx, step);
         // env.step FIRST — it captures frame t for state_t — then
         // row t = (state_t, action_t), then drain. Frame count ==
         // row count by construction (off-by-one, round-2 review).
@@ -1194,7 +1391,9 @@ fn collect(
     mut io: Option<&mut CollectIo>,
 ) -> Result<RunResult, String> {
     let mut env = make_env_with_cameras(spec, args)?;
-    let arm = IkArm::from_robot(&env.robot)?;
+    // P1-B1：策略随 robot 走——`--urdf-robot` 导入构型 = settle+跟踪
+    // smoke；预设 4 轴臂 = 解析 IK 脚本（金标路径逐位不动）。
+    let strat = Policy::for_env(&env, args.urdf_robot.is_some())?;
     let idx = ObsIdx::from_layout(env.obs_layout());
     // Dataset metadata derives from the env's layouts (P-8): dim names
     // are joint names, modality groups are layout slices, robot_type is
@@ -1206,11 +1405,6 @@ fn collect(
         env.action_layout(),
     );
     declare_camera_tracks(&mut ds, &env, spec, args)?;
-    let phases = match env.task {
-        TaskKind::Reach => reach_phases(),
-        TaskKind::PickPlace => pick_place_phases(),
-        TaskKind::Push => push_phases(),
-    };
     // 身份快照只算一次（git_provenance 会 shell out git，spec_hash 要
     // 全量序列化 spec——都不该逐集重算）。
     if let Some(io) = io.as_deref_mut() {
@@ -1247,7 +1441,7 @@ fn collect(
                 return Ok(EpisodeOutcome::Done(row.clone()));
             }
         }
-        let out = run_episode_once(&mut env, seed, &phases, &arm, &idx, Some(&mut ds))?;
+        let out = run_episode_once(&mut env, seed, &strat, &idx, Some(&mut ds))?;
         if let EpisodeOutcome::Done(row) = &out {
             total_steps += row.steps;
             if std::env::var("ORIERA_SIM_DEBUG").is_ok() {
@@ -1321,6 +1515,147 @@ fn import_urdf(args: &Args) {
     );
 }
 
+/// P1-B1：`--urdf-robot` 全链导入并**替换** spec 的 robot（scene/task/DR
+/// 沿用所选 preset）——组合成 v2 spec 后走同一 evaluate 管线。坑位治理
+/// （用户角色集群 PUGC-2/3/4 实测三坑）：gap_closed≈0 / home=URDF 零位
+/// 人话警告（非致命）、base 朝向固定提示（导入只平移不旋转）。
+/// `--dump-robot-spec` 在此导出解析后的 RobotSpec JSON（含 skipped 与
+/// 警告——`examples/pugc_import.rs` 原型的 skipped 打印格式并入这里，
+/// 该原型已删）。
+fn apply_urdf_robot(spec: &mut SceneSpec, args: &Args) {
+    let path = args.urdf_robot.clone().unwrap_or_default();
+    let xml = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        fail(&format!(
+            "读 URDF {path} 失败：{e}
+常见原因：路径拼错 / 文件不在运行目录——cargo 从工作区根运行，用相对工作区根的路径或绝对路径重试"
+        ))
+    });
+    let rep = oriera_agent::urdf::UrdfReport::parse(&xml)
+        .unwrap_or_else(|e| fail(&format!("URDF 解析失败（{path}）：{e}")));
+    let mut opts = oriera_agent::urdf::RobotSpecOpts {
+        // 落地安装位：默认 = 被替换 preset 的 base（桌沿）——URDF 臂落在
+        // 原臂的位置，场景几何（桌/方块/目标）原样适用。
+        mount: args.urdf_mount.unwrap_or(spec.robot.base),
+        // 增益/armature 缺省随所选 preset（preset 调过就跟着调）；URDF
+        // 1.0 没有这个语义——这是包装层旋钮，`--set robot.joints.0.kp=…`
+        // 可逐关节覆盖。
+        default_kp: spec.robot.joints.first().map(|j| j.kp).unwrap_or(60.0),
+        default_kd: spec.robot.joints.first().map(|j| j.kd).unwrap_or(4.0),
+        default_armature: spec
+            .robot
+            .joints
+            .first()
+            .map(|j| j.armature)
+            .unwrap_or(0.02),
+        // 引擎 tick 频率：手指 <limit velocity>（m/s）→ gap_rate 的换算基准。
+        tick_hz: (1.0 / spec.dt).round().max(1.0),
+        mesh_base_dir: args.mesh_base.as_ref().map(std::path::PathBuf::from),
+        ..oriera_agent::urdf::RobotSpecOpts::default()
+    };
+    for kv in &args.mesh_packages {
+        let (name, dir) = kv.split_once('=').expect("parse_args 已校验 name=dir 形式");
+        opts.mesh_packages.insert(
+            name.trim().to_string(),
+            std::path::PathBuf::from(dir.trim()),
+        );
+    }
+    let robot = match &args.urdf_gripper {
+        Some(gp) => {
+            let gxml = std::fs::read_to_string(gp).unwrap_or_else(|e| {
+                fail(&format!(
+                    "读夹爪 URDF {gp} 失败：{e}
+常见原因：路径拼错 / 文件不在运行目录"
+                ))
+            });
+            let grep = oriera_agent::urdf::UrdfReport::parse(&gxml)
+                .unwrap_or_else(|e| fail(&format!("夹爪 URDF 解析失败（{gp}）：{e}")));
+            rep.to_robot_spec_with_gripper(&grep, &mut opts)
+        }
+        None => rep.to_robot_spec(&mut opts),
+    }
+    .unwrap_or_else(|e| {
+        fail(&format!(
+            "URDF → RobotSpec 全链导入失败（{path}）：{e}
+（floating/planar 关节、环、断链都不在范围——人话就在上面那行；单链臂 + 两指夹爪才进得了采集）"
+        ))
+    });
+    robot
+        .validate()
+        .unwrap_or_else(|e| fail(&format!("导入的 RobotSpec 校验失败：{e}")));
+    println!(
+        "  · base 朝向：URDF 主轴（链伸展方向）须朝 OriEra +X——导入只平移（--urdf-mount）不旋转；\
+         朝向不对请先改 URDF 根（详见 docs/URDF-IMPORT.md「全链 CLI」节）"
+    );
+    // skipped 降级/缺省报告（pugc_import 原型的打印格式并入此处）。
+    println!(
+        "  · 导入降级/缺省报告（{} 条）——全文见 --dump-robot-spec 落盘",
+        opts.skipped.len()
+    );
+    for s in &opts.skipped {
+        println!("    · {s}");
+    }
+    spec.robot = robot;
+    // 出处进 notes（meta 不进 spec_hash——身份仍由 robot/scene/task 决定）。
+    let provenance = format!("--urdf-robot 全链导入：{path}");
+    spec.meta.notes = Some(match spec.meta.notes.take() {
+        Some(n) => format!("{n}；{provenance}"),
+        None => provenance,
+    });
+    // `--set` 在 robot 替换之后施加——`robot.home=[…]` /
+    // `robot.gripper.gap_closed=…` 这些坑位覆盖只对 URDF robot 有意义；
+    // 下面的坑位警告与 dump 因此都反映**最终状态**（覆盖后 home 不再
+    // 全零 → 不再触警）。
+    spec.apply_sets(&args.sets)
+        .unwrap_or_else(|e| fail(&format!("--set 失败：{e}")));
+    spec.validate().unwrap_or_else(|e| {
+        fail(&format!(
+            "组合后的 spec 校验失败（preset + URDF robot + --set）：{e}"
+        ))
+    });
+    // 坑位警告（非致命——打印后照跑；对最终状态判定）。
+    let warnings = oriera_agent::urdf::pitfall_warnings(&spec.robot);
+    for w in &warnings {
+        println!("  ⚠ {w}");
+    }
+    if let Some(dump) = &args.dump_robot_spec {
+        let v = serde_json::json!({
+            "robot": serde_json::to_value(&spec.robot)
+                .map_err(|e| format!("RobotSpec 序列化失败：{e}"))
+                .unwrap_or_else(|e| fail(&e)),
+            "skipped": opts.skipped,
+            "warnings": warnings,
+        });
+        let json = serde_json::to_string_pretty(&v)
+            .map_err(|e| format!("dump 序列化失败：{e}"))
+            .unwrap_or_else(|e| fail(&e));
+        if let Some(parent) = std::path::Path::new(dump).parent() {
+            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                fail(&format!(
+                    "--dump-robot-spec 目录创建失败（{parent:?}）：{e}"
+                ))
+            });
+        }
+        std::fs::write(dump, format!("{json}\n")).unwrap_or_else(|e| {
+            fail(&format!(
+                "--dump-robot-spec 写入失败（{dump}）：{e}
+常见原因：目录不存在 / 权限不足——先建目录再重跑"
+            ))
+        });
+        println!(
+            "  ✓ RobotSpec → {dump}（{} / {} DoF，skipped {} 条，警告 {} 条）",
+            spec.robot.name,
+            spec.robot.dof(),
+            opts.skipped.len(),
+            warnings.len()
+        );
+    }
+    if args.spec.is_some() {
+        println!(
+            "  · 提示：--spec 的 robot 字段已被 --urdf-robot 的导入结果替换（设计语义：robot = URDF 全链，scene/task/DR 仍沿用该 spec）"
+        );
+    }
+}
+
 /// `--migrate FILE`: load (v1 or v2), write the v2 JSON next to `--out`.
 fn migrate_spec(args: &Args) {
     let path = args.migrate.clone().unwrap_or_default();
@@ -1372,6 +1707,17 @@ fn validate_spec(args: &Args) {
 
 fn main() {
     let args = parse_args();
+    // P1-B1 互斥治理（PUGC 实测 confusion 面）：两个「定义 robot」的
+    // 入口同给 = 人话报错，不静默择一。（必须在 --urdf 派发之前——
+    // 否则旧入口先 return，互斥检查永远走不到。）
+    if args.urdf_robot.is_some() && args.urdf.is_some() {
+        fail(
+            "--urdf-robot 与 --urdf 都定义了 robot，二者互斥：
+  --urdf-robot FILE   RobotSpec 全链导入（N 轴串联链 + mimic 夹爪 + mesh）——自家臂用这个；
+                      采集照常进行，scene/task/DR 沿用 preset
+  --urdf FILE         旧 4 轴投影入口（first_revolute_chain(4)，只落盘不采集）——仅为兼容保留",
+        );
+    }
     if args.urdf.is_some() {
         import_urdf(&args);
         return;
@@ -1384,8 +1730,39 @@ fn main() {
         validate_spec(&args);
         return;
     }
-    let spec = resolve_spec(&args);
+    if args.dump_robot_spec.is_some() && args.urdf_robot.is_none() {
+        fail(
+            "--dump-robot-spec 需要与 --urdf-robot 同用（它导出的是 URDF 全链导入后的 RobotSpec；
+单独要 preset robot 的 JSON 可从 --out 落盘的 meta/oriera_spec.json 里取 robot 字段）",
+        );
+    }
+    // P1-B1：`--urdf-robot` 时 robot.* 的 `--set` 必须等 robot 替换后
+    // 再施加（6 轴的 `robot.home=[...]` 配 4 关节 preset 必炸）——施加
+    // 在 apply_urdf_robot 内部完成（警告/dump 反映最终状态）；默认路径
+    // 照旧在 resolve_spec 里施加，逐位不动。
+    let spec = if args.urdf_robot.is_some() {
+        let mut s = resolve_spec_with(&args, &[]);
+        apply_urdf_robot(&mut s, &args);
+        s
+    } else {
+        resolve_spec(&args)
+    };
     let spec_hash = spec.spec_hash_hex();
+    // P1-B1：URDF 导入构型没有标定的解析 IK——smoke 策略 + 硬闸自动降
+    // report（smoke 不解决问题；成功率如实报告，不该被 90% 闸拦住管线
+    // 冒烟）。显式 --gate 仍尊重用户选择。
+    let smoke = args.urdf_robot.is_some();
+    let gate_override = args.gate.or({
+        if smoke {
+            println!(
+                "  · 闸：URDF 导入构型走 settle+跟踪 smoke（解析 IK 脚本基线只认 4 轴预设臂）——\
+                 course@v1 的 90% 硬闸自动降为 report（成功率如实报告，不拦管线冒烟；显式 --gate 可覆盖）"
+            );
+            Some(Gate::Report)
+        } else {
+            None
+        }
+    });
 
     // The named protocol (P-1): course@v1 is the default (= the legacy
     // classroom contract), paper@v1 records and never gates. `--seed`
@@ -1396,7 +1773,7 @@ fn main() {
         args.seed0,
     )
     .unwrap_or_else(|e| fail(&e))
-    .with_gate(args.gate)
+    .with_gate(gate_override)
     .unwrap_or_else(|e| fail(&e));
 
     // Runs layout (P-5): --runs-root runs/ → runs/<hash8>/<method>/<seed>/
@@ -1412,7 +1789,7 @@ fn main() {
     let out: std::path::PathBuf = match &args.runs_root {
         Some(root) => {
             let proto8 = protocol.protocol_hash8();
-            let method = format!("scripted-p{proto8}");
+            let method = format!("{}-p{proto8}", if smoke { "smoke" } else { "scripted" });
             let dir = std::path::Path::new(root)
                 .join(spec.spec_hash8())
                 .join(&method)
@@ -1444,7 +1821,9 @@ fn main() {
         &ManifestExtra {
             protocol_id: protocol.id.clone(),
             protocol_hash: protocol.protocol_hash_hex(),
-            method: "scripted".into(),
+            // P1-B1：URDF smoke 跑的方法标签如实写 smoke（数据面语义：
+            // 非任务成功基线，管线冒烟）。
+            method: if smoke { "smoke" } else { "scripted" }.into(),
             seed: Some(protocol.seed0),
         },
         args.sanitize,
@@ -1574,14 +1953,9 @@ fn main() {
         Verify::Sample => {
             let seed0 = r1.rows.first().expect("at least one episode").0;
             let mut env = make_env(&spec, false);
-            let arm = IkArm::from_robot(&env.robot).unwrap_or_else(|e| fail(&e));
+            let strat = Policy::for_env(&env, smoke).unwrap_or_else(|e| fail(&e));
             let idx = ObsIdx::from_layout(env.obs_layout());
-            let phases = match env.task {
-                TaskKind::Reach => reach_phases(),
-                TaskKind::PickPlace => pick_place_phases(),
-                TaskKind::Push => push_phases(),
-            };
-            let re = match run_episode_once(&mut env, seed0, &phases, &arm, &idx, None)
+            let re = match run_episode_once(&mut env, seed0, &strat, &idx, None)
                 .unwrap_or_else(|e| fail(&format!("sample 复核失败：{e}")))
             {
                 EpisodeOutcome::Done(row) => row,

@@ -1,0 +1,86 @@
+solid link5
+  facet normal 0 0 0
+    outer loop
+      vertex 0.030000 -0.030000 -0.030000
+      vertex 0.030000 -0.030000 0.030000
+      vertex 0.030000 0.030000 0.030000
+    endloop
+  endfacet
+  facet normal 0 0 0
+    outer loop
+      vertex 0.030000 -0.030000 -0.030000
+      vertex 0.030000 0.030000 0.030000
+      vertex 0.030000 0.030000 -0.030000
+    endloop
+  endfacet
+  facet normal 0 0 0
+    outer loop
+      vertex 0.090000 -0.030000 -0.030000
+      vertex 0.090000 0.030000 -0.030000
+      vertex 0.090000 0.030000 0.030000
+    endloop
+  endfacet
+  facet normal 0 0 0
+    outer loop
+      vertex 0.090000 -0.030000 -0.030000
+      vertex 0.090000 0.030000 0.030000
+      vertex 0.090000 -0.030000 0.030000
+    endloop
+  endfacet
+  facet normal 0 0 0
+    outer loop
+      vertex 0.030000 -0.030000 -0.030000
+      vertex 0.090000 -0.030000 -0.030000
+      vertex 0.090000 -0.030000 0.030000
+    endloop
+  endfacet
+  facet normal 0 0 0
+    outer loop
+      vertex 0.030000 -0.030000 -0.030000
+      vertex 0.090000 -0.030000 0.030000
+      vertex 0.030000 -0.030000 0.030000
+    endloop
+  endfacet
+  facet normal 0 0 0
+    outer loop
+      vertex 0.030000 0.030000 -0.030000
+      vertex 0.030000 0.030000 0.030000
+      vertex 0.090000 0.030000 0.030000
+    endloop
+  endfacet
+  facet normal 0 0 0
+    outer loop
+      vertex 0.030000 0.030000 -0.030000
+      vertex 0.090000 0.030000 0.030000
+      vertex 0.090000 0.030000 -0.030000
+    endloop
+  endfacet
+  facet normal 0 0 0
+    outer loop
+      vertex 0.030000 -0.030000 -0.030000
+      vertex 0.030000 0.030000 -0.030000
+      vertex 0.090000 0.030000 -0.030000
+    endloop
+  endfacet
+  facet normal 0 0 0
+    outer loop
+      vertex 0.030000 -0.030000 -0.030000
+      vertex 0.090000 0.030000 -0.030000
+      vertex 0.090000 -0.030000 -0.030000
+    endloop
+  endfacet
+  facet normal 0 0 0
+    outer loop
+      vertex 0.030000 -0.030000 0.030000
+      vertex 0.090000 -0.030000 0.030000
+      vertex 0.090000 0.030000 0.030000
+    endloop
+  endfacet
+  facet normal 0 0 0
+    outer loop
+      vertex 0.030000 -0.030000 0.030000
+      vertex 0.090000 0.030000 0.030000
+      vertex 0.030000 0.030000 0.030000
+    endloop
+  endfacet
+endsolid link5
