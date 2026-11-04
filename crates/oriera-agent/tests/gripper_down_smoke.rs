@@ -11,6 +11,18 @@
 //! wired through urdf.rs separately (WP-D), but the ENGINE contract
 //! (oriented plates + friction grasp) is pinned here with a hand-written
 //! RobotSpec, no ArmDescription in sight.
+//!
+//! ── 慢测试分层约定（PLAN-embodied-v3 P1 #20）────────────────────────
+//! 本文件分两层，CI 只跑快层：
+//! - 快层（默认 `cargo test` 可见）：`mirror_constants_match_the_preset`、
+//!   `plates_hang_below_the_flange_per_the_axes`（280 tick 物理——板架
+//!   朝向/放置契约，断言核心）、`orientation_is_identity_in_v2_but_not_v1`、
+//!   `bad_plate_frames_are_named_build_errors`——零/短物理 tick。
+//! - 慢层（`#[ignore = "slow: …"]`）：`four_seed_grasp_smoke_at_least_
+//!   three_pass`——4 集抓取 + 同种子确定性双跑 ≈3000 tick（原整文件
+//!   ~188s 的主体）。本地/夜间跑：`cargo test -p oriera-agent --features
+//!   rigid3d --test gripper_down_smoke -- --ignored`（CI 的 `--ignored`
+//!   计数会因此变化，属于分层设计而非回归）。
 #![cfg(feature = "rigid3d")]
 
 use oriera_common::{FrameIndex, Grants, Timestamp};
@@ -489,6 +501,7 @@ fn grasp_episode(seed: u64) -> bool {
 }
 
 #[test]
+#[ignore = "slow: 4 集抓取 + 确定性双跑 ≈3000 tick 物理长跑——本地/夜间跑 cargo test -- --ignored"]
 fn four_seed_grasp_smoke_at_least_three_pass() {
     let seeds = [11u64, 23, 37, 41];
     let passed = seeds.iter().filter(|&&s| grasp_episode(s)).count();

@@ -251,6 +251,32 @@ v3 树 `videos/depth.{name}/chunk-000/file-000/…`）；`features_json` / `writ
 仍是 21 维状态向量 + 正交俯视；真机标定板全流程（拍照→cv2 标定→回填 spec）属于
 该模式下的工作流，引擎提供 spec 字段、渲染管线与 <2px 自检门槛三件事。
 
+### 6.5 CI 门禁：三出口冒烟腿 × Windows 腿 × 指纹矩阵（PLAN-embodied-v3 §二 #14/#17/#18）
+
+`.github/workflows/ci.yml` 具身相关腿一览（2026-11-04）：
+
+| 腿 | 跑什么 | 硬顶 |
+|---|---|---|
+| **data-pipeline**（新） | 三出口一致性冒烟：2 集 `embodied_sim_collect --task reach --export npz` → `jsonl_to_lerobot_v21.py` 转换 → `lerobot_v3_selfcheck.py --v21`（含 MANIFEST 哈希对账）→ `oriera_results.py aggregate` → `plot_results.py`（无 matplotlib 走 CSV 降级）。全 pass 才绿——Python 数据管线从此有 CI 钉（QA-5/DE-2 此前为零） | 15 min |
+| **windows-check**（新） | `cargo check -p oriera-agent --features rigid3d,cam,spec,urdf,json` + clippy 同参——PR 门禁从此不漏 Windows（本机主力平台）；check 比 test 便宜 | 25 min |
+| rust（matrix） | 各 feature 腿 test+clippy；Build 步骤按腿收窄为本腿 `-p + features`（原 `cargo build --workspace` 对 feature 腿的编译单元零复用） | 60 min |
+| **embodied-fingerprints-matrix** | 三平台金标采集 × golden 对拍（manual dispatch） | 45 min |
+
+**顶层改造（CI P1/P2）**：`concurrency: ci-<ref>` 同分支新推送取消旧跑；
+`workflow_dispatch` 加 `matrix_only`（boolean，默认 false）——勾选后常规
+job 全部跳过、只跑指纹矩阵（`gh workflow run ci.yml -f matrix_only=true`）；
+指纹矩阵每 OS 归档 `eval_report.json` + `run_manifest.json` +
+`lerobot-v21/meta/oriera_receipt.json` 为 artifact `fp-matrix-<os>`（#17，
+离线对账不再翻日志）；browser 腿补 30 min 硬顶。
+
+**数据集 MANIFEST 提交点语义（DE-P1）**：引擎直出目录以
+`MANIFEST.jsonl` 为原子提交点；`jsonl_to_lerobot_v21.py` 转换收尾在同
+级落 `MANIFEST.converted.json`（原清单全部条目 +
+`"converted": true, "converted_at": <utc>`）——**转换后原 MANIFEST 只
+指向 `raw_jsonl/` 归档，本文件才是转换后目录的提交点**；selfcheck
+`--v21` 见该标记即按「已转换」口径对账（哈希在 Python 端用
+splitmix64 byte-fold 对拍重算，不信任清单自述）。
+
 ## 5. 定位声明
 
 OriEra 提供的是「便宜、可复位、可回放」的**世界层**：确定性 tick（#66）、

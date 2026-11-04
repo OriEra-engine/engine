@@ -449,23 +449,26 @@ impl LeRobotV21 {
         // Camera tracks: PNG frame dirs — the converter assembles mp4
         // (v2.1 video features live outside the parquet tables). Depth
         // tracks land as `depth.{name}` dirs of u16 PNGs (M3-A).
+        // DE-P2：RGB 与深度**各自独立判空落盘**——RGB 轨空而深度轨非空
+        // 的 episode（丢帧/RGB 关闭的采集）也要写出深度目录；旧代码
+        // `if track_rgb(..).is_empty() { continue }` 会把整台相机的深度
+        // 轨一并丢掉。（write_dir_v3 的深度循环本就独立，无此问题。）
         for cam in &self.cameras {
             for (i, ep) in self.episodes.iter().enumerate() {
-                let track = track_rgb(ep, &cam.name);
-                if track.is_empty() {
-                    continue;
-                }
-                let dir = root.join(format!(
-                    "videos/chunk-000/observation.images.{}/episode_{i:06}",
-                    cam.name
-                ));
-                std::fs::create_dir_all(&dir)?;
-                for (k, png) in track.iter().enumerate() {
-                    let rel = format!(
-                        "videos/chunk-000/observation.images.{}/episode_{i:06}/frame_{k:06}.png",
+                let rgb = track_rgb(ep, &cam.name);
+                if !rgb.is_empty() {
+                    let dir = root.join(format!(
+                        "videos/chunk-000/observation.images.{}/episode_{i:06}",
                         cam.name
-                    );
-                    put(&rel, png)?;
+                    ));
+                    std::fs::create_dir_all(&dir)?;
+                    for (k, png) in rgb.iter().enumerate() {
+                        let rel = format!(
+                            "videos/chunk-000/observation.images.{}/episode_{i:06}/frame_{k:06}.png",
+                            cam.name
+                        );
+                        put(&rel, png)?;
+                    }
                 }
                 let depth = track_depth(ep, &cam.name);
                 if !depth.is_empty() {
@@ -474,13 +477,13 @@ impl LeRobotV21 {
                         cam.name
                     ));
                     std::fs::create_dir_all(&ddir)?;
-                }
-                for (k, png) in depth.iter().enumerate() {
-                    let rel = format!(
-                        "videos/chunk-000/depth.{}/episode_{i:06}/frame_{k:06}.png",
-                        cam.name
-                    );
-                    put(&rel, png)?;
+                    for (k, png) in depth.iter().enumerate() {
+                        let rel = format!(
+                            "videos/chunk-000/depth.{}/episode_{i:06}/frame_{k:06}.png",
+                            cam.name
+                        );
+                        put(&rel, png)?;
+                    }
                 }
             }
         }
@@ -492,6 +495,12 @@ impl LeRobotV21 {
 
         // Atomic commit: MANIFEST last, via tmp+rename (the only
         // multi-word op; everything else is already durable).
+        // DE-P1 提交点语义：本清单是「引擎直出目录」的提交点。转换
+        // （scripts/jsonl_to_lerobot_v21.py）把清单指向的行文件归档进
+        // raw_jsonl/ 后，会在同级落 `MANIFEST.converted.json`（原清单
+        // 条目 + converted/converted_at 标记）作为**转换后目录**的提交
+        // 点——本清单届时退行为 raw_jsonl 归档内容的回执（哈希仍可对
+        // raw_jsonl/ 里的文件逐条对账）。
         let mut manifest = String::new();
         for (rel, hash) in &files {
             manifest.push_str(&format!(
@@ -1652,6 +1661,54 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&root21);
+    }
+
+    /// DE-P2 回归：RGB 轨空（帧全 `rgb_png: None`）而深度轨非空时，
+    /// 深度目录仍须落盘——旧代码在 `write_dir` 里以 RGB 判空整集
+    /// `continue`，会把该相机的深度轨一并丢掉。
+    #[test]
+    fn depth_tracks_write_independently_of_empty_rgb() {
+        let mut ds = LeRobotV21::new(60.0, "t", vec!["s".into()], vec!["a".into()]);
+        ds.add_camera(CameraTrack {
+            name: "wrist".into(),
+            w: 4,
+            h: 4,
+            fps: 60.0,
+            depth: true,
+        })
+        .unwrap();
+        ds.start_episode("pick up the cube");
+        ds.push_step(&[0.0], &[0.5]).unwrap();
+        // RGB 缺席、深度在场的一帧（push_frame 对 None rgb 合法放行）
+        ds.push_frame(crate::embodied_env::CameraFrame {
+            cam: "wrist".into(),
+            rgb_png: None,
+            depth_png: Some(vec![7, 8, 9]),
+        })
+        .unwrap();
+        ds.finish_episode();
+
+        let root = std::env::temp_dir().join(format!("oriera-depth-only-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        ds.write_dir(&root).expect("v21 tree");
+        assert!(
+            root.join("videos/chunk-000/depth.wrist/episode_000000/frame_000000.png")
+                .exists(),
+            "depth frames must land even with an empty RGB track"
+        );
+        assert!(
+            !root
+                .join("videos/chunk-000/observation.images.wrist")
+                .exists(),
+            "no RGB dir when the RGB track is empty"
+        );
+        // 深度帧进 MANIFEST（提交点覆盖深度轨）
+        let manifest = std::fs::read_to_string(root.join("MANIFEST.jsonl")).unwrap();
+        assert!(
+            manifest.contains("videos/chunk-000/depth.wrist/episode_000000/frame_000000.png"),
+            "{manifest}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // ----- M2: npz bare export (U-8) -----

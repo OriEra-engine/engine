@@ -16,6 +16,16 @@
 //! - agreement with the TipRadius criterion on the success set is
 //!   REPORTED (人话数字 for the migration table), not pinned — the two
 //!   labels differ by design in the pre-touch window.
+//!
+//! ── 慢测试分层约定（PLAN-embodied-v3 P1 #20）────────────────────────
+//! 本文件分两层，CI 只跑快层：
+//! - 快层（默认 `cargo test` 可见）：`contact_criterion_is_opt_in_and_
+//!   validated`——零物理 tick，钉 Contact 判据的 spec 校验与 identity 纪律。
+//! - 慢层（`#[ignore = "slow: …"]`）：`contact_criterion_labels_the_grasp_
+//!   by_real_contact`——3×610 tick 物理长跑（原整文件 ~110s 的主体）。
+//!   本地/夜间跑：`cargo test -p oriera-subsys --features rigid3d --test
+//!   holding_contact_criterion -- --ignored`（CI 的 `--ignored` 计数会因此
+//!   变化，属于分层设计而非回归）。
 #![cfg(feature = "rigid3d")]
 
 use oriera_common::{FrameIndex, Grants, Timestamp};
@@ -301,6 +311,7 @@ fn run_episode(criterion: HoldingCriterion) -> (Vec<(bool, bool, f32)>, [usize; 
 }
 
 #[test]
+#[ignore = "slow: 3×610 tick 物理长跑——本地/夜间跑 cargo test -- --ignored"]
 #[allow(clippy::needless_range_loop)]
 fn contact_criterion_labels_the_grasp_by_real_contact() {
     let (tl, b) = run_episode(HoldingCriterion::Contact {
