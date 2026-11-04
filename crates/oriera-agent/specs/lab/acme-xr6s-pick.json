@@ -1,0 +1,639 @@
+{
+  "schema": "oriera.scene/2",
+  "meta": {
+    "name": "acme-xr6s-pick",
+    "author": "pugc-review",
+    "notes": "6-axis URDF full-chain import review artifact",
+    "difficulty": "进阶"
+  },
+  "robot": {
+    "name": "acme_xr6s",
+    "base": [
+      0.02,
+      0.5,
+      0.0
+    ],
+    "links": [
+      {
+        "name": "base_link",
+        "shape": {
+          "Box": {
+            "half": [
+              0.06,
+              0.05,
+              0.06
+            ]
+          }
+        },
+        "origin": [
+          0.02,
+          0.5,
+          0.0
+        ],
+        "collider_offset": [
+          0.0,
+          0.05,
+          0.0
+        ],
+        "density": 1500.0,
+        "friction": 0.5,
+        "added_mass": 0.0,
+        "inertial": {
+          "mass": 4.0,
+          "com": [
+            0.0,
+            0.05,
+            0.0
+          ],
+          "ixx": 0.02,
+          "iyy": 0.01,
+          "izz": 0.02,
+          "ixy": 0.0,
+          "ixz": 0.0,
+          "iyz": 0.0
+        },
+        "mesh_uri": null
+      },
+      {
+        "name": "link1",
+        "shape": {
+          "Box": {
+            "half": [
+              0.05,
+              0.09,
+              0.05
+            ]
+          }
+        },
+        "origin": [
+          0.02,
+          0.6,
+          0.0
+        ],
+        "collider_offset": [
+          0.0,
+          0.09,
+          0.0
+        ],
+        "density": 1500.0,
+        "friction": 0.7,
+        "added_mass": 0.0,
+        "inertial": {
+          "mass": 2.6,
+          "com": [
+            0.0,
+            0.09,
+            0.0
+          ],
+          "ixx": 0.008,
+          "iyy": 0.004,
+          "izz": 0.008,
+          "ixy": 0.0,
+          "ixz": 0.0,
+          "iyz": 0.0
+        },
+        "mesh_uri": null
+      },
+      {
+        "name": "link2",
+        "shape": {
+          "Box": {
+            "half": [
+              0.055,
+              0.055000015,
+              0.21
+            ]
+          }
+        },
+        "origin": [
+          0.02,
+          0.69,
+          0.0
+        ],
+        "collider_offset": [
+          -0.21,
+          0.0,
+          0.0
+        ],
+        "density": 1500.0,
+        "friction": 0.7,
+        "added_mass": 0.0,
+        "inertial": {
+          "mass": 3.2,
+          "com": [
+            -0.21,
+            0.0,
+            0.0
+          ],
+          "ixx": 0.006,
+          "iyy": 0.028,
+          "izz": 0.028,
+          "ixy": 0.0,
+          "ixz": 0.0,
+          "iyz": 0.0
+        },
+        "mesh_uri": null
+      },
+      {
+        "name": "link3",
+        "shape": {
+          "Box": {
+            "half": [
+              0.045,
+              0.045000017,
+              0.18
+            ]
+          }
+        },
+        "origin": [
+          -0.39999998,
+          0.69,
+          0.0
+        ],
+        "collider_offset": [
+          -0.18,
+          0.0,
+          0.0
+        ],
+        "density": 1500.0,
+        "friction": 0.7,
+        "added_mass": 0.0,
+        "inertial": {
+          "mass": 2.2,
+          "com": [
+            -0.18,
+            0.0,
+            0.0
+          ],
+          "ixx": 0.004,
+          "iyy": 0.016,
+          "izz": 0.016,
+          "ixy": 0.0,
+          "ixz": 0.0,
+          "iyz": 0.0
+        },
+        "mesh_uri": null
+      },
+      {
+        "name": "link4",
+        "shape": {
+          "Box": {
+            "half": [
+              0.04,
+              0.1,
+              0.040000014
+            ]
+          }
+        },
+        "origin": [
+          -0.76,
+          0.69,
+          0.0
+        ],
+        "collider_offset": [
+          0.0,
+          -0.1,
+          1.509958e-8
+        ],
+        "density": 1500.0,
+        "friction": 0.7,
+        "added_mass": 0.0,
+        "inertial": {
+          "mass": 1.4,
+          "com": [
+            0.0,
+            -0.1,
+            1.509958e-8
+          ],
+          "ixx": 0.003,
+          "iyy": 0.0016,
+          "izz": 0.003,
+          "ixy": 0.0,
+          "ixz": 0.0,
+          "iyz": 2.1139415e-10
+        },
+        "mesh_uri": null
+      },
+      {
+        "name": "link5",
+        "shape": {
+          "ConvexHull": {
+            "points": [
+              [
+                0.0,
+                0.08,
+                -1.20796635e-8
+              ],
+              [
+                0.0,
+                0.080000006,
+                0.039999988
+              ],
+              [
+                0.04,
+                0.08,
+                -1.20796635e-8
+              ],
+              [
+                0.0,
+                0.04,
+                -6.0398317e-9
+              ]
+            ]
+          }
+        },
+        "origin": [
+          -0.76,
+          0.49,
+          3.019916e-8
+        ],
+        "collider_offset": [
+          0.0,
+          -0.08,
+          1.20796635e-8
+        ],
+        "density": 1500.0,
+        "friction": 0.7,
+        "added_mass": 0.0,
+        "inertial": {
+          "mass": 0.9,
+          "com": [
+            0.0,
+            -0.08,
+            1.20796635e-8
+          ],
+          "ixx": 0.0016,
+          "iyy": 0.0009,
+          "izz": 0.0016,
+          "ixy": 0.0,
+          "ixz": 0.0,
+          "iyz": 1.0569705e-10
+        },
+        "mesh_uri": "package://acme_xr6s_meshes/link5_visual.stl"
+      },
+      {
+        "name": "link6",
+        "shape": {
+          "Box": {
+            "half": [
+              0.035,
+              0.035000008,
+              0.04
+            ]
+          }
+        },
+        "origin": [
+          -0.76,
+          0.33,
+          5.4358487e-8
+        ],
+        "collider_offset": [
+          0.0,
+          -9.0597485e-9,
+          -0.04
+        ],
+        "density": 1500.0,
+        "friction": 0.7,
+        "added_mass": 0.0,
+        "inertial": {
+          "mass": 0.35,
+          "com": [
+            0.0,
+            -9.0597485e-9,
+            -0.04
+          ],
+          "ixx": 0.0005,
+          "iyy": 0.0005,
+          "izz": 0.0003,
+          "ixy": 0.0,
+          "ixz": 0.0,
+          "iyz": -4.5298744e-11
+        },
+        "mesh_uri": null
+      }
+    ],
+    "joints": [
+      {
+        "name": "joint1",
+        "parent_link": 0,
+        "child_link": 1,
+        "anchor": [
+          0.0,
+          0.1,
+          0.0
+        ],
+        "axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "limits": [
+          -3.14159,
+          3.14159
+        ],
+        "effort": 120.0,
+        "velocity_limit": 2.0,
+        "kp": 60.0,
+        "kd": 4.0,
+        "armature": 0.02,
+        "damping": 0.5
+      },
+      {
+        "name": "joint2",
+        "parent_link": 1,
+        "child_link": 2,
+        "anchor": [
+          0.0,
+          0.089999996,
+          0.0
+        ],
+        "axis": [
+          0.0,
+          7.54979e-8,
+          1.0
+        ],
+        "limits": [
+          -2.3,
+          2.3
+        ],
+        "effort": 180.0,
+        "velocity_limit": 1.8,
+        "kp": 60.0,
+        "kd": 4.0,
+        "armature": 0.02,
+        "damping": 0.6
+      },
+      {
+        "name": "joint3",
+        "parent_link": 2,
+        "child_link": 3,
+        "anchor": [
+          -0.42,
+          0.0,
+          0.0
+        ],
+        "axis": [
+          0.0,
+          7.54979e-8,
+          1.0
+        ],
+        "limits": [
+          -2.5,
+          2.5
+        ],
+        "effort": 120.0,
+        "velocity_limit": 2.0,
+        "kp": 60.0,
+        "kd": 4.0,
+        "armature": 0.02,
+        "damping": 0.5
+      },
+      {
+        "name": "joint4",
+        "parent_link": 3,
+        "child_link": 4,
+        "anchor": [
+          -0.35999998,
+          0.0,
+          0.0
+        ],
+        "axis": [
+          0.0,
+          -1.0,
+          1.509958e-7
+        ],
+        "limits": [
+          -3.14159,
+          3.14159
+        ],
+        "effort": 60.0,
+        "velocity_limit": 2.5,
+        "kp": 60.0,
+        "kd": 4.0,
+        "armature": 0.02,
+        "damping": 0.3
+      },
+      {
+        "name": "joint5",
+        "parent_link": 4,
+        "child_link": 5,
+        "anchor": [
+          0.0,
+          -0.2,
+          3.019916e-8
+        ],
+        "axis": [
+          0.0,
+          -1.0,
+          1.509958e-7
+        ],
+        "limits": [
+          -2.09,
+          2.09
+        ],
+        "effort": 40.0,
+        "velocity_limit": 2.8,
+        "kp": 60.0,
+        "kd": 4.0,
+        "armature": 0.02,
+        "damping": 0.3
+      },
+      {
+        "name": "joint6",
+        "parent_link": 5,
+        "child_link": 6,
+        "anchor": [
+          0.0,
+          -0.16,
+          2.4159327e-8
+        ],
+        "axis": [
+          0.0,
+          -2.2649371e-7,
+          -1.0
+        ],
+        "limits": [
+          -6.0,
+          6.0
+        ],
+        "effort": 20.0,
+        "velocity_limit": 3.2,
+        "kp": 60.0,
+        "kd": 4.0,
+        "armature": 0.02,
+        "damping": 0.2
+      }
+    ],
+    "gripper": {
+      "attach_link": 6,
+      "finger_x": 0.08,
+      "tcp_offset": [
+        3.0199163e-10,
+        -0.0040000333,
+        -0.16999999
+      ],
+      "finger_half": [
+        0.008,
+        0.004000006,
+        0.025
+      ],
+      "gap_open": 0.088,
+      "gap_closed": 0.046,
+      "friction": 1.4,
+      "effort": 60.0,
+      "gap_rate": 0.0050000004,
+      "kind": "ParallelPlates",
+      "approach_axis": [
+        0.0,
+        -2.2649373e-7,
+        -1.0
+      ],
+      "gap_axis": [
+        0.0,
+        -1.0,
+        2.2649371e-7
+      ]
+    },
+    "home": [
+      0.0,
+      0.9,
+      -1.4,
+      0.0,
+      0.5,
+      0.0
+    ],
+    "mass_scale": 1.0,
+    "action_scale": [
+      2.0,
+      2.0,
+      2.0,
+      2.0,
+      2.0,
+      2.0
+    ]
+  },
+  "scene": {
+    "fixtures": [
+      {
+        "name": "ground",
+        "center": [
+          0.0,
+          -0.05,
+          0.0
+        ],
+        "half": [
+          2.0,
+          0.05,
+          1.5
+        ],
+        "friction": 0.9
+      },
+      {
+        "name": "table",
+        "center": [
+          0.32,
+          0.25,
+          0.0
+        ],
+        "half": [
+          0.28,
+          0.25,
+          0.32
+        ],
+        "friction": 0.9
+      }
+    ],
+    "props": [
+      {
+        "name": "cube",
+        "shape": {
+          "kind": "cuboid",
+          "half": [
+            0.025,
+            0.025,
+            0.025
+          ]
+        },
+        "phys": {
+          "density": 400.0,
+          "friction": 0.8
+        },
+        "placement": {
+          "range": {
+            "x": [
+              0.14,
+              0.22
+            ],
+            "y": 0.55,
+            "z": [
+              -0.1,
+              0.1
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "task": {
+    "id": "pick_place@v1",
+    "params": {
+      "goal_xz_tol": 0.09,
+      "goal_y_min": 0.5,
+      "goal_y_max": 0.62,
+      "reach_radius": 0.055,
+      "min_separation": 0.12,
+      "max_redraws": 8,
+      "goal": {
+        "range": {
+          "x": [
+            0.24,
+            0.31
+          ],
+          "y": 0.5,
+          "z": [
+            -0.08,
+            0.08
+          ]
+        }
+      },
+      "terminate_on_success": true,
+      "rest_steps": 10,
+      "rest_speed": 0.01,
+      "release_below": 0.5,
+      "stack_xz_tol": 0.03,
+      "stack_y_tol": 0.02,
+      "pull_axis": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "pull_distance": 0.08
+    }
+  },
+  "control": {
+    "mode": "joint_pos",
+    "action_scale": null
+  },
+  "dt": 0.016666668,
+  "max_steps": 700,
+  "randomization": {
+    "enabled": true,
+    "kp_jitter": 0.0,
+    "mass_jitter": 0.0,
+    "obs_noise": 0.0,
+    "prop_density": [
+      240.0,
+      640.0
+    ],
+    "prop_friction": [
+      0.5,
+      1.1
+    ]
+  },
+  "physics": {
+    "solver_iterations": null,
+    "substeps": null,
+    "contact_softness_hz": null,
+    "warmstart_coefficient": null
+  }
+}

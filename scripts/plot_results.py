@@ -46,8 +46,10 @@ def iqm(values: list[float]) -> float:
     n = len(v)
     lo = int(n * 0.25)
     hi = int(n * 0.75)
-    # rliable 的 IQM：丢弃下 25% 与上 25%（奇数截断取整）
-    keep = v[lo:hi] if hi > lo else v
+    # rliable 的 IQM：丢弃下 25% 与上 25%。截断数与 scipy.stats.
+    # trim_mean(v, 0.25) 一致：两端各 int(n*0.25)（奇数 n=5 → 两端各 1，
+    # 保 3 值——此前 int(n*0.75)-int(n*0.25)=2 值与 scipy 不一致）。
+    keep = v[lo : n - lo] if n - lo > lo else v
     return sum(keep) / len(keep)
 
 
@@ -90,6 +92,19 @@ def hierarchical_bootstrap(
     return out
 
 
+def wilson95(successes: int, n: int) -> tuple[float, float]:
+    """Wilson 95% score interval（EV-P1：seeds<3 时分层 bootstrap 的
+    seed 层无方差，区间系统性偏窄——退回单层二项口径并标注）。"""
+    if n == 0:
+        return (float("nan"), float("nan"))
+    p = successes / n
+    z = 1.959963984540054  # 双侧 95%
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) + z * z / (4 * n)) / n) ** 0.5 / denom
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("results", type=Path, help="oriera_results.py aggregate 的产物（parquet/csv）")
@@ -125,12 +140,22 @@ def main() -> int:
     for key in keys:
         rates = [float(r["success_once_rate"]) for r in groups[key]]
         lo, hi = ci[key]
+        ci_kind = "bootstrap"
+        # EV-P1：seeds<3 时 seed 层重抽无方差——分层区间系统性偏窄
+        #（11/12 组实测 [75,100] vs Wilson [64.6,98.5]；100% 组零宽）。
+        # 自动退回 Wilson 并在列名/输出标注。
+        if len(rates) < 3:
+            ep = sum(int(r.get("episodes") or 0) for r in groups[key])
+            ok = sum(int(r.get("successes_once") or 0) for r in groups[key])
+            lo, hi = wilson95(ok, ep)
+            ci_kind = "wilson95(fallback: seeds<3)"
         summary_rows.append(
             {
                 "group": labels[key],
                 "seeds": len(rates),
                 "mean_once_rate": sum(rates) / len(rates),
                 "iqm_once_rate": iqm(rates),
+                "ci_kind": ci_kind,
                 "boot_ci95_lo": lo,
                 "boot_ci95_hi": hi,
             }

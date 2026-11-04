@@ -736,6 +736,7 @@ pub fn resolve_extends_in(
         .map_err(|e| format!("spec.extends = {name:?}：基 spec JSON 非法：{e}"))?;
     chain.push(name);
     let mut base = resolve_extends_in(dir, base, depth + 1, chain)?;
+    chain.pop(); // M0b 遗留：单链无害，同链复用会误报环（P0-8）
     merge_overlay(&mut base, v);
     Ok(base)
 }

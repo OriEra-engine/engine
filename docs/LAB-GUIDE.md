@@ -101,7 +101,7 @@ VS Build Tools 里的 `link.exe`：
    ```
 4. 跑通官方基线（任意终端；这同时也是交作业用的命令）：
    ```
-   cargo run -q -p oriera-agent --example embodied_sim_collect --features rigid3d,cam -- --task pick_place --episodes 12 --out out/my-run
+   cargo run -q -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- --cam --task pick_place --episodes 12 --out out/my-run
    ```
    看到 `✓ 评测：成功率 91.7%（Wilson 95% CI [64.6%, 98.5%]）` 这样的输出即基线
    正常，产物在 `out\my-run\`。引擎内置 ≥90% 硬闸，低于 90% 会直接报错（人话解释
@@ -257,8 +257,8 @@ lerobot 目录交给 §5 的训练命令即可（图像轨喂 ACT 前先过转�
   成功率 0%：抓取的奖励鸿沟靠密集塑形填不平，正道是 IL 路线（脚本
   采集 91.7% 数据 → ACT/π0 微调）或 RL 加课程表/HER（进阶作业）。
 
-- **作业基线（M2：五预设 × DLS 数值 IK）**：采集脚本之外还有一条
-  「评测专用」入口 `embodied_sim_baseline`——对官方五预设
+- **作业基线（M2 起：六预设 × DLS 数值 IK）**：采集脚本之外还有一条
+  「评测专用」入口 `embodied_sim_baseline`——对官方六预设（M3 增移动底盘 mobile-arm-4dof）
   （`crates/oriera-agent/specs/official/`：金标桌面抓放、Panda 7 轴
   抓放、叠块、料箱抓取、抽屉拉出）各跑 12 集，DLS 数值 IK 相位机
   （任意 N-DoF，Panda 靠它），输出 `success_once` / `success_at_end`

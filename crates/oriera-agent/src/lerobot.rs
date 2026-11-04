@@ -536,6 +536,10 @@ impl LeRobotV21 {
                 v2s.join(",")
             )
         };
+        // P0-4（20 角色审查 DE-1）：`episode_state_hashes` 一名两义——
+        // receipt 里是 v1 身份折叠、eval_report 里是纯状态哈希，跨文件
+        // 对账静默踩坑。规范名改 `episode_fingerprints_v1`；旧键保留为
+        // 兼容别名（同值），存量脚本（CI 矩阵/golden check）零改动。
         write!(
             f,
             concat!(
@@ -543,15 +547,19 @@ impl LeRobotV21 {
                 "\"engine\":\"{}\",\"backend\":\"{}\",\"dt\":{:.8},",
                 "\"spec_hash\":\"{}\",",
                 "{}",
-                "\"successes\":{},\"episode_state_hashes\":[{}]}}\n"
+                "\"episode_fingerprints_v1\":[{}],",
+                "\"episode_state_hashes\":[{}],",
+                "\"episode_state_hashes_note\":\"legacy alias of episode_fingerprints_v1\",",
+                "\"successes\":{}}}\n"
             ),
             engine,
             backend,
             dt,
             spec_hash,
             v2_field,
-            successes,
-            hashes.join(",")
+            hashes.join(","),
+            hashes.join(","),
+            successes
         )
     }
 

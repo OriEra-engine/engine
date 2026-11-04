@@ -130,9 +130,9 @@ articulation，Rust 绑定青年期）。马达三坑（都踩过）：`motor_ax
   `obs_extra` 同一 9 维特权块，`ObsLayout` 从任务派生）。
 - **DLS 数值 IK**（`oriera_agent::ik`）：对任意 N-DoF `RobotSpec` 做 FK + 阻尼最小二乘
   （数值雅可比；3 行位置 + 3 行「工具朝下」约束——4 轴恰好复现解析解约束，7 轴留 1 维
-  零空间给阻尼消解；逐步夹限位）。`embodied_sim_baseline` 用它跑五预设（collect 的 4 轴解析
+  零空间给阻尼消解；逐步夹限位）。`embodied_sim_baseline` 用它跑六预设（M3 增 mobile-arm）（collect 的 4 轴解析
   IK 金标路一行没动）。
-- **五预设 + 任务专属闸**（`eval::baseline_gate`）：金标桌面 ≥90%、Panda/叠块 ≥75%、料箱/抽屉
+- **六预设 + 任务专属闸**（`eval::baseline_gate`）：金标桌面 ≥90%、Panda/叠块 ≥75%、料箱/抽屉
   ≥60%（新任务首版诚实门槛）；`--reference-out` 写 `results/reference/<spec_hash8>/<protocol>.json`，
   超参/种子钉死在 `baselines/<task>/<method>.yaml`（scripted-phases / dls-ik / ppo-sb3 / act-lerobot 占位）。
 - **出图**（P-6）：`scripts/oriera_results.py aggregate runs/` → `results.parquet`（无 pandas 降级 CSV）；
@@ -170,14 +170,14 @@ obs, act = z[meta["obs_key"]], z[meta["act_key"]]          # float32 [N, obs_dim
   `--export parquet` 会给出这句人话并退出。
 - 不加 `--export` 时零行为变化：默认路径产物（lerobot-v21 整棵树，含 PNG 帧与 MANIFEST）与改动前逐字节一致。
 
-**Studio 三库工作台（G-10 / 拍板项 3）**——`/sim` 首屏 = 官方预设卡片墙（五预设，默认选中作业基线
+**Studio 三库工作台（G-10 / 拍板项 3）**——`/sim` 首屏 = 官方预设卡片墙（六预设，默认选中作业基线；mobile-arm 卡 M3 已登记待补 UI
 `tabletop-4dof-pick`），卡片 = 名称 / 一句话 / 难度（`meta.difficulty`，金标文件不带该字段时回退「入门」）/
 任务与机器人；点卡片 = 整份 spec 换装、**不重载 iframe**。
 
 - **spec 服务管线**：Studio 仓 `node scripts/sync-engine-snapshot.mjs` 把 `crates/oriera-agent/specs/`
   的 `official/*.json` + `INDEX.json` 逐字同步进 `engine-snapshot/specs/`，并生成 `resolved/<name>.json`
   （`extends` 展开版，`merge_overlay` 的 JS 逐条移植）。浏览器里的 wasm 没有文件系统，
-  `resolve_extends` 读不到基 spec，所以**发给内核的是展开版**；展开不改身份——五预设 raw(extends) /
+  `resolve_extends` 读不到基 spec，所以**发给内核的是展开版**；展开不改身份——六预设 raw(extends) /
   resolved 在 CLI `--validate` 与浏览器 wasm 里 spec_hash 与 `INDEX.json` 四方一致。
 - **换装协议**：沿用 M1 kernel 的 postMessage `{source:"oriera-sim", cmd:"spec", json, seed:1000}` →
   内核 `applySpec + buildSceneFromSpec + buildSliders + envReset` → 回 `{type:"state", note:"spec-applied", specHash}`。

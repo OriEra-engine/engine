@@ -394,7 +394,7 @@ fn parse_args() -> Args {
         sets: Vec::new(),
         episodes: None,
         seed0: 1000,
-        cam: true,
+        cam: false,
         out: "out/embodied-sim".into(),
         lerobot_v3: false,
         export_npz: false,
@@ -472,6 +472,8 @@ fn parse_args() -> Args {
             "--sanitize" => a.sanitize = true,
             "--force" => a.force = true,
             "--out" => a.out = it.next().expect("--out 需要一个值"),
+            // P0-8：默认翻 off——正交软光栅吃掉 native 52% 吞吐（性能
+            // 审查实测 2121→1027），评测入口不需要渲染；要图轨显式 --cam。
             "--cam" => a.cam = true,
             "--no-cam" => a.cam = false,
             "--cameras-from-spec" => a.cameras_from_spec = true,
@@ -852,7 +854,13 @@ fn main() {
         }
         None => std::path::Path::new(&args.out).to_path_buf(),
     };
-    std::fs::create_dir_all(&out).unwrap();
+    std::fs::create_dir_all(&out).unwrap_or_else(|e| {
+        fail(&format!(
+            "输出目录创建失败（{}）：{e}
+常见原因：权限不足 / 路径已存在同名文件 / 盘满——换 --out 或先清掉同名文件",
+            out.display()
+        ))
+    });
 
     // Provenance first (P-3): even a crashed run leaves its manifest.
     write_run_manifest_opts(
@@ -1014,15 +1022,24 @@ fn main() {
         std::process::exit(2);
     }
     if matches!(verdict, eval::GateVerdict::NotApplied) {
+        // P0-3（20 角色审查）：report 协议下 gate_verdict 恒 not-applied，
+        // 但 eval_report.baseline_gate 会照抄闸的「理论」判定——不读源码
+        // 的实验室脚本会误判成 fail。这里把口径打在控制台正面。
         println!(
-            "  · 闸：本协议/任务不设硬闸（{} × {:?}），只记录",
+            "  · 闸：本协议/任务不设硬闸（{} × {:?}）——只记录不拦流程；             eval_report.baseline_gate 为理论参考值，**不是本跑的实际判定**             （实际判定以 exit code 与 gate 字段为准：两处均为非拦截）",
             protocol.id, protocol.gate
         );
     }
 
     let root = out.join("lerobot-v21");
     std::fs::create_dir_all(&root).unwrap();
-    let n = r1.ds.write_dir(&root).unwrap();
+    let n = r1.ds.write_dir(&root).unwrap_or_else(|e| {
+        fail(&format!(
+            "数据集写出失败（{}）：{e}
+常见原因：磁盘满 / 权限不足——清空间或换 --out 后重跑（本跑数据在内存未丢，重跑即得）",
+            root.display()
+        ))
+    });
     let engine = concat!("oriera-engine/", env!("CARGO_PKG_VERSION"));
     // 三口径指纹集（state/v1/v2）在 receipt 之前算好——数据集自带完整身份。
     let fps = eval::fingerprint_set(&spec.robot, spec.spec_hash(), &r1.hashes);

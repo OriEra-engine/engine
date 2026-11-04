@@ -26,6 +26,21 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 
+
+def seed0_divergence_hint(rows):
+    """EV-P1：同 (spec_hash, method) 出现多个 seed0 = 可能有重跑选优——
+    打印提示（不阻止），供论文口径自查。"""
+    from collections import defaultdict
+    seen = defaultdict(set)
+    for r in rows:
+        seen[(r.get("spec_hash"), r.get("method"))].add(str(r.get("seed0")))
+    multi = {k: v for k, v in seen.items() if len(v) > 1}
+    if multi:
+        print(f"[hint] {len(multi)} 组 (spec,method) 存在多个 seed0 并存——"
+              f"重跑选优会让注册表数字偏高；论文口径请声明全部 attempts：")
+        for k, v in sorted(multi.items()):
+            print(f"    {k[0][:8]} / {k[1]}: seeds0={sorted(v)}")
+
 def load_json(path: Path):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -63,6 +78,10 @@ def aggregate(runs_root: Path) -> list[dict]:
             "successes_once": sum(once),
             "successes_at_end": sum(at_end),
             "success_once_rate": report.get("success_once_rate", report.get("success_rate")),
+            "spec_name": (
+                lambda sp: (sp.get("meta", {}) or {}).get("name")
+                or sp.get("robot", {}).get("name", "")
+            )(manifest.get("spec", {}) or {}),
             "success_at_end_rate": report.get(
                 "success_at_end_rate", report.get("success_rate")
             ),
@@ -137,15 +156,24 @@ def main() -> int:
     fmt = write_out(rows, args.out, args.format)
     # 摘要：按 (spec_hash8, method) 分组报 once 率均值
     groups: dict[tuple[str, str], list[float]] = {}
+    groups_at_end: dict[tuple[str, str], list[float]] = {}
     for r in rows:
         key = (r["spec_hash8"], r["method"])
         v = r["success_once_rate"]
         if v is not None:
             groups.setdefault(key, []).append(float(v))
+            ae = r.get("success_at_end_rate")
+            if ae is not None:
+                groups_at_end.setdefault(key, []).append(float(ae))
     print(f"[oriera-results] 聚合 {len(rows)} 行 → {args.out}（{fmt}）")
+    seed0_divergence_hint(rows)  # EV-P1：并存 seed0 提示（重跑选优自查）
     for (h8, method), rates in sorted(groups.items()):
         mean = sum(rates) / len(rates)
-        print(f"  {h8} × {method:20s} seeds={len(rates):2d}  mean once-rate {mean:.1%}")
+        ae = groups_at_end.get((h8, method))
+        ae_txt = f"  at_end {sum(ae) / len(ae):.1%}" if ae else ""
+        # EV-P1：once ≥ at_end 恒成立——展示面只报 once 会天然偏高
+        print(f"  {h8} × {method:20s} seeds={len(rates):2d}  "
+              f"once {mean:.1%}{ae_txt}")
     return 0
 
 
