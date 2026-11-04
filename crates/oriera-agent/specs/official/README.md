@@ -17,6 +17,7 @@
 | `stack-4dof` | `stack@v1` | tabletop-4dof | 把方块 A 叠到底座 B 上（PLAN 原名 push-stack 收敛为 stack：push 走 `push@v1/v2` 单任务） | 进阶 | ≥75%（新任务首版） | **11/12 = 91.7%** pass · Wilson [64.6, 98.5] · `ffc96325` |
 | `bin-pick-4dof` | `bin_pick@v1` | tabletop-4dof | 从料箱（四面重墙 prop 近似，真 fixture 在 M3）里把方块抓出来放到箱外目标区 | 挑战 | ≥60%（首版） | **12/12 = 100%** pass · Wilson [75.8, 100] · `14fc9bf8` |
 | `drawer-4dof` | `drawer@v1` | tabletop-4dof | 抓住抽屉把手块沿 -X 拉出 ≥0.08 m（可动盒体 prop 近似 prismatic，真关节在 M3） | 进阶 | ≥60%（首版） | **10/12 = 83.3%** pass · Wilson [55.2, 95.3] · `ef18ac07` |
+| `mobile-arm-4dof` | `pick_place@v1` | mobile-4dof（两滑轨+回转底盘+4 轴臂） | 作业点超臂展 0.475 m——底盘开到 ∓0.40 落回作业带（M3 新增） | 进阶 | ≥75%（pick 闸） | 首跑 settle/跟踪 0.0000 m · `9ee15317` |
 
 实测数落盘在 `results/reference/<spec_hash8>/course_v1.json`（`--reference-out` 写）；五预设双跑逐位一致。
 

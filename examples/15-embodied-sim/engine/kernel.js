@@ -454,7 +454,7 @@ export async function boot(viewport) {
   // JS 解析 ik 是 4 轴闭式解——非 4 轴臂（Panda 等）改用 CLI 基线
   const canRunJsPolicy = () => {
     if (K.dof !== 4) {
-      log.textContent = "脚本策略仅支持 4 轴臂；本预设请用 CLI 基线：cargo run -p oriera-agent --example embodied_sim_baseline -- --spec specs/official/<预设>.json";
+      log.textContent = "脚本策略仅支持 4 轴臂；本预设请用 CLI 基线：cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,cam,spec,urdf -- --spec specs/official/<预设>.json";
       return false;
     }
     return true;

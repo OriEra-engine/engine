@@ -29,7 +29,7 @@
 
 use oriera_agent::embodied_env::{CameraShot, EmbodiedEnv, ObsLayout, TableTopEnv};
 use oriera_agent::lerobot::{CameraTrack, LeRobotV21};
-use oriera_agent::manifest::{write_run_manifest, ManifestExtra};
+use oriera_agent::manifest::{write_run_manifest_opts, ManifestExtra};
 use oriera_agent::spec::SceneSpec;
 use oriera_subsys::RobotSpec;
 
@@ -47,6 +47,7 @@ struct Args {
     seed0: u64,
     out: String,
     verify: bool,
+    sanitize: bool,
 }
 
 fn parse_args() -> Args {
@@ -56,6 +57,7 @@ fn parse_args() -> Args {
         seed0: 1000,
         out: "out/embodied-cam".into(),
         verify: true,
+        sanitize: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -574,7 +576,7 @@ fn main() {
     // ---- write the multi-video dataset ------------------------------
     let out = std::path::Path::new(&args.out);
     std::fs::create_dir_all(out).unwrap();
-    write_run_manifest(
+    write_run_manifest_opts(
         out.join("run_manifest.json"),
         &spec,
         &ManifestExtra {
@@ -583,6 +585,7 @@ fn main() {
             method: "scripted-cam".into(),
             seed: Some(args.seed0),
         },
+        args.sanitize,
     )
     .unwrap_or_else(|e| fail(&format!("run_manifest.json 写入失败：{e}")));
 
@@ -604,20 +607,24 @@ fn main() {
     )
     .unwrap();
     oriera_agent::lerobot::LeRobotV21::write_card(&root, env.task.phrase()).unwrap();
-    std::fs::write(
-        root.join("meta/oriera_spec.json"),
-        serde_json::to_string_pretty(&spec).unwrap(),
-    )
-    .unwrap();
+    if !args.sanitize {
+        std::fs::write(
+            root.join("meta/oriera_spec.json"),
+            serde_json::to_string_pretty(&spec).unwrap(),
+        )
+        .unwrap();
+    }
 
     let root_v3 = out.join("lerobot-v30");
     ds.write_dir_v3(&root_v3).unwrap();
     oriera_agent::lerobot::LeRobotV21::write_card_v3(&root_v3, env.task.phrase()).unwrap();
-    std::fs::write(
-        root_v3.join("meta/oriera_spec.json"),
-        serde_json::to_string_pretty(&spec).unwrap(),
-    )
-    .unwrap();
+    if !args.sanitize {
+        std::fs::write(
+            root_v3.join("meta/oriera_spec.json"),
+            serde_json::to_string_pretty(&spec).unwrap(),
+        )
+        .unwrap();
+    }
 
     // ---- pixel statistics of one frame (the acceptance probe: the
     // wrist camera's RGB+depth when present, else the last shot) ------

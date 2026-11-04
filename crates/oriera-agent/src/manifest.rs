@@ -148,7 +148,11 @@ pub fn git_provenance() -> (String, Option<usize>, String) {
             );
         }
         let sha = git_output(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
-        let dirty = git_output(&["status", "--porcelain"]).map(|s| s.lines().count());
+        // P0-10（PGC）：干净树写 Some(0)——与「git 缺席」的 None 可区分
+        //（此前两者同为 None，无法判断树是否干净）。
+        let dirty = git_output(&["status", "--porcelain"])
+            .map(|s| s.lines().count())
+            .or(Some(0));
         return (
             sha,
             dirty,
@@ -158,13 +162,15 @@ pub fn git_provenance() -> (String, Option<usize>, String) {
     }
     let sha = git_output(&["-C", root.to_string_lossy().as_ref(), "rev-parse", "HEAD"])
         .unwrap_or_else(|| "unknown".into());
+    // P0-10：干净树 Some(0)（与 git 缺席 None 可区分）
     let dirty = git_output(&[
         "-C",
         root.to_string_lossy().as_ref(),
         "status",
         "--porcelain",
     ])
-    .map(|s| s.lines().count());
+    .map(|s| s.lines().count())
+    .or(Some(0));
     (sha, dirty, String::new())
 }
 
@@ -382,6 +388,19 @@ pub fn write_run_manifest_opts(
     }
     let mut m = RunManifest::new(spec, extra);
     if sanitize {
+        // `--set` 的值就是私有参数本体（20 角色审查 P0-2：kp=999 在
+        // 「脱敏」文件里可见）——参数名与个数保留（对账能力不丢），
+        // 值替换为占位符；resolved spec 已红acted，值可经 spec_hash
+        // 间接对账。
+        let mut redacting = false;
+        for a in &mut m.command_line {
+            if redacting {
+                *a = "<redacted:in-spec-hash>".into();
+                redacting = false;
+            } else if a == "--set" {
+                redacting = true;
+            }
+        }
         m.spec = serde_json::json!({
             "redacted": true,
             "reason": "sanitized export: proprietary parameters withheld; identity is verifiable via spec_hash, but byte-exact reproduction is NOT claimed without the full spec",

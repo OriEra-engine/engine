@@ -31,7 +31,7 @@ use oriera_agent::eval::{
     self, baseline_gate, EpisodeOutcome, EpisodeRow, EvalProtocol, Gate, SuccessView,
 };
 use oriera_agent::ik::DlsIk;
-use oriera_agent::manifest::{write_run_manifest, ManifestExtra};
+use oriera_agent::manifest::{write_run_manifest_opts, ManifestExtra};
 use oriera_agent::spec::SceneSpec;
 use oriera_subsys::rigid3d::robot_identity_hash;
 
@@ -515,6 +515,7 @@ struct Args {
     reference_out: Option<String>,
     dump_panda_spec: Option<String>,
     force: bool,
+    sanitize: bool,
 }
 
 const USAGE: &str = "--spec/--set/--episodes/--seed0/--seed/--protocol/--gate/--out/--runs-root/--reference-out/--verify-determinism/--dump-panda-spec/--force";
@@ -537,6 +538,7 @@ fn parse_args() -> Args {
         runs_root: None,
         reference_out: None,
         dump_panda_spec: None,
+        sanitize: false,
         force: false,
     };
     let mut it = std::env::args().skip(1);
@@ -583,6 +585,7 @@ fn parse_args() -> Args {
             "--reference-out" => {
                 a.reference_out = Some(it.next().expect("--reference-out 需要一个目录"))
             }
+            "--sanitize" => a.sanitize = true,
             "--dump-panda-spec" => {
                 a.dump_panda_spec = Some(it.next().expect("--dump-panda-spec 需要一个文件路径"))
             }
@@ -910,7 +913,7 @@ fn main() {
     };
     std::fs::create_dir_all(&out).unwrap();
 
-    write_run_manifest(
+    write_run_manifest_opts(
         out.join("run_manifest.json"),
         &spec,
         &ManifestExtra {
@@ -919,6 +922,7 @@ fn main() {
             method: "dls-ik".into(),
             seed: Some(protocol.seed0),
         },
+        args.sanitize,
     )
     .unwrap_or_else(|e| fail(&format!("run_manifest.json 写入失败：{e}")));
 
@@ -1009,10 +1013,15 @@ fn main() {
     let (gate_threshold, gate_why) = baseline_gate(&spec.task.id, &spec.robot.name)
         .unwrap_or((0.0, "本任务不设基线闸（只记录）"));
     let pass = rate >= gate_threshold;
+    // P0-3：report-only 协议（paper@v1）下「fail」是理论参考而非拦截
+    // ——字样改为「记录」，避免实验者误判流程被拦（实测 exit 0）。
     let verdict_word = if gate_threshold <= 0.0 {
         "not-applied"
     } else if pass {
         "pass"
+    } else if protocol.gate != Gate::Hard90 {
+        // report-only：理论参考未达标只记录（实测 exit 0）
+        "record-only"
     } else {
         "fail"
     };

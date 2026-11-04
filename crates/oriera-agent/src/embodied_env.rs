@@ -569,6 +569,24 @@ impl SceneGraph {
                     c.name
                 ));
             }
+            // P0-8（20 角色审查 QA-3）：cx/cy 此前完全不设防（-1e9 也过）；
+            // name 直接拼进 LeRobot 视频目录/特性键，非法字符会在写盘时才炸。
+            if !(p.cx.is_finite() && p.cy.is_finite()) {
+                return Err(format!(
+                    "scene.cameras[{i}]（{}）.cx/cy = ({}, {})：主点须为有限数（像素系，通常 ≈ 宽高的一半）",
+                    c.name, p.cx, p.cy
+                ));
+            }
+            if c.name.is_empty()
+                || !c.name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+            {
+                return Err(format!(
+                    "scene.cameras[{i}].name = {:?}：须非空且只含 [A-Za-z0-9_.-]（name 会拼进 LeRobot 特性键与视频目录路径）",
+                    c.name
+                ));
+            }
             let finite3 = |v: [f32; 3]| v.iter().all(|x| x.is_finite());
             if !finite3(p.pos) || !finite3(p.look_at) || !finite3(p.up) {
                 return Err(format!(

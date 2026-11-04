@@ -25,6 +25,11 @@ import os
 import re
 import subprocess
 import sys
+
+# Windows 控制台默认 cp1252/gbk：打 ✓/✗ 直接 UnicodeEncodeError（20 角色审查 P0-7）
+for _st in (sys.stdout, sys.stderr):
+    if hasattr(_st, "reconfigure"):
+        _st.reconfigure(encoding="utf-8", errors="replace")
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
