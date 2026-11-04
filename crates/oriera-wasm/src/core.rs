@@ -322,6 +322,22 @@ impl SimCore {
         self.env.fingerprint()
     }
 
+    /// Scheme-v2 complete-identity fingerprint (PLAN-embodied-v3 §二 #17):
+    /// `state ⊕ robot identity ⊕ spec_hash` — the same fold as the native
+    /// collector's receipt block. The fold itself lives in
+    /// `oriera_agent::eval::fingerprint_set` (which calls the pub
+    /// `oriera_subsys::rigid3d::{state_hash_from_v1, robot_identity_hash,
+    /// fingerprint_v2_from_parts}`); driving it from here means the wasm
+    /// front door hands out the same three-axis receipt as the CLI instead
+    /// of the thin v1 view only — no second implementation, nothing that
+    /// can drift.
+    pub fn fingerprint_v2(&self) -> u64 {
+        let spec_hash = u64::from_str_radix(&self.spec_hash, 16).unwrap_or(u64::MAX);
+        let v1 = self.env.fingerprint();
+        oriera_agent::eval::fingerprint_set(&self.env.robot, spec_hash, &[v1])
+            .episode_fingerprints_v2[0]
+    }
+
     pub fn spec_hash(&self) -> &str {
         &self.spec_hash
     }
@@ -645,6 +661,52 @@ mod tests {
             (sim.fingerprint(), sim.obs().to_vec())
         };
         assert_eq!(run(), run());
+    }
+
+    /// Pull an array of big u64s out of the golden JSON text — serde's
+    /// `Value` would route them through f64 and lose bits past 2⁵³, and
+    /// this check is exactly about the low bits.
+    fn golden_u64_array(text: &str, key: &str) -> Vec<u64> {
+        let pat = format!("\"{key}\": [");
+        let start = text
+            .find(&pat)
+            .unwrap_or_else(|| panic!("golden lacks {key}"))
+            + pat.len();
+        let end = start + text[start..].find(']').expect("golden array unterminated");
+        text[start..end]
+            .split(',')
+            .map(|s| s.trim().parse::<u64>().expect("golden u64"))
+            .collect()
+    }
+
+    #[test]
+    fn fingerprint_v2_matches_the_native_golden_anchor() {
+        // Episode 1 (seed 1000) of `contracts/golden/
+        // embodied_fingerprints.v2.json` — the native collector's receipt.
+        // The wasm side must reproduce BOTH the legacy v1 fold and the
+        // scheme-v2 complete-identity fold bit-for-bit (the v2 exit rides
+        // `eval::fingerprint_set`, the exact native code path).
+        let golden = include_str!("../../../contracts/golden/embodied_fingerprints.v2.json");
+        let v1_golden = golden_u64_array(golden, "episode_fingerprints_v1");
+        let v2_golden = golden_u64_array(golden, "episode_fingerprints_v2");
+        assert_eq!(v1_golden.len(), 12);
+        assert_eq!(v2_golden.len(), 12);
+
+        let mut sim = SimCore::from_spec_json(SPEC).expect("spec loads");
+        sim.reset(1000);
+        let mut step = 0u64;
+        loop {
+            let a = sim
+                .baseline_action(step)
+                .expect("4-DoF pick_place baseline");
+            let out = sim.step(&a);
+            step += 1;
+            if out.terminated || step >= sim.max_steps() {
+                break;
+            }
+        }
+        assert_eq!(sim.fingerprint(), v1_golden[0], "v1 fold vs golden ep1");
+        assert_eq!(sim.fingerprint_v2(), v2_golden[0], "v2 fold vs golden ep1");
     }
 
     #[test]

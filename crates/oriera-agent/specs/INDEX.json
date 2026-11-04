@@ -3,6 +3,13 @@
  "root": "crates/oriera-agent/specs",
  "rule": "name → spec_hash；同名异 hash 报错；同 hash 异名 = 别名（见 aliases）",
  "specs": {
+  "acme-xr6s-pick": {
+   "hash": "f5c470ba867970c5",
+   "files": [
+    "lab/acme-xr6s-pick.json"
+   ],
+   "tier": "lab"
+  },
   "bin-pick-4dof": {
    "hash": "14fc9bf8c107e5da",
    "files": [
@@ -44,6 +51,13 @@
     "official/panda-7dof-pick.json"
    ],
    "tier": "official"
+  },
+  "panda-contact-criterion": {
+   "hash": "95f75626fd83f70b",
+   "files": [
+    "lab/panda-contact-criterion.json"
+   ],
+   "tier": "lab"
   },
   "pick_place": {
    "hash": "c90869dcf6a04875",

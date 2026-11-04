@@ -26,6 +26,7 @@
 //! r.obs, r.reward, r.terminated, r.truncated, r.success; r.free();
 //! JSON.parse(sim.poses());                          // every pose the renderer places
 //! sim.fingerprint();                                // decimal u64 string
+//! sim.fingerprint_v2();                             // scheme-v2 receipt (golden axis)
 //! ```
 
 mod core;
@@ -147,6 +148,20 @@ impl OrieraSim {
     /// Same receipt, 16 hex digits.
     pub fn fingerprint_hex(&self) -> String {
         format!("{:016x}", self.core.fingerprint())
+    }
+
+    /// Scheme-v2 complete-identity fingerprint (`state ⊕ robot identity
+    /// ⊕ spec_hash` — the native collector's receipt fold), as a decimal
+    /// `u64` string. The v2 golden axis (`contracts/golden/
+    /// embodied_fingerprints.v2.json`); same-platform bit-exact with the
+    /// CLI (PLAN-embodied-v3 §二 #17).
+    pub fn fingerprint_v2(&self) -> String {
+        self.core.fingerprint_v2().to_string()
+    }
+
+    /// Same v2 receipt, 16 hex digits.
+    pub fn fingerprint_v2_hex(&self) -> String {
+        format!("{:016x}", self.core.fingerprint_v2())
     }
 
     /// Canonical spec hash (16 hex digits) — the experiment's identity.

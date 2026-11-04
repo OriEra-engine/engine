@@ -274,36 +274,108 @@ jobs:
           cargo run -q -p oriera-agent --example embodied_sim_collect
           --features rigid3d,cam,spec,urdf
           -- --task pick_place --episodes 12 --out out/fp-matrix
-      - name: Compare against v2 golden anchor
+      - name: Compare against v2 golden anchor (banded statistical report)
         shell: bash
         run: |
           python - <<'PY'
           import json, sys
-          anchor = json.load(open("contracts/golden/embodied_fingerprints.v2.json", encoding="utf-8"))
-          rep = json.load(open("out/fp-matrix/eval_report.json", encoding="utf-8"))
-          # 三口径逐项对拍：v1 视图 / state（反演口径）/ v2
-          def col(rep_key, anchor_key):
-              got = [r[rep_key] for r in rep["runs"]] if rep_key in rep.get("runs", [{}])[0] else rep.get(rep_key)
-              want = anchor[anchor_key]
-              return got == want, rep_key
-          rows = rep.get("fingerprints", anchor.get("fingerprints", {}))
-          mism = []
-          for rep_key, anchor_key in [("episode_fingerprints_v1", "episode_fingerprints_v1"),
-                                      ("episode_fingerprints_v2", "episode_fingerprints_v2")]:
-              got = rep.get(rep_key) or rows.get(rep_key)
-              want = anchor.get(anchor_key) or anchor.get("fingerprints", {}).get(rep_key)
-              if got != want:
-                  mism.append(rep_key)
-          # state hash：旧回执字段（v1 折叠）——金标锚口径
-          import pathlib
-          receipt = json.load(open("out/fp-matrix/lerobot-v21/meta/oriera_receipt.json", encoding="utf-8"))
-          if receipt["episode_state_hashes"] != json.load(open("contracts/golden/embodied_fingerprints.pre-m0a.json", encoding="utf-8"))["episode_state_hashes"]:
-              mism.append("episode_state_hashes")
-          print(f"[{sys.platform}] mismatches: {mism or 'none'}")
-          if mism:
-              print("::warning::cross-platform fingerprints differ from the golden anchor "
-                    "(expected under the same-platform-bit-exact contract; re-anchor via "
-                    "physics-behavior-change if the statistical distribution also drifts)")
+
+          def load(p):
+              with open(p, encoding="utf-8") as f:
+                  return json.load(f)
+
+          anchor = load("contracts/golden/embodied_fingerprints.v2.json")
+          rep = load("out/fp-matrix/eval_report.json")
+          receipt = load("out/fp-matrix/lerobot-v21/meta/oriera_receipt.json")
+          pre = load("contracts/golden/embodied_fingerprints.pre-m0a.json")
+
+          seeds = [r["seed"] for r in rep.get("runs", [])]
+          n = len(seeds)
+          if n == 0 or n % 3:
+              print(f"::warning::expected 12 episodes (3 bands x 4), got {n}; "
+                    "statistical compare skipped")
+              sys.exit(0)
+          per = n // 3
+          bands = [(k * per, min((k + 1) * per, n)) for k in range(3)]
+
+          run_fp = rep.get("fingerprints", {})
+          anchor_fp = anchor.get("fingerprints", {})
+          # v1 legacy axis: post-P0-4 receipts name episode_fingerprints_v1;
+          # older receipts kept the pre-rename alias episode_state_hashes.
+          run_v1_receipt = (receipt.get("episode_fingerprints_v1")
+                            or receipt.get("episode_state_hashes") or [])
+
+          views = [
+              ("state", run_fp.get("episode_state_hashes") or [],
+               anchor_fp.get("episode_state_hashes") or []),
+              ("v1", run_fp.get("episode_fingerprints_v1") or [],
+               anchor_fp.get("episode_fingerprints_v1") or []),
+              ("v2", run_fp.get("episode_fingerprints_v2") or [],
+               anchor_fp.get("episode_fingerprints_v2") or []),
+              ("v1 receipt vs pre-m0a", [str(x) for x in run_v1_receipt],
+               [str(x) for x in pre.get("episode_state_hashes") or []]),
+          ]
+
+          run_succ = [bool(r.get("success")) for r in rep.get("runs", [])]
+          anchor_succ_eps = anchor.get("successes_per_episode")
+          warn = []
+
+          print(f"[{sys.platform}] fingerprint matrix - banded statistical report "
+          f"(report-only, PLAN-embodied-v3 #17)")
+          print(f"  episodes={n} seeds {seeds[0]}..{seeds[-1]} - anchor successes "
+          f"{anchor.get('successes')}/{n} - run successes {sum(run_succ)}/{n}")
+          print(f"  {'view':<24} {'match':>7} {'rate':>8}  band1  band2  band3")
+          for name, got, want in views:
+              got = [str(x) for x in got]
+              want = [str(x) for x in want]
+              if len(got) != n or len(want) != n:
+                  print(f"  {name:<24} {'n/a':>7} {'n/a':>8}  "
+                  f"(length mismatch: run {len(got)} vs anchor {len(want)})")
+                  warn.append(f"{name}: run/anchor episode count mismatch "
+                  f"({len(got)} vs {len(want)})")
+                  continue
+              ok = [a == b for a, b in zip(got, want)]
+              cells = []
+              for lo, hi in bands:
+                  m = sum(ok[lo:hi])
+                  cells.append(f"{m}/{hi - lo}" + ("" if m == hi - lo else " x"))
+              rate = sum(ok) / n
+              print(f"  {name:<24} {sum(ok):>4}/{n:<3}{rate:>6.1%}  {'   '.join(cells)}")
+              flips = [f"ep{i + 1}(seed {seeds[i]})" for i in range(n) if not ok[i]]
+              if flips:
+                  print(f"      mismatched episodes: {', '.join(flips)}")
+              if rate < 0.90:
+                  warn.append(f"{name}: per-episode hash match rate {sum(ok)}/{n} "
+                  f"({rate:.1%}) < 90%")
+          # 成功率差（单位 = 集，非百分点）：钉死的锚只落 successes 总数；
+          # 逐带差需要锚带 successes_per_episode（下次 physics-behavior-change
+          # 重锚时由 reanchor 工具补上）。
+          d_total = abs(anchor.get("successes", 0) - sum(run_succ))
+          if isinstance(anchor_succ_eps, list) and len(anchor_succ_eps) == n:
+              per_band = []
+              for lo, hi in bands:
+                  a = sum(1 for x in anchor_succ_eps[lo:hi] if x)
+                  d = abs(a - sum(run_succ[lo:hi]))
+                  per_band.append(str(d))
+                  if d > 1:
+                      warn.append(f"band seeds {seeds[lo]}..{seeds[hi - 1]}: "
+                      f"success rate diff {d} > 1 episode")
+              print(f"  success delta per band (anchor-run): "
+              f"{' '.join(per_band)} episodes - total delta {d_total}")
+          else:
+              print(f"  success delta total (anchor-run): {d_total} episodes - "
+              "per-band: n/a (pinned anchor records the successes total only)")
+              if d_total > 1:
+                  warn.append(f"success count differs by {d_total} episodes (>1)")
+          if warn:
+              for w in warn:
+                  print(f"::warning::[{sys.platform}] {w} - cross-platform drift under the "
+                  "same-platform-bit-exact contract (report-only, does not gate); "
+                  "re-anchor via physics-behavior-change if the statistical "
+                  "distribution also drifts")
+          else:
+              print(f"[{sys.platform}] statistical compare clean: every view >=90% "
+              "match, success delta <= 1 episode")
           PY
       - name: Upload eval_report + receipt + run_manifest (per-OS artifact)
         if: always()

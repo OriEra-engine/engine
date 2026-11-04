@@ -33,6 +33,18 @@ export class OrieraSim {
      */
     fingerprint_hex(): string;
     /**
+     * Scheme-v2 complete-identity fingerprint (`state ⊕ robot identity
+     * ⊕ spec_hash` — the native collector's receipt fold), as a decimal
+     * `u64` string. The v2 golden axis (`contracts/golden/
+     * embodied_fingerprints.v2.json`); same-platform bit-exact with the
+     * CLI (PLAN-embodied-v3 §二 #17).
+     */
+    fingerprint_v2(): string;
+    /**
+     * Same v2 receipt, 16 hex digits.
+     */
+    fingerprint_v2_hex(): string;
+    /**
      * Build from `oriera.scene/2` JSON text (a v1 draft migrates on the
      * fly). Validation failures surface as a JS `Error` carrying the
      * engine's field-level message.
@@ -138,6 +150,8 @@ export interface InitOutput {
     readonly orierasim_ee_pos: (a: number, b: number) => void;
     readonly orierasim_fingerprint: (a: number, b: number) => void;
     readonly orierasim_fingerprint_hex: (a: number, b: number) => void;
+    readonly orierasim_fingerprint_v2: (a: number, b: number) => void;
+    readonly orierasim_fingerprint_v2_hex: (a: number, b: number) => void;
     readonly orierasim_from_spec_json: (a: number, b: number, c: number) => void;
     readonly orierasim_gap: (a: number) => number;
     readonly orierasim_goal: (a: number, b: number) => void;
