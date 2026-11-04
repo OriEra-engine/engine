@@ -679,7 +679,14 @@ mod tests {
             .collect()
     }
 
+    /// 主机锚快照对账（--ignored，锚定机 windows-gnu 手跑；与 subsys 的
+    /// golden_constants 同纪律）。CI ubuntu 上跨编译器 f32 libm/求和序
+    /// 差 1 ulp 是设计内差异（M1 native↔wasm 已实证，PR #171 三跑实测
+    /// ubuntu 侧 v1 fold 漂移）——契约=同目标逐位+跨目标统计一致，
+    /// 等价性由 `wasm_double_run_is_deterministic` 类测试与 CI 矩阵
+    /// 统计报告保障。
     #[test]
+    #[ignore = "host-anchored snapshot: golden constants captured on windows-gnu; run on the anchor host with --ignored"]
     fn fingerprint_v2_matches_the_native_golden_anchor() {
         // Episode 1 (seed 1000) of `contracts/golden/
         // embodied_fingerprints.v2.json` — the native collector's receipt.
