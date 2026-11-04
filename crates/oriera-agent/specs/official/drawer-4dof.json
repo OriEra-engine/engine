@@ -3,7 +3,7 @@
   "meta": {
     "name": "drawer-4dof",
     "author": "oriera-embodied-maintainers",
-    "notes": "drawer@v1：抓住抽屉把手块沿 -X 拉出 ≥0.08 m，松爪静止。抽屉 = 可动盒体 prop 近似「抽屉把手」（5 cm 方块、1 kg/L 级密度带，矮重不易被拖翻；起点 x 0.27 → 拉到 0.19，终点留在 4 轴臂工具朝下的可达带内——0.17 正卡在肩限位边上，3/12 集差 1 mm 停住）。基线闸 ≥60%（首版诚实门槛）。M3-B 状态（2026-11-03）：引擎侧真抽屉的两块积木已就位——JointKind::Prismatic（rapier 多体 prismatic + 同参 ForceBased 马达，米制限位）与任意个数、每块独立摩擦的 FixtureSlab（MultibodySystem::from_robot_fixtures）；本预设的实验身份（spec_hash ef18ac07，基线 10/12）刻意不动：agent 面 SceneGraph::validate 仍限 1–2 个 fixture 且摩擦钉 0.9、to_scene3d 只映射 ground/table（embodied_env.rs，不在 M3-B 授权面），柜体/滑道 fixture 写进 spec 即 --validate 失败；解锁后按本目录治理规则另起新文件（柜体滑道 fixture + 低摩擦滑道面，或 prop 级 prismatic 约束）再重测。",
+    "notes": "drawer@v1：抓住抽屉把手块沿 -X 拉出 ≥0.08 m，松爪静止。抽屉 = 可动盒体 prop 近似「抽屉把手」（5 cm 方块、1 kg/L 级密度带，矮重不易被拖翻；起点 x 0.27 → 拉到 0.19，终点留在 4 轴臂工具朝下的可达带内——0.17 正卡在肩限位边上，3/12 集差 1 mm 停住）。基线闸 ≥60%（首版诚实门槛）。P2 治理（2026-11-05，PLAN-embodied-v3 §三）：真 prismatic 抽屉面板需运动学 fixture——引擎面的静态 FixtureSlab（P0 起 SceneGraph::validate 已放开任意个数、每块独立摩擦）不支持运动面板，柜体滑道 fixture 只能搭静止外壳；真抽屉在 M3+ 评估 RobotSpec 侧抽屉链（Prismatic 关节 + 滑道 fixture 组合，JointKind::Prismatic 引擎面已就位）再按本目录治理规则另起实验身份重测。本预设实验身份（spec_hash ef18ac07，基线 10/12）不动：本次仅改 meta.notes（不进 hash）。",
     "difficulty": "进阶"
   },
   "scene": {

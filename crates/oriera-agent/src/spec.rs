@@ -224,11 +224,13 @@ impl SceneSpec {
                 self.scene.props.len()
             ));
         }
-        if base == "bin_pick" && self.scene.props.len() < 5 {
-            // 料箱近似 = 4 面重墙 prop + 任务物体（真 fixture 在 M3）
+        if base == "bin_pick" && self.scene.props.len() < 5 && self.scene.fixtures.len() < 7 {
+            // 料箱 = 4 面重墙 prop 近似（M2），或 ≥5 块料箱 fixture
+            //（P2 真 fixture 升级：双层四壁 + 底面，随 ground/table 共 ≥7）
             return Err(format!(
-                "spec.scene.props：bin_pick 任务至少要 5 个 prop（props[0] = 任务物体 + 4 面料箱壁；当前 {} 个）",
-                self.scene.props.len()
+                "spec.scene.props：bin_pick 任务要 ≥5 个 prop（prop 近似）或 ≥7 个 fixture（真 fixture 料箱）；当前 {} 个 prop、{} 个 fixture",
+                self.scene.props.len(),
+                self.scene.fixtures.len()
             ));
         }
         let dof = self.robot.joints.len();
