@@ -1126,7 +1126,7 @@ mod bin_fixture_gate {
     #[test]
     fn legacy_five_prop_bin_still_passes() {
         // 回归：5-prop 近似（14fc9bf8 旧路径）仍过闸
-        let spec = SceneSpec::load(include_str!("../fixtures/bin-pick-4dof-legacy-5prop.json"))
+        let spec = SceneSpec::load(include_str!("fixtures/bin-pick-4dof-legacy-5prop.json"))
             .expect("legacy 5-prop bin must load+validate");
         assert!(spec.spec.scene.props.len() >= 5);
     }
