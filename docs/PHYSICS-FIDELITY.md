@@ -147,6 +147,53 @@
     上的**保守子集**（成功集一致率 100%，预接触差异 = 设计目的）。
   - 同判据重跑逐位一致（确定性契约）。
 
+### 4.1 U-6 验证步：Contact 判据 lab 变体 × 12 集对照（2026-11-04，P1-C2）
+
+PLAN-embodied-v3 拍板项 3-A 兑现：`crates/oriera-agent/specs/lab/
+panda-contact-criterion.json`（extends `panda-7dof-pick`，仅换
+`holding_criterion = Contact`）对官方 TipRadius 口径，同一 12 seed
+（course@v1，`embodied_sim_baseline`，release，确定性复核 full 双跑
+逐位一致）。
+
+- **阈值取值依据**：`min_normal_force = 1.0 N`——50 g 方块经 μ=1.4 板
+  摩擦抵重力单板需 ≈0.18 N，1 N 远高于重力负载又远低于 20 N 板
+  effort（挤压段实测法向力远超它，预接触窗口 <1 N 被排除——正是要
+  消除的假标签）；`max_slip = 0.05 m/s`——down-gripper 实测稳定携带
+  滑速在其之下，区分「压住但打滑」与「真携带」。出处 =
+  `holding_contact_criterion.rs` 的验证阈值 + gripper_down_smoke 同
+  场景实测（M0b/WPA Contact 实现文档 §4 上表）。
+- **12 集成功率对照（once / at_end 双报）**：
+
+  | 口径 | once | at_end | transitions | 判据 spec_hash |
+  |---|---|---|---|---|
+  | TipRadius（官方 panda-7dof-pick） | **10/12（83.3%）** | 10/12 | 6574 | b5535a74f18fb57b |
+  | Contact（lab 变体） | **10/12（83.3%）** | 10/12 | 6574 | 95f75626fd83f70b |
+
+  逐集**零翻转**：同一 10 个种子成功（66539/66548 双口径同败）、逐集
+  steps 逐个相等、物体轨迹逐位相同（判据只改 `holding` 遥测标签，
+  不进物理回路——脚本基线开环，6574 transitions 两口径全等）。
+  **Contact 显著不低——判据可以换，不折成功率**；双败种子是
+  抓取相位本身的失败，与标签口径无关（如实记录，不改判据凑数）。
+- **reward 通道差异（如实报）**：pick_place 的 reward 折入 holding
+  （grasp 事件 + 每步持有项，`tasks.rs`），换判据后 12 集逐集
+  reward_sum 全部改变（±0.3～±10.7），而轨迹/成功不变——换判据是
+  **换监督信号**，对 RL 训练是实质变化（U-6 原诉的量化版：假标签
+  直接进奖励）。升级官方判据前需按 P2 项重跑 reference。
+- **holding 时序抽样**（seed 1000 成功集，ORIERA_SIM_TRACE=5，trace
+  每 5 tick 采样，含确定性双跑 224 行）：224 行中 agree 154、
+  仅 TipRadius 70、仅 Contact **0** → Contact 仍是 TipRadius 的保守
+  子集。两个假标签窗口都被 Contact 消除：①闭爪需求翻转 tick（grip
+  0→1）当拍 TipRadius 即标 held（板还没压上，预接触窗口，Panda 上
+  ~5 tick），Contact 推迟到 ~190 tick 板真正压上；②放置段尾
+  （~515–555 tick）方块已入目标区、板压强衰减，TipRadius 仍标
+  held 直到集末，Contact 在力掉到 1 N 以下即摘标。
+- **结论**：episode 级成功率两口径等价（10/12 = 10/12，零翻转），
+  判据差异全在标签时序——即 U-6 的设计目的。是否把 Contact 升为
+  官方预设判据，按 PLAN-embodied-v3 §三 P2（「Contact 判据出 lab
+  变体跑 12 集对比后决策升官方」）留待决策；本变体留在 `specs/lab/`
+  供复跑（`embodied_sim_baseline --spec crates/oriera-agent/specs/
+  lab/panda-contact-criterion.json`）。
+
 ## 5. wasm 只读口（M1 遗留收尾）
 
 - `OrieraSim.gap() -> f32`：当前指板间距（m）。镜像与引擎
@@ -198,3 +245,34 @@ cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,
 | `LinkShape` 无 Mesh 变体 | ✅ 本包：`ConvexHull`/`Mesh`（无旋转字段——旋转折进体轴点集本身，链体凸包策略下不缺） |
 | `JointSpec` 无关节类型 | ⏳ 未做（prismatic 链关节仍报错；M0b 未加 kind） |
 | 每链仅一个 `<collision>` | ⏳ 未做（多 collider 列表，后续包） |
+
+## 9. P-12 收账：MuJoCo 动力学对比的口径——tick≤30 启动瞬态，以 settled 0.0005 rad 为准（2026-11-04）
+
+PLAN-embodied-general §9.1 P-12（「审稿人问『凭什么不用 ManiSkill/Isaac』无答案；
+抓取模型注释与实现矛盾」）在 M3 交付了 MuJoCo 动力学级对比
+（`scripts/mjcf_crosscheck.py` v2 DYNAMICS 节，meausurement-only）。下轮评审
+重开时直接引用本段口径，不要用全轨最大偏差说话：
+
+- **全轨最大 |dq| = 0.0440 rad**（601 tick × 7 关节，mean 0.0024 rad）——
+  这个数字**全部来自目标阶跃后 ≤30 tick 的启动瞬态**：worst 在 tick 5
+  （joint6，rust 0.524 vs mujoco 0.480），30-tick 采样格最大 0.0143 rad。
+  瞬态根因是伺服公式不同（rapier ForceBased 软约束 = ERP/CFM 弹簧阻尼 vs
+  MuJoCo 显式力 `kp·(ctrl−q) − kv·q̇`），加上阶跃后 kp·error 超 forcerange
+  的饱和段整形不同（mujoco.saturated_ticks 逐关节有数）、积分器/求解器
+  （symplectic Euler + PGS vs implicitfast + Cholesky）、joint4 限位瞬态
+  ——同平衡点、不同瞬态阻尼，`report.json` 的 `root_cause` 四条原文可引。
+- **settled 口径（判准）**：每个 waypoint 末 10 tick（DYN_SETTLE_TAIL）的
+  max |dq| = **0.0005 rad**，相对 0.05 rad 容差两个数量级余量 → 动力学
+  verdict **PASS**。脚本 rule 原文：*"PASS = settled (last ticks of every
+  waypoint) max |dq| <= tol; transient numbers are measured and reported,
+  never tuned"*——瞬态数字如实测量、永不调参（两边引擎的瞬态整形差异
+  不是"误差"，是可解释的设计差异）。
+- 复跑：`python scripts/mjcf_crosscheck.py`（exit code = 运动学/参数
+  verdict；动力学只随 SUMMARY 行附报）。2026-11-01 实测报告：
+  `out/mjcf-crosscheck/report.json`（max 0.0440 / settled 0.0005 / PASS）。
+- rigid3d.rs 头注释矛盾项已在 M2/M3 波次修正（Grasping 段之后接 M0b/M2/
+  M3 三段如实描述），本项无余量。
+
+（本段与 URDF-IMPORT.md 附录 A 的参数保真对比互补：A 是「参数级」，本段
+是「轨迹级」——评审问动力学一致性时以 settled 口径答，问参数一致性时引
+附录 A。）

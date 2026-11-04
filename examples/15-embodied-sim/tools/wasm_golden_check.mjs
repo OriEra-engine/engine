@@ -2,19 +2,24 @@
 //
 // 用 vendor/oriera/ 的 oriera-wasm 跑 pick_place 脚本基线（collect 协议：
 // seed0 + 退化重抽 displaced band），两遍（两个独立 sim 实例）逐位比对，
-// 再与两个外部参照逐集比对：
+// 再与三个外部参照逐集比对：
 //   1. contracts/golden/embodied_fingerprints.pre-m0a.json（绝对金标锚；
-//      哈希口径 = env.fingerprint() = sys.fingerprint(world)，Rust 收集器
-//      收集）；
+//      哈希口径 = env.fingerprint() = sys.fingerprint(world) = v1 折叠，
+//      Rust 收集器收集）；
 //   2. --rust-ref DIR：一次原生 `embodied_sim_collect --episodes N --out DIR`
-//      的产物（lerobot-v21/meta/oriera_receipt.json 的 episode_state_hashes
-//      + eval_report.json 的逐集 success/steps）——金标口径对不上时按
-//      PLAN §3.2 降级：跑一条 Rust 命令取同机参照值逐值比对。
+//      的产物（lerobot-v21/meta/oriera_receipt.json 的指纹 + eval_report.json
+//      的逐集 success/steps）——金标口径对不上时按 PLAN §3.2 降级：跑一条
+//      Rust 命令取同机参照值逐值比对；
+//   3. --golden-v2 FILE（默认 contracts/golden/embodied_fingerprints.v2.json，
+//      PLAN-embodied-v3 #17）：scheme-v2 三口径金标——wasm 侧用
+//      sim.fingerprint_v2()（与原生收集器同一 fold：state ⊕ robot identity
+//      ⊕ spec_hash）对拍 v2 列，v1 列对拍 episode_fingerprints_v1。
 // 口径说明见 docs/WASM-RENDERER.md：u64 哈希超出 JS Number 精度，参照
 // JSON 一律把大整数按十进制字符串正则提取后逐字符比较。
 //
 // 运行：node examples/15-embodied-sim/tools/wasm_golden_check.mjs [--episodes 12]
-//   [--seed0 1000] [--spec FILE] [--golden FILE] [--rust-ref DIR] [--policy wasm|js] [--strict]
+//   [--seed0 1000] [--spec FILE] [--golden FILE] [--golden-v2 FILE]
+//   [--rust-ref DIR] [--policy wasm|js] [--strict]
 
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -34,6 +39,7 @@ const POLICY = arg("policy", "wasm"); // wasm=同代码逐位口径；js=JS frou
 const STRICT = process.argv.includes("--strict");
 const SPEC = path.resolve(arg("spec", path.join(REPO_ROOT, "crates/oriera-agent/specs/tabletop-4dof-pick.json")));
 const GOLDEN = path.resolve(arg("golden", path.join(REPO_ROOT, "contracts/golden/embodied_fingerprints.pre-m0a.json")));
+const GOLDEN_V2 = path.resolve(arg("golden-v2", path.join(REPO_ROOT, "contracts/golden/embodied_fingerprints.v2.json")));
 const RUST_REF = arg("rust-ref", null);
 
 // ── u64 安全的 JSON 提取（十进制字符串，绕开 Number 2^53 精度）──
@@ -42,12 +48,23 @@ function extractU64Array(jsonText, key) {
   if (!m) return null;
   return m[1].split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
 }
-// 大整数数组 → 字符串数组后正常 parse（金标文件读法）
+// 大整数数组 → 字符串数组后正常 parse（金标文件读法）。
+// keys：所有装 u64 指纹的数组键（pre-m0a 只有 episode_state_hashes；
+// v2 金标 fingerprints 块里三口径三个数组都要保护）。
+const U64_KEYS = [
+  "episode_state_hashes",
+  "episode_fingerprints_v1",
+  "episode_fingerprints_v2",
+];
 function parseWithU64Strings(jsonText) {
-  const patched = jsonText.replace(
-    /("episode_state_hashes"\s*:\s*\[)([^\]]*)(\])/g,
-    (_m, a, body, c) => a + body.split(",").map((s) => `"${s.trim()}"`).join(",") + c,
-  );
+  let patched = jsonText;
+  for (const key of U64_KEYS) {
+    patched = patched.replace(
+      new RegExp(`("${key}"\\s*:\\s*\\[)([^\\]]*)(\\])`, "g"),
+      (_m, a, body, c) =>
+        a + body.split(",").map((s) => `"${s.trim()}"`).join(",") + c,
+    );
+  }
   return JSON.parse(patched);
 }
 
@@ -106,6 +123,7 @@ function runCollection(label) {
     episodes.push({
       draw: draws, seed, success: terminated, steps: step, rewardSum,
       fingerprint: sim.fingerprint(), fingerprintHex: sim.fingerprint_hex(),
+      fingerprintV2: sim.fingerprint_v2(),
     });
   }
   const receipt = sim.randomization();
@@ -139,10 +157,10 @@ runA.episodes.forEach((e, i) => {
 console.log(`# 双跑逐位一致: ${bitIdentical ? "PASS ✓" : "FAIL ✗"}`);
 
 // ── 逐集表 ─────────────────────────────────────────────────────
-console.log("\ndraw seed    success steps reward   fingerprint(u64)");
+console.log("\ndraw seed    success steps reward   fingerprint_v1(u64)                            fingerprint_v2(u64)");
 for (const e of runA.episodes) {
   console.log(
-    `${String(e.draw).padEnd(4)} ${String(e.seed).padEnd(8)} ${e.success ? "T" : "F"}       ${String(e.steps).padEnd(5)} ${e.rewardSum.toFixed(3).padEnd(8)} ${e.fingerprint}`,
+    `${String(e.draw).padEnd(4)} ${String(e.seed).padEnd(8)} ${e.success ? "T" : "F"}       ${String(e.steps).padEnd(5)} ${e.rewardSum.toFixed(3).padEnd(8)} ${e.fingerprint.padEnd(46)} ${e.fingerprintV2}`,
   );
 }
 
@@ -201,6 +219,37 @@ if (RUST_REF) {
   }
 }
 
+// ── 参照 3：v2 金标锚（scheme-v2 三口径，PLAN-embodied-v3 §二 #17）──
+// wasm fingerprint_v2() 与原生收集器同一 fold（state ⊕ robot identity ⊕
+// spec_hash，经 eval::fingerprint_set）——对拍 v2 列，v1 列对拍锚内
+// episode_fingerprints_v1（= 参照1 的口径，跨锚复核）。
+let goldenV2Aligned = null;
+if (existsSync(GOLDEN_V2)) {
+  const g = parseWithU64Strings(readFileSync(GOLDEN_V2, "utf8"));
+  const gSeeds = (g.seeds ?? []).map(String);
+  const fp = g.fingerprints ?? {};
+  const gV2 = (fp.episode_fingerprints_v2 ?? []).map(String);
+  const gV1 = (fp.episode_fingerprints_v1 ?? []).map(String);
+  const seedBandSame =
+    gSeeds.length > 0 &&
+    JSON.stringify(runA.episodes.map((e) => String(e.seed))) === JSON.stringify(gSeeds);
+  const v2Same = JSON.stringify(runA.episodes.map((e) => e.fingerprintV2)) === JSON.stringify(gV2);
+  const v1Same = JSON.stringify(runA.episodes.map((e) => e.fingerprint)) === JSON.stringify(gV1);
+  const succSame = runA.episodes.filter((e) => e.success).length === g.successes;
+  goldenV2Aligned = seedBandSame && v2Same && succSame;
+  console.log(`\n# 参照3 v2 金标锚（${path.basename(GOLDEN_V2)} · engine_commit ${g.engine_commit} · scheme ${g.scheme}）:`);
+  console.log(`#   seed band 逐集一致:   ${seedBandSame ? "PASS ✓" : "FAIL ✗"}`);
+  console.log(`#   逐集 v2 指纹逐位一致: ${v2Same ? "PASS ✓" : "FAIL ✗"}`);
+  console.log(`#   逐集 v1 指纹逐位一致: ${v1Same ? "PASS ✓" : "FAIL ✗"}（v2 锚内三口径的 v1 列）`);
+  console.log(`#   成功率一致:           ${succSame ? "PASS ✓" : "FAIL ✗"}（${runA.episodes.filter((e) => e.success).length}/${EPISODES} vs ${g.successes}/12 = ${((g.success_rate ?? 0) * 100).toFixed(1)}%）`);
+  if (!v2Same) {
+    runA.episodes.forEach((e, i) => {
+      const same = String(e.fingerprintV2) === gV2[i];
+      if (!same) console.log(`#     ep${i + 1} seed ${e.seed}: wasm_v2 ${e.fingerprintV2} golden_v2 ${gV2[i]} ✗`);
+    });
+  }
+}
+
 // ── bundle 尺寸 ────────────────────────────────────────────────
 const jsSize = statSync(path.join(VENDOR, "oriera_wasm.js")).size;
 const wasmSize = statSync(path.join(VENDOR, "oriera_wasm_bg.wasm")).size;
@@ -214,11 +263,14 @@ console.log(retiredSum
   : `# 退役: rapier 资产已删除（净变化 ${(wasmSize / 1024).toFixed(0)} KiB wasm + ${(jsSize / 1024).toFixed(1)} KiB glue）`);
 
 // ── 结论 ───────────────────────────────────────────────────────
-const alignedAny = goldenAligned === true || rustAligned === true;
-const comparedAny = goldenAligned !== null || rustAligned !== null;
+const alignedAny = goldenAligned === true || rustAligned === true || goldenV2Aligned === true;
+const comparedAny = goldenAligned !== null || rustAligned !== null || goldenV2Aligned !== null;
 console.log("\n# 结论:");
 console.log(`#   wasm 内双跑逐位一致:  ${bitIdentical ? "PASS" : "FAIL"}`);
 console.log(`#   与 Rust 参照逐位对齐: ${alignedAny ? "PASS（逐位）" : comparedAny ? "未逐位（逐值对照见上；口径说明 docs/WASM-RENDERER.md）" : "未比对（传 --rust-ref 或放置金标）"}`);
+if (goldenV2Aligned !== null) {
+  console.log(`#   v2 金标锚对拍（v1+v2 双列）: ${goldenV2Aligned ? "PASS（逐位）" : "FAIL（见参照3 逐值对照）"}`);
+}
 if (STRICT && !alignedAny) {
   console.error("# --strict：要求与 Rust 参照逐位对齐，未达标。");
   process.exit(1);

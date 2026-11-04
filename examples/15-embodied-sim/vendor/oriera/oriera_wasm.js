@@ -146,6 +146,50 @@ export class OrieraSim {
         }
     }
     /**
+     * Scheme-v2 complete-identity fingerprint (`state ⊕ robot identity
+     * ⊕ spec_hash` — the native collector's receipt fold), as a decimal
+     * `u64` string. The v2 golden axis (`contracts/golden/
+     * embodied_fingerprints.v2.json`); same-platform bit-exact with the
+     * CLI (PLAN-embodied-v3 §二 #17).
+     * @returns {string}
+     */
+    fingerprint_v2() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.orierasim_fingerprint_v2(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Same v2 receipt, 16 hex digits.
+     * @returns {string}
+     */
+    fingerprint_v2_hex() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.orierasim_fingerprint_v2_hex(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * Build from `oriera.scene/2` JSON text (a v1 draft migrates on the
      * fly). Validation failures surface as a JS `Error` carrying the
      * engine's field-level message.
