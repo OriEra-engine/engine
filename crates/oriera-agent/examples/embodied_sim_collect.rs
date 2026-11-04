@@ -495,10 +495,10 @@ fn parse_args() -> Args {
                 let v = it
                     .next()
                     .unwrap_or_else(|| fail(&format!("{arg} 需要一个值：reach|pick_place|push")));
-                a.task = Some(
-                    TaskKind::parse(&v)
-                        .unwrap_or_else(|| fail(&format!("--task {v:?}：须为 reach|pick_place|push"))),
-                );
+                a.task =
+                    Some(TaskKind::parse(&v).unwrap_or_else(|| {
+                        fail(&format!("--task {v:?}：须为 reach|pick_place|push"))
+                    }));
             }
             "--spec" => {
                 a.spec = Some(
@@ -535,7 +535,9 @@ fn parse_args() -> Args {
                     .next()
                     .unwrap_or_else(|| fail(&format!("{arg} 需要一个值")));
                 a.task = Some(TaskKind::from_phrase(&v).unwrap_or_else(|| {
-                    fail(&format!("无法从短语解析任务：{v:?}（试试 --task reach|pick_place|push）"))
+                    fail(&format!(
+                        "无法从短语解析任务：{v:?}（试试 --task reach|pick_place|push）"
+                    ))
                 }));
             }
             "--episodes" => {
@@ -771,11 +773,7 @@ fn load_progress(
 /// 重写 progress.json（tmp+rename 原子提交——这是每集的 checkpoint
 /// commit 点：数据文件先落，日志后提交，kill 掉在中间 = 该集不在日志、
 /// 下次重采，绝不出现「日志说有、盘上没有」的半集）。
-fn write_progress(
-    io: &CollectIo,
-    protocol: &EvalProtocol,
-    task: &str,
-) -> Result<(), String> {
+fn write_progress(io: &CollectIo, protocol: &EvalProtocol, task: &str) -> Result<(), String> {
     let p = Progress {
         format: PROGRESS_FORMAT.into(),
         spec_hash: io.spec_hash.clone(),
@@ -787,8 +785,8 @@ fn write_progress(
         engine_commit: io.engine_commit.clone(),
         draws: io.draws.clone(),
     };
-    let json = serde_json::to_string_pretty(&p)
-        .map_err(|e| format!("progress.json 序列化失败：{e}"))?;
+    let json =
+        serde_json::to_string_pretty(&p).map_err(|e| format!("progress.json 序列化失败：{e}"))?;
     std::fs::create_dir_all(io.root)
         .map_err(|e| format!("checkpoint 目录创建失败（{}）：{e}", io.root.display()))?;
     let tmp = io.root.join("progress.json.tmp");
@@ -856,7 +854,9 @@ fn checkpoint_episode(root: &std::path::Path, ds: &LeRobotV21) -> Result<(), Str
                 .map_err(|e| format!("checkpoint 相机目录创建失败（{}）：{e}", dir.display()))?;
             for (k, png) in frames.iter().enumerate() {
                 std::fs::write(dir.join(format!("frame_{k:06}.png")), png).map_err(|e| {
-                    format!("checkpoint {prefix}/episode_{ep_index:06}/frame_{k:06}.png 写入失败：{e}")
+                    format!(
+                        "checkpoint {prefix}/episode_{ep_index:06}/frame_{k:06}.png 写入失败：{e}"
+                    )
                 })?;
             }
             Ok(())
@@ -873,8 +873,12 @@ fn checkpoint_episode(root: &std::path::Path, ds: &LeRobotV21) -> Result<(), Str
         ep.rows.len()
     );
     let meta_dir = root.join("meta");
-    std::fs::create_dir_all(&meta_dir)
-        .map_err(|e| format!("checkpoint meta 目录创建失败（{}）：{e}", meta_dir.display()))?;
+    std::fs::create_dir_all(&meta_dir).map_err(|e| {
+        format!(
+            "checkpoint meta 目录创建失败（{}）：{e}",
+            meta_dir.display()
+        )
+    })?;
     let episodes_path = meta_dir.join("episodes.jsonl");
     let mut f = std::fs::OpenOptions::new()
         .create(true)
@@ -905,11 +909,7 @@ fn load_episode_into_ds(
         )
     })?;
     ds.start_episode(task);
-    let task_index = ds
-        .tasks
-        .iter()
-        .position(|t| t == task)
-        .unwrap_or_default() as u32;
+    let task_index = ds.tasks.iter().position(|t| t == task).unwrap_or_default() as u32;
     let base = ds.total_frames() as u64;
     let mut n_rows = 0usize;
     for (i, line) in text.lines().enumerate() {
@@ -919,14 +919,15 @@ fn load_episode_into_ds(
         let v: serde_json::Value = serde_json::from_str(line)
             .map_err(|e| format!("checkpoint {} 第 {i} 行不是合法 JSON：{e}", path.display()))?;
         let nums = |key: &str| -> Result<Vec<f32>, String> {
-            let arr = v.get(key).and_then(|x| x.as_array()).ok_or_else(|| {
-                format!("checkpoint {} 第 {i} 行缺 {key}", path.display())
-            })?;
+            let arr = v
+                .get(key)
+                .and_then(|x| x.as_array())
+                .ok_or_else(|| format!("checkpoint {} 第 {i} 行缺 {key}", path.display()))?;
             arr.iter()
                 .map(|x| {
-                    x.as_f64()
-                        .map(|f| f as f32)
-                        .ok_or_else(|| format!("checkpoint {} 第 {i} 行 {key} 含非数字", path.display()))
+                    x.as_f64().map(|f| f as f32).ok_or_else(|| {
+                        format!("checkpoint {} 第 {i} 行 {key} 含非数字", path.display())
+                    })
                 })
                 .collect()
         };
@@ -938,9 +939,10 @@ fn load_episode_into_ds(
             ("index", base + i as u64, "全局行号"),
             ("task_index", task_index as u64, "任务号"),
         ] {
-            let got = v.get(key).and_then(|x| x.as_u64()).ok_or_else(|| {
-                format!("checkpoint {} 第 {i} 行缺 {key}", path.display())
-            })?;
+            let got = v
+                .get(key)
+                .and_then(|x| x.as_u64())
+                .ok_or_else(|| format!("checkpoint {} 第 {i} 行缺 {key}", path.display()))?;
             if got != expect {
                 return Err(format!(
                     "checkpoint {} 第 {i} 行 {what}（{key}）{got} ≠ 期望 {expect}——目录与本跑不一致，用 --force 全量重跑",
@@ -948,9 +950,8 @@ fn load_episode_into_ds(
                 ));
             }
         }
-        ds.push_step(&state, &action).map_err(|e| {
-            format!("checkpoint {} 第 {i} 行读回失败：{e}", path.display())
-        })?;
+        ds.push_step(&state, &action)
+            .map_err(|e| format!("checkpoint {} 第 {i} 行读回失败：{e}", path.display()))?;
         n_rows += 1;
     }
     if n_rows != row.steps as usize {
@@ -1499,9 +1500,8 @@ fn main() {
         for dir in ["lerobot-v21", "lerobot-v30", "npz"] {
             let p = out.join(dir);
             if p.exists() {
-                std::fs::remove_dir_all(&p).unwrap_or_else(|e| {
-                    fail(&format!("--force 清理 {} 失败：{e}", p.display()))
-                });
+                std::fs::remove_dir_all(&p)
+                    .unwrap_or_else(|e| fail(&format!("--force 清理 {} 失败：{e}", p.display())));
             }
         }
     } else {
@@ -1532,7 +1532,10 @@ fn main() {
             // 无日志的残留树（上次跑被 kill 在首集之前等）：清掉，避免
             // 陈旧 episode 文件混进本次数据集。
             std::fs::remove_dir_all(&v21_root).unwrap_or_else(|e| {
-                fail(&format!("清理陈旧 checkpoint {} 失败：{e}", v21_root.display()))
+                fail(&format!(
+                    "清理陈旧 checkpoint {} 失败：{e}",
+                    v21_root.display()
+                ))
             });
         }
     }
@@ -1687,9 +1690,18 @@ fn main() {
         &fps.fingerprint_scheme,
         &fps.episode_fingerprints_v2,
     )
-    .unwrap_or_else(|e| fail(&format!("oriera_receipt.json 写入失败（{}）：{e}", root.display())));
-    LeRobotV21::write_card(&root, task.phrase())
-        .unwrap_or_else(|e| fail(&format!("数据集卡片（README.md）写入失败（{}）：{e}", root.display())));
+    .unwrap_or_else(|e| {
+        fail(&format!(
+            "oriera_receipt.json 写入失败（{}）：{e}",
+            root.display()
+        ))
+    });
+    LeRobotV21::write_card(&root, task.phrase()).unwrap_or_else(|e| {
+        fail(&format!(
+            "数据集卡片（README.md）写入失败（{}）：{e}",
+            root.display()
+        ))
+    });
     // The resolved spec rides with the dataset — the file IS the experiment.
     // 脱敏导出（--sanitize）不落盘：身份只经 manifest/receipt 的 spec_hash
     // 对账，不声称逐位可复现（P-B3）。

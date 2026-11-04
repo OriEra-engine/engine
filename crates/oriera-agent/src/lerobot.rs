@@ -1692,11 +1692,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         ds.write_dir(&root).expect("v21 tree");
         assert!(
-            root.join("videos/chunk-000/depth.wrist/episode_000000/frame_000000.png").exists(),
+            root.join("videos/chunk-000/depth.wrist/episode_000000/frame_000000.png")
+                .exists(),
             "depth frames must land even with an empty RGB track"
         );
         assert!(
-            !root.join("videos/chunk-000/observation.images.wrist").exists(),
+            !root
+                .join("videos/chunk-000/observation.images.wrist")
+                .exists(),
             "no RGB dir when the RGB track is empty"
         );
         // 深度帧进 MANIFEST（提交点覆盖深度轨）
