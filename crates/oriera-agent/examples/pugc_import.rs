@@ -8,8 +8,12 @@
 use oriera_agent::spec::SceneSpec;
 
 fn main() {
-    let urdf_path = std::env::args().nth(1).expect("usage: pugc_import <URDF> <out.json> [mesh_root]");
-    let out_path = std::env::args().nth(2).expect("usage: pugc_import <URDF> <out.json> [mesh_root]");
+    let urdf_path = std::env::args()
+        .nth(1)
+        .expect("usage: pugc_import <URDF> <out.json> [mesh_root]");
+    let out_path = std::env::args()
+        .nth(2)
+        .expect("usage: pugc_import <URDF> <out.json> [mesh_root]");
     let mesh_root = std::env::args().nth(3);
 
     let xml = std::fs::read_to_string(&urdf_path).expect("read urdf");
@@ -105,8 +109,5 @@ fn main() {
     spec.validate()
         .unwrap_or_else(|e| panic!("spec invalid: {e}"));
     std::fs::write(&out_path, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
-    println!(
-        "spec → {out_path} (spec_hash {})",
-        spec.spec_hash_hex()
-    );
+    println!("spec → {out_path} (spec_hash {})", spec.spec_hash_hex());
 }

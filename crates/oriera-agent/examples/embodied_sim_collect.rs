@@ -854,9 +854,13 @@ fn main() {
         }
         None => std::path::Path::new(&args.out).to_path_buf(),
     };
-    std::fs::create_dir_all(&out)
-        .unwrap_or_else(|e| fail(&format!("输出目录创建失败（{}）：{e}
-常见原因：权限不足 / 路径已存在同名文件 / 盘满——换 --out 或先清掉同名文件", out.display())));
+    std::fs::create_dir_all(&out).unwrap_or_else(|e| {
+        fail(&format!(
+            "输出目录创建失败（{}）：{e}
+常见原因：权限不足 / 路径已存在同名文件 / 盘满——换 --out 或先清掉同名文件",
+            out.display()
+        ))
+    });
 
     // Provenance first (P-3): even a crashed run leaves its manifest.
     write_run_manifest_opts(
@@ -1029,8 +1033,13 @@ fn main() {
 
     let root = out.join("lerobot-v21");
     std::fs::create_dir_all(&root).unwrap();
-    let n = r1.ds.write_dir(&root).unwrap_or_else(|e| fail(&format!("数据集写出失败（{}）：{e}
-常见原因：磁盘满 / 权限不足——清空间或换 --out 后重跑（本跑数据在内存未丢，重跑即得）", root.display())));
+    let n = r1.ds.write_dir(&root).unwrap_or_else(|e| {
+        fail(&format!(
+            "数据集写出失败（{}）：{e}
+常见原因：磁盘满 / 权限不足——清空间或换 --out 后重跑（本跑数据在内存未丢，重跑即得）",
+            root.display()
+        ))
+    });
     let engine = concat!("oriera-engine/", env!("CARGO_PKG_VERSION"));
     // 三口径指纹集（state/v1/v2）在 receipt 之前算好——数据集自带完整身份。
     let fps = eval::fingerprint_set(&spec.robot, spec.spec_hash(), &r1.hashes);

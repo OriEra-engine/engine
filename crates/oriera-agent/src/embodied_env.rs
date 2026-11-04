@@ -578,7 +578,8 @@ impl SceneGraph {
                 ));
             }
             if c.name.is_empty()
-                || !c.name
+                || !c
+                    .name
                     .chars()
                     .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
             {
