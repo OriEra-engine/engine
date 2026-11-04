@@ -34,7 +34,16 @@
 
 **不重造物理引擎，不重造数据集格式**——把自己做成便宜、可复位、可回放的训练场（world as benchmark）。物理与数据出口对接开源标准：[Rapier](https://rapier.rs) 3D 接触物理 × [LeRobotDataset v2.1](https://huggingface.co/docs/lerobot) 训练数据导出 × [Gymnasium](https://gymnasium.farama.org) Python 桥。
 
-15 号 demo 一句话：**打开浏览器 → 键鼠遥操作机械臂 → 一键导出可训练数据 → lerobot-train**。
+**这是同一个内核的两个档位**：世界引擎档（demo 01–14：AI NPC、生成式世界、影游）与训练场档（15 号具身仿真台，world as benchmark）跑在同一个 11 层内核上——八条产业赛道共用一套内核的叙事见 [docs/VERTICALS.md](docs/VERTICALS.md)。
+
+**15 号具身仿真台（旗舰）**：一套物理，四个入口，导出轨按入口如实分流——
+
+1. **浏览器**：键鼠遥操作 / 脚本演示，六预设卡片墙点卡片换装（独立打开时「导出」按钮置灰——浏览器看臂动，不产数据）；
+2. **Studio**：具身仿真台工作台，不敲命令录制、一键导出 LeRobot 训练数据（需要含 /sim 页的版本，见 [Studio 发布页](https://github.com/OriEra-engine/studio/releases/latest)）；
+3. **CLI**：`embodied_sim_collect` 确定性采集（默认 12 集，每集带逐位指纹回执），直出 LeRobotDataset v2.1 / v3.0 + npz，见 [docs/EMBODIED-PIPELINES.md](docs/EMBODIED-PIPELINES.md)；
+4. **Python**：Gymnasium 桥接 stable-baselines3 / lerobot-train。
+
+本地 10 秒看臂动（任意终端，仓库根目录）：`python -m http.server 8124 -d examples` → 浏览器打开 http://localhost:8124/15-embodied-sim/ ；从跑基线到交报告的全程走查见 [docs/LAB-GUIDE.md](docs/LAB-GUIDE.md)。
 
 
 OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网页、AR 眼镜（以及未来的脑机接口）上，跑一个**能被 AI 驱动、能持续自我演化、用户可以用自然语言创造内容**的实时 3D 世界。
@@ -63,7 +72,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 | 12 Memory Atlas 记忆星图 | 离线 NPC 记忆写入、检索与时间衰减可视化 | [▶](https://oriera-engine.github.io/engine/examples/12-memory-atlas/index.html) |
 | 13 Generative Gallery 生成式画廊 | 一句话主题 → L8 文生图/文生 3D → L4 热替换装帧小 3D 世界 | [▶](https://oriera-engine.github.io/engine/examples/13-genai-gallery/index.html) |
 | 14 Frame Hunter 帧猎 | 跑酷答题游戏：三车道跑酷 + 谬误之门 + Boss 战，BKT 知识追踪，全离线 2.3MB | [▶](https://oriera-engine.github.io/engine/frame-hunter/index.html) |
-| 15 Embodied Sim 具身仿真台 | **rapier3d 接触物理机械臂桌面抓放**：键鼠遥操作/脚本策略/录制→导出 LeRobot v2.1 训练数据 | [▶](https://oriera-engine.github.io/engine/examples/15-embodied-sim/index.html) |
+| 15 Embodied Sim 具身仿真台 | **rapier3d 接触物理机械臂桌面抓放**：键鼠遥操作/脚本演示 + 六预设卡片墙换装；数据导出走 Studio 工作台或 CLI（独立打开时「导出」置灰） | [▶](https://oriera-engine.github.io/engine/examples/15-embodied-sim/index.html) |
 
 ## 架构
 
@@ -174,13 +183,13 @@ ORIERA_SMOKE_PROVIDER=zhipu cargo run -p oriera-infer --example provider_smoke  
 
 ### 🖥️ 不想装工具链？用官方辅助工具 OriEra Studio
 
-[OriEra Studio](https://github.com/OriEra-engine/studio)（Windows 桌面端）把引擎打包成双击即用的形态：内置全部示例离线运行、按硬件推荐并植入模型、五步生成自己的 AI 原生游戏原型——无需科学上网、无需 GitHub、无需命令行。遇到问题可以直接从 Studio 桌面端把反馈（自动附环境信息）提交到本仓库 issues。[下载 v0.3.0](https://github.com/OriEra-engine/studio/releases/latest)。
+[OriEra Studio](https://github.com/OriEra-engine/studio)（Windows 桌面端）把引擎打包成双击即用的形态：内置全部示例离线运行、按硬件推荐并植入模型、五步生成自己的 AI 原生游戏原型——无需科学上网、无需 GitHub、无需命令行。遇到问题可以直接从 Studio 桌面端把反馈（自动附环境信息）提交到本仓库 issues。[下载最新版](https://github.com/OriEra-engine/studio/releases/latest)（注意：含「具身仿真台 /sim 工作台」的版本以发布页说明为准；旧版没有侧栏这一项）。
 
-### 🎃 Hacktoberfest 2026 进行中
+### 🎃 Hacktoberfest 2026 已收官
 
-10 月 31 日截止前，本仓库所有 `good first issue` 均参与 Hacktoberfest（每个任务都写了涉及文件与验收标准，15 分钟指南带你走完全流程）：
+活动期（10 月 31 日截止）已结束，感谢本季所有贡献者。任务池照常开放——每个 `good first issue` 都写了涉及文件与验收标准，15 分钟指南带你走完全流程：
 
-👉 [挑选你的第一个 issue](https://github.com/OriEra-engine/engine/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [15 分钟提交你的第一个 PR](docs/FIRST_PR.md)
+👉 [挑选你的下一个 issue](https://github.com/OriEra-engine/engine/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [15 分钟提交你的第一个 PR](docs/FIRST_PR.md)
 
 **第一次来？** [15 分钟提交你的第一个 PR](docs/FIRST_PR.md) →
 挑一个 [good first issue](https://github.com/OriEra-engine/engine/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
@@ -188,12 +197,14 @@ ORIERA_SMOKE_PROVIDER=zhipu cargo run -p oriera-infer --example provider_smoke  
 
 | 想做什么 | 入口 |
 |---|---|
-| 理解架构 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 理解架构 | [ARCHITECTURE.md](docs/ARCHITECTURE.md)（含 §6 具身智能仿真层） |
+| 理解八赛道垂直版 | [VERTICALS.md](docs/VERTICALS.md) |
 | 参与开源全景（不写代码也行） | [OPEN_SOURCE_GUIDE.md](docs/OPEN_SOURCE_GUIDE.md) |
 | 书 ↔ 仓库对照 | [BOOK_MAP.md](docs/BOOK_MAP.md) |
 | 提问 / 聊天 | [Discussions](https://github.com/OriEra-engine/engine/discussions)（中英文都行） |
 | 改架构 / 动契约 | 先在 [Ideas 区](https://github.com/OriEra-engine/engine/discussions/categories/ideas) 开 RFC，7 天评论期 |
 | 加一个 demo | 复制 [examples/_template/](examples/_template/)，10 分钟出活 |
+| 具身台贡献（新预设 = 纯 JSON / 新任务 / 文档走查） | [CONTRIBUTING.md「具身仿真台贡献入口」](CONTRIBUTING.md) |
 | 报安全问题 | [SECURITY.md](SECURITY.md)（不要开公开 issue） |
 
 - [贡献指南](CONTRIBUTING.md) · [治理模式](GOVERNANCE.md) · [路线图](ROADMAP.md) · [行为准则](CODE_OF_CONDUCT.md)

@@ -1,0 +1,166 @@
+# Release 流水线（PLAN-embodied-v3 §三 P2「release 工程线」）
+#
+# 触发与语义：
+#   - push v* tag        → 全流程：版本守卫 → 构建 → 发 GitHub Release
+#     （tag 版本必须与 [workspace.package] version 一致，versions-guard 拦）
+#   - workflow_dispatch  → 构建预演（dry_run 默认 true）：只跑守卫 + 构建 +
+#     artifact 上传，不创建 Release。发版一律走 tag——dispatch 没有语义
+#     明确的发布对象（在哪个 ref 打 tag 是人的决定，workflow 不代做）。
+#
+# 与 ci.yml 的关系：完全独立文件，零共用语义；ci.yml 本文件未动。
+# 凭据：只用默认 GITHUB_TOKEN（permissions.contents = write，gh release
+# create 需要）；不发任何 secrets。
+#
+# 发版 SOP 见 docs/OPEN_SOURCE_GUIDE.md §9（打 tag v0.11.0 → 本文件自动构建发布）。
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "构建预演（只构建不发版；正式发版请推 v* tag）"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # gh release create 上传产物所需（默认 GITHUB_TOKEN）
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false # 发版腿不取消：半截 Release 比排队更糟
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ① 版本一致性守卫：workspace/依赖自引用/pyproject 三处 0.x.y 必须同值；
+  #    tag 触发时额外断言 tag 去掉 v 前缀 == 基准版本。
+  versions-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Version consistency guard (tag ↔ workspace ↔ pyproject)
+        run: |
+          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9] ]]; then
+            python scripts/check_release_versions.py --expect-version "${GITHUB_REF_NAME#v}"
+          else
+            python scripts/check_release_versions.py
+          fi
+
+  # ② 引擎全量 release 构建：全 workspace + 打包顶层可执行文件。
+  #    与 ci.yml rust 腿同款 rust-cache 前缀策略，key 独立（release profile
+  #    的编译单元与 debug 不同，不混用缓存）。
+  build-engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-engine
+      - name: Build (workspace, release)
+        run: cargo build --release --workspace
+      - name: Package (top-level release executables)
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9] ]]; then
+            # dispatch 预演：ref 是分支名，用 workspace 版本 + 短 SHA 命名
+            VER="$(python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")-$(git rev-parse --short HEAD)"
+          fi
+          echo "version label: $VER"
+          tar czf "oriera-engine-$VER-linux-x86_64.tar.gz" \
+            -C target/release $(find target/release -maxdepth 1 -type f -executable)
+          ls -lh "oriera-engine-$VER-linux-x86_64.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-tar
+          path: oriera-engine-*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  # ③ oriera-sim wheel（maturin，PyO3）：配置全在根 pyproject.toml
+  #    （module-name/features python,spec/manifest-path），此处只管调用与冒烟。
+  build-wheel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-wheel
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install maturin
+        run: python -m pip install maturin
+      - name: Build wheel (pyproject [tool.maturin])
+        run: maturin build --release --out wheelhouse
+      - name: Wheel smoke (clean venv install + build_info)
+        run: |
+          python -m venv .smoke-venv
+          ./.smoke-venv/bin/pip install wheelhouse/oriera_sim-*.whl
+          ./.smoke-venv/bin/python - <<'PY'
+          import oriera_sim
+
+          info = oriera_sim.build_info()
+          print("wheel build_info:", info)
+          ver = info.get("version")
+          tag = __import__("os").environ.get("GITHUB_REF_NAME", "")
+          if tag.startswith("v") and ver != tag[1:]:
+              raise SystemExit(f"wheel version {ver} != tag {tag}")
+          print("wheel smoke OK")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: wheelhouse/oriera_sim-*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+  # ④ 发 GitHub Release：body 取 docs/release-notes/<tag>*.md（仓内惯例
+  #    vX.Y.Z-代号.md，前缀通配两种命名都认）；挂全部构建产物。
+  #    dispatch（构建预演）不发——见文件头注释。
+  github-release:
+    needs: [versions-guard, build-engine, build-wheel]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Resolve release notes (docs/release-notes/<tag>*.md)
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          notes=$(ls docs/release-notes/"$TAG"*.md 2>/dev/null | head -1 || true)
+          if [ -z "$notes" ]; then
+            echo "::error::docs/release-notes/$TAG*.md 不存在——先写 release notes 再打 tag"
+            exit 1
+          fi
+          echo "notes: $notes"
+          cp "$notes" release-body.md
+      - name: Create GitHub Release (tag push only)
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          gh release create "$TAG" \
+            --title "$TAG — OriEra Engine" \
+            --notes-file release-body.md \
+            dist/*
+      - name: Dry-run summary (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "构建预演完成（dry_run=${{ inputs.dry_run }}）：artifact 已上传，未创建 Release。" >> "$GITHUB_STEP_SUMMARY"
+          echo "正式发版：写好 docs/release-notes/<tag>*.md 后推送 v* tag。" >> "$GITHUB_STEP_SUMMARY"

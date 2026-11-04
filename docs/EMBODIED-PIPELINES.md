@@ -48,11 +48,11 @@ cargo run -p oriera-agent --example embodied_collect --features rigid
 # 内建断言：双跑逐位一致（指纹 + JSONL）
 ```
 
-good-first-issue 候选：
+good-first-issue 候选（2026-11 复核：已完成的划线留档，P2 新池见 §7.2）：
 1. ~~JSONL→parquet 转换器~~ ✅ 3D 线已带 `scripts/jsonl_to_lerobot_v21.py`（pyarrow，v2.1 直读）
 2. MuJoCo 后端（feature `mujoco`，C 工具链方案评审先行；wasm 参照面板先行）
 3. 传感器观察扩展（碰撞事件/邻域扫描进 observation）
-4. 视频轨（L5 帧导出→MP4，对齐 v2.1 的 video 列）
+4. ~~视频轨（L5 帧导出→MP4，对齐 v2.1 的 video 列）~~ ✅ M3 相机规格化已带 LeRobot 多视频轨（§6.4）
 5. 3D 线：~~摩擦/接触抓取~~ ✅ 已落地（2026-10-30 四轮攻坚：双指运动学夹板×摩擦承载，探针最小复现定位——机制成立、集成难点在接近几何，夹板须悬垂于工具中心点之外）、MJCF 子集导入、腕滚转第 5 轴
 
 ## 6. 3D 具身训练台（PLAN-embodied-sim，2026-10-29）
@@ -69,7 +69,8 @@ cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d
 python scripts/jsonl_to_lerobot_v21.py out/embodied-sim/lerobot-v21   # → parquet，lerobot 直读
 ```
 
-选型结论（详见 growth/PLAN-embodied-sim.md）：**rapier3d multibody
+选型结论（详见 growth/PLAN-embodied-sim.md——仓外设计底稿，不在本 git 仓内；
+结论要点已并入本文各节）：**rapier3d multibody
 为主**（纯 Rust/Apache-2.0/wasm32 一等公民/与 rigid2d 同契约）；
 MuJoCo 只作 M1 wasm 参照面板；**Jolt 撤出路线**（无 reduced-coordinate
 articulation，Rust 绑定青年期）。马达三坑（都踩过）：`motor_axes`
@@ -283,3 +284,62 @@ OriEra 提供的是「便宜、可复位、可回放」的**世界层**：确定
 世界指纹（#67）、逐实体动作（#69）、刚体后端与数据出口（本 issue #80）。
 大规模 GPU 并行、可微物理、真实传感器噪声——生态已有答案，接进来，
 不重造。
+
+## 7. 防抄袭对表 × gfi 候选池（PLAN-embodied-v3 P2「生态门面焕新」，2026-11）
+
+### 7.1 指纹级查重：`scripts/fingerprint_dupcheck.py`
+
+「同代码同参数必得同一串逐集指纹」是本台的确定性契约（§6.1），反过来它就是
+最硬的防抄袭凭据：两份交上来的数据集若**逐集指纹全部相同**，只可能是同一份
+采集冒充两次独立实验——比任何文本查重都硬。助教一条命令：
+
+```bash
+# 两个 run 目录（各自也支持 glob：runs/<hash8>/<method>/<seed>/）
+python -I scripts/fingerprint_dupcheck.py out/student-a out/student-b --csv out/dup.csv
+# 自指演示：同一目录跑两次 → 逐集全同 → exit 1（重复检出）
+python -I scripts/fingerprint_dupcheck.py out/my-run out/my-run
+```
+
+- **读什么**：`lerobot-v21/meta/oriera_receipt.json` 的
+  `episode_fingerprints_v1`（旧 receipt 只有 `episode_state_hashes` 键——值同，
+  读兼容）；未转换的采集产物读 `eval_report.json` 的 `fingerprints` 块。
+  两种来源的 `episode_state_hashes` **同名不同义**（P0-4 一名两义修复的背景）：
+  receipt 里它是 v1 的旧键名，eval_report 里它是纯状态口径——脚本按来源分家
+  取值，不会把纯状态当 v1 对。
+- **退出码**：0 = 未检出指纹级重复（含一方无指纹——`embodied_sim_baseline`
+  的产物不带逐集指纹，脚本如实说明）；1 = 指纹级重复（逐集全同）；
+  2 = 输入/读取错误。`--view v2` 换完整身份口径，`--csv` 落逐集对照表。
+- **判定口径（诚实边界）**：同 spec 同种子逐位一致本就是引擎契约（LAB-GUIDE
+  §2）——全同不必然是抄袭，也可能是同一实验交两遍/助教复跑。脚本把
+  spec_hash / seed / method 一起打出来供人判定：**spec_hash 不同而指纹全同 =
+  最强实锤**；spec_hash 相同 = 重复提交/复跑，同样不能当两次独立采集计分。
+  脚本只出事实表，结论由助教下。
+
+### 7.2 good-first-issue 候选池（P2 刷新，欢迎认领；开 issue 前先对
+[CONTRIBUTING.md](../CONTRIBUTING.md)「具身仿真台贡献入口」的验收锚）
+
+1. **drawer 真 prismatic fixture**：柜体滑道 fixture 只能搭静止外壳，真抽屉面板
+   需 RobotSpec 侧抽屉链（`JointKind::Prismatic` 引擎面已就位 + 滑道 fixture
+   组合，M3+ 评估），按官方治理规则另起实验身份重测（`drawer-4dof.json`
+   meta.notes 有 TODO）。
+2. **sphere → Ball 直通**：URDF/mesh 的 sphere 碰撞体现在走 Box 包络近似
+   （`urdf.rs`：sphere → Box 包络）；`LinkShape::Ball` 直通 + `LinkShape`
+   旋转字段——mesh 碰撞量化的第一步（PLAN P2）。
+3. **深度轨 v3 元数据列**：`depth.{name}` 图像轨暂不进 LeRobot v3 episodes
+   元数据的视频指针列（image dtype 无视频时间戳），转换脚本按帧目录拼装
+   补齐——等官方口径或定引擎侧补位方案（v0.11.0 release-notes known-limits #3）。
+4. **Contact 判据升官方**：lab 变体 12 集对照已零翻转（P1-Wave3），升官方
+   需按治理规则重跑 `results/reference/` 并写双轨说明（PLAN 拍板项 3 的 B 侧收尾）。
+5. **渲染器摆 props[1..]**：叠块底座 B、料箱墙在物理与判据里都在、画面里
+   看不见——wasm 侧 `prop_pose()` 真值口已通，差渲染器接线（v0.11.0
+   known-limits #4）。
+6. **Studio 导出逐集指纹收口**：浏览器内核已在导出 postMessage 里携带
+   每集指纹与 `robot`/`specHash` 透传（P2-W5A 批次）；剩余收尾是 Studio
+   落盘侧（`sim.rs`）把这些字段写进 receipt/info.json（此前是空数组 +
+   硬编码 robot 名）并随发版验证（PLAN P2 排期项）。
+7. **URDF base 朝向支持**：导入侧固定 Z-up→Y-up 上轴旋转，基座任意朝向的
+   URDF（吊装/壁装）还不认（PLAN P2）。
+8. **失败相位遥测进报告 + SIM_TRACE 文档化**（PLAN P2 排期项）。
+
+这批候选已同步挂进 [CONTRIBUTING.md](../CONTRIBUTING.md)「具身仿真台贡献入口」
+与 [FIRST_PR.md](FIRST_PR.md) 的指路牌（先写进文档池，转正开 issue 由维护者批量执行）。

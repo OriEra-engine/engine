@@ -3,11 +3,11 @@
   "meta": {
     "name": "stack-4dof",
     "author": "oriera-embodied-maintainers",
-    "notes": "stack@v1：把方块 A 叠到底座 B 上（B 固定在桌面静止高度 [0.30,0.525,0]，出生即落位——goal 由 B 的实时位置 + 两半高推得，出生在空中会让判据与基线差 2.5 cm；A 出生在 x 0.17–0.21 的可达带——4 轴臂从伸直 home 折回时夹板会扫到更近处的方块，把它推进工具朝下不可达的近区，抓偏 3 cm 就叠不上）。判据：A 相对 B 的 XZ 对齐 <0.03、中心高差 ≈ 两半高和 <0.02、已松爪（指令<0.5）、静止 10 步（速度<0.01 m/s）。PLAN 原名 push-stack 收敛为 stack-4dof（push 走 push@v1/v2 单任务）——基线闸 ≥75%（新任务首版诚实门槛） | 命名遗留：robot.name 仍为 tabletop-4dof（改字段=新 hash，按「改字段=新文件名」治理走 v3）；预设身份以 spec_hash ffc96325 为准。",
+    "notes": "stack@v1：把方块 A 叠到底座 B 上（B 固定在桌面静止高度 [0.30,0.525,0]，出生即落位——goal 由 B 的实时位置 + 两半高推得，出生在空中会让判据与基线差 2.5 cm；A 出生在 x 0.17–0.21 的可达带——4 轴臂从伸直 home 折回时夹板会扫到更近处的方块，把它推进工具朝下不可达的近区，抓偏 3 cm 就叠不上）。判据：A 相对 B 的 XZ 对齐 <0.03、中心高差 ≈ 两半高和 <0.02、已松爪（指令<0.5）、静止 10 步（速度<0.01 m/s）。PLAN 原名 push-stack 收敛为 stack-4dof（push 走 push@v1/v2 单任务）——基线闸 ≥75%（新任务首版诚实门槛） | 命名治理（P2，2026-11-05）：robot.name 由 tabletop-4dof 改为 stack-4dof（对齐 mobile-arm-4dof 的「robot.name = 预设名」约定，LeRobot robot_type 随之）——物理零变化（name 只是身份元数据），episode 动力学与旧身份逐位一致；按 P2「同文件换 hash」治理，旧身份 spec_hash ffc96325（course@v1 11/12）留 results/reference/ffc96325/ 作历史档案。",
     "difficulty": "进阶"
   },
   "robot": {
-    "name": "tabletop-4dof",
+    "name": "stack-4dof",
     "base": [
       0.02,
       0.5,

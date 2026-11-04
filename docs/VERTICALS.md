@@ -62,7 +62,9 @@ OriEra 不只是游戏引擎。世界引擎的本质产品是**一个会演化�
 
 - **要什么**：机器人策略需要一个**便宜、可复位、可回放的物理世界**
   当训练场/评测场（world as benchmark）；传感器仿真（深度相机/碰撞）。
-- **层配置**：L6 换刚体物理（Jolt 对接口已在 ROADMAP）；L1 Capabilities
+- **层配置**：L6 换刚体物理（✅ 已落地 `rigid`/`rigid3d` rapier 后端——multibody
+  约简坐标关节臂；Jolt 因无 reduced-coordinate articulation 评估结论「不做」，
+  与 [ROADMAP](../ROADMAP.md) 2027 H1 条目一致）；L1 Capabilities
   扩传感位；L7 route 钉端侧（机器人为隐私+延迟最优场景）；L9 认知
   →策略 agent（「想」换成 policy 推理）；L5 降为无头或简化观测。
 - **首版**：碰撞沙盒 + 固定种子复位 + 评测报告（world 状态断言）。
@@ -195,12 +197,15 @@ OriEra 不只是游戏引擎。世界引擎的本质产品是**一个会演化�
 3. 想要节流保护就读一行拨杆 `ctx.grants.throttle_of(self.name())`；
    想被玩家唤醒就消费 `WakeEvent`——两个都是一行代码的事。
 
-**good-first-issue 候选**（难度从低到高）：
+**good-first-issue 候选**（难度从低到高，2026-11 刷新）：
 - 给 FREE_TIER_MATRIX 补一家厂商行并跑通冒烟；
+- 具身台新预设：`specs/lab/` 写一份 `extends` JSON + 12 集基线（纯 JSON 不写
+  Rust，候选池见 [EMBODIED-PIPELINES.md](EMBODIED-PIPELINES.md) §7）；
 - 给某个垂直版写一个 examples/ HTML demo（纯 JS，照 _template）；
 - Mood→情绪状态机扩展（L9，一个组件一个转移表）；
 - 扩散 ABM demo（L3/L9 组装，无新引擎代码）；
-- `with_fixed_dt` 确定性 tick（L2，~50 行 + 测试）。
+- ~~`with_fixed_dt` 确定性 tick（L2）~~ ✅ 已落地（#66，§2.2/§2.4/§2.8 引用的
+  就是它）——同族后续是 `reanchor_golden.py` 重锚流程维护。
 
 ## 附录 C · 三轮测试计划
 

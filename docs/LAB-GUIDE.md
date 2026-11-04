@@ -324,6 +324,11 @@ lerobot 目录交给 §5 的训练命令即可（图像轨喂 ACT 前先过转�
 **提交**：`out/my-run/` 全目录（含 eval_report.json + receipt + 数据集）
 + 策略代码 + ≤2 页报告（证据三件套见 §6）。
 
+**助教查重**：怀疑两份作业是同一份数据时，跑
+`python -I scripts/fingerprint_dupcheck.py <作业A的out目录> <作业B的out目录>`
+——逐集指纹全同 = 指纹级重复（同实验交两遍也会全同，判定口径见
+docs/EMBODIED-PIPELINES.md §7.1）。
+
 **建议分值**：基线复现 20 / 策略提升 40 / 规范引用（CI/Wilson）20 / 思考题 20。
 
 ## 附：问题排查

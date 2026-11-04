@@ -37,9 +37,9 @@ Architecturally it is an **11-layer stack** with five first-class platforms.
 
 ## Try it (zero install)
 
-**🌐 https://oriera-engine.github.io/engine/** — 13 playable demos in your browser.
+**🌐 https://oriera-engine.github.io/engine/** — 15 playable demos in your browser.
 
-New: [Memory Atlas](https://oriera-engine.github.io/engine/examples/12-memory-atlas/index.html) — record NPC memories, recall relevant episodes, and explore recency offline using the existing browser kernel. New: [Generative Gallery](https://oriera-engine.github.io/engine/examples/13-genai-gallery/index.html) — type a theme, the engine's L8 generates sky / ground / posters and hot-swaps them into a small 3D world (offline procedural fallback; bring a CogView/Tripo key for real generation).
+New: [Memory Atlas](https://oriera-engine.github.io/engine/examples/12-memory-atlas/index.html) — record NPC memories, recall relevant episodes, and explore recency offline using the existing browser kernel. New: [Generative Gallery](https://oriera-engine.github.io/engine/examples/13-genai-gallery/index.html) — type a theme, the engine's L8 generates sky / ground / posters and hot-swaps them into a small 3D world (offline procedural fallback; bring a CogView/Tripo key for real generation). New: [Frame Hunter](https://oriera-engine.github.io/engine/frame-hunter/index.html) (demo 14) — a parkour quiz game with BKT knowledge tracking, fully offline. Flagship: [Embodied Sim](https://oriera-engine.github.io/engine/examples/15-embodied-sim/index.html) (demo 15) — a rapier3d articulated-arm tabletop bench in the browser (teleop / scripted demo / preset card wall); training-data export runs through the Studio workbench or the deterministic CLI, see [docs/EMBODIED-PIPELINES.md](docs/EMBODIED-PIPELINES.md) (Chinese; the full demo table lives in the [Chinese README](README.md)).
 
 ## Architecture
 
@@ -67,7 +67,7 @@ cargo run -p oriera-pc
 
 - 🗺️ [Open source guide](docs/OPEN_SOURCE_GUIDE.en.md) — how to join, with or without writing code
 - 🐣 [15-minute first PR guide](docs/FIRST_PR.md) (Chinese)
-- 🎃 **Hacktoberfest 2026 is live** — all [good first issues](https://github.com/OriEra-engine/engine/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) count until Oct 31
+- 🎃 **Hacktoberfest 2026 has wrapped** (Oct 31 close) — thanks to everyone who contributed; the [good first issue](https://github.com/OriEra-engine/engine/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) pool stays open year-round
 - 📚 [Book ↔ repo map](docs/BOOK_MAP.md) — the architecture book is our spec
 - 💬 [Discussions](https://github.com/OriEra-engine/engine/discussions) — questions in EN or 中文 both welcome
 - 🗺️ [ROADMAP](ROADMAP.md) — L8/L10/L11 landing schedule

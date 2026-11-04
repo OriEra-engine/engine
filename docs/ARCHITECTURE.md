@@ -3,7 +3,9 @@
 > 一句话理解：**十一层是责任边界，接口契约是连接器，横切系统是全局仪表盘与刹车。**
 > （《OriEra 世界引擎》技术篇 T3）
 
-本文是仓库的完整架构文档，对应 **v0.3.0**（2026-10）的 main 分支。
+本文是仓库的完整架构文档，对应 **main 分支**（写作时点 2026-11，工作区版本
+0.10.0、具身五期能力已并入；逐版说明见 [release-notes/](release-notes/)——
+版本声明用活链不用死数，本文不再随小版本手改）。
 定位：读完这一篇，你应该能回答三个问题——每层是什么、代码在哪、为什么这样切。
 层职责与接口契约的完整定义见书技术篇 T4–T15 与附录 B；书 ↔ 仓库对照见 [BOOK_MAP.md](BOOK_MAP.md)。
 
@@ -17,7 +19,8 @@ OriEra 不是又一个游戏引擎。它是一个 **AI 原生、虚实融合、�
 - **虚实融合**：PC / 手机 / 网页 / AR 眼镜五端一等公民，脑机接口 v1 只留 bit 位不接硬件。
 - **可自演化**：用户用自然语言创造与改写世界内容（demo 10「言灵世界」、demo 11「隅角咖啡馆」两个范式）。
 
-在线体验：**https://oriera-engine.github.io/engine/**（11 个浏览器可玩 demo，零安装）。
+在线体验：**https://oriera-engine.github.io/engine/**（15 个浏览器可玩 demo，零安装；
+含 14 号影游 `frame-hunter/` 与 15 号具身仿真台旗舰）。
 
 ## 2. 五条设计硬规则（CI 守护）
 
@@ -37,10 +40,10 @@ OriEra 不是又一个游戏引擎。它是一个 **AI 原生、虚实融合、�
 | L3 | 对象模型：ECS、资源单例 | `crates/oriera-ecs` | ✅ 可用 | `Spawn` `Query` `Publish`(规划) `Serialize`(规划) |
 | L4 | 资产管线：句柄注册表 | `crates/oriera-asset` | ✅ 骨架 | `ResolveAsset`(哈希即身份，规划) `Prefetch` `Evict` |
 | L5 | 渲染内核：Pass 图、帧提交 | `crates/oriera-render` | ✅ 骨架+GPU 闭环* | `BuildFrameGraph` `AddPass` `SetQuality` `render_mesh`* |
-| L6 | 子系统服务：物理/动画/音频/UI/网络同步 | `crates/oriera-subsys` | ✅ 物理 | `StepPhysics` `SampleAnimation`(规划) `SyncState`(规划) |
+| L6 | 子系统服务：物理/动画/音频/UI/网络同步 | `crates/oriera-subsys` | ✅ 物理（粒子 + `rigid`/`rigid3d` 刚体） | `StepPhysics` `MultibodySystem`(rigid3d multibody 关节臂) `HoldingCriterion`(TipRadius/Contact) `fingerprint`/`fingerprint_v2` `SampleAnimation`(规划) `SyncState`(规划) |
 | L7 | AI 推理运行时：命令执行、端云路由 | `crates/oriera-infer` | ✅ 可用 | `SubmitInference` `ReportInferenceMetrics` |
 | L8 | 生成式 AI：文生图 + 文生 3D + 文生视频 | `crates/oriera-genai` | ✅ 表达链路已通（RFC 0001 + demo 13，2028 做深） | `RequestGeneration` `ValidateAsset` |
-| L9 | Agent 层：意图→命令 | `crates/oriera-agent` | ✅ 可用 | `InvokeTool`（v1 规则解析 + 认知系统）；`SpawnPrefab`（实体预制体，确定性声明序——Godot PackedScene 的 ECS 翻译，F1） |
+| L9 | Agent 层：意图→命令 | `crates/oriera-agent` | ✅ 可用 | `InvokeTool`（v1 规则解析 + 认知系统）；`SpawnPrefab`（实体预制体，确定性声明序——Godot PackedScene 的 ECS 翻译，F1）；`embodied`（`SceneSpec`/`RobotSpec`/`Task` trait 注册表/`EvalProtocol`/LeRobot 导出） |
 | L10 | AR/VR 交互：多模态感知 | — | 📋 2027 H2 | 手势/眼动经 L1 `SpatialInputEvent` 进来 |
 | L11 | 应用与 UGC 创作生态 | `platforms/*` + `examples/*` | ✅ 壳 | 同源编辑器（规划） |
 | 横切 | 观测/安全/计量/调试 | 各层埋点 | 📋 | `MeasureGPU`（L5 已有雏形） |
@@ -112,6 +115,15 @@ v0.3 追加顶点材质光照：GLB 的 NORMAL + baseColorFactor 解码后 CPU �
 v0.2 落地 `TimeScale` 仿真节流资源：物理步长按它缩放，钳制 [0,8] 防幻觉值炸世界；
 AI NPC 的 `wave/dance` 动作选择由 L9 认知输出直接驱动。
 
+v0.11 具身线给 L6 加了两个刚体后端（feature 门控，与粒子积分器同契约：
+Gravity/TimeScale/边界，垂直版二选一、回放中途不许换）：`rigid`（rapier2d）与
+`rigid3d`（rapier3d **multibody 约简坐标**关节臂，纯 Rust/Apache-2.0/wasm32
+一等公民；Jolt 因无 reduced-coordinate articulation 评估后不做，见
+[ROADMAP](../ROADMAP.md)）。入口 `MultibodySystem::from_robot(RobotSpec, Scene3D)`
+（真 fixture 走 `from_robot_fixtures`）；抓取标签 `HoldingCriterion` 两档：
+`TipRadius`（默认启发式）与 `Contact`（逐 tick 法向力判据，opt-in）。
+这是「层配置」旋钮的首个实装（[VERTICALS.md](VERTICALS.md) §0）。
+
 ### L7 · oriera-infer — 模型生命周期唯一入口
 
 **厂商零硬编码**的 `ModelProvider` trait + `ProviderConfig/ProviderKind/create_provider`：
@@ -174,6 +186,13 @@ fetch Promise settling 取代轮询节拍）+ `ArtDirectorSystem` 美术导演�
 v0.2 润滑剂：认知/导演自愈启动（裸世界 boot 是测试契约）+ 否定语义解析
 （「别清空」先于意图判断，不被执行成清空）。
 
+v0.11 具身线在 L9 加了第二个入口形态——**具身训练场**（详见 §6）：
+`SceneSpec`（一份 JSON，`spec_hash` 规范化哈希 = 实验身份）× `RobotSpec`
+（N 自由度，URDF 直读）× `Task` trait 注册表（`reach/pick_place/push/stack/
+bin_pick/drawer`，判据修订只走新 id）× `EvalProtocol`（`course@v1` 12 集
+90% 硬闸 / `paper@v1` ≥100 集只记录）× `lerobot` 导出（LeRobotDataset
+v2.1/v3.0 + npz 裸出口）× `run_manifest.json` 全出处。
+
 ### L10 — 多模态交互（规划）
 
 手势/眼动/语音经 L1 `SpatialInputEvent` 语义化后转自然语言意图进 L9。2027 H2。
@@ -181,7 +200,8 @@ v0.2 润滑剂：认知/导演自愈启动（裸世界 boot 是测试契约）+ 
 ### L11 — 应用与 UGC
 
 `platforms/pc` 是全量接线示范（平台预算、画质调速、逐系统耗时、资产热替换、TimeScale）。
-`examples/01–11` 是分层演示：每个 demo 只动它那一层，浏览器直接玩（见首页 index.html）。
+`examples/01–15` 是分层演示：每个 demo 只动它那一层，浏览器直接玩（见首页 index.html；
+14 号 `frame-hunter/` 在仓库根目录同源发行）。
 
 ## 5. 一帧的数据流
 
@@ -216,7 +236,77 @@ L9 DirectorSystem 调度 NPC 行为 → L6 动作/物理 → L5 画质迟滞调�
 `InferSystem::submit()` → 下一帧生效。整条链路没有任何全局变量，
 回放确定性由 L3 generation 句柄与 L7 的固定种子 LCG 保证。
 
-## 6. v0.2 润滑剂契约（2026-10-15「全层润滑剂」PR #32/#35）
+## 6. 具身智能仿真层（world as benchmark）
+
+> 一句话：**不重造物理引擎、不重造数据集格式**——rapier3d multibody 当训练场，
+> LeRobotDataset 当数据出口；「一份 JSON = 一次实验的身份（`spec_hash`），
+> 每集一张逐位回执（指纹）」。管线全景见
+> [EMBODIED-PIPELINES.md](EMBODIED-PIPELINES.md)，实验操作见
+> [LAB-GUIDE.md](LAB-GUIDE.md)，与 ManiSkill/Isaac 的保真对照见
+> [POSITIONING.md](POSITIONING.md)。
+
+### 6.1 两个层位
+
+- **L6 `rigid3d`**（`crates/oriera-subsys`，feature 门控）：rapier3d
+  multibody 约简坐标关节臂。判据面：抓取标签 `HoldingCriterion`
+  （`TipRadius` 启发式 / `Contact` 逐 tick 法向力，lab 变体 12 集对照零翻转
+  后仍在 opt-in）；身份面：`fingerprint()`（v1，状态 ⊕ kp/kd ⊕ mass_scale）、
+  `fingerprint_v2()`（状态 ⊕ `robot_identity_hash` ⊕ spec_hash——机器人
+  N 关节 kp/kd/armature/limits/axis/anchor、逐 link 几何与质量、夹爪摘要全部
+  入 hash）。
+- **L9 `embodied`**（`crates/oriera-agent`，scene/tasks/env 三模块）：
+  `SceneSpec` → `spec_hash()` 规范化哈希（`meta` 不入 hash、字段拼错即报错，
+  改一个字段 = 新实验）→ `TableTopEnv`；任务 = `Task` trait 实现 +
+  `task_registry` 按 id 注册（`pick_place@v1` 冻结、修订走 `@v2`）；
+  评测 = `EvalProtocol` + `evaluate()`（种子带/退化重抽/闸全在这一处，
+  CLI / Python / wasm 三入口同一个口径）；导出 = LeRobotDataset v2.1/v3.0
+  全文件树 + npz 裸出口 + `run_manifest.json`（git SHA+dirty、Cargo.lock
+  hash、rustc/rapier、features、OS/arch、命令行——半年后复现就靠它）。
+
+### 6.2 一套物理，四个入口
+
+同一份 `TableTopEnv` Rust 代码（物理、奖励、判定、随机化、观测、指纹全在
+Rust 侧），四个壳（架构图与逐位验收结论见
+[WASM-RENDERER.md](WASM-RENDERER.md)）：
+
+```
+                    TableTopEnv（crates/oriera-agent，一份 Rust 物理）
+                    /            |             |              \
+        浏览器独立页          Studio /sim       Rust CLI         Python/Gymnasium
+  examples/15-embodied-sim   postMessage 换装   embodied_sim_    PyO3 wheel
+  oriera-wasm→wasm+three.js  录制+一键导出      collect/baseline (oriera_sim，
+  六预设卡片墙，点卡片换装   （发版后可用）     指纹口径源、金标  SB3/lerobot-train）
+                                                采集、评测协议
+```
+
+浏览器页的物理**不是 JS 镜像**——kernel.js 退役为纯渲染器（three.js 每帧读
+`sim.poses()` 搬 mesh），物理来自编译到 wasm32 的同一份代码。契约口径：
+**同目标逐位一致（浏览器内双跑逐位），native↔wasm 统计一致**（libm 末位
+1 ulp；三平台指纹矩阵 CI 出统计报告）。
+
+### 6.3 指纹契约（可审计训练场的机械凭据）
+
+- **每集三口径**：`episode_state_hashes`（纯状态）/ `episode_fingerprints_v1`
+  （旧回执口径，旧键名读兼容）/ `episode_fingerprints_v2`（完整身份）——
+  写进 receipt（`lerobot-v21/meta/oriera_receipt.json`）与 `eval_report.json`。
+- **金标**：`contracts/golden/embodied_fingerprints.v2.json`（12 集三口径）。
+  改物理必须走 `physics-behavior-change` 流程重锚（
+  `scripts/reanchor_golden.py` 固化流程），金标漂移 = CI 红。
+- **防抄袭**：`python -I scripts/fingerprint_dupcheck.py <runA> <runB>`
+  读两个 run 的逐集指纹对表——全部相同 = 指纹级重复（同一份实验冒充两次
+  采集的实锤），用法与判定见 [EMBODIED-PIPELINES.md](EMBODIED-PIPELINES.md) §7。
+- **spec 库治理**：`crates/oriera-agent/specs/official/`（官方六预设金标，
+  改字段 = 换 hash = 新实验身份，旧身份留 `results/reference/<hash8>/` 档案）+
+  `specs/lab/`（`extends` 只写差异）+ `INDEX.json`（同名异 hash 报错）。
+
+### 6.4 官方预设与基线
+
+六个官方预设（桌面 4 轴抓放 / Panda 7 轴 / 叠块 / 料箱 / 抽屉 / 移动底盘
+`mobile-arm-4dof`）各带任务专属基线闸（`eval::baseline_gate`：桌面 ≥90%、
+Panda/叠块 ≥75%、料箱/抽屉 ≥60%），逐项数字与出处见
+[POSITIONING.md](POSITIONING.md) §2 保真卡。
+
+## 7. v0.2 润滑剂契约（2026-10-15「全层润滑剂」PR #32/#35）
 
 每层新增的加法式契约（详见 [AI-NATIVE.md](AI-NATIVE.md) 末节与各层 manifest）：
 
@@ -265,7 +355,7 @@ L9 DirectorSystem 调度 NPC 行为 → L6 动作/物理 → L5 画质迟滞调�
 - L7 SSE 每行 1MB / 整流 16MB 帽（安全审计 P2 回归钉）；tools 数值参数量程设界（1e30→inf→物理 NaN 的路被堵死）
 - 已知边界：熔断失败率与 L2 `BudgetAllocator` 的 EWMA 联动留作 follow-up（信号已由 `health_report()` 暴露）；完整地图见 AI-NATIVE.md v0.8 节
 
-## 7. 治理：LayerManifest 与架构门禁（T3 §3.8.3）
+## 8. 治理：LayerManifest 与架构门禁（T3 §3.8.3）
 
 每层在 `manifests/` 声明机器可读的清单（L0–L9 共 10 份 YAML，含 L08-genai）：
 对外提供什么契约（provides）、依赖哪些契约（requires）、性能预算（budgets）、降级策略（degrade）。
@@ -278,25 +368,30 @@ CI 门禁分两步走——**静态部分已落地**（`scripts/check_manifests.
 
 新增一层时：建 crate → 写 `manifests/Lxx-*.yaml` → 在 `contracts/` 落契约 → 在上表加一行 → CI 接入。
 
-## 8. 目录地图
+## 9. 目录地图
 
 ```
 crates/          L0–L9 各层实现（见上表，含 L8 oriera-genai）
 platforms/       五端入口：pc / web（ar_glasses、bci_reserved 规划中，目录未建）
-examples/        浏览器可玩的分层演示（01–11 + _template，见首页 index.html）
-contracts/       跨语言接口契约（Protobuf：pal/v1、genai/v1）
+examples/        浏览器可玩的分层演示（01–15 + _template，见首页 index.html；
+                 15 号具身仿真台是旗舰，含 vendor/oriera 的 wasm 内核）
+frame-hunter/    14 号影游 demo（跑酷答题 + BKT 知识追踪，Pages 同步发行）
+specs/           具身实验身份库（官方金标 official/ + lab 覆盖层 + INDEX.json，
+                 位于 crates/oriera-agent/specs/）
+contracts/       跨语言接口契约（Protobuf：pal/v1、genai/v1）+ 具身指纹金标 golden/
 manifests/       每层的 LayerManifest（provides/requires/budgets/degrade）
 docs/            架构文档、ADR、AI 原生图、性能记录、release notes
 assets/          logo、hero GIF 等品牌资产
 ```
 
-## 9. 测试、CI 与性能
+## 10. 测试、CI 与性能
 
 - 全仓测试数以 CI 实测为准（2026-10-25 口径：workspace 238 + genai `providers` 59 + agent `json` 60 + subsys `rigid` 15 + infer `native-http` 97 + kernel node 35，含 v0.8 韧性批次、#98 golden fixture、#109/#110 评审批次与 #111-#114 生成供应商批次；分项含少量 doctest），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
-- 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 至 v0.10.0 共 12 份）。
+- 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 至 v0.11.0 共 13 份；
+  `scripts/check_release_versions.py` 守版本号同步，发版前必跑）。
 - 基准怎么跑、当前参考数据见 [PERF.md](PERF.md)。
 
-## 10. 常见问题
+## 11. 常见问题
 
 **为什么不用 Unity/Unreal 加个 AI 插件？**
 因为插件只能挂在应用层，AI 进不了调度、预算、降级这些引擎内脏。OriEra 的判断是：
@@ -313,10 +408,14 @@ L9 的 Agent 是引擎系统（挂调度器、吃帧预算、有世界状态）�
 **我不会 Rust，能参与吗？**
 能。文档、翻译、demo（纯 HTML/JS）、体验反馈都是贡献。见 [开源参与指南](OPEN_SOURCE_GUIDE.md)。
 
-## 11. 延伸阅读
+## 12. 延伸阅读
 
 - [AI-NATIVE.md](AI-NATIVE.md)：十一层逐层 AI 内嵌图 + 润滑剂详解
 - [COMPUTE-BUDGET.md](COMPUTE-BUDGET.md)：算力分拨管线地图（五个微模型 + 植入模型三步）
+- [EMBODIED-PIPELINES.md](EMBODIED-PIPELINES.md)：具身仿真管线全景（生态调研 × L6/L9 接入 × 数据出口 × 指纹防抄袭）
+- [LAB-GUIDE.md](LAB-GUIDE.md)：具身台学生实验指导书（跑基线 → 写策略 → 交报告）
+- [POSITIONING.md](POSITIONING.md)：具身台定位与保真卡（六预设 × MuJoCo 交叉验证）
+- [WASM-RENDERER.md](WASM-RENDERER.md)：一套物理四个入口的 wasm 化架构与逐位验收
 - [STUDIO-PIPELINE.md](STUDIO-PIPELINE.md)：Studio 六区 ↔ 十一层衔接管线（P1 建游 / P2 模型 / P3 运行时 / P4 观测）
 - [VERTICALS.md](VERTICALS.md)：AI 产业八赛道垂直版矩阵 + 接模型/接 agent 指南 + 三轮测试计划
 - [OPEN-MODEL-MATRIX.md](OPEN-MODEL-MATRIX.md)：八赛道开源底座 × 大厂预留 API 矩阵（L7 PROVIDER_PRESETS 13 行）

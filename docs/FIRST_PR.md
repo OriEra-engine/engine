@@ -8,12 +8,18 @@
 挑一个没有其他人认领的，回帖认领（"I'll take this" / 「我认领」）。
 每个 issue 都写了涉及文件和验收标准。
 
+想做具身仿真台（机械臂训练场）方向的任务？候选池在
+[EMBODIED-PIPELINES.md](EMBODIED-PIPELINES.md) §4/§7（纯 JSON 新预设、
+真抽屉 fixture、深度轨元数据列等），上手指南见
+[CONTRIBUTING.md](../CONTRIBUTING.md)「具身仿真台贡献入口」一节——
+新手最友好的面是「新预设」：一份 `extends` JSON + 12 集基线，不写 Rust 也能出活。
+
 ## 第 2 分钟：搭环境
 
 ```bash
 git clone https://github.com/<你的用户名>/engine.git
 cd engine
-rustup toolchain install stable   # 需要 1.80+
+rustup toolchain install stable   # 需要 1.87+（仓库 MSRV）
 cargo test --workspace            # 全绿再动手
 ```
 

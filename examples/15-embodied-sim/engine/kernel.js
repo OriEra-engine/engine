@@ -266,6 +266,26 @@ const K = {
   redraws: 0, keys: new Set(), hudCb: null, logCb: null, recCb: null,
 };
 
+// ── 录制滚动上限 + 逐集回执指纹（P2-W5A）─────────────────────
+// episodes 全程攒在 iframe 内存（60Hz 下 2 万行 ≈ 5.5 分钟）：攒到导出
+// 才被落盘护栏拦等于白录，IAB 冻结页面更是全丢。软上限到限**自动停止
+// 录制**（数据保留、可导出、日志明说），不静默丢。
+// 行上限取 20000 = 落盘侧护栏（sim.rs「总行数超限 >20000」）的边界值：
+// 逐行推进 + 到线即停 ⇒ 逐位不超过，录到的每一行都保证能一次导出
+// （取 100k 会撞护栏，「可导出」承诺就假了）。集上限 200 是经验节流：
+// 作业场景（12 集上下）远够，狂跑策略的人 200 集也会先撞行线。
+const REC_CAP = { episodes: 200, rows: 20000 };
+const recTotalRows = () =>
+  K.episodes.reduce((a, x) => a + x.rows.length, 0) + (K.episode?.rows.length ?? 0);
+// 每集的回执指纹（wasm 现成出口，十进制 u64 串——JS number 装不下 u64）：
+// v1 = 逐集状态指纹；v2 = 状态 ⊕ 机器人身份 ⊕ spec_hash（与 CLI 收集器
+// oriera_receipt.json 的三口径指纹同一套）。必须在 envReset **之前**读：
+// reset 即清零，拖到导出再读就是别的集的数。
+const epReceipt = () => ({
+  fingerprint: K.sim.fingerprint(),
+  fingerprintV2: K.sim.fingerprint_v2(),
+});
+
 function applySpec(specText) {
   const sim = OrieraSim.from_spec_json(specText); // 校验失败=可读 Error
   K.sim = sim;
@@ -669,12 +689,20 @@ export async function boot(viewport) {
       K.recCb?.(true);
       log.textContent = "录制中：动关节 / 跑策略，每 tick 记一行 (state, action)。";
     } else if (K.episode) {
-      if (K.episode.rows.length) K.episodes.push(K.episode);
+      if (K.episode.rows.length) K.episodes.push({ ...K.episode, ...epReceipt() });
       K.episode = null;
-      post({ type: "progress", rows: 0, episodes: K.episodes.length });
-      log.textContent = `已停。共 ${K.episodes.length} 集 · ${K.episodes.reduce((a, x) => a + x.rows.length, 0)} 行`;
+      post({ type: "progress", rows: recTotalRows(), episodes: K.episodes.length });
+      log.textContent = `已停。共 ${K.episodes.length} 集 · ${recTotalRows()} 行`;
     }
   });
+  // 到限自动停：走 btn-rec 的停带（UI 态/收带指纹/进度回报单一来源），
+  // 再把原因写进日志（覆盖「已停」一行——上限说明更重要）。
+  const autoStopRecording = () => {
+    document.getElementById("btn-rec").click();
+    log.textContent =
+      `已达录制软上限（${REC_CAP.episodes} 集 / ${REC_CAP.rows} 行，先到为准）——` +
+      "已自动停止录制；已录数据都在，点「导出」落盘后可继续录。";
+  };
   // G-8：独立打开（未嵌 Studio）时导出按钮置灰 + 悬停/日志区给 CLI 指引。
   // 旧行为是下载演示内核的 JSON，学生会误当作业数据；作业证据一律走
   // CLI（引擎基线口径，见 G-5 HUD 声明）。刻意不用 disabled 属性：
@@ -692,9 +720,22 @@ export async function boot(viewport) {
   }
   btn("btn-export", () => {
     if (!EMBEDDED) { log.textContent = `「导出」${EXPORT_CLI_HINT}\n（浏览器页只用来看手感；交作业的数据与成功率以 CLI 的 eval_report.json 为准）`; return; }
-    if (K.episode?.rows?.length) { K.episodes.push(K.episode); K.episode = null; }
+    // 导出瞬间正录到一半的带子也收进去（指纹此刻读仍属本集——reset 即清零）。
+    if (K.episode?.rows?.length) { K.episodes.push({ ...K.episode, ...epReceipt() }); K.episode = null; }
     if (!K.episodes.length) { log.textContent = "没有可导出的 episode——先录一段。"; return; }
-    post({ type: "episodes", episodes: K.episodes, obsNames: K.layout.obs, actionNames: K.layout.action, task: K.sim.task_phrase(), fps: Math.round(1 / K.sim.dt()) }); K.episodes = []; log.textContent = "已交给 Studio 工作台。";
+    // robot/specHash 透传：info.json 的 robot_type 与 oriera_receipt.json 的
+    // spec_hash 都以内核解析后的 spec 为准（不再让落盘侧硬编码机器人名）。
+    post({
+      type: "episodes",
+      episodes: K.episodes,
+      obsNames: K.layout.obs,
+      actionNames: K.layout.action,
+      task: K.sim.task_phrase(),
+      fps: Math.round(1 / K.sim.dt()),
+      robot: K.spec.robot.name || "oriera-arm",
+      specHash: K.sim.spec_hash(),
+    });
+    K.episodes = []; log.textContent = "已交给 Studio 工作台。";
   });
 
   function post(msg) {
@@ -829,11 +870,17 @@ export async function boot(viewport) {
     }
     if (K.recording && K.episode) {
       K.episode.rows.push({ state: Array.from(stepObs), action });
-      if (K.episode.rows.length % 30 === 0) {
-        post({ type: "progress", rows: K.episode.rows.length, episodes: K.episodes.length + 1 });
+      if (recTotalRows() >= REC_CAP.rows) {
+        // 行上限先到（软上限，集/行先到为准）：收带自动停（数据保留可
+        // 导出），本块余下不再执行——别把上限提示盖回「录制中」。
+        autoStopRecording();
+      } else {
+        if (K.episode.rows.length % 30 === 0) {
+          post({ type: "progress", rows: recTotalRows(), episodes: K.episodes.length + 1 });
+        }
+        sliders.forEach((s, i) => (s.val.textContent = (K.sim.angles()[i] ?? 0).toFixed(2)));
+        K.logCb?.(`录制中：${K.episode.rows.length} 行 · r̄=${rewardAvg.toFixed(3)}${K.holding ? " · 🤏已抓住" : ""}`);
       }
-      sliders.forEach((s, i) => (s.val.textContent = (K.sim.angles()[i] ?? 0).toFixed(2)));
-      K.logCb?.(`录制中：${K.episode.rows.length} 行 · r̄=${rewardAvg.toFixed(3)}${K.holding ? " · 🤏已抓住" : ""}`);
     }
     // 回合语义与 Rust env 循环对齐：终止/截断即回合结束——自动重置。
     // 录制卫生：回合结束先切录音带（当前 episode 落列表），再重置。
@@ -849,7 +896,14 @@ export async function boot(viewport) {
         if (K.recording) K.episode = { task: K.sim.task_phrase(), rows: [], obs: Array.from(K.sim.obs()) };
         if (keepPolicy) startPolicy(); // 重置标定/钉住/限幅状态（新集新状态）
       } else {
-        if (K.recording && K.episode && K.episode.rows.length >= 5) K.episodes.push(K.episode);
+        if (K.recording && K.episode && K.episode.rows.length >= 5) {
+          // 指纹必须在 envReset 前抓（reset 即清零）；随后查集数软上限。
+          K.episodes.push({ ...K.episode, ...epReceipt() });
+          // 已收带即置空：到限自动停的停带（btn-rec click）不会再收一次
+          // （否则本集进列表两遍）；不到限时 envReset/下一集创建照样覆盖。
+          K.episode = null;
+          if (K.episodes.length >= REC_CAP.episodes) autoStopRecording();
+        }
         episodesRun++;
         if (terminated) {
           successCount++; K.policyMode = false;
