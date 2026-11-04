@@ -6,6 +6,7 @@
 
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Entity, World};
+#[cfg(feature = "cam")]
 use oriera_subsys::rigid3d::PropShape;
 use oriera_subsys::{
     ArmDescription, Gravity, JointTargets, JointTelemetry, MultibodySystem, PhysicsParams, Pose3,
@@ -15,7 +16,9 @@ use oriera_subsys::{
 use super::cameras::CameraFrame;
 #[cfg(feature = "cam")]
 use super::cameras::{link_radius, quat_rotate, stamp_prop, CameraShot};
-use super::scene::{CamAttach, CameraSpec, Lcg, SceneGraph};
+#[cfg(feature = "cam")]
+use super::scene::CamAttach;
+use super::scene::{CameraSpec, Lcg, SceneGraph};
 use super::tasks::{
     make_task, task_entry, PickPlaceTask, StepState, Task, TaskEntry, TaskKind, TaskParams,
 };
@@ -1329,6 +1332,7 @@ mod tests {
         // G-3 core: one field in the spec swaps the cube for a cylinder;
         // the env must run end-to-end (same 21-dim contract).
         let mut g = SceneGraph::default();
+        use oriera_subsys::rigid3d::PropShape;
         g.props[0].shape = PropShape::Cylinder {
             half_h: 0.025,
             radius: 0.025,
@@ -1450,6 +1454,7 @@ mod tests {
         // path keeps its bytes.
         let view = CameraView::default();
         let mut g = SceneGraph::default();
+        use oriera_subsys::rigid3d::PropShape;
         g.props[0].shape = PropShape::Cylinder {
             half_h: 0.025,
             radius: 0.025,
