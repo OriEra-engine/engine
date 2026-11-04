@@ -34,6 +34,8 @@ python -m http.server 8124 -d examples
 ```
 浏览器打开 **http://localhost:8124/15-embodied-sim/** → 点「▶ 脚本策略演示」看它
 自己把方块放进绿圈；或按 Q/A、W/S、E/D、R/F 遥控四个关节，空格开合夹爪。
+页面顶部有**六预设卡片墙**（金标桌面 / Panda 7 轴 / 叠块 / 料箱 / 抽屉 / 移动底盘），
+点卡片即换装；移动底盘卡标「实验」，策略演示只支持桌面 4 轴与 Panda。
 跑服务器的终端窗口别关（关了网页就断），用完在该窗口按 `Ctrl+C` 停止。
 
 > 浏览器页是「看手感」的演示版：它的物理内核与引擎基线口径不同，右上角
@@ -163,6 +165,12 @@ off = 单跑，扫参用）；`--runs-root runs/` 把产物写到
 rustc/rapier 版本、features、OS/arch、命令行）——半年后复现就靠它。
 批量示例：`scripts/batch_joblib.py`（joblib 并行）、`scripts/batch_example.slurm`（array job）。
 
+> **慢测试注记（PGC-5）**：评测类入口一律用 **release 构建**跑——`cargo run` 命令
+> 里的 `embodied_sim_baseline` / `embodied_sim_collect` 加上 `--release`
+> （`cargo run --release -p oriera-agent --example embodied_sim_baseline …`），
+> debug 构建慢一个量级（Panda paper@v1 100 集 release 约 30–60 s，debug 约 5–10 分钟）；
+> `cargo test` 里的抓取冒烟（gripper_down_smoke ≈3 min）与接触判据（holding_contact
+> ≈2 min）属物理长跑，CI 只跑快层，本地全量跑一次要有等 5 分钟的心理准备。
 spec 库（P-9）：官方金标在 `crates/oriera-agent/specs/official/`（改字段 = 新文件名），
 自己的实验放 `specs/lab/`，文件里写 `"extends": "tabletop-4dof-pick"` 只填差异；
 `python scripts/gen_spec_index.py` 生成 `specs/INDEX.json`（同名异 hash 会报错）。

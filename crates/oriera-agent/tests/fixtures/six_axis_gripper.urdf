@@ -1,0 +1,239 @@
+<?xml version="1.0"?>
+<!--
+  six_axis_gripper.urdf — synthetic 6-DoF arm + integrated two-finger
+  parallel gripper, hand-written for the OriEra URDF full-chain import
+  tests (PLAN-embodied-v3 P1-B1: the urdf-robot flag CLI acceptance). Own
+  authoring, no vendor content.
+
+  Conventions exercised (docs/URDF-IMPORT.md「全链 CLI」节):
+    - REP-103 Z-up (the importer's default UpAxis::Z maps URDF +Z -> OriEra
+      +Y, URDF +X -> OriEra +X);
+    - main axis along URDF +X (the documented base-orientation rule:
+      OriEra imports translate only, never rotate);
+    - 6 revolute joints, integrated 2-finger gripper = two prismatic
+      fingers, finger_2 in an Rz(180 deg) frame mimicking finger_1 with
+      multiplier 1 — pad offset 23 mm so gap_closed = 0.046 m (the
+      tabletop preset value: grips the standard 5 cm cube, no warning);
+    - link5 collision is a <mesh> (package:// URI) so the honest
+      mesh -> ConvexHull (STL via the mesh-base flag) and -> envelope (no
+      mesh root) degrade paths are both exercised from the CLI.
+-->
+<robot name="sixaxis_lab_arm">
+
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0.05"/>
+      <mass value="4.0"/>
+      <inertia ixx="0.02" iyy="0.02" izz="0.01"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0.05"/>
+      <geometry><box size="0.12 0.12 0.10"/></geometry>
+    </collision>
+  </link>
+
+  <link name="link1">
+    <inertial>
+      <origin xyz="0 0 0.05"/>
+      <mass value="1.8"/>
+      <inertia ixx="0.006" iyy="0.006" izz="0.003"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0.05"/>
+      <geometry><box size="0.10 0.10 0.10"/></geometry>
+    </collision>
+  </link>
+
+  <link name="link2">
+    <inertial>
+      <origin xyz="0.14 0 0"/>
+      <mass value="2.4"/>
+      <inertia ixx="0.004" iyy="0.02" izz="0.02"/>
+    </inertial>
+    <collision>
+      <origin xyz="0.14 0 0"/>
+      <geometry><box size="0.28 0.09 0.09"/></geometry>
+    </collision>
+  </link>
+
+  <link name="link3">
+    <inertial>
+      <origin xyz="0.13 0 0"/>
+      <mass value="1.9"/>
+      <inertia ixx="0.003" iyy="0.014" izz="0.014"/>
+    </inertial>
+    <collision>
+      <origin xyz="0.13 0 0"/>
+      <geometry><box size="0.26 0.08 0.08"/></geometry>
+    </collision>
+  </link>
+
+  <link name="link4">
+    <inertial>
+      <origin xyz="0.10 0 0"/>
+      <mass value="1.1"/>
+      <inertia ixx="0.002" iyy="0.006" izz="0.006"/>
+    </inertial>
+    <collision>
+      <origin xyz="0.10 0 0"/>
+      <geometry><box size="0.20 0.07 0.07"/></geometry>
+    </collision>
+  </link>
+
+  <link name="link5">
+    <inertial>
+      <origin xyz="0.06 0 0"/>
+      <mass value="0.8"/>
+      <inertia ixx="0.0012" iyy="0.003" izz="0.003"/>
+    </inertial>
+    <!-- mesh collision on purpose: exercises the mesh path
+         (ConvexHull when the mesh-base flag resolves the STL, honest envelope
+         degrade + skipped row otherwise) -->
+    <collision>
+      <origin xyz="0.06 0 0"/>
+      <geometry><mesh filename="package://sixaxis_meshes/link5.stl"/></geometry>
+    </collision>
+  </link>
+
+  <link name="link6">
+    <inertial>
+      <origin xyz="0.05 0 0"/>
+      <mass value="0.4"/>
+      <inertia ixx="0.0004" iyy="0.0008" izz="0.0008"/>
+    </inertial>
+    <collision>
+      <origin xyz="0.05 0 0"/>
+      <geometry><box size="0.10 0.06 0.06"/></geometry>
+    </collision>
+  </link>
+
+  <!-- tool flange + hand: fixed-absorbed, become the tip / gripper mount -->
+  <link name="tool0">
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="1e-5" iyy="1e-5" izz="1e-5"/>
+    </inertial>
+  </link>
+
+  <link name="hand">
+    <inertial>
+      <origin xyz="0.02 0 0"/>
+      <mass value="0.45"/>
+      <inertia ixx="0.0005" iyy="0.0008" izz="0.0008"/>
+    </inertial>
+    <collision>
+      <origin xyz="0.02 0 0"/>
+      <geometry><box size="0.05 0.09 0.07"/></geometry>
+    </collision>
+  </link>
+
+  <link name="finger_1">
+    <inertial>
+      <mass value="0.04"/>
+      <inertia ixx="6e-6" iyy="6e-6" izz="2e-6"/>
+    </inertial>
+    <collision>
+      <!-- pad centre 23 mm off the finger plane: inner faces 46 mm apart
+           at q = 0 (= the tabletop preset gap_closed — grips the 5 cm cube) -->
+      <origin xyz="0.03 0.023 0"/>
+      <geometry><box size="0.05 0.008 0.016"/></geometry>
+    </collision>
+  </link>
+
+  <link name="finger_2">
+    <inertial>
+      <mass value="0.04"/>
+      <inertia ixx="6e-6" iyy="6e-6" izz="2e-6"/>
+    </inertial>
+    <collision>
+      <origin xyz="0.03 0.023 0"/>
+      <geometry><box size="0.05 0.008 0.016"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <origin xyz="0 0 0.10"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="120" velocity="2.0"/>
+    <dynamics damping="0.5"/>
+  </joint>
+
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <origin xyz="0 0 0.10"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.30" upper="2.30" effort="180" velocity="1.8"/>
+    <dynamics damping="0.6"/>
+  </joint>
+
+  <joint name="joint3" type="revolute">
+    <parent link="link2"/>
+    <child link="link3"/>
+    <origin xyz="0.28 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.50" upper="2.50" effort="120" velocity="2.0"/>
+    <dynamics damping="0.5"/>
+  </joint>
+
+  <joint name="joint4" type="revolute">
+    <parent link="link3"/>
+    <child link="link4"/>
+    <origin xyz="0.26 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="60" velocity="2.5"/>
+    <dynamics damping="0.3"/>
+  </joint>
+
+  <joint name="joint5" type="revolute">
+    <parent link="link4"/>
+    <child link="link5"/>
+    <origin xyz="0.20 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.09" upper="2.09" effort="40" velocity="2.8"/>
+    <dynamics damping="0.3"/>
+  </joint>
+
+  <joint name="joint6" type="revolute">
+    <parent link="link5"/>
+    <child link="link6"/>
+    <origin xyz="0.12 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="2.0" effort="20" velocity="3.2"/>
+    <dynamics damping="0.2"/>
+  </joint>
+
+  <joint name="flange" type="fixed">
+    <parent link="link6"/>
+    <child link="tool0"/>
+    <origin xyz="0.10 0 0"/>
+  </joint>
+
+  <joint name="hand_mount" type="fixed">
+    <parent link="tool0"/>
+    <child link="hand"/>
+    <origin xyz="0.01 0 0"/>
+  </joint>
+
+  <joint name="finger_1" type="prismatic">
+    <parent link="hand"/>
+    <child link="finger_1"/>
+    <origin xyz="0.05 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="0.04" effort="60" velocity="0.15"/>
+  </joint>
+
+  <joint name="finger_2" type="prismatic">
+    <parent link="hand"/>
+    <child link="finger_2"/>
+    <!-- Rz(180°): the finger's +Y opens along the hand's −Y (the
+         gripper2f pattern); same-sign q opens both pads symmetrically -->
+    <origin xyz="0.05 0 0" rpy="0 0 3.141592653589793"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="0.04" effort="60" velocity="0.15"/>
+    <mimic joint="finger_1" multiplier="1" offset="0"/>
+  </joint>
+
+</robot>

@@ -25,7 +25,7 @@
 | 预设（spec_hash8） | 机器人 / 关节 | 抓取模型要点 | 伺服参数 | 基线（course@v1，12 集） | 吞吐（单环境，release） |
 |---|---|---|---|---|---|
 | `tabletop-4dof-pick`（c90869dc） | 4 轴转动（yaw/肩/肘/腕） | 6×9 cm 板、开 75 mm / 合 46 mm（2 mm/侧挤压） | kp/kd 60/4 N·m/rad、armature 0.02、effort 80 N·m | 脚本 11/12 = 91.7%（金标锚）· DLS 11/12 | 采集 2334 steps/s（本轮实测）· DLS 781 |
-| `panda-7dof-pick`（b5535a74） | Panda 7 轴（URDF 真惯量全张量） | 外部 gripper2f：1.7 cm 指块、开 88 mm / 合 46 mm | 300/30、armature 0.05、effort 87/12、阻尼 1.0 | DLS 9/12 = 75%（压线过闸） | 435 |
+| `panda-7dof-pick`（b5535a74） | Panda 7 轴（URDF 真惯量全张量） | 外部 gripper2f：1.7 cm 指块、开 88 mm / 合 46 mm | 300/30、armature 0.05、effort 87/12、阻尼 1.0 | DLS 10/12 = 83.3% · paper@v1 100 集 **80%**（P1-B2 相位机调参，heavy 排程只动 ≥6 DoF） | 1106（course）· 1932（paper 抽验单跑） |
 | `stack-4dof`（ffc96325） | 4 轴 | 同桌面板；判据 @v2（松爪 + 静止 10 步） | 同桌面 | DLS 11/12 = 91.7% | 1146 |
 | `bin-pick-4dof`（14fc9bf8） | 4 轴 | 料箱 = 四面重墙 prop 近似（真 fixture 见 §5） | 同桌面 | DLS 12/12 = 100% | 564 |
 | `drawer-4dof`（ef18ac07） | 4 轴 | 抽屉 = 可动盒体把手近似（真抽屉见 §5） | 同桌面 | DLS 10/12 = 83.3%（本轮重测逐位一致） | 756（本轮重测入 `results/reference/ef18ac07`；M2 时 627，同机并行负载敏感） |

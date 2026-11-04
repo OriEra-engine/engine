@@ -71,6 +71,11 @@ fixed 关节                           → 透明吸收（工具法兰等刚接�
   （§附录，125/125 PASS）。遗留进 M2：GLB 全量解码接进导入链消费
   `mesh_uri`、真惯量张量进物理、revolute 连杆夹爪（Robotiq 式）、
   非常规关节轴重定向。
+- **P1-B1（PLAN-embodied-v3 §二 #12，PUGC 第一公里）**：`--urdf-robot`
+  **全链 CLI** ✅——U4 的能力此前只够那些肯手写 Rust 的用户
+  （`collect --urdf` 仍静默降级 4 轴投影，用户角色集群实测被迫写出
+  `examples/pugc_import.rs` 原型）；本节把全链接进 `embodied_sim_collect`
+  主入口（命令族/坑位治理/实测输出见 §8），原型已删（能力并入）。
 
 ## 5. U4 RobotSpec 全链映射表（URDF 元素 → RobotSpec 字段 → 降级规则）
 
@@ -224,11 +229,110 @@ M0b 补了板系朝向字段；**M2-A（2026-11-03）已勾掉两项**：
 | `GripperSpec` 无板系朝向（finger_x 恒 +X、gap 恒 Z） | M0b 加 `approach_axis`/`gap_axis` 字段；**M2-A 接上导入**：接近/开合方向经 `r_up ∘ site.mount.r` 旋到挂载体系直写字段，`finger_half` 改取挂载系 AABB 半尺寸（不再 [接近,其余,开合] 轴重排）——外部夹爪板/TCP 全对齐（`tests/urdf_robot_spec.rs` 重钉） | ✅ 闭环 |
 | 惯量张量只进质量等价（密度反推） | **M2-A**：`UrdfInertial` 全张量（含非对角）经 `rotate_inertia`（I_body = R·I·Rᵀ，R = r_up∘body.r）直进 `LinkSpec.inertial`，构建端 `MassProperties::with_inertia_matrix` 显式设置（含主轴分解）；无 `<inertial>` 才走包络体积反推。Panda 8 链体质量逐位/张量不变量逐项对照过闸 | ✅ 闭环 |
 | `LinkShape` 无 Mesh 变体 | **M2-A**：`LinkShape::ConvexHull`/`Mesh` 落地；STL（给了 `opts.mesh_base_dir`）经 `meshres::parse_stl` 全量解析，顶点旋到体轴填进 ConvexHull（链体=凸包策略，接触稳定）；GLB 仍探针 → 包络降级（全量解码 M3）；`mesh_uri` 降级为 provenance 元数据（validate 不再拒）；人话报告 `collision_report()` | ✅ 闭环（无旋转字段——体轴对齐点集本身即表示；盒/柱 primitive 的任意角旋转包络仍保守） |
-| `JointSpec` 无关节类型（仅 revolute） | prismatic 链关节仍报错 | ⏳ 待 `kind` 字段（M0b 未加；滑轨场景前置） |
+| `JointSpec` 无关节类型（仅 revolute） | **M3**：`JointKind::Prismatic` 落地，串联链上的 prismatic 真导入（限位 m / effort N / velocity m/s / 独立 N·m 增益缺省）；两指夹爪的 prismatic 手指对仍由 GripperSpec 检测消费、不入链；**仍在范围外**：floating/planar（断链人话报错）、revolute 连杆夹爪（Robotiq 式） | ✅ prismatic 闭环（M3）；floating/planar、连杆夹爪 ⏳ |
 | 每链仅一个 `<collision>` 被消费 | 只取首个 collision | ⏳ 链体多 collider 列表，后续包 |
+| **PUGC 第一公里断裂**（20 角色集群实测）：`--urdf` 只走 4 轴投影（`first_revolute_chain(4)` 静默降级），U4 全链没有 CLI 入口——自家臂必须手写 Rust（审查 agent 被迫写 `examples/pugc_import.rs` 原型） | **P1-B1**：`--urdf-robot` 全链 CLI 进 `embodied_sim_collect`（§8）：N 轴 + mimic 夹爪 + `--mesh-base`/`--mesh-package` 凸包 + `--urdf-mount` + `--dump-robot-spec`（含 skipped 清单）；坑位三警告；`pugc_import.rs` 原型删除（能力并入） | ✅ 闭环（§8） |
 
 策略文档与验收数字：`docs/PHYSICS-FIDELITY.md`（每项 spec 字段、
 默认值、何时 opt-in、验收数字）。
+
+## 8. 全链 CLI（P1-B1，PLAN-embodied-v3 §二 #12）
+
+U4 的 `to_robot_spec` 此前只够肯手写 Rust 的用户：`collect --urdf`
+（§4 U1）仍走 `first_revolute_chain(4)` 的 4 轴投影且静默降级。P1-B1
+把全链接进采集主入口 **embodied_sim_collect**——自家 URDF 一条命令进
+采集：
+
+```bash
+cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- \
+  --urdf-robot crates/oriera-agent/tests/fixtures/six_axis_gripper.urdf \
+  --mesh-base crates/oriera-agent/tests/fixtures/meshes \
+  --mesh-package sixaxis_meshes=crates/oriera-agent/tests/fixtures/meshes \
+  --dump-robot-spec out/robot.json \
+  --episodes 2
+```
+
+### 8.1 命令族
+
+| 标志 | 语义 |
+|---|---|
+| `--urdf-robot <file.urdf>` | `UrdfReport::to_robot_spec` 全链导入，**替换**所选 preset（`--spec`/`--task`，默认金标）的 robot；scene/task/DR 沿用 preset——组合成 v2 spec 走同一 evaluate 管线，spec_hash 自然不同（= 新实验）。与旧 `--urdf` **互斥**（同给即人话报错，不静默择一） |
+| `--urdf-gripper <file.urdf>` | 可选：外部两指夹爪 URDF（`<mimic>` 配对或同父两条 prismatic）经 `to_robot_spec_with_gripper` 挂臂末体工具法兰 |
+| `--mesh-base <dir>` | STL mesh 解析根目录（透传 `RobotSpecOpts.mesh_base_dir`）：`<collision><mesh>` 的 STL 全量解析 → `LinkShape::ConvexHull`；不给 / GLB / 文件缺失 → 链段包络降级（URI 进 skipped，绝不静默） |
+| `--mesh-package <name=dir>` | `package://name/…` 的包根表（可多次） |
+| `--urdf-mount <x,y,z>` | 根 link 落地安装位；缺省 = 被替换 preset 的 `robot.base`（桌沿 `[0.02, 0.5, 0]`）——URDF 臂落在原臂位置，场景几何原样适用 |
+| `--dump-robot-spec <file>` | 导出导入结果（含 `--set` 覆盖）的 RobotSpec JSON（`{"robot", "skipped", "warnings"}`）；控制台同时打印 skipped 报告（原 `pugc_import.rs` 原型的打印格式并入，该原型已删） |
+
+**采集策略随 robot 走**：4 轴预设臂保持解析 IK 脚本相位机（金标路径
+逐位不动）；`--urdf-robot` 导入构型自动切换「settle+跟踪」smoke——
+前 120 tick 稳在 home，之后全关节绕 home 小行程正弦跟踪 + 夹爪周期
+开合。它不解决问题（成功率如实报告），验证的是 N 轴导入链端到端的
+采集管线（env / LeRobot v2.1 数据面 / 指纹 / 断点续跑）；course@v1
+的 90% 硬闸自动降为 report（显式 `--gate` 可覆盖），manifest 与
+`runs/` 布局的方法标签如实记 `smoke`。`--verify-determinism` 双跑
+逐位复核照常生效。
+
+**增益缺省随所选 preset**（URDF 1.0 无 PD/armature 语义）：kp/kd/
+armature 取被替换 preset 首关节的值（金标 = 60/4/0.02），逐关节覆盖
+用 `--set robot.joints.0.kp=…`。home 可用
+`--set "robot.home=[q1,q2,…]"` 覆盖（JSON 数组，分量数须等于关节数）。
+**`--set` 在 robot 替换之后施加**（`robot.home` 这些坑位覆盖只对
+URDF robot 有意义——提前施加会撞 4 关节 preset 的形状校验），坑位
+警告与 `--dump-robot-spec` 因此都反映覆盖后的最终状态（覆盖 home
+后不再触「零位」警）。
+
+### 8.2 三坑（用户角色集群 PUGC-2/3/4 实测）与治理
+
+| 坑 | 现象 | 治理 |
+|---|---|---|
+| **gap_closed ≈ 0**（< 0.01 m） | 指板闭合位相触——运行时一碰方块就挤飞，抓取永不成立 | 人话警告（非致命，`UrdfReport::pitfall_warnings`，tests/urdf_robot_spec.rs 钉死）：点名 preset 参考值 0.046 与 `--set robot.gripper.gap_closed=0.046` 出口（实测输出见下） |
+| **home = URDF 零位** | 竖直/奇异构型是常态，脚本/策略从零位出发够不着桌面 | 人话警告（非致命）+ `--set "robot.home=[q1,q2,…]"` 覆盖 |
+| **base 朝向** | URDF 主轴（链伸展方向）不朝 OriEra +X 时，臂朝反方向伸（PUGC 实测 arm6 主轴朝 −X） | 文档化：**导入只平移（`--urdf-mount`）不旋转**——URDF +X 经 Z-up→Y-up 换算后仍是 OriEra +X；主轴朝别的方向请先改 URDF 根变换。每次导入固定打印一行提醒 |
+
+### 8.3 实测输出（合成 6 轴 + mimic 夹爪 + mesh，验收原样）
+
+导入阶段（警告 + skipped 报告 + dump 落盘）：
+
+```text
+  · base 朝向：URDF 主轴（链伸展方向）须朝 OriEra +X——导入只平移（--urdf-mount）不旋转；朝向不对请先改 URDF 根（详见 docs/URDF-IMPORT.md「全链 CLI」节）
+  · 导入降级/缺省报告（1 条）——全文见 --dump-robot-spec 落盘
+    · link link5 mesh package://sixaxis_meshes/link5.stl → ConvexHull（8 点，STL 顶点旋到体轴；凸包≈网格的保守近似）
+  ⚠ home 全零 = URDF 零位（常见为竖直/奇异构型，脚本/策略从这里出发可能够不着桌面）——可用 --set "robot.home=[q1,q2,...]" 覆盖（JSON 数组，分量数须等于关节数）
+  ✓ RobotSpec → out/p1b/robot-final.json（sixaxis_lab_arm / 6 DoF，skipped 1 条，警告 1 条）
+  · 闸：URDF 导入构型走 settle+跟踪 smoke（解析 IK 脚本基线只认 4 轴预设臂）——course@v1 的 90% 硬闸自动降为 report（成功率如实报告，不拦管线冒烟；显式 --gate 可覆盖）
+```
+
+采集阶段（smoke 策略 + 双跑逐位复核 + 2 集数据面落盘）：
+
+```text
+  spec <preset> · robot sixaxis_lab_arm (6 DoF) · prop[0] cube Cuboid { half: [0.025, 0.025, 0.025] } · spec_hash 1822996a806a72e3 · protocol_hash ff970c8a640a25c0
+  ✓ 确定性复核（full）：双跑逐位一致
+  ✓ 采集 2 集 · 1400 transitions · 成功 0 集（0%）· 吞吐 25 steps/s（单跑 57.1s）
+  ✓ 评测：成功率 0.0%（Wilson 95% CI [0.0%, 65.8%]）· 协议 course@v1（ff970c8a640a25c0）· 指纹 v2
+```
+
+spec_hash `1822996a806a72e3` ≠ 金标（robot 变了 = 新实验，符合设计）；
+`out/…/lerobot-v21/meta/oriera_spec.json` 携带组合后的完整 spec。
+
+gap-touch 孪生夹具（`six_axis_gap_touch.urdf`，指板零偏移）实测警告：
+
+```text
+  · base 朝向：URDF 主轴（链伸展方向）须朝 OriEra +X——导入只平移（--urdf-mount）不旋转；朝向不对请先改 URDF 根（详见 docs/URDF-IMPORT.md「全链 CLI」节）
+  · 导入降级/缺省报告（1 条）——全文见 --dump-robot-spec 落盘
+    · link link5 mesh package://sixaxis_meshes/link5.stl → ConvexHull（8 点，STL 顶点旋到体轴；凸包≈网格的保守近似）
+  ⚠ 夹爪 gap_closed = 0.0000 m ≈ 0：指板闭合位相触——运行时会挤飞方块，抓取永不成立；参考 preset 的 0.046 m，可用 --set robot.gripper.gap_closed=0.046 覆盖
+  ⚠ home 全零 = URDF 零位（常见为竖直/奇异构型，脚本/策略从这里出发可能够不着桌面）——可用 --set "robot.home=[q1,q2,...]" 覆盖（JSON 数组，分量数须等于关节数）
+  ✓ RobotSpec → out/p1b/gaptouch.json（sixaxis_lab_arm / 6 DoF，skipped 1 条，警告 2 条）
+```
+
+互斥治理实测（`--urdf-robot` 与 `--urdf` 同给，exit 1）：
+
+```text
+错误：--urdf-robot 与 --urdf 都定义了 robot，二者互斥：
+  --urdf-robot FILE   RobotSpec 全链导入（N 轴串联链 + mimic 夹爪 + mesh）——自家臂用这个；
+                      采集照常进行，scene/task/DR 沿用 preset
+  --urdf FILE         旧 4 轴投影入口（first_revolute_chain(4)，只落盘不采集）——仅为兼容保留
+```
 
 ## 附录：MJCF 全量交叉验证（2026-11-01 · MuJoCo 3.17.0）
 

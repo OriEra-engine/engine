@@ -103,13 +103,6 @@ required-features = ["rigid3d", "spec", "urdf"]
 # oriera_agent::{spec, manifest, embodied_env::CameraShot}，同款理由必列
 # required-features。
 [[example]]
-name = "pugc_import"
-# PUGC 全链导入原型（20 角色审查 PUGC-1 的种子）：无条件 import
-# oriera_agent::spec/urdf——无 required-features 会在无该特性的腿上
-# 编译炸（PR #168 首跑实锤）。
-required-features = ["rigid3d", "spec", "urdf"]
-
-[[example]]
 name = "embodied_cam_capture"
 path = "examples/embodied_cam_capture.rs"
 required-features = ["rigid3d", "cam", "spec"]

@@ -32,9 +32,16 @@ hyperparams:
     tol_pos_m: 1.0e-4
     tol_rot: 2.0e-3
     warm_start: previous-solution # 每 tick 从上一解起步
-  phases: pick_phases             # 8 相：above 0.12 → 0.03 → 闭爪 → 提 0.20 → 移到 goal 0.20 → 降 0.06 → 开爪 → 退 0.22
+  phases: pick_phases             # 8 相（4 轴金标路）：above 0.12 → 0.03 → 闭爪 → 提 0.20 → 移到 goal 0.20 → 降 0.06 → 开爪 → 退 0.22
   dwell_ticks: [70, 60, 40, 70, 95, 70, 35, 45]
+  heavy_pick_schedule:            # ≥6 DoF（Panda）专用排程（P1-B2 paper 口径调参，2026-11-04）；
+                                  # 4 轴金标路不进这段，逐位不动
+    rate_limit_rad_per_tick: 0.028
+    grasp_depth_m: 0.0
+    dwell_ticks: [90, 80, 15, 80, 40, 40, 70, 95, 70, 35, 50]  # 悬停/下探(沉降重标定)/沉降(钉目标)/闭爪/三级抬升 0.05/0.11/0.20(钉目标)/移/降/开/退
+    mechanisms: [hover-sag-calibration, descent-end-recalibration, closing-pin, staged-lift, rate-limit, lost-solver-reanchor]
 reference: results/reference/<spec_hash8>/course_v1.json
 notes: >
   相位机与 collect 的解析 IK 金标同一套 waypoint/dwell（可直接对比两条 IK 路的成功率）；
-  任何 N-DoF RobotSpec 都吃——Panda 预设靠它。达不到闸 = 如实报数字，不许调判据凑。
+  任何 N-DoF RobotSpec 都吃——Panda 预设靠它（≥6 DoF 走 heavy 排程：paper@v1 100 集
+  80/100，Wilson [71.1%, 86.7%]）。达不到闸 = 如实报数字，不许调判据凑。

@@ -82,6 +82,177 @@ function policyTick(phases, step) {
   return -1;
 }
 
+// ── N 轴演示策略（P1-B2，创作者-2：Panda「只能遥控不能演示」）──────
+// CLI 的 ik.rs 已有 DLS 数值 IK（embodied_sim_baseline 的 paper@v1 口径
+// 80/100 就靠它）；这里移植一条**简化版**给浏览器演示（f64 数学，不复刻
+// Rust 的 f32 逐位口径——演示内核与引擎基线口径不同的免责声明照旧）：
+//   fkPose    = ik.rs fk_pose 的同约定移植（根 link 钉在 origin，转动关
+//               节右手定则旋转、prismatic 沿父系轴平移 q 米）；
+//   dlsSolve  = DlsIk 的 9 行（位置 + approach + gap 免符号）阻尼最小二
+//               乘，数值雅可比、热启动、限幅、关节限位投影——无重启搜
+//               索（演示够用）。
+// 相位脚本 = baseline 调参后的 heavy 排程（悬停 90 → 下探 80【沉降末
+// 重标定】→ 沉降 15【钉目标】→ 闭爪 80 → 三级抬升 40/40/70 → 携带 95 →
+// 投放 70 → 开爪 35 → 退 50），标定/钉住/限幅逻辑与 Rust policy() 同形。
+
+// spec 的夹爪几何 → 相位高度（与 baseline 的 PhaseGeom 同口径，mm 取整）。
+function phaseGeom(spec) {
+  const g = spec.robot.gripper;
+  if (!g) return null;
+  const a = g.approach_axis || [1, 0, 0];
+  const n = Math.hypot(a[0], a[1], a[2]) || 1;
+  const u = [a[0] / n, a[1] / n, a[2] / n];
+  const tcpAlong = (g.tcp_offset[0] * u[0] + g.tcp_offset[1] * u[1] + g.tcp_offset[2] * u[2]) / n;
+  const idx =
+    Math.abs(u[0]) >= Math.abs(u[1]) && Math.abs(u[0]) >= Math.abs(u[2]) ? 0
+    : Math.abs(u[1]) >= Math.abs(u[2]) ? 1 : 2;
+  const mm = (v) => Math.round(v * 1000) / 1000;
+  const plateDrop = mm(g.finger_x - tcpAlong);
+  const plateHalf = mm(g.finger_half[idx]);
+  const heavy = spec.robot.joints.length >= 6;
+  const grasp = mm(plateDrop + 0.015 - plateHalf);
+  return { heavy, grasp, place: mm(grasp + 0.03) };
+}
+
+// heavy 排程（Panda 演示；与 embodied_sim_baseline pick_phases(true) 同表）。
+function heavyPhases(geom) {
+  const { grasp, place } = geom;
+  return [
+    { grip: 0, ticks: 90, target: (o) => above(o, 0.12) },
+    { grip: 0, ticks: 80, target: (o) => above(o, grasp) },
+    { grip: 0, ticks: 15, pin: true, target: (o) => above(o, grasp) },
+    { grip: 1, ticks: 80, pin: true, target: (o) => above(o, grasp) },
+    { grip: 1, ticks: 40, pin: true, target: (o) => above(o, 0.05) },
+    { grip: 1, ticks: 40, pin: true, target: (o) => above(o, 0.11) },
+    { grip: 1, ticks: 70, pin: true, target: (o) => above(o, 0.2) },
+    { grip: 1, ticks: 95, target: (_o, g) => above(g, 0.2) },
+    { grip: 1, ticks: 70, target: (_o, g) => above(g, place) },
+    { grip: 0, ticks: 35, target: (_o, g) => above(g, place) },
+    { grip: 0, ticks: 50, target: (_o, g) => above(g, 0.22) },
+  ];
+}
+
+// FK（转动 + prismatic）：返回 { tip, approach, gap }（世界系，单位向量）。
+function fkPose(spec, q) {
+  const links = spec.robot.links, joints = spec.robot.joints;
+  const p = links.map(() => [0, 0, 0]);
+  const r = links.map(() => [[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+  p[0] = links[0].origin.slice();
+  const rotAxis = (u, ang) => {
+    const c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
+    return [
+      [c + t * u[0] * u[0], t * u[0] * u[1] - s * u[2], t * u[0] * u[2] + s * u[1]],
+      [t * u[0] * u[1] + s * u[2], c + t * u[1] * u[1], t * u[1] * u[2] - s * u[0]],
+      [t * u[0] * u[2] - s * u[1], t * u[1] * u[2] + s * u[0], c + t * u[2] * u[2]],
+    ];
+  };
+  const mul = (a, b) =>
+    a.map((row) => b[0].map((_, j) => row.reduce((acc, x, k) => acc + x * b[k][j], 0)));
+  const mulVec = (a, v) => a.map((row) => row.reduce((acc, x, k) => acc + x * v[k], 0));
+  joints.forEach((j, i) => {
+    const ang = q[i] || 0;
+    const axisLen = Math.hypot(...j.axis) || 1;
+    const u = j.axis.map((x) => x / axisLen);
+    const par = j.parent_link, ch = j.child_link;
+    p[ch] = mulVec(r[par], j.anchor).map((x, k) => p[par][k] + x);
+    if (j.kind === "Prismatic") {
+      const side = mulVec(r[par], u).map((x) => x * ang);
+      p[ch] = p[ch].map((x, k) => x + side[k]);
+      r[ch] = r[par].map((row) => row.slice());
+    } else {
+      r[ch] = mul(r[par], rotAxis(u, ang));
+    }
+  });
+  const g = spec.robot.gripper;
+  const eeLink = g ? g.attach_link : joints[joints.length - 1].child_link;
+  const unit = (v) => {
+    const n = Math.hypot(v[0], v[1], v[2]) || 1;
+    return [v[0] / n, v[1] / n, v[2] / n];
+  };
+  const tcp = g ? g.tcp_offset : [0, 0, 0];
+  const approach = unit(g ? g.approach_axis || [1, 0, 0] : [1, 0, 0]);
+  const gap = unit(g ? g.gap_axis || [0, 0, 1] : [0, 0, 1]);
+  return {
+    tip: mulVec(r[eeLink], tcp).map((x, k) => p[eeLink][k] + x),
+    approach: mulVec(r[eeLink], approach),
+    gap: mulVec(r[eeLink], gap),
+  };
+}
+
+// 简化 DLS：9 行残差（位置 + approach + gap 免符号）× dof 列数值雅可比，
+// Δq = Jᵀ(JJᵀ + λ²I)⁻¹r（高斯消元带部分主元），步幅钳 + 关节限位投影。
+// `st.q` 热启动（进出）；返回 |target − tip|（诊断，同 Rust last_pos_error）。
+function dlsSolve(spec, st, target, down, gapAxis) {
+  const j = spec.robot.joints;
+  const dof = j.length;
+  st.q = Array.from(st.q ?? []); // 热启动载体可能是 Float32Array（obs 切片）
+  while (st.q.length < dof) st.q.push(0);
+  const eps = 1e-4, lambda = 0.05, maxIter = 80, tol = 1e-4, w = 0.5;
+  const residual = (q) => {
+    const f = fkPose(spec, q);
+    const r = [target[0] - f.tip[0], target[1] - f.tip[1], target[2] - f.tip[2]];
+    for (let k = 0; k < 3; k++) r.push(w * (down[k] - f.approach[k]));
+    const dot = gapAxis[0] * f.gap[0] + gapAxis[1] * f.gap[1] + gapAxis[2] * f.gap[2];
+    const sg = dot < 0 ? -1 : 1;
+    for (let k = 0; k < 3; k++) r.push(w * (sg * gapAxis[k] - f.gap[k]));
+    return r;
+  };
+  const solve9 = (m, rhs) => {
+    // 部分主元高斯消元（n×n 原地，返回解；奇异返回 null）
+    const n = rhs.length;
+    const a = m.map((row, i) => [...row, rhs[i]]);
+    for (let col = 0; col < n; col++) {
+      let piv = col;
+      for (let r2 = col + 1; r2 < n; r2++) if (Math.abs(a[r2][col]) > Math.abs(a[piv][col])) piv = r2;
+      if (Math.abs(a[piv][col]) < 1e-12) return null;
+      [a[col], a[piv]] = [a[piv], a[col]];
+      for (let r2 = 0; r2 < n; r2++) {
+        if (r2 === col) continue;
+        const f = a[r2][col] / a[col][col];
+        for (let k = col; k <= n; k++) a[r2][k] -= f * a[col][k];
+      }
+    }
+    return a.map((row, i) => row[n] / row[i]); // 对角元 = row[i]（行 i 列 i）
+  };
+  let posErr = Infinity;
+  for (let iter = 0; iter < maxIter; iter++) {
+    const r = residual(st.q);
+    posErr = Math.hypot(r[0], r[1], r[2]);
+    const rotOk = r.slice(3).every((v) => Math.abs(v) < 2e-3 * w);
+    if (posErr < tol && rotOk) break;
+    const n = r.length;
+    const jac = [];
+    for (let c = 0; c < dof; c++) {
+      const qp = st.q.slice();
+      qp[c] += eps;
+      const rp = residual(qp);
+      jac.push(rp.map((v, k) => (v - r[k]) / eps)); // 列 = ∂r/∂q_c
+    }
+    const jjt = [];
+    for (let i2 = 0; i2 < n; i2++) {
+      jjt.push([]);
+      for (let k = 0; k < n; k++) {
+        let acc = 0;
+        for (let c = 0; c < dof; c++) acc += jac[c][i2] * jac[c][k];
+        jjt[i2].push(acc + (i2 === k ? lambda * lambda : 0));
+      }
+    }
+    const dx = solve9(jjt, r);
+    if (!dx) break;
+    // Δq_c = Σ_i jac[c][i]·dx_i 是**下降**方向的负号项（残差雅可比）
+    let worst = 0;
+    for (let c = 0; c < dof; c++) {
+      let dq = 0;
+      for (let i2 = 0; i2 < n; i2++) dq += jac[c][i2] * dx[i2];
+      const step = -dq;
+      worst = Math.max(worst, Math.abs(step));
+      st.q[c] = Math.min(Math.max(st.q[c] + step, j[c].limits[0]), j[c].limits[1]);
+    }
+    if (worst < 1e-6) break;
+  }
+  return posErr;
+}
+
 // ── 内核状态 ─
 const K = {
   sim: null, spec: null, layout: null, dof: 0, arm: null,
@@ -90,6 +261,7 @@ const K = {
   tick: 0, steps: 0, obs: null,
   recording: false, episode: null, episodes: [],
   policyMode: false, policyStep: 0, policySource: "js",
+  naxis: null, phaseGeom: null,
   iEe: 9, iObj: 12, iGoal: 15,
   redraws: 0, keys: new Set(), hudCb: null, logCb: null, recCb: null,
 };
@@ -101,6 +273,7 @@ function applySpec(specText) {
   K.layout = JSON.parse(sim.layout());
   K.dof = K.spec.robot.joints.length;
   K.arm = ikArmFromSpec(K.spec);
+  K.phaseGeom = phaseGeom(K.spec);
   const names = K.layout.obs;
   K.iEe = names.indexOf("ee.x");
   K.iObj = names.indexOf("obj_rel.x");
@@ -451,15 +624,41 @@ export async function boot(viewport) {
   });
   const btn = (id, fn) => document.getElementById(id).addEventListener("click", fn);
   btn("btn-reset", () => { envReset((Math.random() * 1e9) | 0); log.textContent = "已重置（随机种子）"; post({ type: "state", note: "reset" }); });
-  // JS 解析 ik 是 4 轴闭式解——非 4 轴臂（Panda 等）改用 CLI 基线
+  // 策略守卫：4 轴走解析 ik（金标路）；其余全转动关节臂（Panda 7 轴等）
+  // 走 N 轴 DLS 数值 IK（P1-B2 移植 ik.rs 的简化版）；含 prismatic 关节
+  // 的预设（mobile-arm 龙门底盘）置灰——滑轨底盘的「移动后才能抓」需要
+  // 两段式规划，数值 IK 单目标 servo 拖不动（Rust 基线同样不给它 DLS，
+  // 见 POSITIONING §2 的诚实边界），演示请换预设或用 CLI。
+  const hasPrismatic = () => K.spec.robot.joints.some((j) => j.kind === "Prismatic");
+  const policyBtn = document.getElementById("btn-policy");
+  const refreshPolicyBtn = () => {
+    const blocked = hasPrismatic();
+    policyBtn.setAttribute("aria-disabled", blocked ? "true" : "false");
+    policyBtn.title = blocked
+      ? "本预设含 prismatic 关节（移动底盘），脚本策略不支持——请在卡片墙换桌面/Panda 预设"
+      : "";
+  };
+  refreshPolicyBtn();
   const canRunJsPolicy = () => {
-    if (K.dof !== 4) {
-      log.textContent = "脚本策略仅支持 4 轴臂；本预设请用 CLI 基线：cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,cam,spec,urdf -- --spec specs/official/<预设>.json";
+    if (hasPrismatic()) {
+      log.textContent = "脚本策略不支持 prismatic 预设（mobile-arm）：请在卡片墙换桌面 4 轴或 Panda 7 轴预设；采集/评测用 CLI：cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf -- --spec specs/official/<预设>.json";
       return false;
     }
     return true;
   };
-  btn("btn-policy", () => { if (!canRunJsPolicy()) return; K.policyMode = true; K.policyStep = 0; log.textContent = "脚本策略运行中…"; });
+  const startPolicy = () => {
+    K.policyMode = true; K.policyStep = 0;
+    if (K.dof !== 4) {
+      // N 轴 DLS 演示：heavy 排程 + 标定/钉住/限幅状态（与 baseline 调参
+      // 同形；q 热启动从家位开始，一集一清）。
+      K.naxis = {
+        phases: heavyPhases(K.phaseGeom),
+        sag: [0, 0, 0], pin: null, prevCmd: null, q: K.spec.robot.home.slice(),
+        lastErr: 0,
+      };
+    } else K.naxis = null;
+  };
+  btn("btn-policy", () => { if (!canRunJsPolicy()) return; startPolicy(); log.textContent = "脚本策略运行中…"; });
   btn("btn-rec", (e) => {
     K.recording = !K.recording;
     e.target.textContent = K.recording ? "■ 停止录制" : "● 开始录制";
@@ -511,7 +710,7 @@ export async function boot(viewport) {
     const m = e.data;
     if (!m || m.source !== "oriera-sim" || !m.cmd) return;
     if (m.cmd === "reset") envReset(m.seed ?? ((Math.random() * 1e9) | 0));
-    else if (m.cmd === "policy") { if (!canRunJsPolicy()) return; K.policyMode = true; K.policyStep = 0; if (m.source === "wasm") K.policySource = "wasm"; }
+    else if (m.cmd === "policy") { if (!canRunJsPolicy()) return; startPolicy(); if (m.source === "wasm") K.policySource = "wasm"; }
     else if (m.cmd === "grip") K.gripper = m.value;
     else if (m.cmd === "teleop") { K.policyMode = false; for (let i = 0; i < K.dof; i++) K.targets[i] = m.angles[i]; K.gripper = m.gripper ?? K.gripper; }
     else if (m.cmd === "record") document.getElementById("btn-rec").click();
@@ -522,9 +721,13 @@ export async function boot(viewport) {
         applySpec(m.json);
         buildSceneFromSpec(scene);
         buildSliders();
+        refreshPolicyBtn();
         envReset(m.seed ?? 1000);
         post({ type: "state", note: "spec-applied", specHash: K.sim.spec_hash() });
-      } catch (err) { log.textContent = "spec 换装失败：" + (err?.message ?? err); }
+      } catch (err) {
+        log.textContent = "spec 换装失败：" + (err?.message ?? err);
+        post({ type: "state", note: "spec-apply-failed", error: String(err?.message ?? err) });
+      }
     }
   });
 
@@ -547,6 +750,51 @@ export async function boot(viewport) {
       if (K.policySource === "wasm") {
         // 同代码逐位口径（12 集验收对 91.7% 用这条）：
         action = Array.from(K.sim.baseline_action(K.policyStep));
+        K.policyStep++;
+      } else if (K.naxis) {
+        // N 轴 DLS 演示策略（P1-B2）：heavy 排程 + 悬停沉降标定/沉降末
+        // 重标定/闭爪目标钉住/关节限幅，与 embodied_sim_baseline 的
+        // policy() 同形（f64 演示口径，不逐位对标 Rust）。
+        const na = K.naxis;
+        const obs = K.sim.obs();
+        const ee = [obs[K.iEe], obs[K.iEe + 1], obs[K.iEe + 2]];
+        const obj = [ee[0] + obs[K.iObj], ee[1] + obs[K.iObj + 1], ee[2] + obs[K.iObj + 2]];
+        const gol = [ee[0] + obs[K.iGoal], ee[1] + obs[K.iGoal + 1], ee[2] + obs[K.iGoal + 2]];
+        const ph = policyTick(na.phases, K.policyStep);
+        const phase = ph >= 0 ? na.phases[ph] : null;
+        let raw = phase ? phase.target(obj, gol) : above(gol, 0.22);
+        const demand = phase ? phase.grip : 0;
+        let ticksBefore = 0;
+        for (let i = 0; i < (ph >= 0 ? ph : na.phases.length); i++) ticksBefore += na.phases[i].ticks;
+        // 闭爪/抬升锚：本段首 tick 钉住物体（含沉降段——它先于闭爪），
+        // obj 系目标整体平移到钉住的坐标系，随活物体漂移的正反馈回路断开。
+        if (phase?.pin) {
+          if (!na.pin) na.pin = obj.slice();
+          raw = [na.pin[0] + (raw[0] - obj[0]), na.pin[1] + (raw[1] - obj[1]), na.pin[2] + (raw[2] - obj[2])];
+        } else na.pin = null;
+        const hoverEnd = na.phases[0].ticks - 1;
+        const step = K.policyStep;
+        if (step === hoverEnd) na.sag = [raw[0] - ee[0], raw[1] - ee[1], raw[2] - ee[2]];
+        // 下探段末：臂已稳到抓取航点，把「指令−实测」稳态差折进补偿。
+        if (phase && na.phases[1] === phase && step === ticksBefore + phase.ticks - 1) {
+          const withSag = [raw[0] + na.sag[0], raw[1] + na.sag[1], raw[2] + na.sag[2]];
+          na.sag = [withSag[0] - ee[0], withSag[1] - ee[1], withSag[2] - ee[2]];
+        }
+        const target = step > hoverEnd
+          ? [raw[0] + na.sag[0], raw[1] + na.sag[1], raw[2] + na.sag[2]]
+          : raw;
+        // 失锁重锚：上一解离目标 >2 cm 时回到实测关节角（真实姿态总是
+        // 合法近邻种子）。
+        if (step > 0 && na.lastErr > 0.02) na.q = obs.slice(0, K.dof);
+        na.lastErr = dlsSolve(K.spec, na, target, [0, -1, 0], [0, 0, 1]);
+        const limited = [];
+        for (let i = 0; i < K.dof; i++) {
+          let v = na.q[i];
+          if (na.prevCmd) v = na.prevCmd[i] + Math.min(Math.max(v - na.prevCmd[i], -0.028), 0.028);
+          limited.push(v);
+        }
+        na.prevCmd = limited;
+        action = [...limited, demand];
         K.policyStep++;
       } else {
         // 渲染层策略（PHASES+ik 留在 JS，M1 工作包定案）：开环固定节拍，
@@ -599,7 +847,7 @@ export async function boot(viewport) {
         const keepPolicy = K.policyMode;
         envReset(((Math.random() * 1e9) | 0) + 65536 * K.redraws);
         if (K.recording) K.episode = { task: K.sim.task_phrase(), rows: [], obs: Array.from(K.sim.obs()) };
-        if (keepPolicy) { K.policyMode = true; K.policyStep = 0; }
+        if (keepPolicy) startPolicy(); // 重置标定/钉住/限幅状态（新集新状态）
       } else {
         if (K.recording && K.episode && K.episode.rows.length >= 5) K.episodes.push(K.episode);
         episodesRun++;
@@ -677,7 +925,7 @@ export async function boot(viewport) {
       policyMode: K.policyMode,
       holding: K.holding,
       goal: [...K.sim.goal()],
-      phase: policyTick(PHASES, K.policyStep),
+      phase: policyTick(K.naxis ? K.naxis.phases : PHASES, K.policyStep),
       step: K.policyStep,
       redraws: K.redraws || 0,
       policySource: K.policySource,
@@ -697,4 +945,4 @@ export async function boot(viewport) {
 export const CONSTANTS = Object.freeze({
   PHASES, MAX_STEPS_FALLBACK: 700,
 });
-export { ik, above, policyTick, ikArmFromSpec };
+export { ik, above, policyTick, ikArmFromSpec, fkPose, dlsSolve, phaseGeom, heavyPhases };

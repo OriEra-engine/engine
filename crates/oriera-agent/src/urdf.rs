@@ -35,6 +35,12 @@
 //! `default_kd_prismatic`（N/m、N·s/m，与转动关节的 N·m/rad 量纲分开），
 //! `per_joint` 按名覆盖照旧）。两指夹爪的 prismatic 手指对仍由 GripperSpec
 //! 检测消费、不入链；`<transmission>` 等非动力学元素继续忽略。
+//!
+//! **P1-B1（PLAN-embodied-v3 §二 #12，PUGC 第一公里）**：CLI 侧全链入口
+//! `embodied_sim_collect --urdf-robot`（见 examples/embodied_sim_collect.rs
+//! 与 docs/URDF-IMPORT.md「全链 CLI」节）；本模块只补了
+//! [`pitfall_warnings`]——导入结果的人话坑位警告（gap_closed≈0 /
+//! home=URDF 零位），解析与映射零改动。
 
 use oriera_subsys::{
     ArmDescription, GripperKind, GripperSpec, Inertial, JointKind, JointSpec, LinkShape, LinkSpec,
@@ -1525,6 +1531,35 @@ impl UrdfReport {
             self_collision: oriera_subsys::SelfCollision::Off,
         })
     }
+}
+
+/// P1-B1 坑位治理（用户角色集群 PUGC-2/3 实测两坑）：全链导入结果的人话
+/// 警告清单——**非致命**，CLI 打印后照跑。第三坑（base 朝向）无法从
+/// [`RobotSpec`] 判定（导入只平移不旋转），由 CLI 面固定提示 + 文档写明。
+///
+/// - **gap_closed ≈ 0**（< 0.01 m）：指板闭合位相触——运行时一碰方块就
+///   把它挤飞，抓取永不成立；给 preset 参考值与 `--set` 覆盖路径。
+/// - **home 全零**：home = URDF 零位钳限位的结果，竖直/奇异构型是常态；
+///   给 `--set robot.home=…` 覆盖路径。
+pub fn pitfall_warnings(robot: &RobotSpec) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(g) = &robot.gripper {
+        if g.gap_closed < 0.01 {
+            out.push(format!(
+                "夹爪 gap_closed = {:.4} m ≈ 0：指板闭合位相触——运行时会挤飞方块，抓取永不成立；\
+                 参考 preset 的 0.046 m，可用 --set robot.gripper.gap_closed=0.046 覆盖",
+                g.gap_closed
+            ));
+        }
+    }
+    if !robot.joints.is_empty() && robot.home.iter().all(|h| h.abs() < 1e-6) {
+        out.push(
+            "home 全零 = URDF 零位（常见为竖直/奇异构型，脚本/策略从这里出发可能够不着桌面）\
+             ——可用 --set \"robot.home=[q1,q2,...]\" 覆盖（JSON 数组，分量数须等于关节数）"
+                .to_string(),
+        );
+    }
+    out
 }
 
 #[cfg(test)]

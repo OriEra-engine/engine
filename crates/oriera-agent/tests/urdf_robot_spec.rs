@@ -19,7 +19,10 @@
 //!   multibody，10 tick settle）、`gripper2f_is_detected_and_mounts_on_
 //!   the_panda`（夹爪挂载几何契约）、`prismatic_rail_urdf_imports_into_
 //!   the_multibody_and_tracks`（M3 滑轨导入）、`mobile_arm_preset_json_
-//!   loads_validates_and_drives`（移动底盘预设端到端）。
+//!   loads_validates_and_drives`（移动底盘预设端到端）、
+//!   `six_axis_gripper_imports_full_chain_and_hull_degrades_honestly`（
+//!   P1-B1：6 轴+mimic+mesh 全链 + 凸包/包络双路 + 坑位警告）、
+//!   `gap_touch_twin_trips_the_gap_warning`（PUGC-2 坑位警告正反例）。
 //! - 慢层（`#[ignore = "slow: …"]`）：`panda7_enters_the_multibody_and_
 //!   tracks_in_limit_targets`——800 tick 7 轴跟踪长跑（本文件 ~87% 时长
 //!   的主体，实测 27s/31s）。本地/夜间跑：`cargo test -p oriera-agent
@@ -37,6 +40,8 @@ use oriera_subsys::{JointTargets, JointTelemetry, MultibodySystem, RobotSpec, Sc
 const DT: f32 = 1.0 / 60.0;
 const PANDA: &str = "tests/fixtures/panda7.urdf";
 const GRIPPER: &str = "tests/fixtures/gripper2f.urdf";
+const SIX_AXIS: &str = "tests/fixtures/six_axis_gripper.urdf";
+const SIX_AXIS_GAP_TOUCH: &str = "tests/fixtures/six_axis_gap_touch.urdf";
 
 fn fixture(name: &str) -> UrdfReport {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
@@ -894,5 +899,207 @@ fn mobile_arm_preset_json_loads_validates_and_drives() {
         (last[sz] + 0.3).abs() < 5e-3,
         "slide_z 到位（米）：{}",
         last[sz]
+    );
+}
+
+// ── P1-B1（PLAN-embodied-v3 §二 #12）：--urdf-robot 全链 CLI 验收 ──────
+// 合成 6 轴 + mimic 夹爪 + mesh 链体（tests/fixtures/six_axis_gripper.urdf
+// 及其 gap-touch 孪生）——CLI 侧跑 `--urdf-robot --dump-robot-spec`，这里
+// 钉导入链本体：全链关节表、凸包/包络双路、坑位警告正反例。
+
+/// six_axis fixture 的 opts：mesh 根 = fixtures/meshes，
+/// `package://sixaxis_meshes/…` 经包根表解析到同一目录。
+fn six_axis_opts_with_meshes() -> RobotSpecOpts {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meshes");
+    RobotSpecOpts {
+        mesh_base_dir: Some(root.clone()),
+        mesh_packages: std::collections::BTreeMap::from([("sixaxis_meshes".to_string(), root)]),
+        ..RobotSpecOpts::default()
+    }
+}
+
+#[test]
+// fixture 的限位字面值是 URDF 原文 3.14159（REP 风格缩写 π）——回环断言
+// 就是要逐字面值相等，epsilon 反而弱化契约。
+#[allow(clippy::approx_constant)]
+fn six_axis_gripper_imports_full_chain_and_hull_degrades_honestly() {
+    let rep = fixture(SIX_AXIS);
+    // mimic 两指对检出
+    assert_eq!(
+        rep.gripper_finger_joints(),
+        Some(("finger_1".into(), "finger_2".into()))
+    );
+
+    // ① 给了 mesh 根：link5 的 STL → ConvexHull（12 三角立方去重后 8 顶点）
+    let mut opts = six_axis_opts_with_meshes();
+    let spec = rep.to_robot_spec(&mut opts).expect("6 轴全链导入");
+    assert_eq!(spec.name, "sixaxis_lab_arm");
+    assert_eq!(spec.dof(), 6, "全链按实得轴数：{:?}", spec.joint_names());
+    assert_eq!(
+        spec.joint_names(),
+        ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
+    );
+    assert_eq!(
+        spec.links.len(),
+        7,
+        "base_link + link1..6（tool0/hand 被 fixed 吸收，手指不入链）"
+    );
+    spec.validate().expect("导入 spec 结构合法");
+
+    // 轴映射：URDF +Z（joint1 竖直 yaw）→ OriEra +Y；URDF +Y（pitch）→ −Z
+    assert_eq!(spec.joints[0].axis, [0.0, 1.0, 0.0]);
+    assert_eq!(spec.joints[1].axis, [0.0, 0.0, -1.0]);
+    // 主轴朝向规则（文档化）：肩柱两关节锚竖直（OriEra +Y），
+    // 水平伸展段（joint3..6）锚全沿 OriEra +X——URDF +X 主轴原样保向
+    assert_eq!(spec.joints[0].anchor, [0.0, 0.10, 0.0]);
+    assert_eq!(spec.joints[1].anchor, [0.0, 0.10, 0.0]);
+    for j in &spec.joints[2..] {
+        assert!(
+            j.anchor[0] > 0.0 && j.anchor[1].abs() < 1e-6 && j.anchor[2].abs() < 1e-6,
+            "{} 锚沿 OriEra +X：{:?}",
+            j.name,
+            j.anchor
+        );
+    }
+    // 限位/effort/velocity/damping 逐字面值直进
+    assert_eq!(spec.joints[0].limits, (-3.14159, 3.14159));
+    assert_eq!(
+        (
+            spec.joints[2].effort,
+            spec.joints[2].velocity_limit,
+            spec.joints[2].damping
+        ),
+        (Some(120.0), Some(2.0), 0.5)
+    );
+
+    // mesh 凸包：AABB 0.06 m、mesh_uri 留 provenance、skipped 诚实登记
+    let l5 = &spec.links[5];
+    let oriera_subsys::LinkShape::ConvexHull { points } = &l5.shape else {
+        panic!("给了 mesh 根：link5 应为 ConvexHull：{:?}", l5.shape)
+    };
+    assert_eq!(points.len(), 8, "立方 12 三角去重后 8 顶点：{points:?}");
+    let mut mn = [f32::MAX; 3];
+    let mut mx = [f32::MIN; 3];
+    for p in points {
+        for k in 0..3 {
+            mn[k] = mn[k].min(p[k]);
+            mx[k] = mx[k].max(p[k]);
+        }
+    }
+    for k in 0..3 {
+        assert!(
+            ((mx[k] - mn[k]) - 0.06).abs() < 1e-4,
+            "AABB[{k}] = {:?}（半 0.03 立方）",
+            (mn[k], mx[k])
+        );
+    }
+    assert_eq!(
+        l5.mesh_uri.as_deref(),
+        Some("package://sixaxis_meshes/link5.stl")
+    );
+    assert!(
+        opts.skipped
+            .iter()
+            .any(|s| s.contains("link5") && s.contains("ConvexHull")),
+        "{:?}",
+        opts.skipped
+    );
+
+    // 集成夹爪：gap_closed = 0.046（桌面 preset 值——刻意不触警）、行程 0.126
+    let g = spec.gripper.as_ref().expect("集成夹爪检出");
+    assert!((g.gap_closed - 0.046).abs() < 1e-4, "{}", g.gap_closed);
+    assert!((g.gap_open - 0.126).abs() < 1e-4, "{}", g.gap_open);
+    assert!(
+        (g.gap_rate - 0.15 * 2.0 / 60.0).abs() < 1e-6,
+        "手指 <limit velocity> → gap_rate：{}",
+        g.gap_rate
+    );
+    assert_eq!(g.attach_link, 6, "末体 link6（法兰+手被 fixed 吸收）");
+    let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+    assert!(
+        near(g.approach_axis.unwrap(), [1.0, 0.0, 0.0]),
+        "接近轴 = 手系 +X → OriEra +X：{:?}",
+        g.approach_axis
+    );
+    assert!(
+        near(g.gap_axis.unwrap(), [0.0, 0.0, -1.0]),
+        "开合轴 = 手系 +Y → OriEra −Z：{:?}",
+        g.gap_axis
+    );
+
+    // 坑位治理：home 全零（URDF 零位）→ 警告；gap_closed = 0.046 → 无 gap 警告
+    let warns = oriera_agent::urdf::pitfall_warnings(&spec);
+    assert!(warns.iter().any(|w| w.contains("URDF 零位")), "{warns:?}");
+    assert!(
+        !warns.iter().any(|w| w.contains("指板闭合位相触")),
+        "{warns:?}"
+    );
+
+    // 构建过闸：6 轴 + 凸包链体 + 双板夹爪进 multibody
+    assert!(MultibodySystem::from_robot(spec, Scene3D::default()).is_ok());
+
+    // ② 不给 mesh 根：同一 link → 链段包络降级（段沿 +X → Capsule）+ 登记
+    let mut opts2 = RobotSpecOpts::default();
+    let spec2 = rep.to_robot_spec(&mut opts2).expect("无 mesh 根也导入");
+    let l5b = &spec2.links[5];
+    assert!(
+        matches!(l5b.shape, oriera_subsys::LinkShape::Capsule { .. }),
+        "段沿 +X → Capsule：{:?}",
+        l5b.shape
+    );
+    assert!(l5b.mesh_uri.is_none());
+    assert!(
+        opts2
+            .skipped
+            .iter()
+            .any(|s| s.contains("link5") && s.contains("包络降级") && s.contains("link5.stl")),
+        "{:?}",
+        opts2.skipped
+    );
+}
+
+/// PUGC-2 正例：指板闭合位相触（gap_closed = 0）→ 人话警告点名 preset
+/// 参考值（0.046）与 `--set` 出口；警告非致命——spec 仍合法可构建。
+/// 反例：六轴主件（gap 0.046）与 panda7（无夹爪、home 非全零）都不触警。
+#[test]
+fn gap_touch_twin_trips_the_gap_warning() {
+    let rep = fixture(SIX_AXIS_GAP_TOUCH);
+    let mut opts = six_axis_opts_with_meshes();
+    let spec = rep.to_robot_spec(&mut opts).expect("gap-touch 导入");
+    let g = spec.gripper.as_ref().expect("夹爪");
+    assert!(
+        g.gap_closed.abs() < 1e-6,
+        "指板闭合位相触：{}",
+        g.gap_closed
+    );
+    let warns = oriera_agent::urdf::pitfall_warnings(&spec);
+    let gap = warns
+        .iter()
+        .find(|w| w.contains("指板闭合位相触"))
+        .expect("gap_closed=0 必须触发人话警告");
+    assert!(
+        gap.contains("0.046") && gap.contains("robot.gripper.gap_closed"),
+        "警告须带参考值与覆盖出口：{gap}"
+    );
+    // home 全零警告同发（URDF 零位）
+    assert!(warns.iter().any(|w| w.contains("URDF 零位")), "{warns:?}");
+    // 非致命：警告 ≠ 拒绝
+    spec.validate().expect("gap-touch 仍合法（警告不拦）");
+    assert!(MultibodySystem::from_robot(spec, Scene3D::default()).is_ok());
+
+    // 反例一：六轴主件（gap 0.046）——无 gap 警告（home 警告仍在）
+    let ok = fixture(SIX_AXIS);
+    let mut o = six_axis_opts_with_meshes();
+    let ok_spec = ok.to_robot_spec(&mut o).expect("主件导入");
+    assert!(!oriera_agent::urdf::pitfall_warnings(&ok_spec)
+        .iter()
+        .any(|w| w.contains("指板闭合位相触")));
+    // 反例二：panda7——无夹爪、joint4 钳出非零 → 两类警告都不发
+    let panda = fixture(PANDA);
+    let mut po = panda_opts();
+    let pspec = panda.to_robot_spec(&mut po).expect("panda 导入");
+    assert!(
+        oriera_agent::urdf::pitfall_warnings(&pspec).is_empty(),
+        "panda7 不应触警"
     );
 }
