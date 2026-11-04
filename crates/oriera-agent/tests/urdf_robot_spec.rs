@@ -1109,11 +1109,6 @@ mod bin_fixture_gate {
     // P2 真 fixture 料箱：spec.rs:227 门改为「≥5 prop 或 ≥7 fixture」。
     use oriera_agent::spec::SceneSpec;
 
-    fn base_bin_spec() -> serde_json::Value {
-        serde_json::from_str(include_str!("../specs/official/bin-pick-4dof.json"))
-            .expect("fixture bin spec parses")
-    }
-
     #[test]
     fn fixture_bin_passes_the_gate() {
         // extends 由 load() 解析（from_value 只吃 resolved 全量 spec）
@@ -1134,7 +1129,7 @@ mod bin_fixture_gate {
     #[test]
     fn bare_bin_without_bin_furniture_is_rejected() {
         // 守门不松：bin_pick 无料箱家具（1 prop + 2 fixture）仍拒
-        let mut v: serde_json::Value =
+        let v: serde_json::Value =
             serde_json::from_str(include_str!("../specs/official/bin-pick-4dof.json")).unwrap();
         let v = oriera_agent::spec::SceneSpec::load(&serde_json::to_string(&v).unwrap())
             .expect("resolved loads")
