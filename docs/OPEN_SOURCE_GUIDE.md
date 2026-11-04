@@ -99,3 +99,22 @@ Discussions 任意板块发帖，或中文微信群/飞书群（入群方式问�
 **我想改架构 / 加新层，行吗？**
 行，但先在 [Discussions · Ideas](https://github.com/OriEra-engine/engine/discussions/categories/ideas)
 开 RFC，7 天评论期后动手——这是为了保护十一层边界不被无意破坏。
+
+## 9. 发布流程（维护者）
+
+发版 = **打一个 tag，剩下的交给** [.github/workflows/release.yml](../.github/workflows/release.yml)
+（versions-guard → 引擎全量 release 构建 → oriera-sim wheel → GitHub Release 自动挂 notes 与产物）：
+
+1. **升版本号**：`Cargo.toml` 的 `[workspace.package] version` +
+   `[workspace.dependencies]` 各 `oriera-*` 自引用版本 + `pyproject.toml` 的
+   `[project] version`，三处一起改（成员 crate 都是 `version.workspace = true`，
+   不用动）。
+2. **机械自查**：`python scripts/check_release_versions.py` 全绿再往下——
+   任何一处漏改 exit 1 并列出每处路径与值（`--expect-version 0.X.0` 可额外
+   断言目标版本；`--studio-root ../studio` 连 studio 锚点一起对账）。
+3. **写 release notes**：`docs/release-notes/vX.Y.Z-代号.md`（风格对照
+   v0.9.0/v0.10.0——workflow 按 `<tag>*.md` 前缀找它当 Release body）。
+4. **打 tag 推送**：`git tag vX.Y.Z && git push origin vX.Y.Z`。tag 必须
+   等于版本号（versions-guard 在 CI 里再拦一遍）。
+5. 约十分钟后 GitHub Release 出现，挂引擎 tar 包 + oriera-sim wheel。
+   手动 `workflow_dispatch` 是**构建预演**（只构建不发版）——发版一律走 tag。

@@ -2,24 +2,26 @@
 
 **规则一句话：这里的每个文件都是一份实验身份（`spec_hash`），改动任何非 `meta` 字段 = 新实验 ⇒ 必须另起新文件名（或新版本后缀），并在 PR 打 `physics-behavior-change` 标签、重跑 `contracts/golden/embodied_fingerprints.v2.json`；禁止原地改值。**
 
+**P2 修订（PLAN-embodied-v3 §三，2026-11-05）**：同一预设的治理性修复——prop 近似升真 fixture、`robot.name` 命名对齐等**不改变物理行为**（或只强化保真度）的升级，走**同文件换 hash**：文件名不动、spec_hash 换新，INDEX 重登记 + `results/reference/<新hash8>/` 重测落盘 + 本表同步；旧 hash 的 reference 目录保留作历史档案（先例：`stack-4dof` 换名 `ffc96325` → `249d5122`，episode 动力学逐位一致）。
+
 - 文件名 = `extends` 里引用的名字（`"extends": "tabletop-4dof-pick"` → `official/tabletop-4dof-pick.json`）。
 - 实验室/个人实验放 `specs/lab/`（建议 `lab/<user>/`），用 `extends` 继承官方 spec、只写差异（见 `lab/example-cylinder.json`）；lab 文件不受治理，但同名异 hash 会被 `scripts/gen_spec_index.py` 拦下。
 - `INDEX.json`（`python scripts/gen_spec_index.py` 生成）：`meta.name → spec_hash` 的登记表；同名异 hash 报错、同 hash 异名放行（同一实验的别名）。
 - `tabletop-4dof-pick.json` 是 M0a 的 v2 金标，与 `specs/tabletop-4dof-pick.json`（WP-B 契约测试钉住的旧路径）逐字节一致——两份都不许动；spec_hash 锚 `c90869dcf6a04875`。
 - 建议配合 `CODEOWNERS`：`crates/oriera-agent/specs/official/ @oriera-embodied-maintainers`（仓库级文件不在 M0b 授权面内，此处只留建议）。
 
-## 五预设（M2）
+## 官方预设（M2 五预设 + M3 mobile-arm 入册）
 
 | 预设 | 任务 | 机器人 | 一句话（G-10 卡片） | 难度 | 基线闸 | DLS 基线实测（course@v1，12 集，2026-11-03） |
 |---|---|---|---|---|---|---|
 | `tabletop-4dof-pick` | `pick_place@v1` | tabletop-4dof（4 轴） | 抓起方块放到目标区——引擎默认作业基线（91.7% 锚） | 入门 | ≥90%（course@v1 硬闸同款） | **11/12 = 91.7%** pass · Wilson [64.6, 98.5] · `c90869dc` |
 | `panda-7dof-pick` | `pick_place@v1` | panda7 + gripper2f（7 轴 + 外部两指） | 真 URDF 机械臂（Franka Panda）做同一个抓放——`--dump-panda-spec` 一次性生成 | 进阶 | ≥75%（新臂首版诚实门槛） | **9/12 = 75.0%** pass（压线） · Wilson [46.8, 91.1] · `b5535a74` |
-| `stack-4dof` | `stack@v1` | tabletop-4dof | 把方块 A 叠到底座 B 上（PLAN 原名 push-stack 收敛为 stack：push 走 `push@v1/v2` 单任务） | 进阶 | ≥75%（新任务首版） | **11/12 = 91.7%** pass · Wilson [64.6, 98.5] · `ffc96325` |
-| `bin-pick-4dof` | `bin_pick@v1` | tabletop-4dof | 从料箱（四面重墙 prop 近似，真 fixture 在 M3）里把方块抓出来放到箱外目标区 | 挑战 | ≥60%（首版） | **12/12 = 100%** pass · Wilson [75.8, 100] · `14fc9bf8` |
+| `stack-4dof` | `stack@v1` | stack-4dof（tabletop 同构 4 轴臂，P2 命名治理） | 把方块 A 叠到底座 B 上（PLAN 原名 push-stack 收敛为 stack：push 走 `push@v1/v2` 单任务） | 进阶 | ≥75%（新任务首版） | **11/12 = 91.7%** pass · Wilson [64.6, 98.5] · `249d5122`（旧身份 `ffc96325` 同为 11/12，复测逐位一致） |
+| `bin-pick-4dof` | `bin_pick@v1` | tabletop-4dof | 从真料箱（双层壁+底面 fixture，P2 升级）里把方块抓出来放到箱外目标区 | 挑战 | ≥60% | **1a7cfc40** |
 | `drawer-4dof` | `drawer@v1` | tabletop-4dof | 抓住抽屉把手块沿 -X 拉出 ≥0.08 m（可动盒体 prop 近似 prismatic，真关节在 M3） | 进阶 | ≥60%（首版） | **10/12 = 83.3%** pass · Wilson [55.2, 95.3] · `ef18ac07` |
 | `mobile-arm-4dof` | `pick_place@v1` | mobile-4dof（两滑轨+回转底盘+4 轴臂） | 作业点超臂展 0.475 m——底盘开到 ∓0.40 落回作业带（M3 新增） | 进阶 | ≥75%（pick 闸） | 首跑 settle/跟踪 0.0000 m · `9ee15317` |
 
-实测数落盘在 `results/reference/<spec_hash8>/course_v1.json`（`--reference-out` 写）；五预设双跑逐位一致。
+实测数落盘在 `results/reference/<spec_hash8>/course_v1.json`（`--reference-out` 写）；六预设双跑逐位一致（stack 于 P2 换名后以新身份 `249d5122` 复测，episode 数据与旧身份逐位相同）。
 
 每份带 `meta{name, author, notes, difficulty}`；四个入口（CLI/Python/浏览器/Studio）吃同一份文件、同一个 `spec_hash`。
 
@@ -66,7 +68,7 @@ cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spe
 
 | 字段 | 含义 | 学生能不能改 | 合法范围 / 默认 |
 |---|---|---|---|
-| `scene.fixtures[]` | 静态家具盒体（`name` / `center` / `half` / `friction`）。fixture[0]→地面、[1]→桌面；更多（真料箱/货架）是 M3 | ⚠️ 进 hash | 1–2 个；half 全正；**friction 现阶段必须 0.9**（后端硬编码） |
+| `scene.fixtures[]` | 静态家具盒体（`name` / `center` / `half` / `friction`）。fixture[0]→地面、[1]→桌面（语义位，勿挪）；更多（料箱壁/货架/滑道外壳）P0 起已解锁任意个数 | ⚠️ 进 hash | ≥1 个；half 全正；每块各自 `friction`（有限 ≥0，P0 起不钉 0.9；reset 走 `from_robot_fixtures` 全列表） |
 | `scene.props[]` | 动态物体。**props[0] = 任务物体**（obs/判据跟踪它）；其余是场景件（stack 的底座 B、bin 的四面墙等） | ⚠️ 进 hash | ≥1 个 |
 | `props[].name` | 物体名 | ⚠️ 进 hash | 字符串 |
 | `props[].shape` | 碰撞体：`{"kind":"cuboid","half":[x,y,z]}` / `{"kind":"cylinder","half_h":h,"radius":r}` / `{"kind":"sphere","r":r}`（m，半尺寸） | ⚠️ 进 hash | 全部有限正数；**改这一个字段就能换物体**（学生验收项） |

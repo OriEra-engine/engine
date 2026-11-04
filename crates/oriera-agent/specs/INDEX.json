@@ -11,7 +11,7 @@
    "tier": "lab"
   },
   "bin-pick-4dof": {
-   "hash": "14fc9bf8c107e5da",
+   "hash": "1a7cfc4073632920",
    "files": [
     "official/bin-pick-4dof.json"
    ],
@@ -67,7 +67,7 @@
    "tier": "legacy"
   },
   "stack-4dof": {
-   "hash": "ffc96325c54141d2",
+   "hash": "249d512239f30fcd",
    "files": [
     "official/stack-4dof.json"
    ],

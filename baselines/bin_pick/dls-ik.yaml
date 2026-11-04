@@ -26,3 +26,7 @@ reference: results/reference/<spec_hash8>/course_v1.json
 notes: >
   TODO(WP-A 集成)：spec 自碰撞开关落地后重验箱内抓取；真料箱 fixture（四壁+底）在 M3——
   现用重墙 prop 近似，墙被撞动不影响判据（判据只看任务物体）。
+
+# P2 真 fixture 升级（2026-11-05）：料箱墙从 props 迁入 scene.fixtures
+#（双层壁：内衬 1.2 / 外壳 0.9 + 底面），内腔几何与 prop 近似逐面一致。
+# spec_hash 14fc9bf8 → 1a7cfc40；12 集复测 12/12（与 prop 近似持平）。

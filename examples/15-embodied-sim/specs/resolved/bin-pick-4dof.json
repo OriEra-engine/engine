@@ -3,7 +3,7 @@
   "meta": {
     "name": "bin-pick-4dof",
     "author": "oriera-embodied-maintainers",
-    "notes": "bin_pick@v1：从料箱内把方块抓出、放到箱外桌面目标区。料箱 = 四面 6 cm 高重墙 prop（6000 kg/m³ 近静态；真料箱 fixture / prismatic 在 M3——见 embodied_env.rs 模块注释）。TODO(WP-A 集成)：spec 开自碰撞开关后重验箱内抓取。判据沿用 @v2 pick：在区 + 松爪 + 静止 10 步。基线闸 ≥60%（首版诚实门槛）",
+    "notes": "bin_pick@v1：从料箱内把方块抓出、放到箱外桌面目标区。料箱 = 真 fixture 静态双层壳（P2 治理，PLAN-embodied-v3 §三：M2 的四面 6000 kg/m³ 重墙 prop 近似升真 fixture——静态体不可被撞走）：内衬板四面 friction 1.2（内壁工作面高摩擦）+ 外壳板四面 friction 0.9（外壁常规）+ 底面 fixture friction 1.2（顶面与桌面平齐 y=0.50）——每块 fixture 各自摩擦（from_robot_fixtures 全列表）；单 slab 只有一份摩擦，故内/外表面用两层 slab 各表一面。内腔几何与旧 prop 近似逐面一致：x∈[0.09,0.27]、z∈[-0.10,0.10]、墙高 0.06 m（顶 y=0.56）。旧 prop 近似的实验身份（spec_hash 14fc9bf8，course@v1 12/12）按「同文件换 hash」治理留 results/reference/14fc9bf8/ 作历史档案。TODO(WP-A 集成)：spec 开自碰撞开关后重验箱内抓取。判据沿用 @v2 pick：在区 + 松爪 + 静止 10 步。基线闸 ≥60%（首版诚实门槛）",
     "difficulty": "挑战"
   },
   "robot": {
@@ -310,6 +310,132 @@
           0.32
         ],
         "friction": 0.9
+      },
+      {
+        "name": "bin_wall_x_pos_inner",
+        "center": [
+          0.2725,
+          0.53,
+          0
+        ],
+        "half": [
+          0.0025,
+          0.03,
+          0.11
+        ],
+        "friction": 1.2
+      },
+      {
+        "name": "bin_wall_x_pos_outer",
+        "center": [
+          0.285,
+          0.53,
+          0
+        ],
+        "half": [
+          0.01,
+          0.03,
+          0.11
+        ],
+        "friction": 0.9
+      },
+      {
+        "name": "bin_wall_x_neg_inner",
+        "center": [
+          0.0875,
+          0.53,
+          0
+        ],
+        "half": [
+          0.0025,
+          0.03,
+          0.11
+        ],
+        "friction": 1.2
+      },
+      {
+        "name": "bin_wall_x_neg_outer",
+        "center": [
+          0.075,
+          0.53,
+          0
+        ],
+        "half": [
+          0.01,
+          0.03,
+          0.11
+        ],
+        "friction": 0.9
+      },
+      {
+        "name": "bin_wall_z_pos_inner",
+        "center": [
+          0.18,
+          0.53,
+          0.1025
+        ],
+        "half": [
+          0.11,
+          0.03,
+          0.0025
+        ],
+        "friction": 1.2
+      },
+      {
+        "name": "bin_wall_z_pos_outer",
+        "center": [
+          0.18,
+          0.53,
+          0.115
+        ],
+        "half": [
+          0.11,
+          0.03,
+          0.01
+        ],
+        "friction": 0.9
+      },
+      {
+        "name": "bin_wall_z_neg_inner",
+        "center": [
+          0.18,
+          0.53,
+          -0.1025
+        ],
+        "half": [
+          0.11,
+          0.03,
+          0.0025
+        ],
+        "friction": 1.2
+      },
+      {
+        "name": "bin_wall_z_neg_outer",
+        "center": [
+          0.18,
+          0.53,
+          -0.115
+        ],
+        "half": [
+          0.11,
+          0.03,
+          0.01
+        ],
+        "friction": 0.9
+      },
+      {
+        "name": "bin_floor",
+        "center": [
+          0.18,
+          0.495,
+          0
+        ],
+        "half": [
+          0.095,
+          0.005,
+          0.105
+        ],
+        "friction": 1.2
       }
     ],
     "props": [
@@ -339,94 +465,6 @@
               0.03
             ]
           }
-        }
-      },
-      {
-        "name": "bin_wall_x_pos",
-        "shape": {
-          "kind": "cuboid",
-          "half": [
-            0.01,
-            0.03,
-            0.11
-          ]
-        },
-        "phys": {
-          "density": 6000,
-          "friction": 0.9
-        },
-        "placement": {
-          "fixed": [
-            0.28,
-            0.53,
-            0
-          ]
-        }
-      },
-      {
-        "name": "bin_wall_x_neg",
-        "shape": {
-          "kind": "cuboid",
-          "half": [
-            0.01,
-            0.03,
-            0.11
-          ]
-        },
-        "phys": {
-          "density": 6000,
-          "friction": 0.9
-        },
-        "placement": {
-          "fixed": [
-            0.08,
-            0.53,
-            0
-          ]
-        }
-      },
-      {
-        "name": "bin_wall_z_pos",
-        "shape": {
-          "kind": "cuboid",
-          "half": [
-            0.11,
-            0.03,
-            0.01
-          ]
-        },
-        "phys": {
-          "density": 6000,
-          "friction": 0.9
-        },
-        "placement": {
-          "fixed": [
-            0.18,
-            0.53,
-            0.11
-          ]
-        }
-      },
-      {
-        "name": "bin_wall_z_neg",
-        "shape": {
-          "kind": "cuboid",
-          "half": [
-            0.11,
-            0.03,
-            0.01
-          ]
-        },
-        "phys": {
-          "density": 6000,
-          "friction": 0.9
-        },
-        "placement": {
-          "fixed": [
-            0.18,
-            0.53,
-            -0.11
-          ]
         }
       }
     ]

@@ -116,7 +116,7 @@ articulation，Rust 绑定青年期）。马达三坑（都踩过）：`motor_ax
 | `push@v2` | 在区 **且全程 `holding == false`**（任一帧抓到即判败） | 奖励去掉抓取项、抓到扣分 |
 | `reach@v2` | 同 v1 | 只为记录 `success_criteria=v2` 与 `terminate_on_success` 协议参数位 |
 | `stack@v1` | A 相对 B 的 XZ < `stack_xz_tol`、中心高差 ≈ 两半高之和 ± `stack_y_tol`、松爪、静止 | 底座 B = `scene.props[1]`（fixed），判据读 B 的**实时**位置 |
-| `bin_pick@v1` | @v2 pick 判据 | 料箱 = 四面 6 cm 重墙 prop（6000 kg/m³）近似；真 fixture / 自碰撞开关待 M3 / WP-A（TODO 在 spec `notes`） |
+| `bin_pick@v1` | @v2 pick 判据 | 料箱 = 四面 6 cm 重墙 prop（6000 kg/m³）近似；真 fixture / 自碰撞开关待 M3 / WP-A（TODO 在 spec `notes`） |（P2：料箱升真 fixture 双层壳，spec `1a7cfc40`）
 | `drawer@v1` | 沿 `pull_axis` 拉出 ≥ `pull_distance`（相对**出生位**）、松爪、静止 | 面板 = 可动盒体 prop；真 prismatic fixture 在 M3 |
 
 - **阈值全进 `TaskParams`**（`terminate_on_success` / `rest_steps` / `rest_speed` / `release_below` /

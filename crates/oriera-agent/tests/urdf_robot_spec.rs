@@ -1103,3 +1103,41 @@ fn gap_touch_twin_trips_the_gap_warning() {
         "panda7 不应触警"
     );
 }
+
+#[cfg(test)]
+mod bin_fixture_gate {
+    // P2 真 fixture 料箱：spec.rs:227 门改为「≥5 prop 或 ≥7 fixture」。
+    use oriera_agent::spec::SceneSpec;
+
+    #[test]
+    fn fixture_bin_passes_the_gate() {
+        // extends 由 load() 解析（from_value 只吃 resolved 全量 spec）
+        let spec = SceneSpec::load(include_str!("../specs/official/bin-pick-4dof.json"))
+            .expect("fixture bin must load+validate");
+        assert!(spec.spec.scene.fixtures.len() >= 7);
+        assert!(spec.spec.scene.props.len() < 5);
+    }
+
+    #[test]
+    fn legacy_five_prop_bin_still_passes() {
+        // 回归：5-prop 近似（14fc9bf8 旧路径）仍过闸
+        let spec = SceneSpec::load(include_str!("fixtures/bin-pick-4dof-legacy-5prop.json"))
+            .expect("legacy 5-prop bin must load+validate");
+        assert!(spec.spec.scene.props.len() >= 5);
+    }
+
+    #[test]
+    fn bare_bin_without_bin_furniture_is_rejected() {
+        // 守门不松：bin_pick 无料箱家具（1 prop + 2 fixture）仍拒
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../specs/official/bin-pick-4dof.json")).unwrap();
+        let v = oriera_agent::spec::SceneSpec::load(&serde_json::to_string(&v).unwrap())
+            .expect("resolved loads")
+            .spec;
+        let mut resolved = serde_json::to_value(&v).unwrap();
+        let fixtures = resolved["scene"]["fixtures"].as_array_mut().unwrap();
+        fixtures.retain(|f| f["name"].as_str().unwrap_or("") == "ground");
+        let err = SceneSpec::from_value(resolved).unwrap_err();
+        assert!(err.contains("bin_pick"), "{err}");
+    }
+}
