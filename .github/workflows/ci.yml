@@ -5,12 +5,24 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch: # M3 跨平台指纹矩阵手动触发用（embodied-fingerprints-matrix）
+    inputs:
+      matrix_only:
+        description: "只跑指纹矩阵（跳过全部常规 job，PLAN-embodied-v3 §二 #18）"
+        type: boolean
+        default: false
+
+# 同分支新推送取消旧跑：省 runner 分钟，也避免旧红掩盖新绿
+# （PLAN-embodied-v3 §二 #18，CI 工程师 P1）。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   agent-physics:
+    if: inputs.matrix_only != true
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -26,40 +38,55 @@ jobs:
   # 单 job 串行全 feature 腿时，一条卡死拖死全部（2026-10-26 实测：
   # Windows Test 步骤挂 79 分钟被取消）。拆 matrix 并行：各腿独立
   # runner 互不阻塞，timeout-minutes 硬顶——卡死自动自杀重触发。
+  # Build 步骤按腿收窄（PLAN-embodied-v3 §二 #18 P2）：此前每腿
+  # `cargo build --workspace`（默认 features）——feature 腿的 test 编译
+  # 用的单元它一个都没暖到，纯烧分钟。现按本腿 -p + features 预热，
+  # 与 test 同一批编译单元复用（core 腿是 --workspace 全量腿，不动）。
   rust:
+    if: inputs.matrix_only != true
     strategy:
       fail-fast: false
       matrix:
         leg:
           - name: core
+            build: cargo build --workspace
             test: cargo test --workspace
             clippy: cargo clippy --workspace --all-targets -- -D warnings
           - name: genai-providers
+            build: cargo build -p oriera-genai --features providers
             test: cargo test -p oriera-genai --features providers
             clippy: cargo clippy -p oriera-genai --all-targets --features providers -- -D warnings
           - name: agent-json
+            build: cargo build -p oriera-agent --features json
             test: cargo test -p oriera-agent --features json
             clippy: cargo clippy -p oriera-agent --all-targets --features json -- -D warnings
           - name: infer-native-http
+            build: cargo build -p oriera-infer --features native-http
             test: cargo test -p oriera-infer --features native-http
             clippy: cargo clippy -p oriera-infer --all-targets --features native-http -- -D warnings
           - name: subsys-rigid
+            build: cargo build -p oriera-subsys --features rigid
             test: cargo test -p oriera-subsys --features rigid
             clippy: cargo clippy -p oriera-subsys --all-targets --features rigid -- -D warnings
           - name: subsys-rigid3d
+            build: cargo build -p oriera-subsys --features rigid3d
             test: cargo test -p oriera-subsys --features rigid3d
             clippy: cargo clippy -p oriera-subsys --all-targets --features rigid3d -- -D warnings
           - name: subsys-rigid3d-cam
+            build: cargo build -p oriera-subsys --features rigid3d,cam
             test: cargo test -p oriera-subsys --features rigid3d,cam
             clippy: cargo clippy -p oriera-subsys --all-targets --features rigid3d,cam -- -D warnings
           - name: agent-rigid3d-cam
+            build: cargo build -p oriera-agent --features rigid3d,cam
             test: cargo test -p oriera-agent --features rigid3d,cam
             clippy: cargo clippy -p oriera-agent --all-targets --features rigid3d,cam -- -D warnings
           # pyo3 桥腿：Windows 下 cdylib+测试二进制并行有已知交互，串行跑
           - name: agent-spec
+            build: cargo build -p oriera-agent --features spec,urdf,rigid3d,cam,json
             test: cargo test -p oriera-agent --features spec,urdf,rigid3d,cam,json
             clippy: cargo clippy -p oriera-agent --all-targets --features spec,urdf,rigid3d,cam,json -- -D warnings
           - name: agent-python-bridge
+            build: cargo build -p oriera-agent --features python
             test: cargo test -p oriera-agent --features python -- --test-threads=1
             clippy: cargo clippy -p oriera-agent --all-targets --features python -- -D warnings
     name: rust (${{ matrix.leg.name }})
@@ -75,8 +102,8 @@ jobs:
           key: ${{ matrix.leg.name }}
       - name: Format
         run: cargo fmt --all --check
-      - name: Build
-        run: cargo build --workspace
+      - name: Build (${{ matrix.leg.name }}) — 本腿 -p+features 预热
+        run: ${{ matrix.leg.build }}
       - name: Test (${{ matrix.leg.name }})
         # timeout 快速失败护栏（2026-10-26 SOP：挂死测试 10 分钟内变红，
         # 不烧满 job 的 60 分钟硬顶——cancelled 语义模糊且拖累整条流水线）
@@ -84,9 +111,30 @@ jobs:
       - name: Clippy (${{ matrix.leg.name }})
         run: ${{ matrix.leg.clippy }}
 
+  # Windows 常规门禁腿（PLAN-embodied-v3 §二 #18，P1：PR 门禁此前完全不
+  # 碰 Windows，而本机是主力开发平台）。check 比 test 便宜（不跑测试），
+  # 只钉 oriera-agent 具身 feature 组在 MSVC 下的编译/clippy 干净。
+  windows-check:
+    if: inputs.matrix_only != true
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-check
+      - name: Check (-p oriera-agent, embodied features)
+        run: cargo check -p oriera-agent --features rigid3d,cam,spec,urdf,json
+      - name: Clippy (-p oriera-agent, embodied features)
+        run: cargo clippy -p oriera-agent --features rigid3d,cam,spec,urdf,json -- -D warnings
+
   # studio_e2e（离线验收 example）独占一腿：panic 即红（#106），且
   # 避免与其他 feature 腿抢同一个 cargo 锁。
   studio-e2e:
+    if: inputs.matrix_only != true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -99,6 +147,7 @@ jobs:
         run: timeout 900 cargo run -q -p oriera-agent --example studio_e2e
 
   manifests:
+    if: inputs.matrix_only != true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -112,7 +161,43 @@ jobs:
       - name: Document number guard (W8)
         run: python scripts/check_numbers.py
 
+  # 三出口 CI 冒烟腿（PLAN-embodied-v3 §二 #14，QA-5 + DE-2）：采集 →
+  # npz → converter → selfcheck → aggregate → plot 的 Python 数据管线
+  # 此前零 CI、三出口一致性靠人肉。2 集 + debug 构建（速度优先），
+  # 全部 pass 才绿；15 分钟硬顶。
+  data-pipeline:
+    if: inputs.matrix_only != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: data-pipeline
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pyarrow (converter / aggregate)
+        run: python -m pip install pyarrow
+      - name: Build collect (debug — 2 集冒烟速度优先)
+        run: cargo build -q -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf
+      - name: Collect 2 episodes (reach → npz + lerobot-v21)
+        run: >
+          cargo run -q -p oriera-agent --example embodied_sim_collect
+          --features rigid3d,cam,spec,urdf
+          -- --task reach --episodes 2 --export npz --out out/smoke
+      - name: Convert JSONL → parquet (LeRobot v2.1)
+        run: python scripts/jsonl_to_lerobot_v21.py out/smoke/lerobot-v21
+      - name: Selfcheck converted v2.1 tree (incl. MANIFEST 对账)
+        run: python scripts/lerobot_v3_selfcheck.py --v21 out/smoke/lerobot-v21
+      - name: Aggregate eval_report → results table
+        run: python scripts/oriera_results.py aggregate out/smoke --out out/smoke-results/results.csv --format csv
+      - name: Plot summary (无 matplotlib 走 CSV 降级)
+        run: python scripts/plot_results.py out/smoke-results/results.csv --out-dir out/smoke-results/plots
+
   bench:
+    if: inputs.matrix_only != true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -122,6 +207,7 @@ jobs:
       - name: ECS benchmarks (report-only)
         run: cargo bench -p oriera-ecs
   cross-check:
+    if: inputs.matrix_only != true
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -143,7 +229,9 @@ jobs:
         run: cargo build -p oriera-web --target wasm32-unknown-unknown
 
   browser:
+    if: inputs.matrix_only != true
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -166,7 +254,9 @@ jobs:
   # 已实证）——当前契约「同平台逐位、跨平台统计一致」：本 job 报告差
   # 异不拦门（continue-on-error），差异超限则按 physics-behavior-change
   # 流程重锚。默认只在 main 手动触发（workflow_dispatch），PR 不跑
-  #（三平台 × 金标采集 ≈ 30 分钟成本）。
+  # （三平台 × 金标采集 ≈ 30 分钟成本）。`matrix_only` 派发输入（#18）
+  # 跳过全部常规 job 只跑本矩阵；eval_report + receipt + run_manifest
+  # 按 OS 归档成 artifact 供离线对账（PLAN-embodied-v3 §二 #17）。
   embodied-fingerprints-matrix:
     if: github.event_name == 'workflow_dispatch'
     strategy:
@@ -215,3 +305,13 @@ jobs:
                     "(expected under the same-platform-bit-exact contract; re-anchor via "
                     "physics-behavior-change if the statistical distribution also drifts)")
           PY
+      - name: Upload eval_report + receipt + run_manifest (per-OS artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fp-matrix-${{ matrix.os }}
+          path: |
+            out/fp-matrix/eval_report.json
+            out/fp-matrix/run_manifest.json
+            out/fp-matrix/lerobot-v21/meta/oriera_receipt.json
+          if-no-files-found: warn

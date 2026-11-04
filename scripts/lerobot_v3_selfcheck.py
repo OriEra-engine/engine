@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
-"""Structural self-check for an OriEra LeRobot v3.0 export (P-7 tail).
+"""Structural self-check for an OriEra LeRobot export (P-7 tail + v2.1).
 
-Checks the on-disk v3.0 contract the lerobot reader will rely on:
-required meta files, the info.json schema keys, the data/video path
-templates and chunk/file naming, the episodes metadata columns and
-contiguity, and (when pyarrow is installed) the parquet tables'
-columns/row counts.
+Two layouts, one entrypoint:
+
+    python scripts/lerobot_v3_selfcheck.py <dir>          # v3.0（默认）
+    python scripts/lerobot_v3_selfcheck.py --v21 <dir>    # v2.1
+
+v3.0 检查 on-disk v3.0 contract：required meta files, the info.json
+schema keys, the data/video path templates and chunk/file naming, the
+episodes metadata columns and contiguity, and (when pyarrow is
+installed) the parquet tables' columns/row counts.
+
+v2.1（`--v21`，PLAN-embodied-v3 §二 #14 QA-5）检查引擎直出/转换后的
+v2.1 目录：info.json 键集与模板、meta/tasks|episodes|stats|modality、
+per-episode 数据文件列集与行数、videos 布局（帧目录 ↔ mp4 ↔ depth
+PNG 序列）、以及 **MANIFEST 哈希对账**（splitmix64 byte-fold 的 Python
+对拍实现；转换后目录按 `MANIFEST.converted.json` 标记改对 raw_jsonl/
+归档与在位文件核验——DE-P1 提交点语义）。
 
 HONESTY NOTE: this is a *structure* audit. 本机没有 lerobot，它不能（也
 不声称）证明 `LeRobotDataset(repo_id)` 能加载这个目录——那一步要等 CI
@@ -13,6 +24,7 @@ HONESTY NOTE: this is a *structure* audit. 本机没有 lerobot，它不能（�
 
 Usage:
     python scripts/lerobot_v3_selfcheck.py out/embodied-sim/lerobot-v30
+    python scripts/lerobot_v3_selfcheck.py --v21 out/embodied-sim/lerobot-v21
     （转换成 parquet 之前后都可跑：JSONL 代理文件按同等语义检查）
 
 Exit code 0 = all checks passed; 1 = at least one failed.
@@ -20,6 +32,7 @@ Exit code 0 = all checks passed; 1 = at least one failed.
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -235,7 +248,264 @@ def check(root: Path) -> int:
     return c.report()
 
 
+# ----- v2.1 mode（`--v21`，PLAN-embodied-v3 §二 #14 / QA-5 + DE-P1）-----
+
+V21_REQUIRED_INFO = [
+    "codebase_version",
+    "robot_type",
+    "total_episodes",
+    "total_frames",
+    "total_tasks",
+    "total_videos",
+    "total_chunks",
+    "chunks_size",
+    "fps",
+    "splits",
+    "data_path",
+    "video_path",
+    "features",
+]
+
+V21_DATA_TEMPLATE = "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
+V21_VIDEO_TEMPLATE = "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
+
+# 五个簿记列 + 特性列（v2.1 行契约，见 lerobot.rs row_jsonl）
+V21_ROW_BOOKKEEPING = ["index", "episode_index", "frame_index", "task_index", "timestamp"]
+
+FRAME_PNG_RE = re.compile(r"^videos/.+/frame_\d{6}\.png$")
+
+_MASK64 = (1 << 64) - 1
+
+
+def _mix64(h: int, x: int) -> int:
+    """lerobot.rs `mix64` 的 Python 对拍实现。"""
+    h ^= x
+    h = (h * 0xFF51_AFD7_ED55_8CCD) & _MASK64
+    h ^= h >> 29
+    h = (h * 0xC4CE_B9FE_1A85_EC53) & _MASK64
+    h ^= h >> 32
+    return h
+
+
+def content_hash(data: bytes) -> int:
+    """lerobot.rs `content_hash`（splitmix64 byte-fold）——MANIFEST 哈希
+    用它在本端重算，不信任清单自述。"""
+    h = 0x0000_6F72_6965_7261
+    for i in range(0, len(data), 8):
+        chunk = data[i:i + 8]
+        buf = int.from_bytes(chunk.ljust(8, b"\x00"), "little")
+        h = _mix64(h, buf)
+    return _mix64(h, len(data))
+
+
+def _read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _read_jsonl(path: Path) -> list[dict] | None:
+    try:
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def check_v21(root: Path) -> int:
+    """v2.1 目录契约自检（引擎直出 raw 树与转换后树两种口径）。"""
+    c = Check()
+    info_path = root / "meta" / "info.json"
+    if not info_path.exists():
+        c.expect(False, f"{info_path} 存在")
+        c.report()
+        return 1
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+
+    c.expect(info.get("codebase_version") == "v2.1",
+             f"codebase_version == v2.1（当前 {info.get('codebase_version')!r}）")
+    for key in V21_REQUIRED_INFO:
+        c.expect(key in info, f"info.json 有 {key}")
+    c.expect(info.get("data_path") == V21_DATA_TEMPLATE,
+             f"data_path 模板 == {V21_DATA_TEMPLATE}（当前 {info.get('data_path')!r}）")
+    c.expect(info.get("video_path") == V21_VIDEO_TEMPLATE,
+             f"video_path 模板 == {V21_VIDEO_TEMPLATE}（当前 {info.get('video_path')!r}）")
+    fps = info.get("fps")
+    c.expect(isinstance(fps, (int, float)) and fps > 0, f"fps 为正数（当前 {fps!r}）")
+    c.expect(bool(info.get("robot_type")), "robot_type 非空")
+    total_eps = info.get("total_episodes", -1)
+    total_frames = info.get("total_frames", -1)
+    splits = info.get("splits") or {}
+    c.expect(splits.get("train") == f"0:{total_eps}",
+             f"splits.train == \"0:{total_eps}\"（当前 {splits.get('train')!r}）")
+
+    feats = info.get("features", {})
+    video_feats = [k for k, v in feats.items() if v.get("dtype") == "video"]
+    image_feats = [k for k, v in feats.items() if v.get("dtype") == "image"]
+    table_feats = {k: v for k, v in feats.items() if v.get("dtype") not in ("video", "image")}
+    for name, feat in feats.items():
+        if name in ("timestamp", "frame_index", "episode_index", "index", "task_index"):
+            c.expect(feat.get("dtype") == ("float32" if name == "timestamp" else "int64"),
+                     f"features[{name}] dtype 合法（{feat.get('dtype')}）")
+            continue
+        c.expect("dtype" in feat and "shape" in feat,
+                 f"features[{name}] 有 dtype+shape")
+        shape = feat.get("shape", [])
+        c.expect(isinstance(shape, list) and len(shape) >= 1 and shape[0] >= 1,
+                 f"features[{name}].shape[0] ≥ 1（{shape}）")
+        if feat.get("dtype") == "video":
+            c.expect(isinstance(feat.get("info", {}).get("video.fps"), (int, float)),
+                     f"features[{name}].info['video.fps'] 存在")
+
+    # meta/tasks.jsonl：task_index 从 0 连续
+    tasks = _read_jsonl(root / "meta" / "tasks.jsonl")
+    c.expect(bool(tasks), "meta/tasks.jsonl 存在且可解析")
+    if tasks:
+        idxs = [t.get("task_index") for t in tasks]
+        c.expect(idxs == list(range(len(tasks))), f"task_index 从 0 连续（{idxs}）")
+        c.expect(all(isinstance(t.get("task"), str) and t["task"] for t in tasks),
+                 "每条 task 非空字符串")
+        c.expect(len(tasks) == info.get("total_tasks", -1),
+                 f"tasks 行数 == total_tasks（{len(tasks)}/{info.get('total_tasks')}）")
+
+    # meta/episodes.jsonl：episode_index 连续、Σ length == total_frames
+    eps = _read_jsonl(root / "meta" / "episodes.jsonl")
+    c.expect(bool(eps), "meta/episodes.jsonl 存在且可解析")
+    if eps:
+        c.expect([e.get("episode_index") for e in eps] == list(range(len(eps))),
+                 "episode_index 从 0 连续")
+        c.expect(all(isinstance(e.get("tasks"), list) and e["tasks"] for e in eps),
+                 "每集带非空 tasks 列表")
+        c.expect(len(eps) == total_eps, f"episodes 行数 == total_episodes（{len(eps)}/{total_eps}）")
+        c.expect(sum(e.get("length", 0) for e in eps) == total_frames,
+                 f"Σ length == total_frames（{sum(e.get('length', 0) for e in eps)}/{total_frames}）")
+
+    # meta/stats.json + meta/modality.json
+    stats = _read_json(root / "meta" / "stats.json")
+    c.expect(isinstance(stats, dict), "meta/stats.json 可解析")
+    if isinstance(stats, dict):
+        for key in ("observation.state", "action", "timestamp"):
+            c.expect(key in stats, f"stats.json 有 {key}")
+    modality = _read_json(root / "meta" / "modality.json")
+    c.expect(isinstance(modality, dict) and isinstance(modality.get("state"), dict)
+             and isinstance(modality.get("action"), dict),
+             "meta/modality.json 有 state/action 分组")
+
+    # 数据文件：episode_*.jsonl（raw）或 episode_*.parquet（转换后）
+    data_jsonl = sorted((root / "data" / "chunk-000").glob("episode_*.jsonl"))
+    data_pq = sorted((root / "data" / "chunk-000").glob("episode_*.parquet"))
+    data_files = data_pq if data_pq else data_jsonl
+    c.expect(bool(data_files), "data/chunk-000/episode_* 存在（jsonl 或转换后 parquet）")
+    c.expect(len(data_files) == total_eps,
+             f"数据文件数 == total_episodes（{len(data_files)}/{total_eps}）")
+    need_cols = set(V21_ROW_BOOKKEEPING) | set(table_feats)
+    total_rows = 0
+    for f in data_files:
+        got, fmt = _read_rows(f)
+        if got is None:
+            c.expect(False, f"{f.name}: {fmt}")
+            continue
+        total_rows += len(got)
+        missing = need_cols - set(got[0].keys()) if got else need_cols
+        c.expect(not missing, f"{f.name} 数据列齐全（{fmt}，缺 {sorted(missing) if missing else '无'}）")
+        if got:
+            stem_idx = int(f.stem.split("_")[1])
+            c.expect(got[0].get("episode_index") == stem_idx,
+                     f"{f.name} 行 episode_index == {stem_idx}")
+            c.expect(got[0].get("timestamp") == 0.0, f"{f.name} 第一行 timestamp == 0")
+    c.expect(total_rows == total_frames,
+             f"数据行数 == total_frames（{total_rows}/{total_frames}）")
+
+    # videos 布局：video 特性 = 帧目录（raw）或 mp4（转换后），episode
+    # artifact 总数必须对上 total_videos；image（depth.*）特性 = u16 PNG
+    # 帧目录（转换器不把深度转 mp4）。
+    videos_root = root / "videos" / "chunk-000"
+    art_total = 0
+    for key in video_feats:
+        # v2.1 布局：目录名 = 完整特性键（videos/chunk-000/observation.images.<name>/）
+        cam_dir = videos_root / key
+        if not cam_dir.is_dir():
+            c.expect(info.get("total_videos", 0) == 0,
+                     f"{key} 有 episode 帧目录或 mp4")
+            continue
+        ep_dirs = {d.name for d in cam_dir.glob("episode_*") if d.is_dir()}
+        ep_mp4s = {p.stem for p in cam_dir.glob("episode_*.mp4")}
+        c.expect(not (ep_dirs & ep_mp4s), f"{key} 的同一 episode 不应同时有帧目录与 mp4")
+        for d in sorted(ep_dirs):
+            c.expect(any((cam_dir / d).glob("frame_*.png")),
+                      f"{key}/{d} 帧目录含 frame_*.png")
+        art_total += len(ep_dirs) + len(ep_mp4s)
+    c.expect(art_total == info.get("total_videos", -1),
+             f"episode 视频 artifact 总数 == total_videos（{art_total}/{info.get('total_videos')}）")
+    for key in image_feats:
+        d = videos_root / key
+        c.expect(d.is_dir(), f"{key} 帧目录存在（u16 PNG 序列）")
+        if d.is_dir():
+            subs = [x for x in d.glob("episode_*") if x.is_dir()]
+            c.expect(bool(subs) and all(any(x.glob("frame_*.png")) for x in subs),
+                     f"{key} 至少一个 episode 帧目录且含 frame_*.png")
+
+    # MANIFEST 提交点对账（DE-P1）：
+    # - raw 树：逐条在位重算哈希；
+    # - 转换后树（有 MANIFEST.converted.json）：行文件条目改对 raw_jsonl/
+    #   归档核验；帧 PNG 条目被 mp4 取代的记为历史回执（不硬失败）。
+    converted_marker = root / "MANIFEST.converted.json"
+    converted = _read_json(converted_marker) if converted_marker.exists() else None
+    manifest_path = root / "MANIFEST.jsonl"
+    c.expect(manifest_path.exists(), "MANIFEST.jsonl 存在（引擎原子提交点）")
+    entries = _read_jsonl(manifest_path) if manifest_path.exists() else None
+    c.expect(entries is not None, "MANIFEST.jsonl 逐行 JSON 可解析")
+    if converted_marker.exists():
+        c.expect(isinstance(converted, dict) and converted.get("converted") is True,
+                 "MANIFEST.converted.json 标记 converted=true（转换后提交点，DE-P1）")
+        c.expect(bool(isinstance(converted, dict) and converted.get("converted_at")),
+                 "MANIFEST.converted.json 带 converted_at")
+        ce = (converted or {}).get("entries")
+        c.expect(ce == entries,
+                 "MANIFEST.converted.json 忠实复制原清单条目")
+    if entries is not None:
+        raw_dir = root / "raw_jsonl"
+        if converted is not None:
+            c.expect(raw_dir.is_dir(), "raw_jsonl/ 归档目录存在（已转换口径）")
+        mism: list[str] = []
+        missing: list[str] = []
+        superseded = 0
+        for e in entries:
+            rel, want = e.get("file", ""), e.get("hash")
+            # 清单里 hash 是 "016x" 十六进制字符串——对账前转回整数
+            try:
+                want_i = int(want, 16) if isinstance(want, str) else want
+            except (TypeError, ValueError):
+                mism.append(f"{rel}(hash 非十六进制: {want!r})")
+                continue
+            p = root / rel
+            if p.is_file():
+                if content_hash(p.read_bytes()) != want_i:
+                    mism.append(rel)
+            elif converted is not None and (raw_dir / Path(rel).name).is_file():
+                arch = raw_dir / Path(rel).name
+                if content_hash(arch.read_bytes()) != want_i:
+                    mism.append(f"{rel} → raw_jsonl/{arch.name}")
+            elif converted is not None and FRAME_PNG_RE.match(rel):
+                superseded += 1  # 帧目录已被 mp4 取代（转换器 rmtree）——历史回执
+            else:
+                missing.append(rel)
+        c.expect(not mism, f"MANIFEST 哈希对账（错 {mism or '无'}）")
+        c.expect(not missing, f"MANIFEST 清单文件齐全（缺 {missing or '无'}）")
+        if superseded:
+            c.expect(True, f"{superseded} 条帧 PNG 条目已被 mp4 取代（条目退行为历史回执）")
+
+    return c.report()
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit(__doc__)
-    sys.exit(check(Path(sys.argv[1])))
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("root", type=Path, help="LeRobot 数据集目录（v3.0 默认 / --v21 按 v2.1）")
+    ap.add_argument("--v21", action="store_true",
+                    help="按 v2.1 目录契约自检（含 MANIFEST 哈希对账）")
+    args = ap.parse_args()
+    sys.exit(check_v21(args.root) if args.v21 else check(args.root))

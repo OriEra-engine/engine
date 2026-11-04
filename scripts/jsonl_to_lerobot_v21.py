@@ -21,6 +21,15 @@ Re-entrant (WPC 实测修复): converted sources live in `raw_jsonl/`;
 re-running a converted directory is a friendly no-op, not an error,
 and re-archiving over an existing copy uses os.replace (Windows-safe).
 
+MANIFEST 提交点语义 (DE-P1，PLAN-embodied-v3 §二 #14/#20)：引擎直出的
+目录以 `MANIFEST.jsonl` 为原子提交点，清单里的行文件转换后已归档进
+`raw_jsonl/`——原清单在新布局上失效。转换收尾时本脚本在 `raw_jsonl/`
+同级落 `MANIFEST.converted.json`（原 MANIFEST 全部条目 +
+`"converted": true, "converted_at": <utc>`）：**转换后原 MANIFEST 只
+指向 raw_jsonl 存档，本文件才是转换后目录的提交点**；selfcheck
+（`lerobot_v3_selfcheck.py --v21`）见该文件即按「已转换」口径对账
+（原清单哈希逐条对 raw_jsonl/ 里的归档核验）。
+
 Usage:
     python scripts/jsonl_to_lerobot_v21.py out/embodied-sim/lerobot-v21
 
@@ -33,6 +42,7 @@ import json
 import os
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Windows GBK console: 中文输出需显式 UTF-8。
@@ -44,6 +54,47 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 DTYPES = {"float32": pa.float32(), "float64": pa.float64(), "int64": pa.int64()}
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_converted_manifest(root: Path) -> Path:
+    """DE-P1：转换收尾落 `MANIFEST.converted.json`（raw_jsonl/ 同级）。
+
+    内容 = 原 `MANIFEST.jsonl` 全部条目 + `converted`/`converted_at`
+    标记。语义（README 同款说明）：转换后原 MANIFEST 指向的行文件已
+    归档进 raw_jsonl/，其哈希仍可对归档逐条对账；`MANIFEST.converted.
+    json` 是转换后目录的提交点。幂等：重跑只刷新 converted_at。
+    """
+    manifest_path = root / "MANIFEST.jsonl"
+    entries: list[dict] = []
+    note = None
+    if manifest_path.exists():
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                entries.append(json.loads(line))
+    else:
+        note = "原 MANIFEST.jsonl 缺失（非引擎直出目录）——条目为空，仅标记 converted"
+    out = {
+        "converted": True,
+        "converted_at": _utcnow(),
+        "source_manifest": "MANIFEST.jsonl",
+        "note": (
+            "转换后原 MANIFEST.jsonl 指向的行文件已归档至 raw_jsonl/；"
+            "本文件为转换后目录的提交点，entries 为原清单逐条内容。"
+        ),
+    }
+    if note:
+        out["note"] = f"{out['note']}（{note}）"
+    out["entries"] = entries
+    dst = root / "MANIFEST.converted.json"
+    dst.write_text(
+        json.dumps(out, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
+    )
+    print(f"  {dst.name}  落盘（提交点：转换后目录，{len(entries)} 条原清单条目）")
+    return dst
 
 
 def _archive(src: Path, raw: Path) -> None:
@@ -113,7 +164,12 @@ def convert_v21_data(root: Path, features: dict) -> int:
     if not eps:
         return 0
     video_feats = {k: v for k, v in features.items() if v.get("dtype") == "video"}
-    table_feats = {k: v for k, v in features.items() if k not in video_feats}
+    # M3-A 修复：image（depth.*）特性是帧目录轨，从不进 JSONL 行——
+    # 只排除会 KeyError（实测 convert 任何带深度导出的 M3-A 数据集即崩）。
+    table_feats = {
+        k: v for k, v in features.items()
+        if v.get("dtype") not in ("video", "image")
+    }
     raw = root / "raw_jsonl"
     for src in eps:
         rows = [json.loads(line) for line in src.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -130,7 +186,11 @@ def convert_v21_data(root: Path, features: dict) -> int:
 def convert_v30(root: Path, features: dict) -> int:
     """v3.0: consolidated file-*.jsonl → parquet（data/episodes/tasks）."""
     converted = 0
-    table_feats = {k: v for k, v in features.items() if v.get("dtype") != "video"}
+    # 同 convert_v21_data：image（depth.*）是帧目录轨，不进行文件
+    table_feats = {
+        k: v for k, v in features.items()
+        if v.get("dtype") not in ("video", "image")
+    }
     raw = root / "raw_jsonl"
     for src in sorted(root.glob("data/chunk-*/file-*.jsonl")):
         rows = [json.loads(line) for line in src.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -244,6 +304,10 @@ def convert(root: Path) -> None:
         has_parquet = any(root.glob("data/chunk-*/*.parquet"))
         if has_parquet:
             print(f"已转换过了：{root} 下没有待转换的 JSONL（原始行在 raw_jsonl\\ 留底），无需重复转换。")
+            # 幂等补漏：老版本转换的目录可能没有 converted 标记——补上
+            # （DE-P1：转换后目录必须能被 selfcheck 识别为已转换）。
+            if not (root / "MANIFEST.converted.json").exists():
+                write_converted_manifest(root)
         else:
             sys.exit(
                 f"错误：{root} 下既没有待转换的 JSONL 也没有 parquet——"
@@ -252,6 +316,7 @@ def convert(root: Path) -> None:
         return
 
     mp4_made = convert_videos(root, features, version)
+    write_converted_manifest(root)
     print(
         f"done: {n_eps} 个数据文件已转换 under {root}"
         + (f"，{mp4_made} 段相机视频" if mp4_made else "")

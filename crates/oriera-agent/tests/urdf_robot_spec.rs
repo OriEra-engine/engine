@@ -10,6 +10,21 @@
 //!
 //! 整文件用 `#![cfg]` 门控：不带 `rigid3d,urdf` 特性时是空测试二进制
 //! （cargo 自动发现 tests/*.rs，无 [[test]] 登记可加）。
+//!
+//! ── 慢测试分层约定（PLAN-embodied-v3 P1 #20）────────────────────────
+//! 本文件分两层，CI 只跑快层：
+//! - 快层（默认 `cargo test` 可见）：`panda7_maps_to_a_full_robot_spec`
+//!   （全表导入契约）、`four_axis_fixture_joint_count_matches_the_legacy_
+//!   projection`、`panda7_inertials_reach_the_rigid_bodies`（真惯量进
+//!   multibody，10 tick settle）、`gripper2f_is_detected_and_mounts_on_
+//!   the_panda`（夹爪挂载几何契约）、`prismatic_rail_urdf_imports_into_
+//!   the_multibody_and_tracks`（M3 滑轨导入）、`mobile_arm_preset_json_
+//!   loads_validates_and_drives`（移动底盘预设端到端）。
+//! - 慢层（`#[ignore = "slow: …"]`）：`panda7_enters_the_multibody_and_
+//!   tracks_in_limit_targets`——800 tick 7 轴跟踪长跑（本文件 ~87% 时长
+//!   的主体，实测 27s/31s）。本地/夜间跑：`cargo test -p oriera-agent
+//!   --features rigid3d,urdf --test urdf_robot_spec -- --ignored`（CI 的
+//!   `--ignored` 计数会因此变化，属于分层设计而非回归）。
 
 #![cfg(all(feature = "rigid3d", feature = "urdf"))]
 
@@ -221,6 +236,7 @@ fn panda7_maps_to_a_full_robot_spec() {
 }
 
 #[test]
+#[ignore = "slow: 800 tick 7 轴跟踪物理长跑——本地/夜间跑 cargo test -- --ignored"]
 fn panda7_enters_the_multibody_and_tracks_in_limit_targets() {
     let rep = fixture(PANDA);
     let mut opts = panda_opts();
