@@ -10,7 +10,7 @@
 - `tabletop-4dof-pick.json` 是 M0a 的 v2 金标，与 `specs/tabletop-4dof-pick.json`（WP-B 契约测试钉住的旧路径）逐字节一致——两份都不许动；spec_hash 锚 `c90869dcf6a04875`。
 - 建议配合 `CODEOWNERS`：`crates/oriera-agent/specs/official/ @oriera-embodied-maintainers`（仓库级文件不在 M0b 授权面内，此处只留建议）。
 
-## 官方预设（M2 五预设 + M3 mobile-arm 入册）
+## 官方预设（六预设 = M2 首批 5 个 + M3 mobile-arm；drawer@v1→v2 滑轨替换，v1 为对照档案）
 
 | 预设 | 任务 | 机器人 | 一句话（G-10 卡片） | 难度 | 基线闸 | DLS 基线实测（course@v1，12 集，2026-11-03） |
 |---|---|---|---|---|---|---|

@@ -38,7 +38,7 @@ Panda paper 口径（P1-B2，2026-11-04）：相位机 ≥6 DoF 专用机制调�
 spec_hash 未变 = 无新预设文件）。失败集中拼凑：方块落在近基区（x < 0.19）的折叠臂位，
 夹爪 1.7 cm 指块摩擦挤压余量不足——下一个调参假设是 preset 的抓取带/指块几何（新文件）。
 
-once 与 at_end 相同是因为五预设都走 `terminate_on_success = true`（首次满足即终止）；`--set task.params.terminate_on_success=false` 跑满 700 步才会分开。
+once 与 at_end 相同是因为六预设都走 `terminate_on_success = true`（首次满足即终止；tabletop / panda / stack / bin-pick / drawer v2 / mobile-arm 同款）；`--set task.params.terminate_on_success=false` 跑满 700 步才会分开。
 
 约定：
 - `eval.protocol` 一律写 id（`course@v1` / `paper@v1`），集数/种子带由协议决定（`oriera_agent::eval`）；

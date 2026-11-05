@@ -262,6 +262,7 @@ v3 树 `videos/depth.{name}/chunk-000/file-000/…`）；`features_json` / `writ
 | **data-pipeline**（新） | 三出口一致性冒烟：2 集 `embodied_sim_collect --task reach --export npz` → `jsonl_to_lerobot_v21.py` 转换 → `lerobot_v3_selfcheck.py --v21`（含 MANIFEST 哈希对账）→ `oriera_results.py aggregate` → `plot_results.py`（无 matplotlib 走 CSV 降级）。全 pass 才绿——Python 数据管线从此有 CI 钉（QA-5/DE-2 此前为零） | 15 min |
 | **windows-check**（新） | `cargo check -p oriera-agent --features rigid3d,cam,spec,urdf,json` + clippy 同参——PR 门禁从此不漏 Windows（本机主力平台）；check 比 test 便宜 | 25 min |
 | rust（matrix） | 各 feature 腿 test+clippy；Build 步骤按腿收窄为本腿 `-p + features`（原 `cargo build --workspace` 对 feature 腿的编译单元零复用） | 60 min |
+| **embodied-slow**（新，2026-11-06） | 慢测试分层夜间腿：`cargo test -p oriera-subsys --features rigid3d,cam -- --ignored` + `-p oriera-agent --features rigid3d,spec,urdf -- --ignored`——抓取冒烟 ≈188s / Contact 接触判据 ≈110s / panda 7 轴跟踪等 `#[ignore = "slow: …"]` 物理长跑的 nightly 兜底（`workflow_dispatch` 可手动补跑），不进 PR 门禁 | 30 min |
 | **embodied-fingerprints-matrix** | 三平台金标采集 × golden 对拍（manual dispatch） | 45 min |
 
 **顶层改造（CI P1/P2）**：`concurrency: ci-<ref>` 同分支新推送取消旧跑；
@@ -270,6 +271,16 @@ job 全部跳过、只跑指纹矩阵（`gh workflow run ci.yml -f matrix_only=t
 指纹矩阵每 OS 归档 `eval_report.json` + `run_manifest.json` +
 `lerobot-v21/meta/oriera_receipt.json` 为 artifact `fp-matrix-<os>`（#17，
 离线对账不再翻日志）；browser 腿补 30 min 硬顶。
+
+**慢测试分层约定（PLAN-embodied-v3 §二 #20，2026-11-06）**：物理长跑
+测试分两层。**快层**（默认 `cargo test` 可见）随 PR 门禁 rust 矩阵腿跑；
+**慢层**标 `#[ignore = "slow: <原因>"]`（现状三件：`gripper_down_smoke`
+四种子抓取 + 同种子确定性双跑 ≈188s、`holding_contact_criterion` 接触
+判据 3×610 tick ≈110s、`urdf_robot_spec` panda 7 轴 800 tick 跟踪），
+由 nightly `embodied-slow` 腿 `cargo test -- --ignored` 兜底。约定：
+新慢测试一律 `#[ignore = "slow: …"]` 并在文件头写明本地/夜间跑法；
+快层单文件不许逼近 rust 腿的 `timeout 600` 护栏；慢层只进夜间，
+不许逼近 30 分钟硬顶。
 
 **数据集 MANIFEST 提交点语义（DE-P1）**：引擎直出目录以
 `MANIFEST.jsonl` 为原子提交点；`jsonl_to_lerobot_v21.py` 转换收尾在同

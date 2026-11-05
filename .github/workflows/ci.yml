@@ -4,7 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch: # M3 跨平台指纹矩阵手动触发用（embodied-fingerprints-matrix）
+  schedule:
+    # 慢测试分层夜间腿（embodied-slow，PLAN-embodied-v3 §二 #20）：
+    # #[ignore] 慢层物理长跑只在 nightly 兜底，不进 PR 门禁。
+    - cron: "23 3 * * *"
+  workflow_dispatch: # 指纹矩阵手动触发用（embodied-fingerprints-matrix）+ embodied-slow 手动补跑
     inputs:
       matrix_only:
         description: "只跑指纹矩阵（跳过全部常规 job，PLAN-embodied-v3 §二 #18）"
@@ -195,6 +199,27 @@ jobs:
         run: python scripts/oriera_results.py aggregate out/smoke --out out/smoke-results/results.csv --format csv
       - name: Plot summary (无 matplotlib 走 CSV 降级)
         run: python scripts/plot_results.py out/smoke-results/results.csv --out-dir out/smoke-results/plots
+
+  # 慢测试分层夜间腿（PLAN-embodied-v3 §二 #20，QA/DE）：抓取冒烟
+  # （4 集双跑 ≈188s）、Contact 接触判据（3×610 tick ≈110s）、panda 7 轴
+  # 跟踪（800 tick）这批 `#[ignore = "slow: …"]` 物理长跑不进 PR 门禁
+  # （rust 矩阵腿的 `timeout 600` 护栏会杀），由本腿 nightly / 手动
+  # dispatch 补跑 `-- --ignored` 兜底，30 分钟硬顶。分层约定见
+  # docs/EMBODIED-PIPELINES.md §6.5。
+  embodied-slow:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.matrix_only != true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: embodied-slow
+      - name: Slow tests (-p oriera-subsys, rigid3d+cam, --ignored)
+        run: cargo test -p oriera-subsys --features rigid3d,cam -- --ignored
+      - name: Slow tests (-p oriera-agent, rigid3d+spec+urdf, --ignored)
+        run: cargo test -p oriera-agent --features rigid3d,spec,urdf -- --ignored
 
   bench:
     if: inputs.matrix_only != true
