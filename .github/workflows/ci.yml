@@ -80,15 +80,19 @@ jobs:
             build: cargo build -p oriera-subsys --features rigid3d,cam
             test: cargo test -p oriera-subsys --features rigid3d,cam
             clippy: cargo clippy -p oriera-subsys --all-targets --features rigid3d,cam -- -D warnings
-          - name: agent-rigid3d-cam
-            build: cargo build -p oriera-agent --features rigid3d,cam
-            test: cargo test -p oriera-agent --features rigid3d,cam
-            clippy: cargo clippy -p oriera-agent --all-targets --features rigid3d,cam -- -D warnings
+          # ADR 0004（oriera-embodied 拆分）：具身面集成测试（slide_drawer/
+          # embodied_cam/urdf_robot_spec/gripper_down_smoke）随源码迁到
+          # oriera-embodied，本腿跟着改挂 -p oriera-embodied；agent 侧只剩
+          # 认知面（agent-json 腿 + core --workspace 腿覆盖）与 python 桥腿。
+          - name: embodied-rigid3d-cam
+            build: cargo build -p oriera-embodied --features rigid3d,cam
+            test: cargo test -p oriera-embodied --features rigid3d,cam
+            clippy: cargo clippy -p oriera-embodied --all-targets --features rigid3d,cam -- -D warnings
           # pyo3 桥腿：Windows 下 cdylib+测试二进制并行有已知交互，串行跑
-          - name: agent-spec
-            build: cargo build -p oriera-agent --features spec,urdf,rigid3d,cam,json
-            test: cargo test -p oriera-agent --features spec,urdf,rigid3d,cam,json
-            clippy: cargo clippy -p oriera-agent --all-targets --features spec,urdf,rigid3d,cam,json -- -D warnings
+          - name: embodied-spec
+            build: cargo build -p oriera-embodied --features spec,urdf,rigid3d,cam,json
+            test: cargo test -p oriera-embodied --features spec,urdf,rigid3d,cam,json
+            clippy: cargo clippy -p oriera-embodied --all-targets --features spec,urdf,rigid3d,cam,json -- -D warnings
           - name: agent-python-bridge
             build: cargo build -p oriera-agent --features python
             test: cargo test -p oriera-agent --features python -- --test-threads=1
@@ -117,7 +121,9 @@ jobs:
 
   # Windows 常规门禁腿（PLAN-embodied-v3 §二 #18，P1：PR 门禁此前完全不
   # 碰 Windows，而本机是主力开发平台）。check 比 test 便宜（不跑测试），
-  # 只钉 oriera-agent 具身 feature 组在 MSVC 下的编译/clippy 干净。
+  # 钉具身 feature 组在 MSVC 下的编译/clippy 干净。ADR 0004 后具身代码
+  # 在 oriera-embodied（本体腿），oriera-agent 是兼容壳 + python 桥
+  # （同参复验 compat re-export 与 cdylib 编译）。
   windows-check:
     if: inputs.matrix_only != true
     runs-on: windows-latest
@@ -130,9 +136,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows-check
-      - name: Check (-p oriera-agent, embodied features)
+      - name: Check (-p oriera-embodied, embodied features)
+        run: cargo check -p oriera-embodied --features rigid3d,cam,spec,urdf,json
+      - name: Clippy (-p oriera-embodied, embodied features)
+        run: cargo clippy -p oriera-embodied --features rigid3d,cam,spec,urdf,json -- -D warnings
+      - name: Check (-p oriera-agent, same features — compat shim + python bridge)
         run: cargo check -p oriera-agent --features rigid3d,cam,spec,urdf,json
-      - name: Clippy (-p oriera-agent, embodied features)
+      - name: Clippy (-p oriera-agent, same features)
         run: cargo clippy -p oriera-agent --features rigid3d,cam,spec,urdf,json -- -D warnings
 
   # studio_e2e（离线验收 example）独占一腿：panic 即红（#106），且
@@ -218,8 +228,8 @@ jobs:
           key: embodied-slow
       - name: Slow tests (-p oriera-subsys, rigid3d+cam, --ignored)
         run: cargo test -p oriera-subsys --features rigid3d,cam -- --ignored
-      - name: Slow tests (-p oriera-agent, rigid3d+spec+urdf, --ignored)
-        run: cargo test -p oriera-agent --features rigid3d,spec,urdf -- --ignored
+      - name: Slow tests (-p oriera-embodied, rigid3d+spec+urdf, --ignored)
+        run: cargo test -p oriera-embodied --features rigid3d,spec,urdf -- --ignored
 
   bench:
     if: inputs.matrix_only != true

@@ -3,11 +3,11 @@ method: dls-ik
 task_id: bin_pick@v1
 entry: >
   cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf --
-  --spec crates/oriera-agent/specs/official/bin-pick-4dof.json --protocol course@v1
+  --spec crates/oriera-embodied/specs/official/bin-pick-4dof.json --protocol course@v1
   --reference-out results/reference
 presets:
   - name: bin-pick-4dof
-    spec: crates/oriera-agent/specs/official/bin-pick-4dof.json
+    spec: crates/oriera-embodied/specs/official/bin-pick-4dof.json
     gate: 0.60                    # 新任务首版诚实门槛（料箱 prop 近似）
 eval:
   protocol: course@v1

@@ -6,7 +6,7 @@ entry: >
   --task reach --episodes 12 --runs-root runs
 presets:
   - name: tabletop-4dof-pick      # task.id 由 --task 覆盖为 reach@v1
-    spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json
+    spec: crates/oriera-embodied/specs/official/tabletop-4dof-pick.json
     gate: 0.90                    # course@v1 硬闸（实测 100%）
 eval: { protocol: course@v1, episodes: 12, seed0: 1000, success_criteria: v1, verify_determinism: full }
 train: { seeds: null }

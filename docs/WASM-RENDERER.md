@@ -36,7 +36,7 @@ M1 把浏览器 demo 从「Rust 引擎的 JS 镜像」退役为「Rust 引擎的
   `sim.spec_json()` 生成——改 JSON 换方块形状，浏览器页直接可见（M0a
   验收④在浏览器侧成立）。
 - **入口同一性**：`OrieraSim.from_spec_json(preset_spec_json())` 的
-  `spec_hash` 与 `crates/oriera-agent/specs/tabletop-4dof-pick.json` 一致
+  `spec_hash` 与 `crates/oriera-embodied/specs/tabletop-4dof-pick.json` 一致
   （kernel.test.mjs 钉死）；demo 支持 `?spec=<url>` 与 postMessage
   `{cmd:"spec", json}` 换装（Studio 三库 M2 钩子）。
 

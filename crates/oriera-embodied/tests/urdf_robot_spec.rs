@@ -31,10 +31,10 @@
 
 #![cfg(all(feature = "rigid3d", feature = "urdf"))]
 
-use oriera_agent::urdf::{RobotSpecOpts, UrdfReport};
 use oriera_common::{FrameIndex, Grants, Timestamp};
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::World;
+use oriera_embodied::urdf::{RobotSpecOpts, UrdfReport};
 use oriera_subsys::{JointTargets, JointTelemetry, MultibodySystem, RobotSpec, Scene3D, TimeScale};
 
 const DT: f32 = 1.0 / 60.0;
@@ -825,8 +825,8 @@ fn prismatic_rail_urdf_imports_into_the_multibody_and_tracks() {
 #[cfg(all(feature = "spec", feature = "json"))]
 #[test]
 fn mobile_arm_preset_json_loads_validates_and_drives() {
-    use oriera_agent::embodied_env::EmbodiedEnv;
-    use oriera_agent::spec::SceneSpec;
+    use oriera_embodied::embodied_env::EmbodiedEnv;
+    use oriera_embodied::spec::SceneSpec;
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("specs/official/mobile-arm-4dof.json");
     let loaded = SceneSpec::load_file(&path).expect("移动底盘预设加载");
@@ -1028,7 +1028,7 @@ fn six_axis_gripper_imports_full_chain_and_hull_degrades_honestly() {
     );
 
     // 坑位治理：home 全零（URDF 零位）→ 警告；gap_closed = 0.046 → 无 gap 警告
-    let warns = oriera_agent::urdf::pitfall_warnings(&spec);
+    let warns = oriera_embodied::urdf::pitfall_warnings(&spec);
     assert!(warns.iter().any(|w| w.contains("URDF 零位")), "{warns:?}");
     assert!(
         !warns.iter().any(|w| w.contains("指板闭合位相触")),
@@ -1072,7 +1072,7 @@ fn gap_touch_twin_trips_the_gap_warning() {
         "指板闭合位相触：{}",
         g.gap_closed
     );
-    let warns = oriera_agent::urdf::pitfall_warnings(&spec);
+    let warns = oriera_embodied::urdf::pitfall_warnings(&spec);
     let gap = warns
         .iter()
         .find(|w| w.contains("指板闭合位相触"))
@@ -1091,7 +1091,7 @@ fn gap_touch_twin_trips_the_gap_warning() {
     let ok = fixture(SIX_AXIS);
     let mut o = six_axis_opts_with_meshes();
     let ok_spec = ok.to_robot_spec(&mut o).expect("主件导入");
-    assert!(!oriera_agent::urdf::pitfall_warnings(&ok_spec)
+    assert!(!oriera_embodied::urdf::pitfall_warnings(&ok_spec)
         .iter()
         .any(|w| w.contains("指板闭合位相触")));
     // 反例二：panda7——无夹爪、joint4 钳出非零 → 两类警告都不发
@@ -1099,7 +1099,7 @@ fn gap_touch_twin_trips_the_gap_warning() {
     let mut po = panda_opts();
     let pspec = panda.to_robot_spec(&mut po).expect("panda 导入");
     assert!(
-        oriera_agent::urdf::pitfall_warnings(&pspec).is_empty(),
+        oriera_embodied::urdf::pitfall_warnings(&pspec).is_empty(),
         "panda7 不应触警"
     );
 }
@@ -1107,7 +1107,7 @@ fn gap_touch_twin_trips_the_gap_warning() {
 #[cfg(test)]
 mod bin_fixture_gate {
     // P2 真 fixture 料箱：spec.rs:227 门改为「≥5 prop 或 ≥7 fixture」。
-    use oriera_agent::spec::SceneSpec;
+    use oriera_embodied::spec::SceneSpec;
 
     #[test]
     fn fixture_bin_passes_the_gate() {
@@ -1131,7 +1131,7 @@ mod bin_fixture_gate {
         // 守门不松：bin_pick 无料箱家具（1 prop + 2 fixture）仍拒
         let v: serde_json::Value =
             serde_json::from_str(include_str!("../specs/official/bin-pick-4dof.json")).unwrap();
-        let v = oriera_agent::spec::SceneSpec::load(&serde_json::to_string(&v).unwrap())
+        let v = oriera_embodied::spec::SceneSpec::load(&serde_json::to_string(&v).unwrap())
             .expect("resolved loads")
             .spec;
         let mut resolved = serde_json::to_value(&v).unwrap();

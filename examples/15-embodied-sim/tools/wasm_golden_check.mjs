@@ -37,7 +37,7 @@ const EPISODES = parseInt(arg("episodes", "12"), 10);
 const SEED0 = parseInt(arg("seed0", "1000"), 10);
 const POLICY = arg("policy", "wasm"); // wasm=同代码逐位口径；js=JS fround ik（渲染层）
 const STRICT = process.argv.includes("--strict");
-const SPEC = path.resolve(arg("spec", path.join(REPO_ROOT, "crates/oriera-agent/specs/tabletop-4dof-pick.json")));
+const SPEC = path.resolve(arg("spec", path.join(REPO_ROOT, "crates/oriera-embodied/specs/tabletop-4dof-pick.json")));
 const GOLDEN = path.resolve(arg("golden", path.join(REPO_ROOT, "contracts/golden/embodied_fingerprints.pre-m0a.json")));
 const GOLDEN_V2 = path.resolve(arg("golden-v2", path.join(REPO_ROOT, "contracts/golden/embodied_fingerprints.v2.json")));
 const RUST_REF = arg("rust-ref", null);

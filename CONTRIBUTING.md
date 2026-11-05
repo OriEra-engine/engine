@@ -64,7 +64,7 @@ OriEra 的开源路线与专利管线并行：代码一旦合并进 main 即构�
 
 | 好上手面 | 要做什么 | 验收锚 |
 |---|---|---|
-| **新预设**（纯 JSON） | 在 `crates/oriera-agent/specs/lab/` 写一份 `extends` 官方金标、只填差异字段；`python -I scripts/gen_spec_index.py` 生成 INDEX | `--validate` 过 + 跑 12 集基线（`embodied_sim_baseline`）出数字 |
+| **新预设**（纯 JSON） | 在 `crates/oriera-embodied/specs/lab/` 写一份 `extends` 官方金标、只填差异字段；`python -I scripts/gen_spec_index.py` 生成 INDEX | `--validate` 过 + 跑 12 集基线（`embodied_sim_baseline`）出数字 |
 | **新任务**（Rust） | 实现 `Task` trait（`embodied_env/tasks.rs`）+ 注册进 `task_registry`（判据修订只走新 id，如 `xxx@v1`）；阈值进 `TaskParams`（写进 spec 即进 hash） | 三向：Rust 单测判据语义 + 12 集基线过任务专属闸（`eval::baseline_gate`）+ 指纹金标不漂移（改物理才需要重锚，见 `scripts/reanchor_golden.py`） |
 | **文档/走查** | 改 LAB-GUIDE / EMBODIED-PIPELINES 后照 §0 全程走查一遍 | 全程无未解释红字（LAB-GUIDE 末节自定验收锚）；数字改动先跑 `python -I scripts/check_numbers.py` |
 

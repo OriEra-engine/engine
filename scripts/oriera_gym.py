@@ -9,7 +9,7 @@ loop's standard-plug entry (PLAN-embodied-sim M1 #1 tail).
     obs, r, term, trunc, info = env.step(env.action_space.sample())
 
     # M0a：实验即文件 —— spec 驱动（schema oriera.scene/2，v1 自动迁移）
-    env = OrieraEnv(spec="crates/oriera-agent/specs/tabletop-4dof-pick.json")
+    env = OrieraEnv(spec="crates/oriera-embodied/specs/tabletop-4dof-pick.json")
     obs, info = env.reset(seed=1000)
 
 Action: float32[5] in [-1, 1] → 4 joint-angle targets (× action_scale，

@@ -4,7 +4,7 @@ task_id: pick_place@v1
 entry: python scripts/train_ppo.py --task pick_place --steps 100000 [--dr]
 presets:
   - name: tabletop-4dof-pick      # train_ppo 走 OrieraPickPlaceEnv(task=...) = 预设等价物
-    spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json
+    spec: crates/oriera-embodied/specs/official/tabletop-4dof-pick.json
     gate: null                    # 学习类基线不设硬闸，只记录
 eval:
   protocol: course@v1             # 口径：12 集固定带（与 CLI 验收带分开，held-out）

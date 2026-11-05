@@ -5,7 +5,7 @@ entry: >
   cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf --
   --task push --episodes 12 --runs-root runs
 presets:
-  - { name: tabletop-4dof-pick, spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json, gate: null }
+  - { name: tabletop-4dof-pick, spec: crates/oriera-embodied/specs/official/tabletop-4dof-pick.json, gate: null }
 eval: { protocol: course@v1, episodes: 12, seed0: 1000, success_criteria: v1, verify_determinism: full }
 train: { seeds: null }
 hyperparams: { ik: analytic-4dof, phases: push_phases, dwell_ticks: [70, 60, 180, 60] }

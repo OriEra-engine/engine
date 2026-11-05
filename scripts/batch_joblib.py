@@ -7,8 +7,8 @@ receipt; full double-runs are for the classroom contract) and
 `--gate=report` (a sweep records, never panics).
 
     pip install joblib
-    python scripts/batch_joblib.py --specs crates/oriera-agent/specs/official/tabletop-4dof-pick.json \
-        crates/oriera-agent/specs/lab/example-cylinder.json --seeds 1000 2000 3000 --jobs 4
+    python scripts/batch_joblib.py --specs crates/oriera-embodied/specs/official/tabletop-4dof-pick.json \
+        crates/oriera-embodied/specs/lab/example-cylinder.json --seeds 1000 2000 3000 --jobs 4
     # re-run the same line → every finished (spec, seed) is skipped (断点续跑)
 
 Each job's stdout/stderr lands in `<runs-root>/_logs/<hash8>-<seed>.log`;

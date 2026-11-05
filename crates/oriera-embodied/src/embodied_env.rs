@@ -42,9 +42,12 @@
 //! (`TableTopEnv`, `ObsLayout`, the Gymnasium contract, the capture
 //! wiring) and `cameras` (frame types + render helpers) — with this
 //! file as the umbrella. Every public item is re-exported here, so
-//! the `oriera_agent::embodied_env::…` paths (lib.rs, python.rs,
-//! lerobot.rs, spec.rs, manifest.rs, tests, examples, the wasm
-//! shell) stay byte-for-byte unchanged.
+//! the `oriera_embodied::embodied_env::…` paths (spec.rs, python.rs,
+//! lerobot.rs, manifest.rs, tests, examples, the wasm shell) stay
+//! byte-for-byte unchanged. (ADR 0004, PLAN-embodied-v3 P2: this
+//! module moved verbatim from `oriera-agent`; that crate re-exports
+//! it, so the historical `oriera_agent::embodied_env::…` paths also
+//! keep resolving.)
 
 /// Legacy observation/action column names (pre-M0a LeRobot feature
 /// meta) — kept public as the positional contract the derived

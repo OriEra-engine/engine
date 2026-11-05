@@ -15,9 +15,9 @@
 //! - **Cargo.lock hash**: house splitmix fold of the file bytes.
 //!
 //! ```no_run
-//! use oriera_agent::embodied_env::TaskKind;
-//! use oriera_agent::manifest::{write_run_manifest, ManifestExtra};
-//! use oriera_agent::spec::SceneSpec;
+//! use oriera_embodied::embodied_env::TaskKind;
+//! use oriera_embodied::manifest::{write_run_manifest, ManifestExtra};
+//! use oriera_embodied::spec::SceneSpec;
 //! let spec = SceneSpec::preset(TaskKind::PickPlace);
 //! write_run_manifest(
 //!     "runs/abcd1234/scripted/1000/run_manifest.json",
@@ -101,7 +101,7 @@ pub fn features_string() -> String {
     }
 }
 
-/// The engine workspace root: `crates/oriera-agent/../..` at compile
+/// The engine workspace root: `crates/oriera-embodied/../..` at compile
 /// time, overridable at runtime with `ORIERA_ENGINE_ROOT` (e.g. when a
 /// moved checkout writes manifests).
 fn engine_root() -> std::path::PathBuf {

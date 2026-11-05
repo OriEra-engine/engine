@@ -20,15 +20,28 @@ oriera-ecs.workspace = true
 oriera-genai.workspace = true
 oriera-infer.workspace = true
 serde = { workspace = true, features = ["derive"] }
-# L6 physics (PLAN-embodied-sim): the embodied environment and
-# dataset-exporter modules live here (L9) and drive L6 systems. The dep
-# is NOT optional because studio_e2e (CI, featureless) uses the base
-# subsys — which itself pulls zero external deps until a backend
-# feature is on; examples/tests opt into backends through
-# `rigid`/`rigid3d`.
+# ADR 0004 (PLAN-embodied-v3 P2): the embodied simulation runtime
+# (`embodied_env`/`spec`/`urdf`/`meshres`/`lerobot`/`eval`/`ik`/
+# `manifest`) lives in `oriera-embodied`; THIS crate is the cognition
+# face (cognition/memory/story/genai bridge) and re-exports the
+# embodied surface for path compatibility (`oriera_agent::spec::…`
+# keeps resolving — lib.rs "compatibility layer"). The dep is NOT
+# optional: `python.rs` (the PyO3 gymnasium bridge, cdylib
+# `oriera_sim`) and the harness examples build against it on every
+# leg, mirroring how studio_e2e (CI, featureless) uses the base L6
+# subsys below — which itself pulls zero external deps until a backend
+# feature is on.
+oriera-embodied = { workspace = true }
+# L6 physics (PLAN-embodied-sim): the 2D embodied recorder
+# (`embodied.rs`, #80) and the `embodied_collect` example read L6
+# state (Gravity / RigidBodySystem) directly. The embodied_env 3D
+# runtime reaches L6 through `oriera-embodied` instead (ADR 0004).
 oriera-subsys = { workspace = true }
+# PyO3 gymnasium bridge (feature `python`): the cdylib `oriera_sim`
+# is built from this crate's lib — the bridge stays here so the
+# extension-module artifact keeps its name; the env it drives comes
+# from `oriera-embodied`.
 pyo3 = { workspace = true, optional = true }
-roxmltree = { workspace = true, optional = true }
 # MemoryStore ↔ JSON (feature `json`): the persistence boundary for
 # cross-session companion memory. Optional like genai's `providers`
 # feature — wasm budget stays minimal unless the shell asks for it.
@@ -40,19 +53,25 @@ json = ["dep:serde_json"]
 # Passthrough to the L6 crate: examples/tests opt into the rapier2d
 # backend through THIS feature (required-features).
 rigid = ["oriera-subsys/rigid"]
-# 3D articulated backend + the embodied environment/exporter modules.
-rigid3d = ["oriera-subsys/rigid3d"]
-# Top-down camera track through the env (PNG frames).
-cam = ["oriera-subsys/cam"]
+# 3D articulated backend — forwards to `oriera-embodied` (ADR 0004),
+# which forwards to oriera-subsys/rigid3d. The embodied feature set on
+# this crate is a pure compatibility shim: external legs
+# (`-p oriera-agent --features rigid3d,cam,spec,urdf`) keep working.
+rigid3d = ["oriera-embodied/rigid3d"]
+# Top-down / spec-declared camera track (PNG frames).
+cam = ["oriera-embodied/cam"]
 # PyO3 gymnasium bridge (cdylib `oriera_sim`): online training loops.
-# `spec` 挂上：python 侧 `from_spec` 走 SceneSpec 加载（schema v2 / v1 迁移）。
-python = ["dep:pyo3", "pyo3/abi3-py310", "rigid3d", "cam", "spec"]
-# SceneSpec（实验即文件）：serde 化场景描述 + JSON 加载。
-spec = ["rigid3d", "oriera-subsys/serde", "json"]
+# `spec` 挂上：python 侧 `from_spec` 走 SceneSpec 加载（schema v2 / v1
+# 迁移）。`oriera-embodied/python` keeps `manifest::feature_list()`
+# receipts listing `python` exactly as before the split (ADR 0004).
+python = ["dep:pyo3", "pyo3/abi3-py310", "rigid3d", "cam", "spec", "oriera-embodied/python"]
+# SceneSpec（实验即文件）：serde 化场景描述 + JSON 加载。Feature
+# algebra preserved from the pre-split crate: enabling `spec` here
+# still turns on this crate's `rigid3d` + `json` flags.
+spec = ["rigid3d", "json", "oriera-embodied/spec"]
 # URDF 导入：机器人描述文件 → 关节链 → ArmDescription（M1 设计稿落地）。
-# serde_json 仅供 meshres 的 GLB JSON chunk 探针（U3）——GLB 全量解码
-# 在 L4 oriera-asset，L9 不反向依赖，也不为此引新外部 crate。
-urdf = ["dep:roxmltree", "rigid3d", "dep:serde_json"]
+# roxmltree/serde_json live on `oriera-embodied` now (ADR 0004).
+urdf = ["rigid3d", "oriera-embodied/urdf"]
 
 [dev-dependencies]
 oriera-render = { path = "../oriera-render" }

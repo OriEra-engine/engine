@@ -5,7 +5,7 @@
 作对照（LAB 入册单进程参考值：13,458 steps/s，release pyd）。
 
     python scripts/recipe_subproc_vecenv.py [--n 4] [--steps 2000]
-        [--spec crates/oriera-agent/specs/tabletop-4dof-pick.json]
+        [--spec crates/oriera-embodied/specs/tabletop-4dof-pick.json]
 
 前置：`target/release/oriera_sim.pyd`（`cargo build --release -p oriera-agent
 --features python` + dll→pyd，见 docs/LAB-GUIDE.md）或已 `pip install dist/*.whl`。
@@ -78,7 +78,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--n", type=int, default=4, help="并行进程数（默认 4）")
     ap.add_argument("--steps", type=int, default=2000, help="每进程步数（默认 2000）")
-    ap.add_argument("--spec", default=str(REPO / "crates/oriera-agent/specs/tabletop-4dof-pick.json"))
+    ap.add_argument("--spec", default=str(REPO / "crates/oriera-embodied/specs/tabletop-4dof-pick.json"))
     ap.add_argument("--skip-single", action="store_true", help="不跑单进程对照")
     ap.add_argument("--skip-dummy", action="store_true", help="不跑 DummyVecEnv（同进程向量化）对照")
     args = ap.parse_args()

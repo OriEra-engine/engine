@@ -31,13 +31,13 @@
 //! `MultibodySystem::gap()` read-only view exists for when the env
 //! forwards it).
 
-use oriera_agent::embodied_env::{EmbodiedEnv, StepOutcome, TableTopEnv, TaskKind};
-use oriera_agent::spec::SceneSpec;
+use oriera_embodied::embodied_env::{EmbodiedEnv, StepOutcome, TableTopEnv, TaskKind};
+use oriera_embodied::spec::SceneSpec;
 
 /// The engine's default experiment (= `TableTopEnv::new()`, the
 /// `tabletop-4dof-pick` golden) as `oriera.scene/2` JSON — the browser
 /// demo's preset when no spec is handed in. Same `spec_hash` as
-/// `crates/oriera-agent/specs/tabletop-4dof-pick.json` (pinned by test).
+/// `crates/oriera-embodied/specs/tabletop-4dof-pick.json` (pinned by test).
 pub fn preset_spec_json() -> String {
     serde_json::to_string(&SceneSpec::preset(TaskKind::PickPlace)).expect("preset serializes")
 }
@@ -288,7 +288,7 @@ impl SimCore {
         self.gap_now = self.env.robot.gripper.as_ref().map_or(0.0, |g| g.gap_open);
         self.gripper_cmd = 0.0;
         self.steps = 0;
-        self.tick = oriera_agent::embodied_env::SETTLE_TICKS;
+        self.tick = oriera_embodied::embodied_env::SETTLE_TICKS;
         self.last_obs = obs.clone();
         obs
     }
@@ -325,7 +325,7 @@ impl SimCore {
     /// Scheme-v2 complete-identity fingerprint (PLAN-embodied-v3 §二 #17):
     /// `state ⊕ robot identity ⊕ spec_hash` — the same fold as the native
     /// collector's receipt block. The fold itself lives in
-    /// `oriera_agent::eval::fingerprint_set` (which calls the pub
+    /// `oriera_embodied::eval::fingerprint_set` (which calls the pub
     /// `oriera_subsys::rigid3d::{state_hash_from_v1, robot_identity_hash,
     /// fingerprint_v2_from_parts}`); driving it from here means the wasm
     /// front door hands out the same three-axis receipt as the CLI instead
@@ -334,7 +334,7 @@ impl SimCore {
     pub fn fingerprint_v2(&self) -> u64 {
         let spec_hash = u64::from_str_radix(&self.spec_hash, 16).unwrap_or(u64::MAX);
         let v1 = self.env.fingerprint();
-        oriera_agent::eval::fingerprint_set(&self.env.robot, spec_hash, &[v1])
+        oriera_embodied::eval::fingerprint_set(&self.env.robot, spec_hash, &[v1])
             .episode_fingerprints_v2[0]
     }
 
@@ -409,7 +409,7 @@ impl SimCore {
     /// `{obs:[names], action:[names], obs_slices:[[name,start,end]],
     /// action_slices:[…], obs_dim, action_dim, dof}`.
     pub fn layout_json(&self) -> String {
-        let slices = |l: &oriera_agent::embodied_env::ObsLayout| -> Vec<serde_json::Value> {
+        let slices = |l: &oriera_embodied::embodied_env::ObsLayout| -> Vec<serde_json::Value> {
             l.slices_with_offsets()
                 .into_iter()
                 .map(|(n, s, e)| serde_json::json!([n, s, e]))
@@ -617,7 +617,7 @@ impl SimCore {
 mod tests {
     use super::*;
 
-    const SPEC: &str = include_str!("../../oriera-agent/specs/tabletop-4dof-pick.json");
+    const SPEC: &str = include_str!("../../oriera-embodied/specs/tabletop-4dof-pick.json");
 
     fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
         ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()

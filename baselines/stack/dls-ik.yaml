@@ -3,11 +3,11 @@ method: dls-ik
 task_id: stack@v1
 entry: >
   cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf --
-  --spec crates/oriera-agent/specs/official/stack-4dof.json --protocol course@v1
+  --spec crates/oriera-embodied/specs/official/stack-4dof.json --protocol course@v1
   --reference-out results/reference
 presets:
   - name: stack-4dof
-    spec: crates/oriera-agent/specs/official/stack-4dof.json
+    spec: crates/oriera-embodied/specs/official/stack-4dof.json
     gate: 0.75                    # 新任务首版诚实门槛
 eval:
   protocol: course@v1

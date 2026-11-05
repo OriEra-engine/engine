@@ -2,13 +2,17 @@
 //! simulator (PLAN-embodied-general v2.2 §3.2 / M1).
 //!
 //! ```text
-//! oriera-subsys(rigid3d) ─▶ oriera-agent(TableTopEnv, SceneSpec)
+//! oriera-subsys(rigid3d) ─▶ oriera-embodied(TableTopEnv, SceneSpec)
 //!        │                              │
 //!   Rust CLI / PyO3                 this crate (wasm-bindgen)
 //!                                       │
 //!                           examples/15-embodied-sim/engine/kernel.js
 //!                           (three.js renders what `poses()` says)
 //! ```
+//!
+//! (ADR 0004: the shell depends on `oriera-embodied` — the L9 embodied
+//! simulation runtime — not on `oriera-agent`; the browser bundle no
+//! longer drags the cognition layer.)
 //!
 //! One physics, four entrances: the same `TableTopEnv` that the CLI
 //! collector and the Python wheel drive is compiled to wasm32 here, so

@@ -6,7 +6,7 @@ entry: >
   --task pick_place --episodes 12 --runs-root runs
 presets:
   - name: tabletop-4dof-pick
-    spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json
+    spec: crates/oriera-embodied/specs/official/tabletop-4dof-pick.json
     gate: 0.90                    # course@v1 硬闸（91.7% = 11/12 锚）
 eval:
   protocol: course@v1
