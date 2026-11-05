@@ -12,8 +12,8 @@
 //! tests; this file pins the ENV/spec layer.
 #![cfg(all(feature = "rigid3d", feature = "spec"))]
 
-use oriera_agent::embodied_env::{EmbodiedEnv, TableTopEnv};
-use oriera_agent::spec::{official_specs_dir, SceneSpec};
+use oriera_embodied::embodied_env::{EmbodiedEnv, TableTopEnv};
+use oriera_embodied::spec::{official_specs_dir, SceneSpec};
 
 /// The shipped v2 preset, resolved against the official library.
 fn v2_spec() -> SceneSpec {

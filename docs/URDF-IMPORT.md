@@ -14,7 +14,7 @@
   （agent 仓），默认构建零增量。serde_json 仅供 meshres 的 GLB JSON
   chunk 探针（U3，本 crate 已有的可选依赖，非新外部 crate）；GLB
   全量解码在 L4 `oriera-asset`，L9 不反向依赖。STL/GLB 解析全部手写。
-- 双端：Rust `crates/oriera-agent/src/meshres.rs` × JS 镜像
+- 双端：Rust `crates/oriera-embodied/src/meshres.rs` × JS 镜像
   `examples/15-embodied-sim/engine/urdf_mesh.js`（判定规则同源）。
 
 ## 2. 范围（U0 骨架 = 本轮落地）
@@ -157,7 +157,7 @@ TCP 同系全对齐（Panda 法兰朝下构型的 `approach_axis = [0,−1,0]`�
 | —— | `home` = 零位（限位不含零时钳到最近限位，如 Panda joint4 → −0.0698） | — |
 | —— | `action_scale = vec![2.0; n]`、`mass_scale = 1.0`（预设同款，包装层旋钮） | — |
 
-验收（`cargo test -p oriera-agent --features rigid3d,urdf --test
+验收（`cargo test -p oriera-embodied --features rigid3d,spec,urdf --test
 urdf_robot_spec`）：panda7（menagerie rev b065505 换算件 + mesh 降级 +
 datasheet velocity）7 关节 limits/effort/velocity/damping 逐项对照、
 `MultibodySystem::from_robot` 构建并在限位内目标跟踪（最差关节误差

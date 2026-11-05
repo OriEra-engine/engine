@@ -1,6 +1,6 @@
 {
  "schema": "oriera.spec-index/1",
- "root": "crates/oriera-agent/specs",
+ "root": "crates/oriera-embodied/specs",
  "rule": "name → spec_hash；同名异 hash 报错；同 hash 异名 = 别名（见 aliases）",
  "specs": {
   "acme-xr6s-pick": {

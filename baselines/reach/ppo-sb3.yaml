@@ -3,7 +3,7 @@ method: ppo-sb3
 task_id: reach@v1
 entry: python scripts/train_ppo.py --task reach --steps 100000 --dr
 presets:
-  - { name: tabletop-4dof-pick, spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json, gate: null }
+  - { name: tabletop-4dof-pick, spec: crates/oriera-embodied/specs/official/tabletop-4dof-pick.json, gate: null }
 eval: { protocol: course@v1, episodes: 12, seed0: 10000000, success_criteria: v1, eval_every_steps: 20000 }
 train: { seeds: [7], total_timesteps: 100000 }   # paper@v1 口径：[7, 17, 27, 37, 47]
 hyperparams:

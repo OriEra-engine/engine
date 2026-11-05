@@ -27,38 +27,44 @@
 
 pub mod cognition;
 pub mod embodied;
-#[cfg(feature = "rigid3d")]
-pub mod embodied_env;
-/// Versioned evaluation protocols (M0b P-1): `course@v1` / `paper@v1`
-/// behind one `evaluate()` entry. Needs the experiment layer
-/// (`rigid3d` + `json`, i.e. the `spec` feature).
-#[cfg(feature = "spec")]
-pub mod eval;
 pub mod genai;
 pub mod goal;
-/// DLS 数值 IK（M2）：任意 N-DoF RobotSpec 的末端位置 + 工具朝向——
-/// Panda 7 轴等非 4 轴构型的脚本/数值基线共用。纯浮点，无物理依赖。
-#[cfg(feature = "spec")]
-pub mod ik;
-#[cfg(feature = "rigid3d")]
-pub mod lerobot;
-/// Run provenance manifests (M0b P-3): `run_manifest.json` writers and
-/// the compile-time `build_info()` the Python bridge mirrors.
-#[cfg(feature = "spec")]
-pub mod manifest;
 pub mod memory;
-#[cfg(feature = "urdf")]
-pub mod meshres;
 pub mod prefab;
 #[cfg(feature = "python")]
 pub mod python;
-#[cfg(feature = "spec")]
-pub mod spec;
 pub mod story;
 #[cfg(feature = "json")]
 pub mod tools;
+
+// ── Embodied-face compatibility layer (ADR 0004) ─────────────────────
+// The embodied simulation runtime — `embodied_env` (umbrella + the
+// P1-C1 four submodules), `spec`, `urdf`, `meshres`, `lerobot`,
+// `eval`, `ik`, `manifest` — moved verbatim to the `oriera-embodied`
+// crate (PLAN-embodied-v3 P2: L9 was a "simulation runtime + cognition
+// layer" cohabitation; the wasm shell had to drag the whole cognition
+// layer to reach the env). These re-exports keep every public path —
+// `oriera_agent::embodied_env::TableTopEnv`,
+// `oriera_agent::spec::SceneSpec`, … — resolving unchanged for
+// external consumers (the PyO3 bridge in `python.rs`, the collection
+// harness examples, docs). Feature gates mirror the old module gates;
+// the Cargo.toml features forward 1:1 to `oriera-embodied`.
+#[cfg(feature = "rigid3d")]
+pub use oriera_embodied::embodied_env;
+#[cfg(feature = "spec")]
+pub use oriera_embodied::eval;
+#[cfg(feature = "spec")]
+pub use oriera_embodied::ik;
+#[cfg(feature = "rigid3d")]
+pub use oriera_embodied::lerobot;
+#[cfg(feature = "spec")]
+pub use oriera_embodied::manifest;
 #[cfg(feature = "urdf")]
-pub mod urdf;
+pub use oriera_embodied::meshres;
+#[cfg(feature = "spec")]
+pub use oriera_embodied::spec;
+#[cfg(feature = "urdf")]
+pub use oriera_embodied::urdf;
 
 pub use cognition::{
     CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WakeEvent, WorldStory,

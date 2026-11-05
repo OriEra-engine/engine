@@ -101,7 +101,7 @@ articulation，Rust 绑定青年期）。马达三坑（都踩过）：`motor_ax
   `contracts/golden/embodied_fingerprints.v2.json`（12 seed 三口径，`--fingerprints FILE` 生成）。
 - **GripperSpec 板系朝向**：`approach_axis` / `gap_axis`（挂载 link 系，缺省 = 旧 +X/+Z，
   序列化省略 ⇒ 金标 spec_hash 不变）；外部朝下夹爪挂 7 轴臂的抓取过闸见
-  `crates/oriera-agent/tests/gripper_down_smoke.rs`。
+  `crates/oriera-embodied/tests/gripper_down_smoke.rs`。
 - **spec 库**：`specs/official/`（金标，改字段 = 新文件）+ `specs/lab/`（`extends` 覆盖层）+
   `scripts/gen_spec_index.py` → `specs/INDEX.json`（同名异 hash 报错）。
 
@@ -139,7 +139,7 @@ articulation，Rust 绑定青年期）。马达三坑（都踩过）：`motor_ax
   超参/种子钉死在 `baselines/<task>/<method>.yaml`（scripted-phases / dls-ik / ppo-sb3 / act-lerobot 占位）。
 - **出图**（P-6）：`scripts/oriera_results.py aggregate runs/` → `results.parquet`（无 pandas 降级 CSV）；
   `scripts/plot_results.py` 画均值 + **分层 bootstrap 95% CI**（seed 层 × episode 层两级重抽）+ IQM。
-- 字段中文速查表（G-7）：`crates/oriera-agent/specs/official/README.md`。
+- 字段中文速查表（G-7）：`crates/oriera-embodied/specs/official/README.md`。
 
 ### 6.3 npz 裸出口 × Studio 三库工作台（M2-C，PLAN-embodied-general §四 M2 / §9.1 U-8 / G-10 / 拍板项 3）
 
@@ -176,7 +176,7 @@ obs, act = z[meta["obs_key"]], z[meta["act_key"]]          # float32 [N, obs_dim
 `tabletop-4dof-pick`），卡片 = 名称 / 一句话 / 难度（`meta.difficulty`，金标文件不带该字段时回退「入门」）/
 任务与机器人；点卡片 = 整份 spec 换装、**不重载 iframe**。
 
-- **spec 服务管线**：Studio 仓 `node scripts/sync-engine-snapshot.mjs` 把 `crates/oriera-agent/specs/`
+- **spec 服务管线**：Studio 仓 `node scripts/sync-engine-snapshot.mjs` 把 `crates/oriera-embodied/specs/`
   的 `official/*.json` + `INDEX.json` 逐字同步进 `engine-snapshot/specs/`，并生成 `resolved/<name>.json`
   （`extends` 展开版，`merge_overlay` 的 JS 逐条移植）。浏览器里的 wasm 没有文件系统，
   `resolve_extends` 读不到基 spec，所以**发给内核的是展开版**；展开不改身份——六预设 raw(extends) /
@@ -238,7 +238,7 @@ obs, act = z[meta["obs_key"]], z[meta["act_key"]]          # float32 [N, obs_dim
 RGB+depth 带畸变 + top 320×240 RGB 俯拍）：
 
 ```bash
-cargo run -p oriera-agent --example embodied_cam_capture --features rigid3d,cam,spec -- --spec crates/oriera-agent/specs/lab/wrist-cam-demo.json --episodes 2
+cargo run -p oriera-agent --example embodied_cam_capture --features rigid3d,cam,spec -- --spec crates/oriera-embodied/specs/lab/wrist-cam-demo.json --episodes 2
 # → out/embodied-cam/lerobot-v21/ + lerobot-v30/ + eval_report.json（含标定表与吞吐行）
 ```
 
@@ -260,9 +260,9 @@ v3 树 `videos/depth.{name}/chunk-000/file-000/…`）；`features_json` / `writ
 | 腿 | 跑什么 | 硬顶 |
 |---|---|---|
 | **data-pipeline**（新） | 三出口一致性冒烟：2 集 `embodied_sim_collect --task reach --export npz` → `jsonl_to_lerobot_v21.py` 转换 → `lerobot_v3_selfcheck.py --v21`（含 MANIFEST 哈希对账）→ `oriera_results.py aggregate` → `plot_results.py`（无 matplotlib 走 CSV 降级）。全 pass 才绿——Python 数据管线从此有 CI 钉（QA-5/DE-2 此前为零） | 15 min |
-| **windows-check**（新） | `cargo check -p oriera-agent --features rigid3d,cam,spec,urdf,json` + clippy 同参——PR 门禁从此不漏 Windows（本机主力平台）；check 比 test 便宜 | 25 min |
+| **windows-check**（新） | `cargo check/clippy -p oriera-embodied --features rigid3d,cam,spec,urdf,json` + `-p oriera-agent` 同参（ADR 0004 兼容壳 + python 桥）——PR 门禁从此不漏 Windows（本机主力平台）；check 比 test 便宜 | 25 min |
 | rust（matrix） | 各 feature 腿 test+clippy；Build 步骤按腿收窄为本腿 `-p + features`（原 `cargo build --workspace` 对 feature 腿的编译单元零复用） | 60 min |
-| **embodied-slow**（新，2026-11-06） | 慢测试分层夜间腿：`cargo test -p oriera-subsys --features rigid3d,cam -- --ignored` + `-p oriera-agent --features rigid3d,spec,urdf -- --ignored`——抓取冒烟 ≈188s / Contact 接触判据 ≈110s / panda 7 轴跟踪等 `#[ignore = "slow: …"]` 物理长跑的 nightly 兜底（`workflow_dispatch` 可手动补跑），不进 PR 门禁 | 30 min |
+| **embodied-slow**（新，2026-11-06） | 慢测试分层夜间腿：`cargo test -p oriera-subsys --features rigid3d,cam -- --ignored` + `-p oriera-embodied --features rigid3d,spec,urdf -- --ignored`——抓取冒烟 ≈188s / Contact 接触判据 ≈110s / panda 7 轴跟踪等 `#[ignore = "slow: …"]` 物理长跑的 nightly 兜底（`workflow_dispatch` 可手动补跑），不进 PR 门禁 | 30 min |
 | **embodied-fingerprints-matrix** | 三平台金标采集 × golden 对拍（manual dispatch） | 45 min |
 
 **顶层改造（CI P1/P2）**：`concurrency: ci-<ref>` 同分支新推送取消旧跑；

@@ -21,7 +21,7 @@
 //!
 //! Run:
 //! `cargo run -p oriera-agent --example embodied_cam_capture --features rigid3d,cam,spec -- \
-//!    --spec crates/oriera-agent/specs/lab/wrist-cam-demo.json --episodes 2`
+//!    --spec crates/oriera-embodied/specs/lab/wrist-cam-demo.json --episodes 2`
 //! Args: `--spec FILE` · `--episodes N` · `--seed0 S` · `--out DIR`
 //!       `--verify-determinism full|off`
 //! Output: `<out>/lerobot-v21/` + `<out>/lerobot-v30/` +
@@ -52,7 +52,7 @@ struct Args {
 
 fn parse_args() -> Args {
     let mut a = Args {
-        spec: "crates/oriera-agent/specs/lab/wrist-cam-demo.json".into(),
+        spec: "crates/oriera-embodied/specs/lab/wrist-cam-demo.json".into(),
         episodes: 2,
         seed0: 1000,
         out: "out/embodied-cam".into(),
@@ -365,7 +365,7 @@ fn main() {
         .unwrap_or_else(|e| fail(&format!("spec 校验失败：{e}")));
     if spec.scene.cameras.is_empty() {
         fail(&format!(
-            "{} 没有声明 scene.cameras——本示例采集标定相机轨（示例 spec：crates/oriera-agent/specs/lab/wrist-cam-demo.json）",
+            "{} 没有声明 scene.cameras——本示例采集标定相机轨（示例 spec：crates/oriera-embodied/specs/lab/wrist-cam-demo.json）",
             args.spec
         ));
     }

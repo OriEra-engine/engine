@@ -3,14 +3,14 @@ method: dls-ik
 task_id: drawer@v1
 entry: >
   cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf --
-  --spec crates/oriera-agent/specs/official/drawer-4dof.json --protocol course@v1
+  --spec crates/oriera-embodied/specs/official/drawer-4dof.json --protocol course@v1
   --reference-out results/reference
 presets:
   - name: drawer-4dof             # 对照档案（P2-W6B 起 deprecated → drawer-4dof-v2）
-    spec: crates/oriera-agent/specs/official/drawer-4dof.json
+    spec: crates/oriera-embodied/specs/official/drawer-4dof.json
     gate: 0.60                    # 新任务首版诚实门槛（可动盒体近似 prismatic）
   - name: drawer-4dof-v2          # P2-W6B 真 prismatic 滑轨面板（drawer@v2，同相位机）
-    spec: crates/oriera-agent/specs/official/drawer-4dof-v2.json
+    spec: crates/oriera-embodied/specs/official/drawer-4dof-v2.json
     task_id: drawer@v2
     gate: 0.60                    # 新任务首版诚实门槛；首跑 12/12（course@v1，双跑逐位一致，2026-11-05）
 eval:

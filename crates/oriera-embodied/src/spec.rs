@@ -656,7 +656,7 @@ pub const EXTENDS_KEY: &str = "extends";
 const EXTENDS_MAX_DEPTH: usize = 8;
 
 /// The governed spec library: `$ORIERA_SPECS_OFFICIAL` when set, else
-/// the engine's `crates/oriera-agent/specs/official/` (compile-time
+/// the engine's `crates/oriera-embodied/specs/official/` (compile-time
 /// path — the library ships with the engine that resolves it).
 pub fn official_specs_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("ORIERA_SPECS_OFFICIAL") {

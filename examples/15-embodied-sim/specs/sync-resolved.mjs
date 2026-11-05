@@ -7,7 +7,7 @@
  * resolved/（浏览器里 wasm 没有文件系统，读不到 extends 的基 spec，
  * spec.rs 的 resolve_extends_in 走 std::fs）。本脚本把官方 spec 库展开成
  * 本目录的 resolved/<name>.json——展开不改身份：extends 键不进 hash，
- * spec_hash 仍以 crates/oriera-agent/specs/INDEX.json 为准。
+ * spec_hash 仍以 crates/oriera-embodied/specs/INDEX.json 为准。
  *
  * 展开规则逐条移植 spec.rs merge_overlay：对象逐键合并、数组逐下标合并
  * （多出的追加）、其余替换；`kind` 标签不同 / 单键外部标签变体换了键
@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..", "..", "..");
-const officialDir = path.join(repoRoot, "crates", "oriera-agent", "specs", "official");
+const officialDir = path.join(repoRoot, "crates", "oriera-embodied", "specs", "official");
 const outDir = path.join(here, "resolved");
 
 const check = process.argv.includes("--check");

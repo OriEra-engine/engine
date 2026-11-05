@@ -36,7 +36,7 @@ python -m http.server 8124 -d examples
 自己把方块放进绿圈；或按 Q/A、W/S、E/D、R/F 遥控四个关节，空格开合夹爪。
 页面顶部有**六预设卡片墙**（金标桌面 / Panda 7 轴 / 叠块 / 料箱 / 抽屉 / 移动底盘；
 P2-W6B 起抽屉另有真 prismatic 滑轨身份 `drawer-4dof-v2`——CLI/Python 侧
-`--spec crates/oriera-agent/specs/official/drawer-4dof-v2.json` 直接用，页面卡片
+`--spec crates/oriera-embodied/specs/official/drawer-4dof-v2.json` 直接用，页面卡片
 随引擎快照同步后出现），
 点卡片即换装；移动底盘卡标「实验」，策略演示只支持桌面 4 轴与 Panda。
 跑服务器的终端窗口别关（关了网页就断），用完在该窗口按 `Ctrl+C` 停止。
@@ -174,7 +174,7 @@ rustc/rapier 版本、features、OS/arch、命令行）——半年后复现就�
 > debug 构建慢一个量级（Panda paper@v1 100 集 release 约 30–60 s，debug 约 5–10 分钟）；
 > `cargo test` 里的抓取冒烟（gripper_down_smoke ≈3 min）与接触判据（holding_contact
 > ≈2 min）属物理长跑，CI 只跑快层，本地全量跑一次要有等 5 分钟的心理准备。
-spec 库（P-9）：官方金标在 `crates/oriera-agent/specs/official/`（改字段 = 新文件名），
+spec 库（P-9）：官方金标在 `crates/oriera-embodied/specs/official/`（改字段 = 新文件名），
 自己的实验放 `specs/lab/`，文件里写 `"extends": "tabletop-4dof-pick"` 只填差异；
 `python scripts/gen_spec_index.py` 生成 `specs/INDEX.json`（同名异 hash 会报错）。
 
@@ -210,7 +210,7 @@ spec 库（P-9）：官方金标在 `crates/oriera-agent/specs/official/`（改�
 
 - obs 前 20 维是浮点通道（关节角×4、速度×4、夹爪、末端位姿×3、
   方块相对×3、目标相对×3、高度与距离），第 21 维语义见
-  `crates/oriera-agent/src/embodied_env.rs` 的 `OBS_NAMES`；
+  `crates/oriera-embodied/src/embodied_env.rs` 的 `OBS_NAMES`；
 - action = 4 个关节目标角（rad）+ 夹爪（0 开 / 1 合）；引擎侧 PD 马达
   （ForceBased）负责跟踪，你只管给目标；
 - reward：reach/pick_place/push 三任务各有密集塑形 + 成功大额奖励；
@@ -225,7 +225,7 @@ LeRobot 多视频轨数据集，且每步都做过「投影 ↔ 渲染像素」�
 < 2 px，语义见 EMBODIED-PIPELINES §6.4）：
 
 ```bash
-cargo run -p oriera-agent --example embodied_cam_capture --features rigid3d,cam,spec -- --spec crates/oriera-agent/specs/lab/wrist-cam-demo.json --episodes 2
+cargo run -p oriera-agent --example embodied_cam_capture --features rigid3d,cam,spec -- --spec crates/oriera-embodied/specs/lab/wrist-cam-demo.json --episodes 2
 # → out/embodied-cam/lerobot-v21/（observation.images.wrist + depth.wrist + observation.images.top）
 ```
 
@@ -271,7 +271,7 @@ lerobot 目录交给 §5 的训练命令即可（图像轨喂 ACT 前先过转�
 - **作业基线（M2 起：官方预设 × DLS 数值 IK）**：采集脚本之外还有一条
   「评测专用」入口 `embodied_sim_baseline`——对官方预设（M3 增移动底盘 mobile-arm-4dof，
   P2-W6B 增真 prismatic 抽屉 drawer-4dof-v2；抽屉旧预设 drawer-4dof 自 P2 起为对照档案）
-  （`crates/oriera-agent/specs/official/`：金标桌面抓放、Panda 7 轴
+  （`crates/oriera-embodied/specs/official/`：金标桌面抓放、Panda 7 轴
   抓放、叠块、料箱抓取、抽屉拉出）各跑 12 集，DLS 数值 IK 相位机
   （任意 N-DoF，Panda 靠它），输出 `success_once` / `success_at_end`
   双报 + Wilson 95% CI，并按任务专属闸给 PASS/FAIL（金标桌面 ≥90%，
@@ -280,7 +280,7 @@ lerobot 目录交给 §5 的训练命令即可（图像轨喂 ACT 前先过转�
 
   ```bash
   cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf -- \
-    --spec crates/oriera-agent/specs/official/stack-4dof.json --protocol course@v1 \
+    --spec crates/oriera-embodied/specs/official/stack-4dof.json --protocol course@v1 \
     --reference-out results/reference
   ```
 

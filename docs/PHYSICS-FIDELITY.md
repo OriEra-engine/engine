@@ -36,8 +36,8 @@
   DoF 槽位（`build_arm` 第 5 步）；本包补了读回口
   `MultibodySystem::joint_armature(i)` 作验收证明。
 - **验收数字**（Panda 夹具 `tests/fixtures/panda7.urdf`，menagerie
-  rev b065505 换算件；`cargo test -p oriera-agent --features
-  rigid3d,urdf --test urdf_robot_spec` 的
+  rev b065505 换算件；`cargo test -p oriera-embodied --features
+  rigid3d,spec,urdf --test urdf_robot_spec` 的
   `panda7_inertials_reach_the_rigid_bodies`）：
 
   | link | URDF 质量 (kg) | `mass_properties()` 读回 | 张量迹读回 | URDF 迹 |
@@ -149,7 +149,7 @@
 
 ### 4.1 U-6 验证步：Contact 判据 lab 变体 × 12 集对照（2026-11-04，P1-C2）
 
-PLAN-embodied-v3 拍板项 3-A 兑现：`crates/oriera-agent/specs/lab/
+PLAN-embodied-v3 拍板项 3-A 兑现：`crates/oriera-embodied/specs/lab/
 panda-contact-criterion.json`（extends `panda-7dof-pick`，仅换
 `holding_criterion = Contact`）对官方 TipRadius 口径，同一 12 seed
 （course@v1，`embodied_sim_baseline`，release，确定性复核 full 双跑
@@ -191,7 +191,7 @@ panda-contact-criterion.json`（extends `panda-7dof-pick`，仅换
   判据差异全在标签时序——即 U-6 的设计目的。是否把 Contact 升为
   官方预设判据，按 PLAN-embodied-v3 §三 P2（「Contact 判据出 lab
   变体跑 12 集对比后决策升官方」）留待决策；本变体留在 `specs/lab/`
-  供复跑（`embodied_sim_baseline --spec crates/oriera-agent/specs/
+  供复跑（`embodied_sim_baseline --spec crates/oriera-embodied/specs/
   lab/panda-contact-criterion.json`）。
 
 ## 4.2 slide prop——场景侧真 prismatic 可动 fixture（P2-W6B，2026-11-05）
@@ -256,11 +256,11 @@ spec 字段，缺省逐位不变**：`scene.props[].slide`（serde 整体省略�
 
 ```bash
 cargo test -p oriera-subsys --features rigid3d,cam
-cargo test -p oriera-agent --features rigid3d,cam,spec,urdf --test urdf_robot_spec
-cargo test -p oriera-agent --features rigid3d --test gripper_down_smoke
+cargo test -p oriera-embodied --features rigid3d,cam,spec,urdf --test urdf_robot_spec
+cargo test -p oriera-embodied --features rigid3d --test gripper_down_smoke
 cargo test -p oriera-subsys --features rigid3d --test holding_contact_criterion
 cargo test -p oriera-wasm
-cargo clippy -p oriera-subsys -p oriera-agent -p oriera-wasm --features rigid3d,cam,spec,urdf --all-targets
+cargo clippy -p oriera-subsys -p oriera-embodied -p oriera-agent -p oriera-wasm --features rigid3d,cam,spec,urdf --all-targets
 cargo check --target wasm32-unknown-unknown -p oriera-wasm
 cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf \
   -- --task pick_place --episodes 12 --out out/_m2a   # 对 contracts/golden/embodied_fingerprints.pre-m0a.json

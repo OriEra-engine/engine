@@ -3,14 +3,14 @@ method: dls-ik
 task_id: pick_place@v1
 entry: >
   cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf --
-  --spec crates/oriera-agent/specs/official/<preset>.json --protocol course@v1
+  --spec crates/oriera-embodied/specs/official/<preset>.json --protocol course@v1
   --reference-out results/reference
 presets:
   - name: tabletop-4dof-pick      # 金标桌面（4 轴）——走 DLS 也须 ≥90%
-    spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json
+    spec: crates/oriera-embodied/specs/official/tabletop-4dof-pick.json
     gate: 0.90
   - name: panda-7dof-pick         # Panda 7 轴 + gripper2f（--dump-panda-spec 生成）
-    spec: crates/oriera-agent/specs/official/panda-7dof-pick.json
+    spec: crates/oriera-embodied/specs/official/panda-7dof-pick.json
     gate: 0.75
 eval:
   protocol: course@v1

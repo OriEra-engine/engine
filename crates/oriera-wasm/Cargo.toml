@@ -13,12 +13,16 @@ path = "src/lib.rs"
 # of the FK / baseline mirror (`cargo test -p oriera-wasm`).
 crate-type = ["cdylib", "rlib"]
 
-# Dependency discipline (M1 工作包): oriera-agent (+spec/rigid3d) +
-# wasm-bindgen + serde_json — nothing else. The robot/scene types are
-# reached through `TableTopEnv`'s public fields (no direct oriera-subsys
-# dep); link/prop *shapes* travel to the renderer as the resolved spec
-# JSON (`spec_json()`), so this crate never names a subsys enum.
+# Dependency discipline (M1 工作包 + ADR 0004): oriera-embodied
+# (+spec/rigid3d) + wasm-bindgen + serde_json — nothing else. The shell
+# reaches the embodied simulation runtime directly; it no longer
+# transits oriera-agent, so the browser bundle stops dragging the L9
+# cognition layer (cognition/memory/story/genai). The robot/scene types
+# are reached through `TableTopEnv`'s public fields (no direct
+# oriera-subsys dep); link/prop *shapes* travel to the renderer as the
+# resolved spec JSON (`spec_json()`), so this crate never names a
+# subsys enum.
 [dependencies]
-oriera-agent = { workspace = true, features = ["rigid3d", "spec"] }
+oriera-embodied = { workspace = true, features = ["rigid3d", "spec"] }
 wasm-bindgen = "0.2"
 serde_json = { workspace = true }

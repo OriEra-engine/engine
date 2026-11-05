@@ -1,4 +1,4 @@
-//! M3 移动底盘预设 (`crates/oriera-agent/specs/official/mobile-arm-4dof.json`)
+//! M3 移动底盘预设 (`crates/oriera-embodied/specs/official/mobile-arm-4dof.json`)
 //! — the ENGINE side: the preset's robot block mirrored in Rust (same
 //! numbers, same order; the agent-side test
 //! `tests/urdf_robot_spec.rs::mobile_arm_preset_json_*` loads the JSON

@@ -14,7 +14,7 @@
 //! 用法：
 //! ```text
 //! cargo run -p oriera-agent --example embodied_sim_baseline \
-//!   --features rigid3d,spec,urdf -- --spec crates/oriera-agent/specs/official/panda-7dof-pick.json \
+//!   --features rigid3d,spec,urdf -- --spec crates/oriera-embodied/specs/official/panda-7dof-pick.json \
 //!   --protocol course@v1 [--reference-out results/reference] [--runs-root runs]
 //! ```
 //! Args: `--spec FILE`（默认金标 tabletop-4dof-pick）· `--set a.b=v`
@@ -831,7 +831,7 @@ fn resolve_spec(args: &Args) -> SceneSpec {
         }
         None => {
             SceneSpec::load_file(std::path::Path::new(
-                "crates/oriera-agent/specs/official/tabletop-4dof-pick.json",
+                "crates/oriera-embodied/specs/official/tabletop-4dof-pick.json",
             ))
             .unwrap_or_else(|e| fail(&format!("默认金标 spec 加载失败：{e}")))
             .spec
@@ -857,7 +857,7 @@ fn resolve_spec(args: &Args) -> SceneSpec {
 /// 金标的桌面 + 5 cm 方块工作区。
 fn dump_panda_spec(out: &str) {
     let fixture = |name: &str| {
-        let path = format!("crates/oriera-agent/tests/fixtures/{name}");
+        let path = format!("crates/oriera-embodied/tests/fixtures/{name}");
         std::fs::read_to_string(&path).unwrap_or_else(|e| fail(&format!("读 {path} 失败：{e}")))
     };
     let arm = oriera_agent::urdf::UrdfReport::parse(&fixture("panda7.urdf"))
@@ -924,7 +924,7 @@ fn dump_panda_spec(out: &str) {
     robot.home = vec![0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785];
 
     let golden = SceneSpec::load_file(std::path::Path::new(
-        "crates/oriera-agent/specs/official/tabletop-4dof-pick.json",
+        "crates/oriera-embodied/specs/official/tabletop-4dof-pick.json",
     ))
     .unwrap_or_else(|e| fail(&format!("金标 spec 加载失败：{e}")))
     .spec;

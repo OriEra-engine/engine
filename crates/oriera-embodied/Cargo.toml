@@ -1,0 +1,49 @@
+[package]
+name = "oriera-embodied"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OriEra embodied simulation runtime (L9): TableTopEnv, SceneSpec, URDF import, LeRobot export, eval protocols (ADR 0004)"
+
+[lib]
+name = "oriera_embodied"
+path = "src/lib.rs"
+
+[dependencies]
+oriera-common.workspace = true
+oriera-core.workspace = true
+oriera-ecs.workspace = true
+# L6 physics backends: the env drives the `rigid3d` multibody systems;
+# base subsys pulls zero external deps until a backend feature is on.
+oriera-subsys = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+# URDF import (feature `urdf`): roxmltree for robot description files.
+roxmltree = { workspace = true, optional = true }
+# Feature `json`: spec/report serialization. Also a meshres-only dep of
+# the `urdf` feature — GLB JSON chunk probing (U3). GLB full decode
+# stays in L4 oriera-asset; this crate never depends on it.
+serde_json = { workspace = true, optional = true }
+
+[features]
+default = []
+json = ["dep:serde_json"]
+# 3D articulated backend + the embodied environment/exporter modules.
+rigid3d = ["oriera-subsys/rigid3d"]
+# Top-down / spec-declared cameras through the env (PNG frames).
+cam = ["oriera-subsys/cam"]
+# SceneSpec（实验即文件）：serde 化场景描述 + JSON 加载。
+spec = ["rigid3d", "oriera-subsys/serde", "json"]
+# URDF 导入：机器人描述文件 → 关节链 → ArmDescription（M1 设计稿落地）。
+urdf = ["dep:roxmltree", "rigid3d", "dep:serde_json"]
+# Receipt-fidelity flag only (ADR 0004): `manifest::feature_list()`
+# reports the build's feature set; the PyO3 cdylib is built from
+# oriera-agent's `python` feature, which forwards here so a python
+# wheel's run manifest keeps listing `python` exactly as before the
+# split. No dependencies of its own — python.rs (the bridge itself)
+# stays in oriera-agent.
+python = []
+
+[dev-dependencies]
+# golden fixture tests read spec JSON on every test leg
+serde_json = { workspace = true }

@@ -43,7 +43,8 @@ OriEra 不是又一个游戏引擎。它是一个 **AI 原生、虚实融合、�
 | L6 | 子系统服务：物理/动画/音频/UI/网络同步 | `crates/oriera-subsys` | ✅ 物理（粒子 + `rigid`/`rigid3d` 刚体） | `StepPhysics` `MultibodySystem`(rigid3d multibody 关节臂) `HoldingCriterion`(TipRadius/Contact) `fingerprint`/`fingerprint_v2` `SampleAnimation`(规划) `SyncState`(规划) |
 | L7 | AI 推理运行时：命令执行、端云路由 | `crates/oriera-infer` | ✅ 可用 | `SubmitInference` `ReportInferenceMetrics` |
 | L8 | 生成式 AI：文生图 + 文生 3D + 文生视频 | `crates/oriera-genai` | ✅ 表达链路已通（RFC 0001 + demo 13，2028 做深） | `RequestGeneration` `ValidateAsset` |
-| L9 | Agent 层：意图→命令 | `crates/oriera-agent` | ✅ 可用 | `InvokeTool`（v1 规则解析 + 认知系统）；`SpawnPrefab`（实体预制体，确定性声明序——Godot PackedScene 的 ECS 翻译，F1）；`embodied`（`SceneSpec`/`RobotSpec`/`Task` trait 注册表/`EvalProtocol`/LeRobot 导出） |
+| L9 | Agent 层：意图→命令（认知面） | `crates/oriera-agent` | ✅ 可用 | `InvokeTool`（v1 规则解析 + 认知系统）；`SpawnPrefab`（实体预制体，确定性声明序——Godot PackedScene 的 ECS 翻译，F1）；兼容层 re-export 具身面历史 API（ADR 0004） |
+| L9 | 具身仿真运行时（ADR 0004 拆分） | `crates/oriera-embodied` | ✅ 可用 | `embodied_env`（`TableTopEnv` Gymnasium 契约/任务注册表/域随机化/相机）；`spec`（`SceneSpec`/`spec_hash`）；`urdf`+`meshres`（机器人导入）；`lerobot`（v2.1/v3 导出）；`eval`（`course@v1`/`paper@v1`）；`ik`（DLS）；`manifest`（run 溯源） |
 | L10 | AR/VR 交互：多模态感知 | — | 📋 2027 H2 | 手势/眼动经 L1 `SpatialInputEvent` 进来 |
 | L11 | 应用与 UGC 创作生态 | `platforms/*` + `examples/*` | ✅ 壳 | 同源编辑器（规划） |
 | 横切 | 观测/安全/计量/调试 | 各层埋点 | 📋 | `MeasureGPU`（L5 已有雏形） |
@@ -51,9 +52,11 @@ OriEra 不是又一个游戏引擎。它是一个 **AI 原生、虚实融合、�
 当前 Cargo 依赖图（方向即合法方向）：
 
 ```
-agent(L9) → infer(L7) → subsys(L6) → ecs(L3) → core(L2) → common(L0)
+agent(L9 认知) → embodied(L9 仿真运行时, ADR 0004) → subsys(L6) → ecs(L3) → core(L2) → common(L0)
+agent(L9) → infer(L7) → subsys(L6)（具身 API 经兼容层 re-export，ADR 0004）
           → genai(L8) → asset(L4) / ecs(L3) / core(L2)（ADR 0003：生成不依赖推理）
                         infer(L7) → ecs(L3)
+wasm(L9 壳) → embodied(L9)（ADR 0004：不再穿透 agent 拖认知层）
 render(L5) → ecs(L3) → core(L2)
 pal(L1)：只被平台壳（platforms/*）引用，不被上层 crate 直接依赖
 ```
@@ -254,7 +257,7 @@ L9 DirectorSystem 调度 NPC 行为 → L6 动作/物理 → L5 画质迟滞调�
   `fingerprint_v2()`（状态 ⊕ `robot_identity_hash` ⊕ spec_hash——机器人
   N 关节 kp/kd/armature/limits/axis/anchor、逐 link 几何与质量、夹爪摘要全部
   入 hash）。
-- **L9 `embodied`**（`crates/oriera-agent`，scene/tasks/env 三模块）：
+- **L9 `embodied_env`**（`crates/oriera-embodied`，ADR 0004 拆分；umbrella + scene/tasks/env/cameras 四子模块）：
   `SceneSpec` → `spec_hash()` 规范化哈希（`meta` 不入 hash、字段拼错即报错，
   改一个字段 = 新实验）→ `TableTopEnv`；任务 = `Task` trait 实现 +
   `task_registry` 按 id 注册（`pick_place@v1` 冻结、修订走 `@v2`）；
@@ -270,7 +273,7 @@ Rust 侧），四个壳（架构图与逐位验收结论见
 [WASM-RENDERER.md](WASM-RENDERER.md)）：
 
 ```
-                    TableTopEnv（crates/oriera-agent，一份 Rust 物理）
+                    TableTopEnv（crates/oriera-embodied，一份 Rust 物理）
                     /            |             |              \
         浏览器独立页          Studio /sim       Rust CLI         Python/Gymnasium
   examples/15-embodied-sim   postMessage 换装   embodied_sim_    PyO3 wheel
@@ -295,7 +298,7 @@ Rust 侧），四个壳（架构图与逐位验收结论见
 - **防抄袭**：`python -I scripts/fingerprint_dupcheck.py <runA> <runB>`
   读两个 run 的逐集指纹对表——全部相同 = 指纹级重复（同一份实验冒充两次
   采集的实锤），用法与判定见 [EMBODIED-PIPELINES.md](EMBODIED-PIPELINES.md) §7。
-- **spec 库治理**：`crates/oriera-agent/specs/official/`（官方六预设金标，
+- **spec 库治理**：`crates/oriera-embodied/specs/official/`（官方六预设金标，
   改字段 = 换 hash = 新实验身份，旧身份留 `results/reference/<hash8>/` 档案）+
   `specs/lab/`（`extends` 只写差异）+ `INDEX.json`（同名异 hash 报错）。
 
@@ -377,7 +380,7 @@ examples/        浏览器可玩的分层演示（01–15 + _template，见首�
                  15 号具身仿真台是旗舰，含 vendor/oriera 的 wasm 内核）
 frame-hunter/    14 号影游 demo（跑酷答题 + BKT 知识追踪，Pages 同步发行）
 specs/           具身实验身份库（官方金标 official/ + lab 覆盖层 + INDEX.json，
-                 位于 crates/oriera-agent/specs/）
+                 位于 crates/oriera-embodied/specs/）
 contracts/       跨语言接口契约（Protobuf：pal/v1、genai/v1）+ 具身指纹金标 golden/
 manifests/       每层的 LayerManifest（provides/requires/budgets/degrade）
 docs/            架构文档、ADR、AI 原生图、性能记录、release notes

@@ -19,7 +19,7 @@ import path from "node:path";
 const ENGINE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEMO_DIR = path.resolve(ENGINE_DIR, "..");
 const REPO_ROOT = path.resolve(DEMO_DIR, "..", "..");
-const SPEC_PATH = path.join(REPO_ROOT, "crates/oriera-agent/specs/tabletop-4dof-pick.json");
+const SPEC_PATH = path.join(REPO_ROOT, "crates/oriera-embodied/specs/tabletop-4dof-pick.json");
 const SPEC_TEXT = readFileSync(SPEC_PATH, "utf8");
 
 // kernel.js import 了 three 与后处理 jsm——node 侧用 resolve 钩子把

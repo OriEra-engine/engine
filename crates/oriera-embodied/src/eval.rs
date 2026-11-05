@@ -20,7 +20,7 @@
 //! half-year-old number can be re-derived byte for byte.
 //!
 //! ```no_run
-//! use oriera_agent::eval::{EvalProtocol, EpisodeOutcome, EpisodeRow, evaluate};
+//! use oriera_embodied::eval::{EvalProtocol, EpisodeOutcome, EpisodeRow, evaluate};
 //! let p = EvalProtocol::parse("course@v1", Some(12), 1000).unwrap();
 //! let result = evaluate(&p, |seed, _draw| {
 //!     Ok(EpisodeOutcome::Done(EpisodeRow {

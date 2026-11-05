@@ -46,6 +46,32 @@ spec:
         pressure the speak interval stretches by 1/throttle (cap 8x);
         a WakeEvent (player touched the world) restores base cadence
         instantly; utterance content is never touched
+    # ── embodied simulation runtime (ADR 0004: lives in the
+    # `oriera-embodied` crate; `oriera_agent::` paths keep resolving via
+    # the compat re-export) ──
+    - id: oriera.embodied.env.v1
+      contract: rust:oriera_embodied::embodied_env::{EmbodiedEnv,TableTopEnv,TaskKind}
+      stability: stable
+      note: Gymnasium-signature table-top env — reset/step/(obs, reward,
+        terminated, truncated, success); spec-driven task family behind
+        a versioned registry; deterministic tick + per-episode fingerprint
+    - id: oriera.embodied.spec.v1
+      contract: rust:oriera_embodied::spec::SceneSpec
+      stability: stable
+      note: experiment-as-a-file (oriera.scene/2) — serde scene spec,
+        extends overlays against specs/official/, spec_hash identity;
+        presets library ships at crates/oriera-embodied/specs/
+    - id: oriera.embodied.eval.v1
+      contract: rust:oriera_embodied::eval::evaluate
+      stability: stable
+      note: versioned evaluation protocols (course@v1 / paper@v1) —
+        one evaluate() entry shared by CLI / Python / wasm
+    - id: oriera.embodied.export.v1
+      contract: rust:oriera_embodied::lerobot::LeRobotV21
+      stability: stable
+      note: LeRobotDataset v2.1/v3 export + run_manifest provenance
+        (manifest::write_run_manifest); urdf/meshres/ik support the
+        robot-import and N-DoF baseline paths
   requires:
     - id: oriera.infer.runtime.v1
       optional: false   # produces Command values
@@ -70,3 +96,8 @@ spec:
     tokens into UsageMeter. LLM backend, MCP tool registry land
     v0.5–v0.7 (book T12). genai::parse_generation bridges into the L8
     crate (ADR 0003); L10 (interaction) is not created yet — see ROADMAP.
+    ADR 0004 (PLAN-embodied-v3 P2): the embodied simulation runtime
+    (embodied_env/spec/urdf/meshres/lerobot/eval/ik/manifest) moved to
+    the `oriera-embodied` crate — see manifests/L9-embodied.yaml. This
+    crate keeps the cognition face and a feature-gated compat re-export
+    of every historical embodied path.

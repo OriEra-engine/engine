@@ -9,7 +9,7 @@ entry: >
   lerobot-train --dataset.repo_id=local/act-data --dataset.root=out/act-data/lerobot-v30 --policy.type=act
 presets:
   - name: tabletop-4dof-pick
-    spec: crates/oriera-agent/specs/official/tabletop-4dof-pick.json
+    spec: crates/oriera-embodied/specs/official/tabletop-4dof-pick.json
     gate: null
 eval:
   protocol: course@v1

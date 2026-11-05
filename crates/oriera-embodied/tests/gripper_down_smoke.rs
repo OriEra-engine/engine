@@ -20,7 +20,7 @@
 //!   `bad_plate_frames_are_named_build_errors`——零/短物理 tick。
 //! - 慢层（`#[ignore = "slow: …"]`）：`four_seed_grasp_smoke_at_least_
 //!   three_pass`——4 集抓取 + 同种子确定性双跑 ≈3000 tick（原整文件
-//!   ~188s 的主体）。本地/夜间跑：`cargo test -p oriera-agent --features
+//!   ~188s 的主体）。本地/夜间跑：`cargo test -p oriera-embodied --features
 //!   rigid3d --test gripper_down_smoke -- --ignored`（CI 的 `--ignored`
 //!   计数会因此变化，属于分层设计而非回归）。
 #![cfg(feature = "rigid3d")]

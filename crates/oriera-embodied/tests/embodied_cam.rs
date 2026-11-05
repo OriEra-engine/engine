@@ -7,9 +7,9 @@
 //! anchor is the acceptance diff against the pre-M3 worktree).
 #![cfg(all(feature = "rigid3d", feature = "cam", feature = "spec"))]
 
-use oriera_agent::embodied_env::{CamAttach, EmbodiedEnv, TableTopEnv};
-use oriera_agent::lerobot::{CameraTrack, LeRobotV21};
-use oriera_agent::spec::SceneSpec;
+use oriera_embodied::embodied_env::{CamAttach, EmbodiedEnv, TableTopEnv};
+use oriera_embodied::lerobot::{CameraTrack, LeRobotV21};
+use oriera_embodied::spec::SceneSpec;
 use oriera_subsys::camera::PinholeCam;
 
 /// The shipped lab demo: golden spec + wrist (EE, 160×120 RGB+depth,
@@ -294,7 +294,7 @@ fn multi_track_dataset_round_trips_through_lerobot() {
     for (name, w, h) in [("wrist", 160u32, 120u32), ("top", 320, 240)] {
         let png =
             oriera_subsys::camera::encode_png(&vec![7u8; (w * h * 3) as usize], w, h).unwrap();
-        ds.push_frame(oriera_agent::embodied_env::CameraFrame {
+        ds.push_frame(oriera_embodied::embodied_env::CameraFrame {
             cam: name.into(),
             rgb_png: Some(png),
             depth_png: if name == "wrist" {

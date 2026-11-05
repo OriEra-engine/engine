@@ -90,7 +90,7 @@
 //!
 //! Run:
 //! `cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- --task pick_place --episodes 12 --cam`
-//! `… -- --spec crates/oriera-agent/specs/tabletop-4dof-pick.json --episodes 12`
+//! `… -- --spec crates/oriera-embodied/specs/tabletop-4dof-pick.json --episodes 12`
 //! `… -- --urdf-robot arm.urdf --mesh-base meshes/ --dump-robot-spec robot.json --episodes 2`
 //! Args: `--task reach|pick_place|push` · `--spec FILE` · `--set a.b=v`
 //!       `--episodes N` · `--seed0 S` / `--seed N` · `--cam` / `--no-cam`

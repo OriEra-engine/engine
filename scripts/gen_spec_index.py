@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate ``specs/INDEX.json`` — the spec library registry (M0b, PLAN
 §9.1 P-9): ``meta.name → spec_hash`` over every spec under
-``crates/oriera-agent/specs/`` (official + lab + legacy root files).
+``crates/oriera-embodied/specs/`` (official + lab + legacy root files).
 
 Hashes come from the ENGINE (``embodied_sim_collect --validate FILE``
 prints ``spec_hash <hex16>``) — never re-implemented here, so ``extends``
@@ -33,7 +33,7 @@ for _st in (sys.stdout, sys.stderr):
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-SPECS = REPO / "crates" / "oriera-agent" / "specs"
+SPECS = REPO / "crates" / "oriera-embodied" / "specs"
 INDEX = SPECS / "INDEX.json"
 HASH_RE = re.compile(r"spec_hash ([0-9a-f]{16})")
 
@@ -84,7 +84,7 @@ def spec_name(path: Path) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--specs", default=str(SPECS), help="spec 库根目录（默认 crates/oriera-agent/specs）")
+    ap.add_argument("--specs", default=str(SPECS), help="spec 库根目录（默认 crates/oriera-embodied/specs）")
     ap.add_argument("--exe", default=None, help="embodied_sim_collect 可执行文件路径（默认自动找 target/，找不到用 cargo run）")
     ap.add_argument("--check", action="store_true", help="只校验现有 INDEX.json 是否最新，不写")
     args = ap.parse_args()
