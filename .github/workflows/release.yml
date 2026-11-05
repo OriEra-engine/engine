@@ -155,10 +155,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="$GITHUB_REF_NAME"
+          # 幂等：tag 重锚/重跑时 create 撞「同名已存在」→ 回退 edit 更新
           gh release create "$TAG" \
             --title "$TAG — OriEra Engine" \
             --notes-file release-body.md \
-            dist/*
+            dist/* \
+          || gh release edit "$TAG" \
+            --title "$TAG — OriEra Engine" \
+            --notes-file release-body.md
       - name: Dry-run summary (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
         run: |
