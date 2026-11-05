@@ -77,8 +77,7 @@ jobs:
           fi
           echo "version label: $VER"
           tar czf "oriera-engine-$VER-linux-x86_64.tar.gz" \
-            -C target/release $(find target/release -maxdepth 1 -type f -executable -printf '%f
-')
+            -C target/release $(find target/release -maxdepth 1 -type f -executable -printf '%f\n')
           ls -lh "oriera-engine-$VER-linux-x86_64.tar.gz"
       - uses: actions/upload-artifact@v4
         with:
