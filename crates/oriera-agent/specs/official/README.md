@@ -18,10 +18,11 @@
 | `panda-7dof-pick` | `pick_place@v1` | panda7 + gripper2f（7 轴 + 外部两指） | 真 URDF 机械臂（Franka Panda）做同一个抓放——`--dump-panda-spec` 一次性生成 | 进阶 | ≥75%（新臂首版诚实门槛） | **9/12 = 75.0%** pass（压线） · Wilson [46.8, 91.1] · `b5535a74` |
 | `stack-4dof` | `stack@v1` | stack-4dof（tabletop 同构 4 轴臂，P2 命名治理） | 把方块 A 叠到底座 B 上（PLAN 原名 push-stack 收敛为 stack：push 走 `push@v1/v2` 单任务） | 进阶 | ≥75%（新任务首版） | **11/12 = 91.7%** pass · Wilson [64.6, 98.5] · `249d5122`（旧身份 `ffc96325` 同为 11/12，复测逐位一致） |
 | `bin-pick-4dof` | `bin_pick@v1` | tabletop-4dof | 从真料箱（双层壁+底面 fixture，P2 升级）里把方块抓出来放到箱外目标区 | 挑战 | ≥60% | **1a7cfc40** |
-| `drawer-4dof` | `drawer@v1` | tabletop-4dof | 抓住抽屉把手块沿 -X 拉出 ≥0.08 m（可动盒体 prop 近似 prismatic，真关节在 M3） | 进阶 | ≥60%（首版） | **10/12 = 83.3%** pass · Wilson [55.2, 95.3] · `ef18ac07` |
+| `drawer-4dof` | `drawer@v1` | tabletop-4dof | 【**对照档案（deprecated → drawer-4dof-v2）**】抓住抽屉把手块沿 -X 拉出 ≥0.08 m（可动盒体 prop 近似 prismatic；v2 真滑轨已落地） | 进阶 | ≥60%（首版） | **10/12 = 83.3%** pass · Wilson [55.2, 95.3] · `ef18ac07` |
+| `drawer-4dof-v2`（P2-W6B） | `drawer@v2` | tabletop-4dof | 沿 -Z 拉开真 prismatic 抽屉 ≥0.08 m：面板 = slide prop（prismatic 滑轨，撞不走、限位钳制），柜体 = 真 fixtures | 进阶 | ≥60%（首版） | **12/12 = 100%** pass · Wilson [75.8, 100.0] · `f503b3a3`（course@v1 双跑逐位一致，2026-11-05） |
 | `mobile-arm-4dof` | `pick_place@v1` | mobile-4dof（两滑轨+回转底盘+4 轴臂） | 作业点超臂展 0.475 m——底盘开到 ∓0.40 落回作业带（M3 新增） | 进阶 | ≥75%（pick 闸） | 首跑 settle/跟踪 0.0000 m · `9ee15317` |
 
-实测数落盘在 `results/reference/<spec_hash8>/course_v1.json`（`--reference-out` 写）；六预设双跑逐位一致（stack 于 P2 换名后以新身份 `249d5122` 复测，episode 数据与旧身份逐位相同）。
+实测数落盘在 `results/reference/<spec_hash8>/course_v1.json`（`--reference-out` 写）；六预设双跑逐位一致（stack 于 P2 换名后以新身份 `249d5122` 复测，episode 数据与旧身份逐位相同）；drawer v2（`f503b3a3`，P2-W6B）同口径双跑逐位一致。`drawer-4dof`（ef18ac07）自 P2-W6B 起为**对照档案**（可动盒体近似 vs 真 prismatic 滑轨的对照），新实验请用 `drawer-4dof-v2`。
 
 每份带 `meta{name, author, notes, difficulty}`；四个入口（CLI/Python/浏览器/Studio）吃同一份文件、同一个 `spec_hash`。
 
@@ -74,12 +75,13 @@ cargo run -p oriera-agent --example embodied_sim_baseline --features rigid3d,spe
 | `props[].shape` | 碰撞体：`{"kind":"cuboid","half":[x,y,z]}` / `{"kind":"cylinder","half_h":h,"radius":r}` / `{"kind":"sphere","r":r}`（m，半尺寸） | ⚠️ 进 hash | 全部有限正数；**改这一个字段就能换物体**（学生验收项） |
 | `props[].phys` | 标称物理：`density`（kg/m³）/ `friction` | ⚠️ 进 hash | 正数（默认 400 / 0.8） |
 | `props[].placement` | 出生位：`{"range":{"x":[lo,hi],"y":h,"z":[lo,hi]}}`（XZ 均匀抽、y 固定）或 `{"fixed":[x,y,z]}`；抽签顺序 = 回执的一部分 | ⚠️ 进 hash | range 须 lo ≤ hi；料箱墙/底座用 fixed |
+| `props[].slide` | **滑轨（P2-W6B，可省略）**：`{"axis":[x,y,z],"limits":[lo,hi],"damping":δ}`——该 prop 的动态体经 prismatic 关节接到出生位的静态锚体：只能沿轴滑、行程钳制（米，零点 = 出生位）、`damping`（N·s/m）= 滑轨摩擦模型；被夹爪摩擦拖动、法向推挤被关节吸收 | ⚠️ 进 hash（**省略 = 不写**，所有旧 spec 的 hash 不动） | axis 有限非零；lo ≤ hi 有限；damping ≥ 0；`drawer@v2` 强制 props[0] 必填 |
 
 ### `task`（TaskRef）
 
 | 字段 | 含义 | 学生能不能改 | 合法范围 / 默认 |
 |---|---|---|---|
-| `task.id` | 注册表任务 id | ⚠️ 进 hash | `reach@v1` `pick_place@v1` `push@v1`（金标判据，只读保留）· `pick_place@v2` `push@v2` `reach@v2`（@v2 修订判据）· `stack@v1` `bin_pick@v1` `drawer@v1`（M2 新任务）。裸名（`pick_place`）= 该族 @v1 |
+| `task.id` | 注册表任务 id | ⚠️ 进 hash | `reach@v1` `pick_place@v1` `push@v1`（金标判据，只读保留）· `pick_place@v2` `push@v2` `reach@v2`（@v2 修订判据）· `stack@v1` `bin_pick@v1` `drawer@v1`（M2 新任务）· `drawer@v2`（P2-W6B 真 prismatic 面板，须配 props[0].slide）。裸名（`pick_place`）= 该族 @v1 |
 | `task.params.goal_xz_tol` | 目标区 XZ 容差（m） | ⚠️ 进 hash | 有限正数（默认 0.09） |
 | `task.params.goal_y_min` / `goal_y_max` | 目标区高度带（物体质心，m） | ⚠️ 进 hash | 有限、min < max（默认 0.5 / 0.62） |
 | `task.params.reach_radius` | reach 终止半径（尖端−物体，m） | ⚠️ 进 hash | 有限正数（默认 0.055） |

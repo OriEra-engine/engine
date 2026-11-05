@@ -118,7 +118,8 @@ articulation，Rust 绑定青年期）。马达三坑（都踩过）：`motor_ax
 | `reach@v2` | 同 v1 | 只为记录 `success_criteria=v2` 与 `terminate_on_success` 协议参数位 |
 | `stack@v1` | A 相对 B 的 XZ < `stack_xz_tol`、中心高差 ≈ 两半高之和 ± `stack_y_tol`、松爪、静止 | 底座 B = `scene.props[1]`（fixed），判据读 B 的**实时**位置 |
 | `bin_pick@v1` | @v2 pick 判据 | 料箱 = 四面 6 cm 重墙 prop（6000 kg/m³）近似；真 fixture / 自碰撞开关待 M3 / WP-A（TODO 在 spec `notes`） |（P2：料箱升真 fixture 双层壳，spec `1a7cfc40`）
-| `drawer@v1` | 沿 `pull_axis` 拉出 ≥ `pull_distance`（相对**出生位**）、松爪、静止 | 面板 = 可动盒体 prop；真 prismatic fixture 在 M3 |
+| `drawer@v1` | 沿 `pull_axis` 拉出 ≥ `pull_distance`（相对**出生位**）、松爪、静止 | 面板 = 可动盒体 prop 近似（**P2 起为对照档案**：`drawer-4dof.json` ef18ac07，10/12） |
+| `drawer@v2` | 判据表达式与 @v1 逐字相同（P-2 新 id 纪律——升级在场景不在判据） | **P2-W6B 真 prismatic 抽屉**：面板 = slide prop（`scene.props[0].slide`：prismatic 关节接出生位静态锚体，行程限位 + 滑轨阻尼，被夹爪摩擦拖动、撞不走）；柜体 = 真 fixtures（后壁+两侧板，顶留夹爪通道）；滑轨沿 Z（夹爪 gap 轴在 pick 姿态 = 世界 Z，挤压须∥滑轴——直列 X 轨在合爪过挤压下被求解器弹飞，见 rigid3d slide 测试探针记录）；预设 `drawer-4dof-v2.json` `f503b3a3`，基线 12/12（course@v1，双跑逐位一致，2026-11-05） |
 
 - **阈值全进 `TaskParams`**（`terminate_on_success` / `rest_steps` / `rest_speed` / `release_below` /
   `stack_*` / `pull_*`）：写进 spec 即进 hash——**取默认值时由 `SceneSpec::spec_hash` 规范化掉**
@@ -318,10 +319,11 @@ python -I scripts/fingerprint_dupcheck.py out/my-run out/my-run
 ### 7.2 good-first-issue 候选池（P2 刷新，欢迎认领；开 issue 前先对
 [CONTRIBUTING.md](../CONTRIBUTING.md)「具身仿真台贡献入口」的验收锚）
 
-1. **drawer 真 prismatic fixture**：柜体滑道 fixture 只能搭静止外壳，真抽屉面板
-   需 RobotSpec 侧抽屉链（`JointKind::Prismatic` 引擎面已就位 + 滑道 fixture
-   组合，M3+ 评估），按官方治理规则另起实验身份重测（`drawer-4dof.json`
-   meta.notes 有 TODO）。
+1. ~~**drawer 真 prismatic fixture**~~ ✅ P2-W6B（2026-11-05）：走了更简的场景侧
+   面而不是 RobotSpec 抽屉链——`scene.props[].slide`（prismatic 关节接出生位静态
+   锚体，行程限位 + 滑轨阻尼，`MultibodyJointSet` 挂 `MultibodySystem` 的
+   prop 同步协议），预设 `drawer-4dof-v2.json`（`drawer@v2`，基线 12/12）；
+   旧 `drawer-4dof.json`（ef18ac07）保留为对照档案。
 2. **sphere → Ball 直通**：URDF/mesh 的 sphere 碰撞体现在走 Box 包络近似
    （`urdf.rs`：sphere → Box 包络）；`LinkShape::Ball` 直通 + `LinkShape`
    旋转字段——mesh 碰撞量化的第一步（PLAN P2）。

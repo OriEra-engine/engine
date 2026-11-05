@@ -6,9 +6,13 @@ entry: >
   --spec crates/oriera-agent/specs/official/drawer-4dof.json --protocol course@v1
   --reference-out results/reference
 presets:
-  - name: drawer-4dof
+  - name: drawer-4dof             # 对照档案（P2-W6B 起 deprecated → drawer-4dof-v2）
     spec: crates/oriera-agent/specs/official/drawer-4dof.json
     gate: 0.60                    # 新任务首版诚实门槛（可动盒体近似 prismatic）
+  - name: drawer-4dof-v2          # P2-W6B 真 prismatic 滑轨面板（drawer@v2，同相位机）
+    spec: crates/oriera-agent/specs/official/drawer-4dof-v2.json
+    task_id: drawer@v2
+    gate: 0.60                    # 新任务首版诚实门槛；首跑 12/12（course@v1，双跑逐位一致，2026-11-05）
 eval:
   protocol: course@v1
   episodes: 12
@@ -24,4 +28,5 @@ hyperparams:
   criteria: { pull_axis: [-1, 0, 0], pull_distance: 0.08, rest_steps: 10, rest_speed: 0.01 }
 reference: results/reference/<spec_hash8>/course_v1.json
 notes: >
-  真 prismatic 抽屉 fixture 在 M3；现用 0.12 kg 木块面板在桌面上拖——拖拽机制与 pick 的「夹持搬运」同源。
+  drawer-4dof-v2（P2-W6B）：面板是 slide prop（prismatic 滑轨，挤压须∥滑轴——滑轨沿 Z、拉出 −Z，因为预设夹爪 gap 轴在 pick 姿态 = 世界 Z）；同一份 drawer_phases 相位机照跑（phases_for 按族名分发，240 tick 追逐拖拽 + 1 cm 前置胡萝卜，滑轨面板跑到行程端被限位钳制，松爪后静止过闸）。
+  drawer-4dof（v1 对照档案）：0.12 kg 木块面板在桌面上拖——拖拽机制与 pick 的「夹持搬运」同源。

@@ -1119,6 +1119,75 @@ impl Task for DrawerTask {
     }
 }
 
+/// drawer@v2 — the revision of drawer@v1 for the real prismatic drawer
+/// (P2-W6B, PLAN-embodied-v3 §三): the judged object is no longer the
+/// free box-prop approximation but the slide-prop panel on its rail
+/// (`scene.props[0].slide`, enforced by `SceneSpec::validate`). The
+/// predicate itself is expression-identical to v1 — displacement along
+/// `pull_axis` ≥ `pull_distance` from spawn, released, quasi-static —
+/// because the *scene* upgraded, not the criterion (review P-2: new id,
+/// the v1 entry stays read-only as the prop-approximation control).
+/// Physics-wise the criterion now bites harder: the panel cannot be
+/// knocked off-axis (the joint absorbs perpendicular pushes), so the
+/// pull reading measures an actual slide, not a shove.
+struct DrawerTaskV2 {
+    inner: DrawerTask,
+}
+
+impl DrawerTaskV2 {
+    fn new(params: TaskParams) -> Self {
+        Self {
+            inner: DrawerTask::new(params),
+        }
+    }
+}
+
+impl Task for DrawerTaskV2 {
+    fn id(&self) -> &'static str {
+        "drawer@v2"
+    }
+    fn phrase(&self) -> &'static str {
+        "pull the drawer panel out by the target distance"
+    }
+    fn env_name(&self) -> &'static str {
+        "Drawer-OrieraArm-v2"
+    }
+    fn kind(&self) -> TaskKind {
+        TaskKind::PickPlace
+    }
+    fn success_criteria(&self) -> &'static str {
+        "v2"
+    }
+
+    fn reset(&mut self, rng: &mut Lcg, scene: &SceneGraph) -> Placements {
+        self.inner.reset(rng, scene)
+    }
+
+    fn finalize(&mut self, rng: &mut Lcg, scene: &SceneGraph, placements: &mut Placements) {
+        self.inner.finalize(rng, scene, placements)
+    }
+
+    fn reward(&self, s: &StepState) -> f32 {
+        self.inner.reward(s)
+    }
+
+    fn success(&self, s: &StepState) -> bool {
+        self.inner.success(s)
+    }
+
+    fn obs_extra(&self, s: &StepState) -> Vec<f32> {
+        self.inner.obs_extra(s)
+    }
+
+    fn obs_extra_layout(&self) -> Vec<ObsSlice> {
+        self.inner.obs_extra_layout()
+    }
+
+    fn goal(&self) -> [f32; 3] {
+        self.inner.goal()
+    }
+}
+
 /// The shared privileged block: object-relative, goal-relative, hold
 /// flag, object height, |tip − object| — the pre-M0a obs tail, byte for
 /// byte.
@@ -1252,10 +1321,22 @@ const REGISTRY: &[TaskEntry] = &[
         env_name: "Drawer-OrieraArm-v0",
         success_criteria: "v2",
     },
+    // ----- P2-W6B: the real-prismatic drawer revision (new id; the v1
+    // entry above stays the free-box-prop approximation control) -----
+    TaskEntry {
+        id: "drawer@v2",
+        kind: TaskKind::PickPlace,
+        make: |p| Box::new(DrawerTaskV2::new(p)),
+        phrase: "pull the drawer panel out by the target distance",
+        env_name: "Drawer-OrieraArm-v2",
+        success_criteria: "v2",
+    },
 ];
 
 /// The task registry — `@v1` trio (frozen aliases) + `@v2` revisions +
-/// the M2 families (`stack` / `bin_pick` / `drawer`).
+/// the M2 families (`stack` / `bin_pick` / `drawer`, the latter with a
+/// P2-W6B `drawer@v2` revision pairing the criterion with the real
+/// prismatic slide-prop panel).
 pub fn task_registry() -> &'static [TaskEntry] {
     REGISTRY
 }
@@ -1452,6 +1533,7 @@ mod tests {
                 "stack@v1",
                 "bin_pick@v1",
                 "drawer@v1",
+                "drawer@v2",
             ]
         );
         for id in &ids {
@@ -1694,6 +1776,55 @@ mod tests {
         // Pulled sideways (off-axis) does not count.
         s.obj_pos = [0.25, 0.55, -0.08];
         assert!(!t.success(&s));
+    }
+
+    /// drawer@v2 (P2-W6B): expression-identical predicate to v1 — the
+    /// revision pairs the criterion with the real slide-prop panel;
+    /// positive (pulled ≥ target, released, still) and negative
+    /// (holding / still-moving / short-pull) cases both ways.
+    #[test]
+    fn drawer_v2_pairs_the_same_predicate_with_the_slide_panel() {
+        let v2 = make_task("drawer@v2", TaskParams::default()).unwrap();
+        let v1 = make_task("drawer@v1", TaskParams::default()).unwrap();
+        assert_eq!(v2.id(), "drawer@v2");
+        assert_eq!(v2.success_criteria(), "v2");
+        assert_eq!(v2.env_name(), "Drawer-OrieraArm-v2");
+        let mut s = zone_state();
+        s.obj_start = [0.28, 0.525, 0.0];
+        s.obj_pos = [0.28, 0.525, 0.0];
+        assert!(!v2.success(&s), "closed panel ⇒ no");
+        // Pulled out 8 cm on the rail, released, settled ⇒ yes (and the
+        // predicate is byte-equal to v1's on the same state).
+        s.obj_pos = [0.28 - 0.08, 0.525, 0.0];
+        assert!(v2.success(&s));
+        assert_eq!(v2.success(&s), v1.success(&s));
+        // Gripper still commanded closed ⇒ no (release half missing).
+        let gripped = StepState { gripper: 1.0, ..s };
+        assert!(!v2.success(&gripped));
+        // Panel still sliding after the pull ⇒ no (rest half missing).
+        let moving = StepState {
+            still_steps: 3,
+            ..s
+        };
+        assert!(!v2.success(&moving));
+        // Short pull (3 cm of 8) ⇒ no.
+        let short = StepState {
+            obj_pos: [0.28 - 0.03, 0.525, 0.0],
+            ..s
+        };
+        assert!(!v2.success(&short));
+        // Off-rail sideways displacement ⇒ no (the joint makes this
+        // physically unreachable; the predicate stays honest).
+        let sideways = StepState {
+            obj_pos: [0.28, 0.525, -0.08],
+            ..s
+        };
+        assert!(!v2.success(&sideways));
+        // Bare family name still resolves to the frozen @v1 entry.
+        assert_eq!(
+            make_task("drawer", TaskParams::default()).unwrap().id(),
+            "drawer@v1"
+        );
     }
 
     #[test]

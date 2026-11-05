@@ -194,6 +194,36 @@ panda-contact-criterion.json`（extends `panda-7dof-pick`，仅换
   供复跑（`embodied_sim_baseline --spec crates/oriera-agent/specs/
   lab/panda-contact-criterion.json`）。
 
+## 4.2 slide prop——场景侧真 prismatic 可动 fixture（P2-W6B，2026-11-05）
+
+PLAN-embodied-v3 §三「真抽屉/真料箱 fixture 预设」的抽屉半边。**opt-in
+spec 字段，缺省逐位不变**：`scene.props[].slide`（serde 整体省略）不写
+时 prop 走原自由体路径，所有既有 spec 的 `spec_hash` 与指纹一位不动。
+
+- **机制**（`oriera-subsys::rigid3d::SlideSpec`，组件挂在 prop 实体上）：
+  prop 的动态体经 `MultibodyJointSet` 的 prismatic 关节接到一个
+  **出生位冻结的无碰撞体静态锚体**上——面板只保留滑轴一个自由度，
+  行程限位（米，零点 = 出生位）+ 滑轴阻尼（N·s/m = 滑轨滑动摩擦模型），
+  无位置电机。被夹爪板摩擦拖动；垂直于滑轴的推挤被关节约束吸收
+  （「被夹拖时整箱可被撞走」的 v1 缺陷根治）；外部 `Pose3` 写入沿滑轴
+  **投影采纳并钳到行程**（multibody FK 会覆写裸体写入，采纳走关节坐标
+  `apply_displacements` + 前向运动学——同步契约在滑轨上同样成立）。
+- **几何取舍（探针实测钉死，见 rigid3d in-module slide 测试注释）**：
+  夹爪板对滑轨面板的合爪挤压必须**∥滑轴**。直列布局（拉出 −X、滑轴 X、
+  gap 轴 Z）下挤压 ⊥ 滑轴：法向被关节锁死 → 求解器经摩擦锥把 4 mm 过
+  挤压沿唯一的自由方向（滑轴）泄放，面板被弹飞到行程限位。预设
+  `drawer-4dof-v2` 因此把滑轨放沿 **Z**（拉出 −Z；预设夹爪 gap 轴在
+  pick 姿态 = 世界 Z），面板在臂轴线上（合爪面与面板面平行、yaw=0
+  不楔出），面板尺寸 = 120×50×50 mm（5 cm 夹持带与金标方块同宽同高，
+  顶缘 0.55 逐毫米沿用经验证的合爪净空）。
+- **验收**：`drawer-4dof-v2`（`drawer@v2`，spec_hash `f503b3a3`）12 集
+  course@v1 基线 **12/12 = 100%**（release，`--verify-determinism full`
+  双跑逐位一致；Wilson [75.8, 100.0]；闸 ≥60% pass）；单元面五项
+  （出生位保持/外力拖到限位+拖回+闭合端钳制/teleport 采纳投影钳制/
+  夹爪摩擦拖动 ≥8 cm/双跑逐位）+ agent 集成六项（v2 身份/滑轨保持/
+  拖到位成功正例/短拉反例/不松爪反例/v1 对照档案）全绿。旧
+  `drawer-4dof`（ef18ac07）保留为对照档案。
+
 ## 5. wasm 只读口（M1 遗留收尾）
 
 - `OrieraSim.gap() -> f32`：当前指板间距（m）。镜像与引擎

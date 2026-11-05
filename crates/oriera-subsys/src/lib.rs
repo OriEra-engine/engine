@@ -16,7 +16,7 @@ pub mod rigid3d;
 pub use rigid3d::{
     collision_report, sim_fingerprint, ArmDescription, FixtureSlab, JointTargets, JointTelemetry,
     LinkMassReadback, MultibodySystem, PhysicsParams, Pose3, PropPhys, Scene3D, SimObject,
-    GRASP_RADIUS, JOINT_NAMES, LEGACY_FIXTURE_FRICTION, PROP_HALF,
+    SlideSpec, GRASP_RADIUS, JOINT_NAMES, LEGACY_FIXTURE_FRICTION, PROP_HALF,
 };
 // PLAN-embodied-general M0a: the generic robot specification the 3D
 // backend builds from (`ArmDescription` is its 4-DoF preset). M2 adds

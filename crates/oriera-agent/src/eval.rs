@@ -446,7 +446,10 @@ pub fn baseline_gate(task_id: &str, robot_name: &str) -> Option<(f64, &'static s
         }
         "stack" => Some((0.75, "stack 新任务首版诚实门槛")),
         "bin_pick" => Some((0.60, "bin_pick 新任务首版诚实门槛（料箱 prop 近似）")),
-        "drawer" => Some((0.60, "drawer 新任务首版诚实门槛（可动盒体近似 prismatic）")),
+        "drawer" => Some((
+            0.60,
+            "drawer 新任务首版诚实门槛（真 prismatic 滑轨面板，v2 预设）",
+        )),
         "push" => None,
         _ => None,
     }

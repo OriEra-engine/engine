@@ -1,0 +1,38 @@
+{
+  "extends": "tabletop-4dof-pick",
+  "meta": {
+    "name": "drawer-4dof-v2",
+    "author": "oriera-embodied-maintainers",
+    "notes": "drawer@v2（P2-W6B 真 prismatic 抽屉，PLAN-embodied-v3 §三）：面板 = slide prop（scene.props[0].slide：prismatic 关节接出生位静态锚体，滑轴 [0,0,-1]、行程 [0,0.10] m、滑轨阻尼 12 N·s/m（限位回弹经滑轨阻尼数 tick 内耗散，合爪拖动照常） = 滑动摩擦模型，无电机——被夹爪板摩擦拖动、被行程限位钳制、垂直于滑轴的推挤被关节吸收撞不走）；柜体 = 真 fixtures（后壁 + 两滑轨侧板，U 形敞口顶留夹爪通道）。几何朝向（单位向量级取舍，见 rigid3d slide 测试的探针记录）：滑轨沿 **Z**、拉出方向 −Z——预设夹爪的 gap 轴在 pick 姿态 = 世界 Z，夹爪板沿滑轴方向挤压面板（挤压落在自由轴上被滑行程温和吸收；直列 X 滑轨变体在合爪 4 mm 过挤压下被求解器沿滑轨弹飞到限位，面板须在臂轴线上 z0=0 使合爪面与面板面平行不楔出）。面板 = 120×50×50 mm（5 cm 夹持带 = 金标方块同宽同高，顶缘 0.55 与经验证的合爪净空逐毫米一致；120 mm 面宽），中心高 0.525（= 桌面静置方块中心高，相位机抓取高度同款 m.grasp()），悬浮桌面 2.5 mm 之上（真抽屉挂在滑轨上不压桌面）；出生位 [0.28,0.525,0]（闭合），拉出 0.08 m 至 [0.28,0.525,-0.08]（v1 对照档案 ef18ac07 同款 0.27→0.19 可达带半径量级）。把手 = 面板本体 5 cm 夹持带（独立把手小块需面板-把手固定副第二个 joint 机制，超出本包最小面，见报告）。判据 drawer@v2：沿 pull_axis 拉出 ≥0.08 m（相对出生位）+ 松爪 + 静止 10 步——判据表达式与 drawer@v1 逐字相同（升级在场景不在判据，P-2 新 id 纪律；v1 的可动盒体近似 spec ef18ac07 保留为对照档案）。基线闸 ≥60%（首版诚实门槛）。",
+    "difficulty": "进阶"
+  },
+  "scene": {
+    "fixtures": [
+      { "name": "ground", "center": [0.0, -0.05, 0.0], "half": [2.0, 0.05, 1.5], "friction": 0.9 },
+      { "name": "table", "center": [0.32, 0.25, 0.0], "half": [0.28, 0.25, 0.32], "friction": 0.9 },
+      { "name": "cab_back", "center": [0.28, 0.525, 0.053], "half": [0.07, 0.055, 0.008], "friction": 0.9 },
+      { "name": "cab_rail_x_neg", "center": [0.19, 0.525, -0.02], "half": [0.01, 0.055, 0.08], "friction": 0.9 },
+      { "name": "cab_rail_x_pos", "center": [0.37, 0.525, -0.02], "half": [0.01, 0.055, 0.08], "friction": 0.9 }
+    ],
+    "props": [
+      {
+        "name": "drawer_panel",
+        "shape": { "kind": "cuboid", "half": [0.06, 0.025, 0.025] },
+        "phys": { "density": 1000.0, "friction": 1.0 },
+        "placement": { "fixed": [0.28, 0.525, 0.0] },
+        "slide": { "axis": [0.0, 0.0, -1.0], "limits": [0.0, 0.1], "damping": 12.0 }
+      }
+    ]
+  },
+  "task": {
+    "id": "drawer@v2",
+    "params": {
+      "pull_axis": [0.0, 0.0, -1.0],
+      "pull_distance": 0.08,
+      "goal": { "fixed": [0.28, 0.525, -0.08] }
+    }
+  },
+  "randomization": {
+    "prop_density": [800.0, 1200.0]
+  }
+}

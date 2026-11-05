@@ -34,7 +34,10 @@ python -m http.server 8124 -d examples
 ```
 浏览器打开 **http://localhost:8124/15-embodied-sim/** → 点「▶ 脚本策略演示」看它
 自己把方块放进绿圈；或按 Q/A、W/S、E/D、R/F 遥控四个关节，空格开合夹爪。
-页面顶部有**六预设卡片墙**（金标桌面 / Panda 7 轴 / 叠块 / 料箱 / 抽屉 / 移动底盘），
+页面顶部有**六预设卡片墙**（金标桌面 / Panda 7 轴 / 叠块 / 料箱 / 抽屉 / 移动底盘；
+P2-W6B 起抽屉另有真 prismatic 滑轨身份 `drawer-4dof-v2`——CLI/Python 侧
+`--spec crates/oriera-agent/specs/official/drawer-4dof-v2.json` 直接用，页面卡片
+随引擎快照同步后出现），
 点卡片即换装；移动底盘卡标「实验」，策略演示只支持桌面 4 轴与 Panda。
 跑服务器的终端窗口别关（关了网页就断），用完在该窗口按 `Ctrl+C` 停止。
 
@@ -265,8 +268,9 @@ lerobot 目录交给 §5 的训练命令即可（图像轨喂 ACT 前先过转�
   成功率 0%：抓取的奖励鸿沟靠密集塑形填不平，正道是 IL 路线（脚本
   采集 91.7% 数据 → ACT/π0 微调）或 RL 加课程表/HER（进阶作业）。
 
-- **作业基线（M2 起：六预设 × DLS 数值 IK）**：采集脚本之外还有一条
-  「评测专用」入口 `embodied_sim_baseline`——对官方六预设（M3 增移动底盘 mobile-arm-4dof）
+- **作业基线（M2 起：官方预设 × DLS 数值 IK）**：采集脚本之外还有一条
+  「评测专用」入口 `embodied_sim_baseline`——对官方预设（M3 增移动底盘 mobile-arm-4dof，
+  P2-W6B 增真 prismatic 抽屉 drawer-4dof-v2；抽屉旧预设 drawer-4dof 自 P2 起为对照档案）
   （`crates/oriera-agent/specs/official/`：金标桌面抓放、Panda 7 轴
   抓放、叠块、料箱抓取、抽屉拉出）各跑 12 集，DLS 数值 IK 相位机
   （任意 N-DoF，Panda 靠它），输出 `success_once` / `success_at_end`

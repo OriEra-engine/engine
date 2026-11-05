@@ -105,6 +105,17 @@
 //!   projects onto that list ([`Scene3D::fixture_slabs`]: ground, then
 //!   table, both at [`LEGACY_FIXTURE_FRICTION`]) — `from_robot` goes
 //!   through it, so the default build sequence is the pre-M3 one.
+//!
+//! **P2 可滑动 fixture（P2-W6B, PLAN-embodied-v3 §三「真抽屉」）** —
+//! again opt-in, defaults bit-identical: a prop entity carrying
+//! [`SlideSpec`] gets its body attached by a prismatic multibody joint
+//! to a colliderless static anchor born at the prop's spawn pose
+//! (travel limits in metres, viscous damping as the rail-friction
+//! model, no motor). The panel is dragged on plate friction, clamped by
+//! the joint limits, and cannot be teleported off its rail — external
+//! `Pose3` writes adopt *projected on the slide axis*, clamped to the
+//! travel (the multibody FK would overwrite raw body writes, so
+//! adoption rides the joint coordinate; see the sync note in `run`).
 
 use crate::robot::{
     HoldingCriterion, Inertial, JointKind, LinkShape, RobotSpec, RobotSpecError, SelfCollision,
@@ -233,6 +244,35 @@ impl PropShape {
             Self::Sphere { r } => ok(r),
         }
     }
+}
+
+/// Slide-prop kinematic constraint (P2-W6B, PLAN-embodied-v3 §三「真
+/// 抽屉」): put on a prop entity (next to `Pose3 + SimObject`) to make
+/// its dynamic body ride a rapier **prismatic joint** to a static
+/// anchor body frozen at the prop's spawn pose — a drawer front on
+/// rails. The panel keeps exactly one DoF: translation along `axis`
+/// (world frame) within `limits` (metres, joint-zero = the spawn pose,
+/// so `[0.0, 0.10]` = "closed at birth, may travel 10 cm out"); the
+/// joint absorbs every perpendicular push, so the panel can be dragged
+/// by gripper-plate friction but never knocked off its rail. `damping`
+/// (N·s/m on the slide DoF) is the sliding-friction model of the rail —
+/// there is no position motor: the panel is a passive scene element the
+/// arm must actually pull. The anchor is a colliderless fixed body (a
+/// pure frame), so the joint adds no visible geometry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+pub struct SlideSpec {
+    /// Slide axis, world frame (normalised at build; must be finite and
+    /// non-zero — agent-side validate names the offender).
+    pub axis: [f32; 3],
+    /// Travel limits along the axis (m) measured from the spawn pose:
+    /// `[lo, hi]` with lo ≤ hi. The spawn pose is the joint zero; a stop
+    /// at 0 = the closed position.
+    pub limits: [f32; 2],
+    /// Viscous damping of the slide DoF (N·s/m) — the rail's sliding
+    /// friction model. 0 = frictionless rail.
+    pub damping: f32,
 }
 
 /// Dynamic prop collider from its shape + physics override. The
@@ -1029,6 +1069,10 @@ pub struct MultibodySystem {
     gap_vec: Vec3,
     /// Entity ↔ body reconciliation for props.
     map: BTreeMap<EntKey, RigidBodyHandle>,
+    /// Slide props (P2-W6B): per panel entity, the colliderless static
+    /// anchor body its prismatic joint is rooted at (frozen at the
+    /// spawn pose) and the joint handle (teleport adoption rides it).
+    slide_rails: BTreeMap<EntKey, (RigidBodyHandle, MultibodyJointHandle)>,
     /// Last pose we wrote back — the external-write detector (step 2).
     last_pose: BTreeMap<EntKey, ([f32; 3], [f32; 4])>,
     /// Measured angles last tick — finite-difference velocities and
@@ -1125,6 +1169,7 @@ impl MultibodySystem {
             approach_vec,
             gap_vec,
             map: BTreeMap::new(),
+            slide_rails: BTreeMap::new(),
             last_pose: BTreeMap::new(),
             prev_angles: vec![0.0; n],
             last_cmd: vec![f32::NAN; n],
@@ -1433,6 +1478,41 @@ impl MultibodySystem {
 
         self.prev_angles = vec![0.0; r.joints.len()];
         Ok(())
+    }
+
+    /// Prismatic-joint a slide prop to its static anchor (P2-W6B):
+    /// unit axis, travel limits in metres from the anchor frame, and
+    /// viscous damping on the slide DoF (the rail-friction model). Both
+    /// joint frames sit at the shared spawn pose, so the joint zero IS
+    /// the spawn configuration. No position motor — the panel is a
+    /// passive scene element the gripper drags on friction. The pair's
+    /// contact is disabled (the anchor has no collider anyway).
+    ///
+    /// Returns the joint handle (`None` = rapier rejected the joint —
+    /// the panel then stays a free body; the agent-side validate makes
+    /// this unreachable for spec-driven worlds).
+    fn attach_slide(
+        &mut self,
+        anchor: RigidBodyHandle,
+        panel: RigidBodyHandle,
+        s: SlideSpec,
+    ) -> Option<MultibodyJointHandle> {
+        let axis = Vec3::new(s.axis[0], s.axis[1], s.axis[2]).normalize();
+        let builder = PrismaticJointBuilder::new(axis)
+            .local_anchor1(Vec3::ZERO)
+            .local_anchor2(Vec3::ZERO)
+            .limits([s.limits[0], s.limits[1]])
+            .contacts_enabled(false);
+        let handle = self.mbody_joints.insert(anchor, panel, builder, true)?;
+        if let Some((mb, link_id)) = self.mbody_joints.get_mut(handle) {
+            if let Some(link) = mb.link(link_id) {
+                let a = link.assembly_id();
+                if let Some(v) = mb.damping_mut().get_mut(a) {
+                    *v = s.damping;
+                }
+            }
+        }
+        Some(handle)
     }
 
     /// Per-tick plate-pair velocity (finite difference of the plate
@@ -1825,6 +1905,20 @@ impl System<World> for MultibodySystem {
                     true,
                 );
             }
+            // Slide prop (P2-W6B): the panel's removal also drops the
+            // prismatic joint (above) — the colliderless anchor frame
+            // goes with it.
+            if let Some((a, _)) = self.slide_rails.remove(&k) {
+                self.bodies.remove(
+                    a,
+                    &mut self.islands,
+                    &mut self.colliders,
+                    &mut self.impulse_joints,
+                    &mut self.mbody_joints,
+                    &mut self.soft_bodies,
+                    true,
+                );
+            }
             self.last_pose.remove(&k);
         }
         // Optional per-prop physics overrides (domain randomization).
@@ -1838,6 +1932,13 @@ impl System<World> for MultibodySystem {
             .query::<PropShape>()
             .map(|(e, s)| (key(e), *s))
             .collect();
+        // Optional slide constraints (P2-W6B): a prismatic joint to a
+        // static anchor per panel prop. Absent (every pre-P2 world) ⇒
+        // the plain free-body path below, bit-identical.
+        let slides: BTreeMap<EntKey, SlideSpec> = world
+            .query::<SlideSpec>()
+            .map(|(e, s)| (key(e), *s))
+            .collect();
         for (k, p) in &live {
             if !self.map.contains_key(k) {
                 let pp = phys.get(k).copied().unwrap_or_default();
@@ -1846,26 +1947,79 @@ impl System<World> for MultibodySystem {
                     SelfCollision::Off => world_groups(),
                     SelfCollision::AdjacentExempt => exempt_world_groups(&self.robot),
                 };
-                let b = RigidBodyBuilder::dynamic()
+                // Slide prop: the anchor frame is born BEFORE the panel
+                // body (deterministic insertion order for a given
+                // reset — the same discipline as the arm build).
+                let anchor = slides.get(k).map(|_| {
+                    let a = RigidBodyBuilder::fixed()
+                        .translation(Vec3::new(p.pos[0], p.pos[1], p.pos[2]))
+                        .build();
+                    self.bodies.insert(a)
+                });
+                let mut b = RigidBodyBuilder::dynamic()
                     .linear_damping(0.1)
                     .angular_damping(0.1)
-                    .translation(Vec3::new(p.pos[0], p.pos[1], p.pos[2]))
-                    .build();
-                let h = self.bodies.insert(b);
+                    .translation(Vec3::new(p.pos[0], p.pos[1], p.pos[2]));
+                if slides.contains_key(k) {
+                    // The panel is a driven mechanism on a joint, same
+                    // discipline as the arm chain: sleep would make the
+                    // first post-settle drag depend on wake timing.
+                    b = b.can_sleep(false);
+                }
+                let h = self.bodies.insert(b.build());
                 let c = prop_collider(shape, pp, groups);
                 self.colliders.insert_with_parent(c, h, &mut self.bodies);
+                if let (Some(s), Some(a)) = (slides.get(k), anchor) {
+                    if let Some(j) = self.attach_slide(a, h, *s) {
+                        self.slide_rails.insert(*k, (a, j));
+                    }
+                }
                 self.map.insert(*k, h);
                 self.last_pose.insert(*k, (p.pos, p.rot));
             }
         }
 
         // 2. External pose writes (Teleport-style) — adopt into bodies.
+        //    Slide props (P2-W6B): the multibody FK would overwrite a
+        //    raw body write, so adoption rides the JOINT coordinate —
+        //    the write's offset is projected on the slide axis and
+        //    applied (clamped to the travel) as a joint displacement.
+        //    The panel cannot be teleported off its rail or rotated:
+        //    off-axis / rotational parts of the write are absorbed by
+        //    the joint, which is exactly the "real drawer" behaviour.
         for (k, p) in &live {
             let Some(&h) = self.map.get(k) else { continue };
             if self.last_pose.get(k).copied() != Some((p.pos, p.rot)) {
-                if let Some(b) = self.bodies.get_mut(h) {
-                    b.set_rotation(quat_from(p.rot), true);
-                    b.set_translation(Vec3::new(p.pos[0], p.pos[1], p.pos[2]), true);
+                match (self.slide_rails.get(k), slides.get(k)) {
+                    (Some(&(_a, j)), Some(s)) => {
+                        let unit = Vec3::new(s.axis[0], s.axis[1], s.axis[2]).normalize();
+                        let (cur, anchor_t) = match (
+                            self.bodies.get(h).map(|b| b.translation()),
+                            self.bodies.get(_a).map(|b| b.translation()),
+                        ) {
+                            (Some(c), Some(t)) => (c, t),
+                            _ => continue,
+                        };
+                        // Joint-zero = the spawn pose = the anchor pose.
+                        let q = (cur - anchor_t).dot(unit);
+                        let delta = (Vec3::new(p.pos[0], p.pos[1], p.pos[2]) - cur).dot(unit);
+                        let q_new = (q + delta).clamp(s.limits[0], s.limits[1]);
+                        if let Some((mb, link_id)) = self.mbody_joints.get_mut(j) {
+                            if let Some(link) = mb.link(link_id) {
+                                let mut disp = vec![0.0; mb.ndofs()];
+                                disp[link.assembly_id()] = q_new - q;
+                                mb.apply_displacements(&disp);
+                                mb.forward_kinematics(&self.bodies, false);
+                                mb.update_rigid_bodies(&mut self.bodies, false);
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(b) = self.bodies.get_mut(h) {
+                            b.set_rotation(quat_from(p.rot), true);
+                            b.set_translation(Vec3::new(p.pos[0], p.pos[1], p.pos[2]), true);
+                        }
+                    }
                 }
             }
         }
@@ -3567,5 +3721,355 @@ mod tests {
             Err(RobotSpecError::BadFixture { index: 2, .. })
         ));
         assert!(MultibodySystem::from_robot_fixtures(robot, &[]).is_ok());
+    }
+
+    // --- P2-W6B: slide props（真 prismatic 抽屉面板） --------------------
+
+    /// The v2 drawer panel: 120 × 50 × 50 mm — cube-equivalent grasp
+    /// band (5 cm tall, top edge at 0.55 like the proven cube; 5 cm
+    /// across the squeeze), density 1000, spawned "closed" at
+    /// [0.28, 0.525, 0.0] — floating 2.5 mm above the table top (the
+    /// joint holds it; a real panel rides its rails, not the table).
+    /// The rail runs along **Z** (pull = −Z): the preset gripper's gap
+    /// axis is world Z at the pick posture, so the plates squeeze the
+    /// panel faces ALONG the slide DoF — the squeeze settles on the
+    /// free axis instead of fighting a locked one. Two named traps,
+    /// both probed: a straight X-rail (squeeze ⊥ rail) ejects the
+    /// panel to its stop the moment the plates over-close, and an
+    /// off-axis panel (z0 > 0) wedges the same way because the tilted
+    /// plate faces cam it out. Panel on the arm axis (yaw = 0 at the
+    /// grasp) keeps the squeeze square and the rails honest.
+    const PANEL_SPAWN: [f32; 3] = [0.28, 0.525, 0.0];
+    const PANEL_SLIDE: SlideSpec = SlideSpec {
+        axis: [0.0, 0.0, -1.0],
+        limits: [0.0, 0.10],
+        damping: 8.0,
+    };
+
+    /// Bench world whose single prop is the slide panel (no cabinet —
+    /// the joint IS the rail; fixtures are only shell). Returns
+    /// (world, sys, arm, panel).
+    fn slide_bench() -> (World, MultibodySystem, Entity, Entity) {
+        let mut world = World::new();
+        world.insert_resource(Gravity(9.8));
+        world.insert_resource(TimeScale(1.0));
+        let arm = world.spawn();
+        world.insert(
+            arm,
+            JointTargets {
+                angles: vec![0.0; 4],
+                gripper: 0.0,
+            },
+        );
+        world.insert(arm, JointTelemetry::default());
+        let obj = world.spawn();
+        world.insert(
+            obj,
+            Pose3 {
+                pos: PANEL_SPAWN,
+                ..Default::default()
+            },
+        );
+        world.insert(obj, SimObject);
+        world.insert(
+            obj,
+            PropPhys {
+                density: 1000.0,
+                friction: 1.0,
+            },
+        );
+        world.insert(
+            obj,
+            PropShape::Cuboid {
+                half: [0.06, 0.025, 0.025],
+            },
+        );
+        world.insert(obj, PANEL_SLIDE);
+        let sys = MultibodySystem::new(ArmDescription::default(), Scene3D::default());
+        (world, sys, arm, obj)
+    }
+
+    fn panel_body(sys: &MultibodySystem, obj: Entity) -> RigidBodyHandle {
+        *sys.map.get(&key(obj)).expect("panel body exists")
+    }
+
+    /// Steady horizontal pull on the panel body (external force through
+    /// the body's force slot — the multibody reads it as the slide DoF's
+    /// generalized force): `force` N along −Z (the pull direction) for
+    /// `ticks`, forces reset after every tick. Returns the final pose.
+    fn pull_panel(
+        world: &mut World,
+        sys: &mut MultibodySystem,
+        obj: Entity,
+        force: f32,
+        t0: u64,
+        ticks: u64,
+    ) -> Pose3 {
+        for i in t0..t0 + ticks {
+            let h = panel_body(sys, obj);
+            sys.bodies
+                .get_mut(h)
+                .expect("panel body")
+                .add_force(Vec3::new(0.0, 0.0, -force), true);
+            sys.run(&ctx(i), world);
+            let h = panel_body(sys, obj);
+            sys.bodies
+                .get_mut(h)
+                .expect("panel body")
+                .reset_forces(true);
+        }
+        pose(world, obj)
+    }
+
+    #[test]
+    fn slide_panel_holds_its_spawn_pose_without_contact() {
+        // The joint owns 5 DoF: no sag, no slide under gravity, no
+        // drift while the arm idles. A free prop at this height would
+        // drop 22.5 mm to the table.
+        let (mut world, mut sys, _arm, obj) = slide_bench();
+        for i in 0..180 {
+            sys.run(&ctx(i), &mut world);
+            if i % 30 == 0 {
+                eprintln!("PROBE idle i={i} panel={:?}", pose(&world, obj).pos);
+            }
+        }
+        let p = pose(&world, obj);
+        assert!(
+            (p.pos[0] - PANEL_SPAWN[0]).abs() < 1e-3
+                && (p.pos[1] - PANEL_SPAWN[1]).abs() < 1e-3
+                && (p.pos[2] - PANEL_SPAWN[2]).abs() < 1e-3,
+            "panel must hold its spawn pose on the rail: {:?}",
+            p.pos
+        );
+    }
+
+    #[test]
+    fn slide_panel_drags_to_the_limit_stops_and_drags_back() {
+        let (mut world, mut sys, _arm, obj) = slide_bench();
+        // One tick to reconcile the panel body (creation happens on the
+        // first run), then pull.
+        sys.run(&ctx(0), &mut world);
+        // Pull out: parks at the +0.10 m travel stop (z = −0.10) and the
+        // constraint holds it there against a sustained 2 N pull.
+        let p = pull_panel(&mut world, &mut sys, obj, 2.0, 1, 600);
+        let pulled = PANEL_SPAWN[2] - p.pos[2];
+        assert!(
+            (pulled - PANEL_SLIDE.limits[1]).abs() < 3e-3,
+            "panel must park at the 0.10 m stop (pulled {pulled:.4} m)"
+        );
+        assert!(
+            (p.pos[1] - PANEL_SPAWN[1]).abs() < 1e-3 && (p.pos[0] - PANEL_SPAWN[0]).abs() < 1e-3,
+            "the stop holds height/cross-rail too: {:?}",
+            p.pos
+        );
+        // Drag back: returns to the closed stop (joint-zero) and the 0
+        // limit clamps the push inward.
+        let p = pull_panel(&mut world, &mut sys, obj, -2.0, 601, 600);
+        assert!(
+            (p.pos[2] - PANEL_SPAWN[2]).abs() < 3e-3,
+            "panel must return to the closed stop: {:?}",
+            p.pos
+        );
+        let p = pull_panel(&mut world, &mut sys, obj, -2.0, 1201, 120);
+        assert!(
+            (p.pos[2] - PANEL_SPAWN[2]).abs() < 3e-3,
+            "pushing inward past the closed stop must clamp: {:?}",
+            p.pos
+        );
+    }
+
+    #[test]
+    fn slide_panel_teleport_adopts_projected_and_clamped() {
+        // The sync contract holds on rails too: an external Pose3 write
+        // adopts as a JOINT displacement — projected on the slide axis,
+        // clamped to the travel (a raw body write would be overwritten
+        // by the multibody FK; the panel cannot leave its rail).
+        let (mut world, mut sys, _arm, obj) = slide_bench();
+        for i in 0..30 {
+            sys.run(&ctx(i), &mut world);
+        }
+        // In-travel write: adopted exactly.
+        if let Some(p) = world.get_mut::<Pose3>(obj) {
+            p.pos = [PANEL_SPAWN[0], PANEL_SPAWN[1], PANEL_SPAWN[2] - 0.04];
+        }
+        sys.run(&ctx(30), &mut world);
+        assert!(
+            (pose(&world, obj).pos[2] - (PANEL_SPAWN[2] - 0.04)).abs() < 2e-3,
+            "in-travel teleport adopts: {:?}",
+            pose(&world, obj).pos
+        );
+        // Past the −Z stop (12 cm out, travel 10 cm): clamped at the stop.
+        if let Some(p) = world.get_mut::<Pose3>(obj) {
+            p.pos = [PANEL_SPAWN[0], PANEL_SPAWN[1], PANEL_SPAWN[2] - 0.12];
+        }
+        sys.run(&ctx(31), &mut world);
+        sys.run(&ctx(32), &mut world);
+        let p = pose(&world, obj);
+        assert!(
+            (p.pos[2] - (PANEL_SPAWN[2] - PANEL_SLIDE.limits[1])).abs() < 3e-3,
+            "teleport past the stop clamps to the travel: {:?}",
+            p.pos
+        );
+        // Off-axis components (x here) are absorbed by the joint.
+        if let Some(p) = world.get_mut::<Pose3>(obj) {
+            p.pos = [PANEL_SPAWN[0] + 0.05, PANEL_SPAWN[1], p.pos[2]];
+        }
+        sys.run(&ctx(33), &mut world);
+        let p = pose(&world, obj);
+        assert!(
+            (p.pos[0] - PANEL_SPAWN[0]).abs() < 1e-3,
+            "cross-rail teleport component absorbed: {:?}",
+            p.pos
+        );
+        // Drag back to the spawn (closed) stop: adopted, joint-zero.
+        if let Some(p) = world.get_mut::<Pose3>(obj) {
+            p.pos = PANEL_SPAWN;
+        }
+        sys.run(&ctx(34), &mut world);
+        let p = pose(&world, obj);
+        assert!(
+            (p.pos[2] - PANEL_SPAWN[2]).abs() < 2e-3,
+            "teleport back to the closed stop adopts: {:?}",
+            p.pos
+        );
+    }
+
+    /// The 4-DoF analytic IK of the grasp test (tool-down posture).
+    fn slide_ik(target: [f32; 3]) -> [f32; 4] {
+        let d = ArmDescription::default();
+        let (l1, l2) = (d.links[0], d.links[1]);
+        let sh = d.base[1] + d.shoulder_height;
+        let dx = target[0] - d.base[0];
+        let dz = target[2] - d.base[2];
+        let yaw = f32::atan2(-dz, dx);
+        let r = (dx * dx + dz * dz).sqrt().clamp(0.06, l1 + l2 - 0.005);
+        let h = (target[1] + d.links[2] - sh).clamp(-0.38, 0.30);
+        let ce = ((r * r + h * h - l1 * l1 - l2 * l2) / (2.0 * l1 * l2)).clamp(-1.0, 1.0);
+        let el = -ce.acos();
+        let sh2 = f32::atan2(h, r) - f32::atan2(l2 * el.sin(), l1 + l2 * el.cos());
+        let wr = -std::f32::consts::FRAC_PI_2 - sh2 - el;
+        [
+            yaw.clamp(d.limits[0].0, d.limits[0].1),
+            sh2.clamp(d.limits[1].0, d.limits[1].1),
+            el.clamp(d.limits[2].0, d.limits[2].1),
+            wr.clamp(d.limits[3].0, d.limits[3].1),
+        ]
+    }
+
+    #[test]
+    fn slide_panel_friction_drag_by_the_gripper() {
+        // The drawer grip: descend straddling the 5 cm band, close onto
+        // the panel faces (2 mm/side squeeze, same as the cube), then
+        // DRAG with a 3 cm leading carrot — plate/panel friction does
+        // the pull; the joint absorbs the perpendicular squeeze.
+        let (mut world, mut sys, arm, obj) = slide_bench();
+        let cy = PANEL_SPAWN[1];
+        let grasp_h = 0.030; // TCP = panel centre + 3 cm (the proven m.grasp() height)
+                             // Aim 1 cm past the 8 cm criterion (the drawer_phases overshoot).
+        let goal = [PANEL_SPAWN[0], cy, PANEL_SPAWN[2] - 0.09];
+        let phases: &[([f32; 3], u64, f32)] = &[
+            ([PANEL_SPAWN[0], cy + 0.16, PANEL_SPAWN[2]], 90, 0.0),
+            ([PANEL_SPAWN[0], cy + grasp_h, PANEL_SPAWN[2]], 90, 0.0),
+            ([PANEL_SPAWN[0], cy + grasp_h, PANEL_SPAWN[2]], 60, 1.0),
+        ];
+        let mut i = 0u64;
+        for (target, ticks, grip) in phases {
+            let angles = slide_ik(*target);
+            for _ in 0..*ticks {
+                if let Some(t) = world.get_mut::<JointTargets>(arm) {
+                    t.angles = angles.to_vec();
+                    t.gripper = *grip;
+                }
+                sys.run(&ctx(i), &mut world);
+                i += 1;
+            }
+        }
+        let at_close = pose(&world, obj).pos;
+        assert!(
+            (at_close[2] - PANEL_SPAWN[2]).abs() < 8e-3,
+            "closing must not eject the panel along its rail (squeeze ∥ slide DoF): {at_close:?}"
+        );
+        // Drag phase: carrot 3 cm ahead of the panel toward the goal,
+        // re-read every tick (the drawer_phases law).
+        for _ in 0..240 {
+            let o = pose(&world, obj).pos;
+            let d = ((goal[0] - o[0]).powi(2) + (goal[2] - o[2]).powi(2)).sqrt();
+            let lead = (d + 0.01).min(0.03);
+            let want = [
+                toward1(o[0], goal[0] - o[0], d, lead),
+                cy + grasp_h,
+                toward1(o[2], goal[2] - o[2], d, lead),
+            ];
+            let angles = slide_ik(want);
+            if let Some(t) = world.get_mut::<JointTargets>(arm) {
+                t.angles = angles.to_vec();
+                t.gripper = 1.0;
+            }
+            sys.run(&ctx(i), &mut world);
+            i += 1;
+        }
+        // Release + retreat.
+        for _ in 0..40 {
+            let o = pose(&world, obj).pos;
+            let angles = slide_ik([o[0], cy + grasp_h, o[2]]);
+            if let Some(t) = world.get_mut::<JointTargets>(arm) {
+                t.angles = angles.to_vec();
+                t.gripper = 0.0;
+            }
+            sys.run(&ctx(i), &mut world);
+            i += 1;
+        }
+        let p = pose(&world, obj).pos;
+        let pulled = PANEL_SPAWN[2] - p[2];
+        eprintln!(
+            "PROBE drawer drag: pulled {pulled:.4} m, pose {p:?} (goal z {})",
+            goal[2]
+        );
+        assert!(
+            pulled >= 0.08,
+            "plate friction must drag the panel ≥ 8 cm on the rail (pulled {pulled:.4})"
+        );
+        assert!(
+            pulled <= PANEL_SLIDE.limits[1] + 3e-3,
+            "the travel stop clamps the pull: {pulled:.4}"
+        );
+        assert!(
+            (p[1] - cy).abs() < 2e-3 && (p[0] - PANEL_SPAWN[0]).abs() < 2e-3,
+            "the panel never leaves its rail (x held, y held): {p:?}"
+        );
+    }
+
+    /// One axis of the drawer carrot: `p + dir/n · lead` (the
+    /// `toward` helper's per-axis form; `d` is the precomputed
+    /// horizontal distance).
+    fn toward1(p: f32, dir: f32, d: f32, lead: f32) -> f32 {
+        if d < 1e-6 {
+            p
+        } else {
+            p + dir / d * lead
+        }
+    }
+
+    #[test]
+    fn slide_world_is_bit_deterministic() {
+        let run = || {
+            let (mut world, mut sys, _arm, obj) = slide_bench();
+            let mut fps = Vec::new();
+            sys.run(&ctx(u64::MAX), &mut world); // reconcile the panel body
+            for i in 0..240u64 {
+                let f = if i % 80 < 40 { 0.5 } else { -0.5 };
+                let h = panel_body(&sys, obj);
+                sys.bodies
+                    .get_mut(h)
+                    .unwrap()
+                    .add_force(Vec3::new(0.0, 0.0, -f), true);
+                sys.run(&ctx(i), &mut world);
+                let h = panel_body(&sys, obj);
+                sys.bodies.get_mut(h).unwrap().reset_forces(true);
+                fps.push(sim_fingerprint(&world));
+            }
+            fps
+        };
+        assert_eq!(run(), run(), "slide-panel runs must be bit-identical");
     }
 }

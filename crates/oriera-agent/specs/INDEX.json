@@ -24,6 +24,13 @@
    ],
    "tier": "official"
   },
+  "drawer-4dof-v2": {
+   "hash": "f503b3a3d265121a",
+   "files": [
+    "official/drawer-4dof-v2.json"
+   ],
+   "tier": "official"
+  },
   "lab-example-cylinder": {
    "hash": "a0f523ed0cd0e3c4",
    "files": [

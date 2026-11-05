@@ -28,7 +28,7 @@
 | `panda-7dof-pick`（b5535a74） | Panda 7 轴（URDF 真惯量全张量） | 外部 gripper2f：1.7 cm 指块、开 88 mm / 合 46 mm | 300/30、armature 0.05、effort 87/12、阻尼 1.0 | DLS 10/12 = 83.3% · paper@v1 100 集 **80%**（P1-B2 相位机调参，heavy 排程只动 ≥6 DoF） | 1106（course）· 1932（paper 抽验单跑） |
 | `stack-4dof`（ffc96325） | 4 轴 | 同桌面板；判据 @v2（松爪 + 静止 10 步） | 同桌面 | DLS 11/12 = 91.7% | 1146 |
 | `bin-pick-4dof`（14fc9bf8） | 4 轴 | 料箱 = 四面重墙 prop 近似（真 fixture 见 §5） | 同桌面 | DLS 12/12 = 100% | 564 |
-| `drawer-4dof`（ef18ac07） | 4 轴 | 抽屉 = 可动盒体把手近似（真抽屉见 §5） | 同桌面 | DLS 10/12 = 83.3%（本轮重测逐位一致） | 756（本轮重测入 `results/reference/ef18ac07`；M2 时 627，同机并行负载敏感） |
+| `drawer-4dof-v2 真滑轨（ef18ac07 为 prop 近似对照档案）`（ef18ac07） | 4 轴 | 抽屉 = 可动盒体把手近似（真抽屉见 §5） | 同桌面 | DLS 10/12 = 83.3%（本轮重测逐位一致） | 756（本轮重测入 `results/reference/ef18ac07`；M2 时 627，同机并行负载敏感） |
 | **`mobile-arm-4dof`（9ee15317，M3-B 新增）** | 2 prismatic（x/z，米）+ 底盘 yaw + 4 轴臂 | 同桌面板；龙门式底盘（prismatic 悬离地面 2 cm，**不建轮地接触**） | 滑轨 500/80 N/m、effort 150 N、armature 0.5 kg；臂同桌面 | `--validate` ✓；DLS 0/12（**不是物理结论**：`ik.rs` 的 FK 只会转动关节）→ 以 settle/跟踪测试替代：TCP 随底盘的位姿误差 < 1 mm | DLS 跑 182 |
 
 吞吐出处：M2 列来自 `baselines/README.md`（2026-11-03，`embodied_sim_baseline --release`）；本轮数字来自 M3-B 验收（同机并行有 WP-A 构建，绝对值偏低，供量级参考）。纯物理（无接触、无策略）参考：Panda 7 轴 **8220 ticks/s**（`urdf_traj_dump --release`，每 tick 含 2 子步）。

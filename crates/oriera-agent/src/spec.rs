@@ -233,6 +233,23 @@ impl SceneSpec {
                 self.scene.fixtures.len()
             ));
         }
+        // P2-W6B：drawer@v2 判定的对象是真 prismatic 滑轨面板
+        //（scene.props[0].slide）——没有滑轨的可动盒体近似请用
+        // drawer@v1（可动盒体对照档案），不许顶着 @v2 的身份跑旧物理。
+        if base == "drawer"
+            && self.task.id.ends_with("@v2")
+            && self
+                .scene
+                .props
+                .first()
+                .and_then(|p| p.slide.as_ref())
+                .is_none()
+        {
+            return Err(
+                "spec.task.id = drawer@v2：面板须为滑轨 prop（scene.props[0].slide 必填——@v2 判定的对象是真 prismatic 面板；可动盒体近似请用 drawer@v1）"
+                    .into(),
+            );
+        }
         let dof = self.robot.joints.len();
         if let Some(scale) = &self.control.action_scale {
             if scale.len() != dof {
@@ -585,7 +602,7 @@ fn unknown_key_report(input: &serde_json::Value, roundtrip: &serde_json::Value) 
                         // halfx 这类拼错键也误放行（删掉后同样全等）——
                         // 加一层已知 skip-默认键允许清单：键在清单内且
                         // 去除后全等才放行；清单外一律报错。
-                        const SKIPPED_DEFAULT_KEYS: [&str; 8] = [
+                        const SKIPPED_DEFAULT_KEYS: [&str; 9] = [
                             "kind",
                             "self_collision",
                             "approach_axis",
@@ -594,6 +611,7 @@ fn unknown_key_report(input: &serde_json::Value, roundtrip: &serde_json::Value) 
                             "holding_criterion",
                             "difficulty",
                             "friction",
+                            "slide",
                         ];
                         let mut a_wo = a.clone();
                         a_wo.remove(k);
@@ -1266,6 +1284,53 @@ mod tests {
         assert_eq!(env.spec().name, "PickPlace3D-OrieraArm-v2");
         let obs = env.reset(7);
         assert_eq!(obs.len(), 21, "obs contract unchanged");
+    }
+
+    /// P2-W6B slide rail: absent keeps the golden hash; present parses,
+    /// round-trips and is identity; an explicit `null` equals absent
+    /// (audit allowlist); a typo in the block is a named error;
+    /// drawer@v2 requires the rail on props[0] (named error without).
+    #[cfg(feature = "json")]
+    #[test]
+    fn slide_spec_parses_hashes_and_gates_drawer_v2() {
+        const SLIDE: &str = r#"{"axis":[-1.0,0.0,0.0],"limits":[0.0,0.1],"damping":8.0}"#;
+        assert_eq!(
+            golden().spec_hash_hex(),
+            GOLDEN_SPEC_HASH_HEX,
+            "slide absent ⇒ the M0a identity anchor stands"
+        );
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["scene"]["props"][0]["slide"] = serde_json::from_str(SLIDE).unwrap();
+        let with_slide = SceneSpec::from_value(v).expect("slide spec parses");
+        let s = with_slide.scene.props[0]
+            .slide
+            .as_ref()
+            .expect("rail lands");
+        assert_eq!(s.limits, [0.0, 0.1]);
+        assert_ne!(
+            with_slide.spec_hash_hex(),
+            GOLDEN_SPEC_HASH_HEX,
+            "a rail is experiment identity"
+        );
+        // explicit null == absent (SKIPPED_DEFAULT_KEYS allowlist)
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["scene"]["props"][0]["slide"] = serde_json::Value::Null;
+        assert!(SceneSpec::from_value(v).is_ok(), "explicit null == absent");
+        // typo inside the slide block is a named error
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["scene"]["props"][0]["slide"] =
+            serde_json::json!({"axis": [-1.0, 0.0, 0.0], "limits": [0.0, 0.1], "damp": 8.0});
+        let err = SceneSpec::from_value(v).unwrap_err();
+        assert!(err.contains("damp"), "{err}");
+        // drawer@v2 without a rail is refused by name; with it, fine
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["task"]["id"] = serde_json::json!("drawer@v2");
+        let err = SceneSpec::from_value(v).unwrap_err();
+        assert!(err.contains("drawer@v2") && err.contains("slide"), "{err}");
+        let mut v = serde_json::to_value(golden()).unwrap();
+        v["task"]["id"] = serde_json::json!("drawer@v2");
+        v["scene"]["props"][0]["slide"] = serde_json::from_str(SLIDE).unwrap();
+        assert!(SceneSpec::from_value(v).is_ok());
     }
 
     /// stack needs its two props; the validator names the requirement.

@@ -4,7 +4,7 @@
 //! the episode receipt. Serde derives ride the `spec` feature (which
 //! turns on subsys' serde for RobotSpec/PropShape/PropPhys/Scene3D).
 
-use oriera_subsys::rigid3d::PropShape;
+use oriera_subsys::rigid3d::{PropShape, SlideSpec};
 use oriera_subsys::{PropPhys, Scene3D};
 
 /// Deterministic LCG (the same constants as the #80 example): episode
@@ -84,7 +84,10 @@ impl Placement {
 
 /// One dynamic prop: shape + nominal physics + where it spawns.
 /// `props[0]` is the *task object* (the one the obs/reward channels
-/// track); any further props spawn as scene clutter.
+/// track); any further props spawn as scene clutter. An optional
+/// `slide` (P2-W6B) turns the prop into a *slidable fixture panel* —
+/// a dynamic body on a prismatic rail to a static anchor at its spawn
+/// pose (the drawer front of `drawer-4dof-v2`).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "spec", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "spec", serde(deny_unknown_fields))]
@@ -98,6 +101,15 @@ pub struct PropSpec {
     #[cfg_attr(feature = "spec", serde(default))]
     pub phys: PropPhys,
     pub placement: Placement,
+    /// Slidable-fixture rail (`subsys::SlideSpec`): `None` (the
+    /// default, omitted from serialization) keeps the plain free body
+    /// and every pre-P2 spec hash bit-identical; `Some` = prismatic
+    /// joint to a static anchor frozen at the spawn pose.
+    #[cfg_attr(
+        feature = "spec",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub slide: Option<SlideSpec>,
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +321,7 @@ impl Default for SceneGraph {
                 shape: PropShape::default(),
                 phys: PropPhys::default(),
                 placement: OBJ_RANGE,
+                slide: None,
             }],
             cameras: Vec::new(),
         }
@@ -413,6 +426,32 @@ impl SceneGraph {
                     return Err(format!(
                         "scene.props[{i}]（{}）.placement: 区间须 lo ≤ hi（x = {:?}, z = {:?}）",
                         p.name, x, z
+                    ));
+                }
+            }
+            // P2-W6B slide rail: finite non-zero axis, [lo, hi] travel
+            // with lo ≤ hi, non-negative damping (G-7: name the field).
+            if let Some(s) = &p.slide {
+                let norm2 = s.axis[0] * s.axis[0] + s.axis[1] * s.axis[1] + s.axis[2] * s.axis[2];
+                if !(s.axis.iter().all(|v| v.is_finite()) && norm2 > 1e-12) {
+                    return Err(format!(
+                        "scene.props[{i}]（{}）.slide.axis = {:?}：须为有限非零向量（世界系滑轴，构建时归一化）",
+                        p.name, s.axis
+                    ));
+                }
+                if !(s.limits[0].is_finite()
+                    && s.limits[1].is_finite()
+                    && s.limits[0] <= s.limits[1])
+                {
+                    return Err(format!(
+                        "scene.props[{i}]（{}）.slide.limits = {:?}：须为 [lo, hi] 且 lo ≤ hi（米，行程零点 = 出生位；[0, 0.1] = 出生位闭合、可拉出 10 cm）",
+                        p.name, s.limits
+                    ));
+                }
+                if !(s.damping.is_finite() && s.damping >= 0.0) {
+                    return Err(format!(
+                        "scene.props[{i}]（{}）.slide.damping = {}：须为有限非负数（N·s/m，滑轨阻尼 = 滑动摩擦模型；0 = 无摩擦滑轨）",
+                        p.name, s.damping
                     ));
                 }
             }
@@ -574,5 +613,59 @@ mod tests {
         let x_draw = r2.next_f32(0.0, 1.0);
         let z_draw = r2.next_f32(0.0, 1.0);
         assert_eq!(a, [x_draw, 0.55, z_draw], "x first, then z");
+    }
+
+    /// P2-W6B slide rail: the default scene has none; a well-formed
+    /// rail validates; every bad field is a named error (G-7).
+    #[test]
+    fn slide_spec_validates_and_defaults_stay_rail_free() {
+        let g = SceneGraph::default();
+        assert!(g.props.iter().all(|p| p.slide.is_none()));
+        let mut g = SceneGraph::default();
+        g.props[0].slide = Some(SlideSpec {
+            axis: [-1.0, 0.0, 0.0],
+            limits: [0.0, 0.10],
+            damping: 8.0,
+        });
+        assert!(g.validate().is_ok(), "{:?}", g.validate());
+        let ok = SlideSpec {
+            axis: [-1.0, 0.0, 0.0],
+            limits: [0.0, 0.10],
+            damping: 8.0,
+        };
+        let bad = |s: SlideSpec, word: &str| {
+            let mut g = SceneGraph::default();
+            g.props[0].slide = Some(s);
+            let err = g.validate().unwrap_err();
+            assert!(err.contains("slide") && err.contains(word), "{word}: {err}");
+        };
+        bad(
+            SlideSpec {
+                axis: [f32::NAN, 0.0, 0.0],
+                ..ok
+            },
+            "axis",
+        );
+        bad(
+            SlideSpec {
+                axis: [0.0, 0.0, 0.0],
+                ..ok
+            },
+            "axis",
+        );
+        bad(
+            SlideSpec {
+                limits: [0.2, -0.1],
+                ..ok
+            },
+            "limits",
+        );
+        bad(
+            SlideSpec {
+                damping: -0.5,
+                ..ok
+            },
+            "damping",
+        );
     }
 }

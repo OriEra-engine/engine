@@ -885,6 +885,12 @@ impl EmbodiedEnv for TableTopEnv {
             };
             self.world.insert(e, pp);
             self.world.insert(e, prop.shape);
+            // P2-W6B: a slide prop spawns on its prismatic rail — the
+            // backend reads this component during body reconciliation
+            // and joints the panel to a static anchor at the spawn pose.
+            if let Some(slide) = prop.slide {
+                self.world.insert(e, slide);
+            }
             if i == 0 {
                 self.obj = e;
                 self.obj_start = placements.props[i];

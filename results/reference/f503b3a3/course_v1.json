@@ -1,0 +1,151 @@
+{
+  "backend": "rigid3d",
+  "baseline_gate": {
+    "threshold": 0.6,
+    "verdict": "pass",
+    "why": "drawer 新任务首版诚实门槛（可动盒体近似 prismatic）"
+  },
+  "draws": 12,
+  "dt": 0.01666666753590107,
+  "engine": "oriera-engine/0.11.0",
+  "episodes": 12,
+  "identity_hash": "834494da02895592",
+  "method": "dls-ik",
+  "protocol": {
+    "degenerate": "redraw",
+    "episodes": 12,
+    "gate": "hard90",
+    "id": "course@v1",
+    "parameter_hash": "abfa767a29a372f7",
+    "seed0": 1000,
+    "success_criteria": "v2"
+  },
+  "redraws": 0,
+  "runs": [
+    {
+      "rand": "drawer_panel_density=901kg/m3 drawer_panel_friction=0.63 profile=default",
+      "reward_sum": -1.376,
+      "seed": 1000,
+      "steps": 459,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "drawer_panel_density=1163kg/m3 drawer_panel_friction=0.99 profile=default",
+      "reward_sum": 0.292,
+      "seed": 1001,
+      "steps": 432,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "drawer_panel_density=1177kg/m3 drawer_panel_friction=0.52 profile=default",
+      "reward_sum": -1.404,
+      "seed": 1002,
+      "steps": 460,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "drawer_panel_density=1039kg/m3 drawer_panel_friction=0.88 profile=default",
+      "reward_sum": -1.647,
+      "seed": 1003,
+      "steps": 459,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "drawer_panel_density=1053kg/m3 drawer_panel_friction=1.01 profile=default",
+      "reward_sum": 0.48,
+      "seed": 1004,
+      "steps": 432,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "drawer_panel_density=915kg/m3 drawer_panel_friction=0.77 profile=default",
+      "reward_sum": -1.544,
+      "seed": 1005,
+      "steps": 459,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "drawer_panel_density=929kg/m3 drawer_panel_friction=0.90 profile=default",
+      "reward_sum": -1.685,
+      "seed": 1006,
+      "steps": 459,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "drawer_panel_density=1191kg/m3 drawer_panel_friction=0.66 profile=default",
+      "reward_sum": -1.508,
+      "seed": 1007,
+      "steps": 460,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "drawer_panel_density=805kg/m3 drawer_panel_friction=0.79 profile=default",
+      "reward_sum": -1.462,
+      "seed": 1008,
+      "steps": 458,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "drawer_panel_density=1067kg/m3 drawer_panel_friction=0.54 profile=default",
+      "reward_sum": -1.304,
+      "seed": 1009,
+      "steps": 459,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "drawer_panel_density=1081kg/m3 drawer_panel_friction=0.68 profile=default",
+      "reward_sum": -1.411,
+      "seed": 1010,
+      "steps": 459,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    },
+    {
+      "rand": "drawer_panel_density=943kg/m3 drawer_panel_friction=1.03 profile=default",
+      "reward_sum": -1.858,
+      "seed": 1011,
+      "steps": 459,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
+    }
+  ],
+  "spec_hash": "f503b3a3d265121a",
+  "success_at_end_rate": 1.0,
+  "success_once_rate": 1.0,
+  "success_rate": 1.0,
+  "successes": 12,
+  "task": "pull the drawer panel out by the target distance",
+  "task_id": "drawer@v2",
+  "throughput_steps_per_s": 1940.4611040707887,
+  "verify_determinism": "full",
+  "wilson95_at_end": [
+    0.7575059933447592,
+    1.0
+  ],
+  "wilson95_once": [
+    0.7575059933447592,
+    1.0
+  ]
+}
