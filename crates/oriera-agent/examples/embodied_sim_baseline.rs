@@ -1184,7 +1184,7 @@ fn main() {
     .unwrap_or_else(|e| fail(&format!("run_manifest.json 写入失败：{e}")));
 
     println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║  OriEra DLS 数值 IK 基线 · 五预设 × course@v1 双报            ║");
+    println!("║  OriEra DLS 数值 IK 基线 · 六预设 × course@v1 双报            ║");
     println!("╚════════════════════════════════════════════════════════════╝");
     println!(
         "  任务 {}（{}，判据 {}） · 协议 {}（{} 集，种子 {}..）",

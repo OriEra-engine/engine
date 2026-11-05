@@ -110,3 +110,30 @@ Yes, but open an RFC in
 [Discussions · Ideas](https://github.com/OriEra-engine/engine/discussions/categories/ideas)
 first with a 7-day comment period — that's how we protect the eleven-layer
 boundaries from accidental damage.
+
+## 9. Release process (maintainers)
+
+Cutting a release = **push one tag; everything else is handled by
+[.github/workflows/release.yml](../.github/workflows/release.yml)**
+(versions-guard → full engine release build → oriera-sim wheel → GitHub
+Release with notes and artifacts attached automatically):
+
+1. **Bump the version**: `[workspace.package] version` in `Cargo.toml` +
+   each `oriera-*` self-reference under `[workspace.dependencies]` + the
+   `[project] version` in `pyproject.toml` — all three together (member
+   crates use `version.workspace = true`, so there is nothing else to
+   touch).
+2. **Mechanical self-check**: run `python scripts/check_release_versions.py`
+   and only move on when it is fully green — any missed spot exits 1 and
+   lists every path and its current value (`--expect-version 0.X.0`
+   additionally asserts the target version; `--studio-root ../studio`
+   reconciles the Studio anchor as well).
+3. **Write the release notes**: `docs/release-notes/vX.Y.Z-<codename>.md`
+   (style references: v0.9.0 / v0.10.0 — the workflow looks the file up by
+   the `<tag>*.md` prefix and uses it as the Release body).
+4. **Tag and push**: `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag
+   must equal the version number (versions-guard re-checks it in CI).
+5. About ten minutes later the GitHub Release appears, carrying the engine
+   tarball and the oriera-sim wheel. A manual `workflow_dispatch` run is a
+   **build rehearsal** (builds but does not publish) — releases always go
+   through a tag.
