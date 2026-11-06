@@ -7,7 +7,7 @@
   },
   "draws": 13,
   "dt": 0.01666666753590107,
-  "engine": "oriera-engine/0.10.0",
+  "engine": "oriera-engine/0.11.0",
   "episodes": 12,
   "identity_hash": "1e6473af0cdbafa3",
   "method": "dls-ik",
@@ -42,12 +42,12 @@
     },
     {
       "rand": "cube_density=324kg/m3 cube_friction=0.99 profile=default",
-      "reward_sum": -63.052,
+      "reward_sum": 5.372,
       "seed": 66539,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 549,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
       "rand": "cube_density=418kg/m3 cube_friction=0.89 profile=default",
@@ -123,29 +123,29 @@
     },
     {
       "rand": "cube_density=536kg/m3 cube_friction=0.60 profile=default",
-      "reward_sum": -62.473,
+      "reward_sum": 6.687,
       "seed": 66548,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 555,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     }
   ],
   "spec_hash": "b5535a74f18fb57b",
-  "success_at_end_rate": 0.8333333333333334,
-  "success_once_rate": 0.8333333333333334,
-  "success_rate": 0.8333333333333334,
-  "successes": 10,
+  "success_at_end_rate": 1.0,
+  "success_once_rate": 1.0,
+  "success_rate": 1.0,
+  "successes": 12,
   "task": "pick up the cube and place it at the target",
   "task_id": "pick_place@v1",
-  "throughput_steps_per_s": 1106.0163436374946,
+  "throughput_steps_per_s": 1340.0756914367926,
   "verify_determinism": "full",
   "wilson95_at_end": [
-    0.5519691377470266,
-    0.9530348578161463
+    0.7575059933447592,
+    1.0
   ],
   "wilson95_once": [
-    0.5519691377470266,
-    0.9530348578161463
+    0.7575059933447592,
+    1.0
   ]
 }

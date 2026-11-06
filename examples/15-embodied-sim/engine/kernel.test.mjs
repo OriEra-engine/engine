@@ -230,6 +230,39 @@ describe("kernel.js 渲染层策略（纯函数，物理已退役）", () => {
     assert.equal(typeof kernel.boot, "function");
     assert.equal(kernel.boot.constructor.name, "AsyncFunction");
   });
+
+  it("taskDescHtml：默认桌面卡与 index.html 硬编码渲染逐字一致（换装渲染零漂移兜底）", () => {
+    const sim = mod.OrieraSim.from_spec_json(SPEC_TEXT);
+    const spec = JSON.parse(sim.spec_json());
+    sim.free();
+    const html = kernel.taskDescHtml(spec);
+    const page = readFileSync(path.join(DEMO_DIR, "index.html"), "utf8");
+    const m = page.match(/<div id="task-desc"[^>]*>([\s\S]*?)<\/div>/);
+    assert.ok(m, "index.html 有 task-desc 面板");
+    // 浏览器渲染近似：<br> 是唯一硬换行（先换成哨兵），其余空白（含源码
+    // 换行）一律折叠成单空格，最后按哨兵分行。
+    const rendered = (s) =>
+      s.replace(/<br\s*\/?>/gi, "\u0000").replace(/<[^>]+>/g, "").replace(/\s+/g, " ")
+        .split("\u0000").map((l) => l.trim()).filter(Boolean).join("\n");
+    assert.equal(rendered(html), rendered(m[1]));
+    assert.equal(rendered(html), "把 方块 抓起来放到 绿色目标圈。9cm 落区内即成功。\n奖励：接近 → 抓住 → 提升 → 送达。");
+  });
+
+  it("taskDescHtml：数字与判据行读 spec（drawer 8cm / stack 3cm / Contact 1 N 增补）", () => {
+    const resolved = (n) => {
+      const sim = mod.OrieraSim.from_spec_json(readFileSync(path.join(DEMO_DIR, "specs/resolved", `${n}.json`), "utf8"));
+      const s = JSON.parse(sim.spec_json());
+      sim.free();
+      return s;
+    };
+    assert.ok(kernel.taskDescHtml(resolved("drawer-4dof-v2")).includes("拉开 ≥ 8cm"), "pull_distance → 8cm");
+    assert.ok(kernel.taskDescHtml(resolved("stack-4dof")).includes("3cm"), "stack_xz_tol → 3cm");
+    assert.ok(kernel.taskDescHtml(resolved("bin-pick-4dof")).includes("9cm"), "goal_xz_tol → 9cm");
+    const contact = kernel.taskDescHtml(resolved("panda-contact-criterion"));
+    assert.ok(contact.includes("Contact") && contact.includes("≥ 1 N") && contact.includes("0.05 m/s"),
+      "Contact 判据增补行读 holding_criterion");
+    assert.ok(!kernel.taskDescHtml(resolved("panda-7dof-pick")).includes("Contact"), "TipRadius 卡无 Contact 行");
+  });
 });
 
 // ── P2-R：props[1..] 全入口渲染守卫（浏览器入口：wasm poses + kernel 几何）──
@@ -349,9 +382,9 @@ describe("drawer 相位机（B 包：drawer@v2 滑轨真跑）", () => {
     return s;
   };
 
-  it("分流只认 task.id：drawer@v1/@v2 进相位机，五张非 drawer 卡不进（panda 的 params 带 pull_axis 默认值也不误伤）", () => {
+  it("分流只认 task.id：drawer@v1/@v2 进相位机，六张非 drawer 卡不进（panda 的 params 带 pull_axis 默认值也不误伤）", () => {
     for (const n of ["drawer-4dof-v2", "drawer-4dof"]) assert.equal(kernel.isDrawerTask(specOf(n)), true, n);
-    for (const n of ["tabletop-4dof-pick", "panda-7dof-pick", "stack-4dof", "bin-pick-4dof", "mobile-arm-4dof"]) {
+    for (const n of ["tabletop-4dof-pick", "panda-7dof-pick", "panda-contact-criterion", "stack-4dof", "bin-pick-4dof", "mobile-arm-4dof"]) {
       assert.equal(kernel.isDrawerTask(specOf(n)), false, n);
     }
     assert.ok(Array.isArray(specOf("panda-7dof-pick").task.params.pull_axis), "按字段判别会误伤 panda");

@@ -22,6 +22,7 @@
 //   [--rust-ref DIR] [--policy wasm|js] [--strict]
 
 import { readFileSync, existsSync, statSync } from "node:fs";
+import { register } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -41,6 +42,22 @@ const SPEC = path.resolve(arg("spec", path.join(REPO_ROOT, "crates/oriera-embodi
 const GOLDEN = path.resolve(arg("golden", path.join(REPO_ROOT, "contracts/golden/embodied_fingerprints.pre-m0a.json")));
 const GOLDEN_V2 = path.resolve(arg("golden-v2", path.join(REPO_ROOT, "contracts/golden/embodied_fingerprints.v2.json")));
 const RUST_REF = arg("rust-ref", null);
+
+// `--policy js` 时 kernel.js（及其 vendor/jsm 依赖链）裸导入 `three`——
+// 页面侧靠 index.html 的 importmap 解析，node 侧没有 node_modules，直接
+// import 会 ERR_MODULE_NOT_FOUND。这里注册一个 resolve 钩子把 `three`
+// 映射到 vendor/three.module.js（与 importmap 同一文件），让
+// `node tools/wasm_golden_check.mjs --policy js` 开箱跑通。
+const THREE_URL = pathToFileURL(path.join(DEMO_DIR, "vendor", "three.module.js")).href;
+register(
+  "data:text/javascript," +
+    encodeURIComponent(
+      `export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "three") return { url: ${JSON.stringify(THREE_URL)}, shortCircuit: true };
+  return nextResolve(specifier, context);
+}`,
+    ),
+);
 
 // ── u64 安全的 JSON 提取（十进制字符串，绕开 Number 2^53 精度）──
 function extractU64Array(jsonText, key) {

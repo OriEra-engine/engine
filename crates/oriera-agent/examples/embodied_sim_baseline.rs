@@ -610,7 +610,57 @@ struct PolicyState {
     pin: Option<[f32; 3]>,
     /// Previous joint command (heavy-arm rate limit; empty = first tick).
     prev_cmd: Vec<f32>,
+    /// Ghost-grip retreat-recovery state: `None` = healthy/not engaged;
+    /// `Some(SENTINEL)` = measuring (first lift tick); `Some(t0)` =
+    /// recovery engaged at step t0. See `SWAP_RISE_TICKS` for the
+    /// mechanism.
+    swap_start: Option<u64>,
+    /// The closing/lift anchor captured when the recovery engages (the
+    /// machine's own pin clears when the carry phase starts).
+    swap_anchor: Option<[f32; 3]>,
+    /// Object Y captured on the first lift phase's first tick (the slip
+    /// detector's reference).
+    lift_obj_y0: Option<f32>,
 }
+
+/// Ghost-grip breaker (heavy arms, P2-Wave-3B): on a lift-start slip the
+/// gripper opens, the TCP rises 8 cm (the plate↔cube broad-phase pair
+/// dies), dwells, descends back onto the same ±z faces and re-closes.
+/// Diagnosis: every paper@v1 lift failure is a *ghost grip* — the
+/// plate↔cube contact manifold is frozen at its creation-time
+/// speculative contacts (those count as active contacts, so the pair's
+/// recycle budget is the full 5 cm; the 21 mm closing sweep from a pair
+/// created near the grasp pose never crosses it) and the solver produces
+/// exactly 0 N. Nothing unfreezes a live pair — not sweeps, lifts or
+/// axis rotations. What does: killing the pair. A pair reborn far from
+/// the cube has *no* manifold points yet, so its recycle budget is
+/// capped by the ~2 cm prediction distance — the 21 mm re-close then
+/// crosses it and the contact is recomputed exactly as it forms. The
+/// retreat is flown with the gripper open, so nothing can be knocked;
+/// false triggers (slow-but-real grips) drop the cube a centimetre onto
+/// its own spot and are re-gripped the same way.
+const SWAP_RISE_TICKS: u64 = 30;
+const SWAP_HOLD_TICKS: u64 = 6;
+const SWAP_DESCEND_TICKS: u64 = 25;
+/// Ticks after the first lift phase's start at which the detector fires.
+const SCRUB_DETECT_AFTER: u64 = 8;
+/// Lift-slip detector: the held cube must rise at least this much (m)
+/// within [`SCRUB_DETECT_AFTER`] ticks of the first lift phase, else the
+/// grip is a ghost (plates ride up off the cube — measured +0 mm object
+/// rise in every paper@v1 lift failure).
+const SCRUB_DETECT_RISE: f32 = 0.004;
+/// The retreat altitude over the grasp height (m): the plates leave the
+/// cube's AABB so the broad-phase pair dies.
+const SWAP_RISE_HEIGHT: f32 = 0.08;
+/// Settle: hold the full squeeze at the grasp height past the recovery
+/// window — the machine's carry lunge would otherwise rip a just-caught
+/// cube out of the plates.
+const SWAP_SETTLE_TICKS: u64 = 40;
+/// Total recovery + settle window.
+const SWAP_TOTAL_TICKS: u64 =
+    SWAP_RISE_TICKS + SWAP_HOLD_TICKS + SWAP_DESCEND_TICKS + SWAP_SETTLE_TICKS;
+/// Heavy pick schedule: index of the first lift phase.
+const HEAVY_LIFT1_IDX: usize = 4;
 
 /// Heavy-arm per-tick joint command rate limit (rad/tick ≈ 2.1 rad/s at
 /// 60 Hz with the 0.035 default): a smooth path between IK solutions,
@@ -639,13 +689,26 @@ fn policy(
     let g = idx.goal_rel;
     let obj = [ee[0] + obs[o], ee[1] + obs[o + 1], ee[2] + obs[o + 2]];
     let goal = [ee[0] + obs[g], ee[1] + obs[g + 1], ee[2] + obs[g + 2]];
+    let phase_step = step;
     let mut ticks = 0u64;
-    let active_idx = phases.iter().position(|p| {
+    let mut active_idx: Option<usize> = None;
+    let mut active_start = 0u64;
+    for (i, p) in phases.iter().enumerate() {
+        if phase_step < ticks + p.ticks {
+            active_idx = Some(i);
+            active_start = ticks;
+            break;
+        }
         ticks += p.ticks;
-        step < ticks
-    });
+    }
+    // `ticks` must stay cumulative THROUGH the active phase (the
+    // `recal_sag` endpoint below compares `step == ticks - 1`), matching
+    // the original `position()` semantics.
+    if let Some(i) = active_idx {
+        ticks = active_start + phases[i].ticks;
+    }
     let active = active_idx.map(|i| &phases[i]);
-    let (mut raw, demand) = match active {
+    let (mut raw, mut demand) = match active {
         Some(p) => ((p.target)(obj, goal, ee, geom), p.gripper),
         // Past the script: hover above the goal, gripper open.
         None => (above(goal, 0.22), 0.0),
@@ -663,6 +726,61 @@ fn policy(
         ];
     } else {
         state.pin = None;
+    }
+    // Heavy arms: ghost-grip retreat-recovery (P2-Wave-3B). A no-op on
+    // the 4-axis golden path (`sag_comp` false). See `SWAP_RISE_TICKS`
+    // for the mechanism.
+    if geom.sag_comp && active_idx == Some(HEAVY_LIFT1_IDX) && state.swap_start.is_none() {
+        if step == active_start {
+            // First lift tick: start measuring the object's rise.
+            state.lift_obj_y0 = Some(obj[1]);
+        } else if step == active_start + SCRUB_DETECT_AFTER {
+            let rose = obj[1] - state.lift_obj_y0.unwrap_or(f32::NEG_INFINITY);
+            // `partial_cmp` so an incomparable (NaN) rise also counts as
+            // "not risen" — same semantics as `!(rose >= threshold)`.
+            let risen = rose
+                .partial_cmp(&SCRUB_DETECT_RISE)
+                .is_some_and(|o| o != std::cmp::Ordering::Less);
+            if !risen {
+                // Ghost grip: the plates left the cube behind. Retreat,
+                // re-close on the same faces.
+                state.swap_start = Some(step);
+                state.swap_anchor = state.pin;
+            }
+        }
+    }
+    if let Some(t0) = state.swap_start {
+        let t = step - t0;
+        if t < SWAP_TOTAL_TICKS {
+            let p = state.swap_anchor;
+            if let Some(p) = state.pin.or(p) {
+                if t < SWAP_RISE_TICKS {
+                    // Phase 1: open + rise 8 cm — the broad-phase pair dies.
+                    demand = 0.0;
+                    raw = [p[0], p[1] + geom.grasp() + SWAP_RISE_HEIGHT, p[2]];
+                } else if t < SWAP_RISE_TICKS + SWAP_HOLD_TICKS {
+                    // Phase 2: dwell at altitude; the pair is gone.
+                    demand = 0.0;
+                    raw = [p[0], p[1] + geom.grasp() + SWAP_RISE_HEIGHT, p[2]];
+                } else if t < SWAP_RISE_TICKS + SWAP_HOLD_TICKS + SWAP_DESCEND_TICKS {
+                    // Phase 3: descend onto the same ±z faces, still open.
+                    demand = 0.0;
+                    raw = [p[0], p[1] + geom.grasp(), p[2]];
+                } else {
+                    // Phase 4: re-close on the same ±z faces — the pair is
+                    // reborn far from the cube (recycle budget capped at the
+                    // prediction distance) and the 21 mm re-close crosses it:
+                    // the contact is recomputed exactly as it forms. Full
+                    // squeeze from the first tick (a 12-tick demand ramp was
+                    // tried and recovered none of the residual failures); the
+                    // settle then holds the squeeze while the machine
+                    // transitions into its vertical climb (releasing straight
+                    // into the carry's horizontal lunge rips the cube out).
+                    demand = 1.0;
+                    raw = [p[0], p[1] + geom.grasp(), p[2]];
+                }
+            }
+        }
     }
     // Hover-sag calibration (heavy arms): on the approach hover's last
     // tick, remember how far below the commanded tip the arm settled.
@@ -1055,6 +1173,33 @@ fn run_episode_once(
                 eprintln!(
                     "      fk gap=({:.3},{:.3},{:.3}) appr=({:.3},{:.3},{:.3})",
                     fk.gap[0], fk.gap[1], fk.gap[2], fk.approach[0], fk.approach[1], fk.approach[2]
+                );
+            }
+            // P2-Wave-3B force probe: per-plate normal force (N) on the
+            // task object. Read-only telemetry, off unless asked.
+            if std::env::var("ORIERA_SIM_TRACE_FORCE").is_ok() {
+                let f = env.plate_forces_on_cube();
+                eprintln!("      force=({:.2},{:.2})", f[0], f[1]);
+            }
+            // P2-Wave-3B plate-position probe: plate world centres + live
+            // gap. Read-only telemetry, off unless asked.
+            if std::env::var("ORIERA_SIM_TRACE_PLATES").is_ok() {
+                let (l, r, gap) = env.debug_plate_state();
+                eprintln!(
+                    "      plateL=({:.3},{:.3},{:.3}) plateR=({:.3},{:.3},{:.3}) gap={:.4}",
+                    l[0], l[1], l[2], r[0], r[1], r[2], gap
+                );
+            }
+            // P2-Wave-3B contact-pair probe: plate↔cube narrow-phase pair
+            // counts + cube sleep state + plate collider translations.
+            // Off unless asked.
+            if std::env::var("ORIERA_SIM_TRACE_PAIRS").is_ok() {
+                let (nl, nr, asleep, cols) = env.debug_plate_cube_contact();
+                let (pts, imp, dist, active) = env.debug_plate_cube_manifolds();
+                eprintln!(
+                    "      pairsL={} pairsR={} asleep={} pts={} act={} imp={:.4} dist={:.4} colL=({:.3},{:.3},{:.3}) colR=({:.3},{:.3},{:.3})",
+                    nl, nr, asleep, pts, active, imp, dist, cols[0][0], cols[0][1], cols[0][2],
+                    cols[1][0], cols[1][1], cols[1][2]
                 );
             }
         }

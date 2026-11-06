@@ -150,6 +150,54 @@ function isDrawerTask(spec) {
   return String(spec?.task?.id ?? "").split("@")[0] === "drawer";
 }
 
+// 「任务」面板文案——从 wasm 解析后的 spec_json（K.spec）推导，不再依赖
+// index.html 写死的抓放文案：换装（卡片墙 / ?spec= / Studio postMessage）
+// 后面板跟着 spec 走。数字（落区半径 / 拉出判据 / 接触力阈值）一律读
+// spec 字段，spec 改参文案自动跟。返回 HTML 片段（innerHTML）。
+// 默认桌面卡（tabletop-4dof-pick）的推导结果与 index.html 硬编码渲染
+// 一致；boot 无 ?spec= 时不触碰面板（金标桌面卡零变化兜底）。
+export function taskDescHtml(spec) {
+  const fam = String(spec?.task?.id ?? "").split("@")[0];
+  const p = spec?.task?.params ?? {};
+  const cm = (v) => `${Math.round((Number(v) || 0) * 100)}cm`;
+  const tol = p.goal_xz_tol ?? 0.09;
+  // 夹持判据（serde 外部标签枚举 {"Contact": {min_normal_force, max_slip}}）：
+  // 只有 Contact 判据卡（panda-contact-criterion）出增补行。
+  const c = spec?.robot?.gripper?.holding_criterion?.Contact;
+  const contactLine = c
+    ? `<br>夹住判据：Contact——法向接触力 ≥ ${c.min_normal_force} N、滑速 ≤ ${c.max_slip} m/s 才算握持（防「贴住」假标签）。`
+    : "";
+  let body;
+  switch (fam) {
+    case "drawer":
+      body =
+        `沿 <b style="color:#7be0a0">滑轨</b> 把抽屉面板拉开 ≥ ${cm(p.pull_distance ?? 0.08)}` +
+        `（判据 ${spec?.task?.id}：拉出 + 松爪 + 静止）。` +
+        `<br>策略演示：对齐 → 贴面板 → 合爪 → 拉出 → 松爪 → 退。`;
+      break;
+    case "stack":
+      body =
+        `把 <b style="color:#ffd479">方块 A</b> 搬上 <b style="color:#7be0a0">方块 B</b>` +
+        `（判据 ${spec?.task?.id}：放到顶面 ${cm(p.stack_xz_tol ?? 0.03)} 内 + 松爪 + 静止）。`;
+      break;
+    case "bin_pick":
+      body =
+        `从 <b style="color:#ffd479">料箱</b> 里把方块抓出来，放到箱外 ` +
+        `<b style="color:#7be0a0">绿色目标圈</b>。${cm(tol)} 落区内即成功。` +
+        `<br>奖励：接近 → 抓住 → 提升 → 送达。`;
+      break;
+    case "pick_place":
+      body =
+        `把 <b style="color:#ffd479">方块</b> 抓起来放到 ` +
+        `<b style="color:#7be0a0">绿色目标圈</b>。${cm(tol)} 落区内即成功。` +
+        `<br>奖励：接近 → 抓住 → 提升 → 送达。`;
+      break;
+    default:
+      body = `任务 ${spec?.task?.id ?? "（未知）"}。`;
+  }
+  return body + contactLine;
+}
+
 // 滑轨轴（单位向量）；无滑轨（drawer@v1）返回 null。
 function drawerAxisOf(spec) {
   const a = spec?.scene?.props?.[0]?.slide?.axis;
@@ -708,6 +756,11 @@ export async function boot(viewport) {
   const specUrl = new URLSearchParams(location.search).get("spec");
   const specText = specUrl ? await (await fetch(specUrl)).text() : OrieraSim.preset_spec_json();
   try { applySpec(specText); } catch (e) { stage("ERR: " + (e && e.message ? e.message : e)); throw e; }
+  // 任务面板跟 spec：仅 ?spec= 显式换装时渲染（默认桌面卡不触碰——
+  // index.html 硬编码文案原样保留，渲染零变化）。面板元素可能不存在
+  // （Studio 宿主页自建 UI），判空跳过。
+  const taskEl = document.getElementById("task-desc");
+  if (specUrl && taskEl) taskEl.innerHTML = taskDescHtml(K.spec);
   K.policySource = new URLSearchParams(location.search).get("policy") === "wasm" ? "wasm" : "js";
   buildSceneFromSpec(scene);
   stage("world");
@@ -936,6 +989,10 @@ export async function boot(viewport) {
         buildSceneFromSpec(scene);
         buildSliders();
         refreshPolicyBtn();
+        // 「任务」面板跟 spec（卡片墙 / Studio 换装都走这里）；宿主页
+        // 无该面板时跳过。
+        const taskEl = document.getElementById("task-desc");
+        if (taskEl) taskEl.innerHTML = taskDescHtml(K.spec);
         envReset(m.seed ?? 1000);
         post({ type: "state", note: "spec-applied", specHash: K.sim.spec_hash() });
       } catch (err) {
@@ -1138,6 +1195,10 @@ export async function boot(viewport) {
 
   // CDP/测试钩子（Studio cdp_*.mjs 传统）：确定性地驱动与读态。
   // 数据源已改 wasm（物理退役），键名语义与退役前一致。
+  // 如实的策略源标签：drawer 相位机驱动时（?policy=wasm 也一样——wasm
+  // baseline_action 对 drawer 返回空数组，实际喂动作的是 JS 相位机）报
+  // "js-phases"；其余原样（wasm = baseline_action 真跑，js = 抓放/重型节拍）。
+  const effectivePolicySource = () => (K.policyMode && K.drawer ? "js-phases" : K.policySource);
   window.__orieraSim = {
     state: () => {
       const p = JSON.parse(K.sim.poses());
@@ -1163,7 +1224,7 @@ export async function boot(viewport) {
       phase: policyTick(K.drawer ? K.drawer.phases : K.naxis ? K.naxis.phases : PHASES, K.policyStep),
       step: K.policyStep,
       redraws: K.redraws || 0,
-      policySource: K.policySource,
+      policySource: effectivePolicySource(),
       specHash: K.sim.spec_hash(),
       fingerprint: K.sim.fingerprint(),
       // drawer 相位机遥测（判据口径拉出量；仅 drawer 相位机建过时出现）
