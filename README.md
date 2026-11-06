@@ -20,7 +20,7 @@
 </div>
 
 <p align="center">
-  <img src="assets/hero.gif" alt="OriEra 演示：AI NPC 长期记忆 × 百万粒子世界生成" width="640" />
+  <img src="assets/hero.gif" alt="OriEra 具身仿真台：rapier3d 机械臂桌面抓放（浏览器与 Rust 同物理，脚本策略解析 IK 实跑成功一集）" width="640" />
 </p>
 <p align="center">
   <em>上：隅角咖啡馆——3D AI NPC 对话 + 长期记忆 + AI 导演 ｜ 下：自然语言生成粒子世界</em><br/>
