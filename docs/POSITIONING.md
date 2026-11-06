@@ -18,20 +18,21 @@
 
 **不做清单**（PLAN §八，与本页一致）：GPU 千环境并行、RTX 渲染、四足/人形、软体流体。
 
-## 2. 保真卡：六个官方预设
+## 2. 保真卡：七个官方预设（八文件，drawer@v1 为对照档案）
 
-共同点：抓取 = **运动学双板（`ParallelPlates`）+ 板/物体摩擦夹持**（板不是力控手指）；`holding` 标签默认 `TipRadius`（闭合且物体中心在 TCP 0.06 m 内——启发式标签，物理上的夹持由接触摩擦完成；M2 的接触力判据 `HoldingCriterion::Contact` 为 opt-in，官方预设均未开启）。求解器 = **rapier 0.36 默认**（各预设 `physics` 全为 null）：PGS 4 次迭代、每 tick 2 子步（物理步 1/120 s，tick 1/60 s）、接触软度 30 Hz / ζ=10（贴固定体 60 Hz）、warmstart 1.0、关节约束 1e6 Hz（硬）；电机 = ForceBased PD（约束式隐式弹簧-阻尼，effort 作冲量钳）。
+共同点：抓取 = **运动学双板（`ParallelPlates`）+ 板/物体摩擦夹持**（板不是力控手指）；`holding` 标签默认 `TipRadius`（闭合且物体中心在 TCP 0.06 m 内——启发式标签，物理上的夹持由接触摩擦完成；接触力判据 `HoldingCriterion::Contact`（≥1.0 N 双板法向力 ∧ ≤0.05 m/s 滑速）在 P2-Wave2 起由官方预设 `panda-contact-criterion` 开启——`holding` = 「物理说夹住」，其余官方预设仍走 TipRadius 缺省）。求解器 = **rapier 0.36 默认**（各预设 `physics` 全为 null）：PGS 4 次迭代、每 tick 2 子步（物理步 1/120 s，tick 1/60 s）、接触软度 30 Hz / ζ=10（贴固定体 60 Hz）、warmstart 1.0、关节约束 1e6 Hz（硬）；电机 = ForceBased PD（约束式隐式弹簧-阻尼，effort 作冲量钳）。
 
 | 预设（spec_hash8） | 机器人 / 关节 | 抓取模型要点 | 伺服参数 | 基线（course@v1，12 集） | 吞吐（单环境，release） |
 |---|---|---|---|---|---|
 | `tabletop-4dof-pick`（c90869dc） | 4 轴转动（yaw/肩/肘/腕） | 6×9 cm 板、开 75 mm / 合 46 mm（2 mm/侧挤压） | kp/kd 60/4 N·m/rad、armature 0.02、effort 80 N·m | 脚本 11/12 = 91.7%（金标锚）· DLS 11/12 | 采集 2334 steps/s（本轮实测）· DLS 781 |
 | `panda-7dof-pick`（b5535a74） | Panda 7 轴（URDF 真惯量全张量） | 外部 gripper2f：1.7 cm 指块、开 88 mm / 合 46 mm | 300/30、armature 0.05、effort 87/12、阻尼 1.0 | DLS 10/12 = 83.3% · paper@v1 100 集 **80%**（P1-B2 相位机调参，heavy 排程只动 ≥6 DoF） | 1106（course）· 1932（paper 抽验单跑） |
-| `stack-4dof`（ffc96325） | 4 轴 | 同桌面板；判据 @v2（松爪 + 静止 10 步） | 同桌面 | DLS 11/12 = 91.7% | 1146 |
-| `bin-pick-4dof`（14fc9bf8） | 4 轴 | 料箱 = 四面重墙 prop 近似（真 fixture 见 §5） | 同桌面 | DLS 12/12 = 100% | 564 |
-| `drawer-4dof-v2 真滑轨（ef18ac07 为 prop 近似对照档案）`（ef18ac07） | 4 轴 | 抽屉 = 可动盒体把手近似（真抽屉见 §5） | 同桌面 | DLS 10/12 = 83.3%（本轮重测逐位一致） | 756（本轮重测入 `results/reference/ef18ac07`；M2 时 627，同机并行负载敏感） |
+| `panda-contact-criterion`（95f75626，P2-Wave2 升格） | Panda 7 轴（同上） | 同 `panda-7dof-pick`；仅 `holding` 标签换 Contact 判据（物理逐位不变，success 不读 holding——两口径同 seeds 逐集零翻转，course 12 + paper 100） | 同 Panda | DLS 10/12 = 83.3% · paper@v1 100 集 80% | 667 / 561（course 双跑）· 802 / 884（paper 双跑） |
+| `stack-4dof`（249d5122，旧身份 ffc96325 复测逐位同） | 4 轴 | 同桌面板；判据 @v2（松爪 + 静止 10 步） | 同桌面 | DLS 11/12 = 91.7% | 1146 |
+| `bin-pick-4dof`（1a7cfc40，P2 真 fixture 升级） | 4 轴 | 料箱 = 真 fixtures（双层壁 + 底面，P2 升级；四面重墙 prop 近似为旧身份 14fc9bf8 对照） | 同桌面 | DLS 12/12 = 100% | 564 |
+| `drawer-4dof-v2`（f503b3a3，P2-W6B 真滑轨；ef18ac07 为 prop 近似对照档案 10/12） | 4 轴 | 面板 = slide prop（真 prismatic，撞不走、限位钳制），柜体 = 真 fixtures | 同桌面 | DLS 12/12 = 100%（双跑逐位一致，2026-11-05） | 1940（P2-W6B 重测入 `results/reference/f503b3a3`） |
 | **`mobile-arm-4dof`（9ee15317，M3-B 新增）** | 2 prismatic（x/z，米）+ 底盘 yaw + 4 轴臂 | 同桌面板；龙门式底盘（prismatic 悬离地面 2 cm，**不建轮地接触**） | 滑轨 500/80 N/m、effort 150 N、armature 0.5 kg；臂同桌面 | `--validate` ✓；DLS 0/12（**不是物理结论**：`ik.rs` 的 FK 只会转动关节）→ 以 settle/跟踪测试替代：TCP 随底盘的位姿误差 < 1 mm | DLS 跑 182 |
 
-吞吐出处：M2 列来自 `baselines/README.md`（2026-11-03，`embodied_sim_baseline --release`）；本轮数字来自 M3-B 验收（同机并行有 WP-A 构建，绝对值偏低，供量级参考）。纯物理（无接触、无策略）参考：Panda 7 轴 **8220 ticks/s**（`urdf_traj_dump --release`，每 tick 含 2 子步）。
+吞吐出处：M2 列来自 `baselines/README.md`（2026-11-03，`embodied_sim_baseline --release`）；本轮数字来自 M3-B 验收（同机并行有 WP-A 构建，绝对值偏低，供量级参考）；contact-criterion 与 drawer-v2 行来自各自 `results/reference/` 文件自记吞吐（2026-11，同机并行有构建负载，供量级参考）。纯物理（无接触、无策略）参考：Panda 7 轴 **8220 ticks/s**（`urdf_traj_dump --release`，每 tick 含 2 子步）。
 
 **prismatic 量纲（M3-B）**：`JointSpec.kind = Prismatic` 的关节，同一组字段按米制读——限位/home/动作目标/遥测 `angles` 为 m、`velocities` 为 m/s、`kp` N/m、`kd` N·s/m、`effort` N、`armature` kg；观测里的 `<joint>.pos` / `<joint>.vel` 列因此是**米与弧度混排**（列名即关节名，单位跟关节类型走；奖励只用 TCP/物体/目标的笛卡尔量，不读关节角）。
 
@@ -68,8 +69,8 @@
 
 ## 5. 诚实边界（随期更新）
 
-- **抓取**：运动学板 + 摩擦夹持，不是力控手指；`TipRadius` 是标签启发式（接触力判据为 opt-in）。
+- **抓取**：运动学板 + 摩擦夹持，不是力控手指；`TipRadius` 是标签启发式（接触力判据已在官方 `panda-contact-criterion` 开启——`holding` =「物理说夹住」，其余预设缺省 TipRadius）。
 - **移动底盘**：prismatic 龙门抽象，无轮地牵引/打滑；DLS 基线待 `ik.rs` 的 FK 支持 prismatic（平移而非绕轴转）。
-- **fixture**：L6 已支持任意个数、每块独立摩擦（`FixtureSlab` / `MultibodySystem::from_robot_fixtures`），但 agent 面 `SceneGraph` 仍限 1–2 个 fixture、摩擦钉 0.9——料箱/抽屉的「真 fixture」版本待 agent 面放开后另起新预设文件。
+- **fixture**：L6 已支持任意个数、每块独立摩擦（`FixtureSlab` / `MultibodySystem::from_robot_fixtures`）；料箱/抽屉的「真 fixture」版本已在 P2 落地为官方预设——`bin-pick-4dof`（1a7cfc40，双层壁 + 底面真 fixtures）、`drawer-4dof-v2`（f503b3a3，真 prismatic 滑轨面板 + 真 fixture 柜体）。
 - **跨平台**：同构建逐位一致；native↔wasm 已实测为统计一致（1 ulp 级）；三平台（ubuntu/windows/macos-arm64）指纹矩阵为 M3 待办（P-10）。
 - **相机**：教学/示意级（俯视 + 针孔/畸变/深度由 M3-A 推进），不对标照片级渲染。

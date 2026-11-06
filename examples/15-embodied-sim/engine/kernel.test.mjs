@@ -8,7 +8,9 @@
 //!   4. 渲染器 FK 自洽（poses 的 FK TCP ≈ 物理遥测 TCP）；
 //!   5. kernel.js 渲染层策略纯函数（PHASES/ik/policyTick）；
 //!   6. P2-R 渲染全入口一致：props[1..] 全量位姿、prop 形状（内部标签）、
-//!      目标标记贴支撑面（goal_marker）。
+//!      目标标记贴支撑面（goal_marker）；
+//!   7. Wave-2 B 包 drawer 相位机：任务分流、排程与 Rust drawer_phases 同表、
+//!      滑轨轴胡萝卜、真 wasm 拉 drawer@v2（max_pull ≥ 0.08 + 面板单轴位移）。
 //! 运行：node --test examples/15-embodied-sim/engine/kernel.test.mjs
 
 import { strict as assert } from "node:assert";
@@ -328,5 +330,122 @@ describe("P2-R：props[1..] / 形状 / 目标标记（渲染全入口一致）",
     }
     // 旧 wasm（无 goal_marker 字段）回退旧写死高度
     assert.deepEqual(kernel.goalMarkerOf({ goal: [0.3, 0.575, 0.1] }), [0.3, 0.5, 0.1]);
+  });
+});
+
+// ── Wave-2 B 包：drawer 相位机（移植 embodied_sim_baseline.rs drawer_phases）──
+// S 包验收缺口：drawer@v2 卡「▶ 脚本策略」走抓放节拍，合爪后上提把滑轨面板
+// 拽向限位、板间打滑（wasm baseline_action 对 drawer 返回空数组，无替补）。
+// 这里守：任务分流（只认 task.id）、排程与 Rust 同表、滑轨轴胡萝卜与 Rust
+// goal 原式同解、真 wasm 拉 drawer@v2（max_pull ≥ 0.08 + 面板只沿滑轨轴动）。
+describe("drawer 相位机（B 包：drawer@v2 滑轨真跑）", () => {
+  let kernel;
+  before(async () => { kernel = await import(pathToFileURL(path.join(ENGINE_DIR, "kernel.js")).href); });
+  const resolved = (n) => readFileSync(path.join(DEMO_DIR, "specs/resolved", `${n}.json`), "utf8");
+  const specOf = (n) => {
+    const sim = mod.OrieraSim.from_spec_json(resolved(n));
+    const s = JSON.parse(sim.spec_json()); // 页面 K.spec 同源（wasm 解析后的 spec）
+    sim.free();
+    return s;
+  };
+
+  it("分流只认 task.id：drawer@v1/@v2 进相位机，五张非 drawer 卡不进（panda 的 params 带 pull_axis 默认值也不误伤）", () => {
+    for (const n of ["drawer-4dof-v2", "drawer-4dof"]) assert.equal(kernel.isDrawerTask(specOf(n)), true, n);
+    for (const n of ["tabletop-4dof-pick", "panda-7dof-pick", "stack-4dof", "bin-pick-4dof", "mobile-arm-4dof"]) {
+      assert.equal(kernel.isDrawerTask(specOf(n)), false, n);
+    }
+    assert.ok(Array.isArray(specOf("panda-7dof-pick").task.params.pull_axis), "按字段判别会误伤 panda");
+    assert.equal(kernel.isDrawerTask({}), false);
+  });
+
+  it("排程与 Rust drawer_phases 同表：悬停 70 → 下探 60 → 合爪 40 → 拖拽 240 → 松爪 30 → 退 45", () => {
+    const spec = specOf("drawer-4dof-v2");
+    assert.deepEqual(kernel.drawerAxisOf(spec), [0, 0, -1], "滑轨轴读 scene.props[0].slide.axis");
+    assert.equal(kernel.drawerAxisOf(specOf("drawer-4dof")), null, "v1 无滑轨 → Rust 原式");
+    const geom = kernel.phaseGeom(spec);
+    assert.equal(geom.grasp, 0.03, "抓取高度 = Rust m.grasp()（预设夹爪 0.030）");
+    const ph = kernel.drawerPhases(geom, kernel.drawerAxisOf(spec));
+    assert.deepEqual(ph.map((p) => p.ticks), [70, 60, 40, 240, 30, 45]);
+    assert.deepEqual(ph.map((p) => p.grip), [0, 0, 1, 1, 0, 0]);
+    const o = [0.28, 0.525, 0];
+    assert.deepEqual(ph[0].target(o), [0.28, 0.645, 0]);
+    for (const i of [1, 2, 4]) assert.deepEqual(ph[i].target(o), [0.28, 0.555, 0], `phase ${i}`);
+    assert.deepEqual(ph[5].target(o), [0.28, 0.745, 0]);
+    assert.equal(kernel.policyTick(ph, 169), 2);
+    assert.equal(kernel.policyTick(ph, 170), 3, "第 170 拍（70+60+40）进拖拽段");
+    assert.equal(kernel.policyTick(ph, 410), 4, "第 410 拍松爪");
+    assert.equal(kernel.policyTick(ph, 485), -1, "超程 → 悬停兜底");
+  });
+
+  it("滑轨轴胡萝卜 ≡ Rust goal 原式（面板在轴线上逐值同解，含瞄过 1 cm 与越程回拉）", () => {
+    const spec = specOf("drawer-4dof-v2");
+    const geom = kernel.phaseGeom(spec);
+    const axisDrag = kernel.drawerPhases(geom, kernel.drawerAxisOf(spec))[3].target;
+    const rustDrag = kernel.drawerPhases(geom, null)[3].target;
+    const birth = [0.28, 0.525, 0], goal = [0.28, 0.525, -0.08];
+    for (const pulled of [0, 0.02, 0.05, 0.075, 0.079, 0.0805, 0.085, 0.095]) {
+      const o = [birth[0], birth[1], birth[2] - pulled];
+      const a = axisDrag(o, goal), r = rustDrag(o, goal);
+      for (let k = 0; k < 3; k++) assert.ok(Math.abs(a[k] - r[k]) < 1e-12, `pulled ${pulled}: ${a} vs ${r}`);
+      const lead = o[2] - a[2]; // 正 = 沿 −Z 领先
+      const want = Math.min(Math.abs(0.08 - pulled) + 0.01, 0.03) * Math.sign(0.08 - pulled);
+      assert.ok(Math.abs(lead - want) < 1e-12, `pulled ${pulled}: lead ${lead} want ${want}`);
+      assert.equal(a[0], o[0], "胡萝卜不偏离滑轨轴（x 不动）");
+      assert.equal(a[1], o[1] + 0.03, "拖拽保持抓取高度");
+    }
+  });
+
+  it("真跑 wasm：drawer@v2 max_pull ≥ 0.08 m、面板位移只沿滑轨轴、判据成功（3 seeds）", () => {
+    const text = resolved("drawer-4dof-v2");
+    const sim = mod.OrieraSim.from_spec_json(text);
+    const spec = JSON.parse(sim.spec_json());
+    const L = JSON.parse(sim.layout());
+    const idx = { ee: L.obs.indexOf("ee.x"), obj: L.obs.indexOf("obj_rel.x"), goal: L.obs.indexOf("goal_rel.x") };
+    const arm = kernel.ikArmFromSpec(spec);
+    const slide = spec.scene.props[0].slide;
+    const u = kernel.drawerAxisOf(spec);
+    for (const seed of [1000, 1001, 1002]) {
+      sim.reset(seed);
+      const dr = kernel.drawerPolicy(spec, kernel.phaseGeom(spec), idx);
+      const birth = JSON.parse(sim.poses()).props[0].pos.slice();
+      let maxPull = -Infinity, maxPerp = 0, minPull = Infinity, worstTel = 0, success = false, at = -1;
+      for (let step = 0; step < sim.max_steps() && !success; step++) {
+        const r = sim.step(kernel.drawerAction(dr, arm, sim.obs(), step));
+        success = r.success; const done = r.terminated || r.truncated;
+        r.free();
+        const p = JSON.parse(sim.poses()).props[0].pos;
+        const d = [p[0] - birth[0], p[1] - birth[1], p[2] - birth[2]];
+        const pull = d[0] * u[0] + d[1] * u[1] + d[2] * u[2];
+        maxPull = Math.max(maxPull, pull); minPull = Math.min(minPull, pull);
+        maxPerp = Math.max(maxPerp, Math.hypot(d[0] - pull * u[0], d[1] - pull * u[1], d[2] - pull * u[2]));
+        worstTel = Math.max(worstTel, Math.abs(kernel.drawerPull(dr, sim.obs()) - pull));
+        if (success) at = step;
+        if (done) break;
+      }
+      assert.equal(success, true, `seed ${seed}: drawer@v2 判据未成（max_pull ${maxPull}）`);
+      assert.ok(maxPull >= 0.08, `seed ${seed}: max_pull ${maxPull} < 0.08`);
+      assert.ok(maxPerp < 1e-4, `seed ${seed}: 面板离轴 ${maxPerp} m（应只沿滑轨轴动）`);
+      // 行程内无求解器瞬态（抓放节拍上提时实测出现过一帧 −10.6 m）
+      assert.ok(minPull > -0.01 && maxPull < slide.limits[1] + 0.005, `seed ${seed}: pull ∈ [${minPull}, ${maxPull}]`);
+      assert.ok(worstTel < 1e-6, `seed ${seed}: 遥测拉出量偏差 ${worstTel}`);
+      // 判据含「松爪」：成功只可能落在松爪段（第 410 拍）之后
+      assert.ok(dr.maxPull >= 0.08 && at >= 410, `seed ${seed}: 遥测 max_pull ${dr.maxPull} / 成功拍 ${at}`);
+    }
+    sim.free();
+  });
+
+  it("超程兜底同 Rust：goal 上方 0.22 悬停、开爪", () => {
+    const sim = mod.OrieraSim.from_spec_json(resolved("drawer-4dof-v2"));
+    const spec = JSON.parse(sim.spec_json());
+    const L = JSON.parse(sim.layout());
+    const obs = sim.reset(1000);
+    const iEe = L.obs.indexOf("ee.x"), iGoal = L.obs.indexOf("goal_rel.x");
+    const dr = kernel.drawerPolicy(spec, kernel.phaseGeom(spec), { ee: iEe, obj: L.obs.indexOf("obj_rel.x"), goal: iGoal });
+    const arm = kernel.ikArmFromSpec(spec);
+    const gol = [0, 1, 2].map((k) => obs[iEe + k] + obs[iGoal + k]);
+    const truth = Array.from(sim.goal());
+    for (let k = 0; k < 3; k++) assert.ok(Math.abs(gol[k] - truth[k]) < 1e-6, "观测推出的 goal = sim.goal()");
+    assert.deepEqual(kernel.drawerAction(dr, arm, obs, 10_000), [...kernel.ik(arm, [gol[0], gol[1] + 0.22, gol[2]]), 0]);
+    sim.free();
   });
 });

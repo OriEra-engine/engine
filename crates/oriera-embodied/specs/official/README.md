@@ -5,28 +5,29 @@
 **P2 修订（PLAN-embodied-v3 §三，2026-11-05）**：同一预设的治理性修复——prop 近似升真 fixture、`robot.name` 命名对齐等**不改变物理行为**（或只强化保真度）的升级，走**同文件换 hash**：文件名不动、spec_hash 换新，INDEX 重登记 + `results/reference/<新hash8>/` 重测落盘 + 本表同步；旧 hash 的 reference 目录保留作历史档案（先例：`stack-4dof` 换名 `ffc96325` → `249d5122`，episode 动力学逐位一致）。
 
 - 文件名 = `extends` 里引用的名字（`"extends": "tabletop-4dof-pick"` → `official/tabletop-4dof-pick.json`）。
-- 实验室/个人实验放 `specs/lab/`（建议 `lab/<user>/`），用 `extends` 继承官方 spec、只写差异（见 `lab/example-cylinder.json`）；lab 文件不受治理，但同名异 hash 会被 `scripts/gen_spec_index.py` 拦下。
+- 实验室/个人实验放 `specs/lab/`（建议 `lab/<user>/`），用 `extends` 继承官方 spec、只写差异（见 `lab/example-cylinder.json`）；lab 文件不受治理，但同名异 hash 会被 `scripts/gen_spec_index.py` 拦下。**升格先例**：lab 变体验证充分后按治理规则平移进 `official/`——同名同 hash、只换登记 tier，lab 原件删除（防同名异 hash），升格脉络写进该文件 `meta.notes` 与下表；先例 `panda-contact-criterion`（P2-Wave2，lab `95f75626` → official 同 hash，升格判据 = 两口径同 seeds 逐集零翻转 + reference 重测，见 `baselines/README.md`）。
 - `INDEX.json`（`python scripts/gen_spec_index.py` 生成）：`meta.name → spec_hash` 的登记表；同名异 hash 报错、同 hash 异名放行（同一实验的别名）。
 - `tabletop-4dof-pick.json` 是 M0a 的 v2 金标，与 `specs/tabletop-4dof-pick.json`（WP-B 契约测试钉住的旧路径）逐字节一致——两份都不许动；spec_hash 锚 `c90869dcf6a04875`。
 - 建议配合 `CODEOWNERS`：`crates/oriera-embodied/specs/official/ @oriera-embodied-maintainers`（仓库级文件不在 M0b 授权面内，此处只留建议）。
 
-## 官方预设（六预设 = M2 首批 5 个 + M3 mobile-arm；drawer@v1→v2 滑轨替换，v1 为对照档案）
+## 官方预设（八文件 = 七活跃 + 1 对照档案；七活跃 = M2 首批 5 个 + M3 mobile-arm + P2 contact-criterion 升格；drawer@v1→v2 滑轨替换，v1 为对照档案）
 
 | 预设 | 任务 | 机器人 | 一句话（G-10 卡片） | 难度 | 基线闸 | DLS 基线实测（course@v1，12 集，2026-11-03） |
 |---|---|---|---|---|---|---|
 | `tabletop-4dof-pick` | `pick_place@v1` | tabletop-4dof（4 轴） | 抓起方块放到目标区——引擎默认作业基线（91.7% 锚） | 入门 | ≥90%（course@v1 硬闸同款） | **11/12 = 91.7%** pass · Wilson [64.6, 98.5] · `c90869dc` |
-| `panda-7dof-pick` | `pick_place@v1` | panda7 + gripper2f（7 轴 + 外部两指） | 真 URDF 机械臂（Franka Panda）做同一个抓放——`--dump-panda-spec` 一次性生成 | 进阶 | ≥75%（新臂首版诚实门槛） | **9/12 = 75.0%** pass（压线） · Wilson [46.8, 91.1] · `b5535a74` |
+| `panda-7dof-pick` | `pick_place@v1` | panda7 + gripper2f（7 轴 + 外部两指） | 真 URDF 机械臂（Franka Panda）做同一个抓放——`--dump-panda-spec` 一次性生成 | 进阶 | ≥75%（新臂首版诚实门槛） | **10/12 = 83.3%** pass · Wilson [55.2, 95.3] · `b5535a74`（M2 首版 9/12 压线；P1-B2 相位机调参后重测 10/12，paper@v1 100 集 80%） |
+| `panda-contact-criterion`（P2-Wave2 升格） | `pick_place@v1` | panda7 + gripper2f（同上） | 同 `panda-7dof-pick`，仅 `holding` 标签换接触力判据（双板法向力 ≥1.0 N 且滑速 ≤0.05 m/s 才算夹住）——`holding` 从「几何说合拢」变「物理说夹住」（U-6；物理逐位不变，判据是 v2 身份字段，hash 与母预设不同） | 进阶 | ≥75%（pick 闸；判据换装不换闸——success=在区、不读 holding，两口径同 seeds 逐集零翻转见 `baselines/README.md`） | **10/12 = 83.3%** pass · Wilson [55.2, 95.3] · `95f75626`（course+paper 双协议双跑 runs 逐位一致；paper@v1 **80/100 = 80.0%** pass · Wilson [71.1, 86.7]，2026-11-06） |
 | `stack-4dof` | `stack@v1` | stack-4dof（tabletop 同构 4 轴臂，P2 命名治理） | 把方块 A 叠到底座 B 上（PLAN 原名 push-stack 收敛为 stack：push 走 `push@v1/v2` 单任务） | 进阶 | ≥75%（新任务首版） | **11/12 = 91.7%** pass · Wilson [64.6, 98.5] · `249d5122`（旧身份 `ffc96325` 同为 11/12，复测逐位一致） |
 | `bin-pick-4dof` | `bin_pick@v1` | tabletop-4dof | 从真料箱（双层壁+底面 fixture，P2 升级）里把方块抓出来放到箱外目标区 | 挑战 | ≥60% | **1a7cfc40** |
 | `drawer-4dof` | `drawer@v1` | tabletop-4dof | 【**对照档案（deprecated → drawer-4dof-v2）**】抓住抽屉把手块沿 -X 拉出 ≥0.08 m（可动盒体 prop 近似 prismatic；v2 真滑轨已落地） | 进阶 | ≥60%（首版） | **10/12 = 83.3%** pass · Wilson [55.2, 95.3] · `ef18ac07` |
 | `drawer-4dof-v2`（P2-W6B） | `drawer@v2` | tabletop-4dof | 沿 -Z 拉开真 prismatic 抽屉 ≥0.08 m：面板 = slide prop（prismatic 滑轨，撞不走、限位钳制），柜体 = 真 fixtures | 进阶 | ≥60%（首版） | **12/12 = 100%** pass · Wilson [75.8, 100.0] · `f503b3a3`（course@v1 双跑逐位一致，2026-11-05） |
 | `mobile-arm-4dof` | `pick_place@v1` | mobile-4dof（两滑轨+回转底盘+4 轴臂） | 作业点超臂展 0.475 m——底盘开到 ∓0.40 落回作业带（M3 新增） | 进阶 | ≥75%（pick 闸） | 首跑 settle/跟踪 0.0000 m · `9ee15317` |
 
-实测数落盘在 `results/reference/<spec_hash8>/course_v1.json`（`--reference-out` 写）；六预设双跑逐位一致（stack 于 P2 换名后以新身份 `249d5122` 复测，episode 数据与旧身份逐位相同）；drawer v2（`f503b3a3`，P2-W6B）同口径双跑逐位一致。`drawer-4dof`（ef18ac07）自 P2-W6B 起为**对照档案**（可动盒体近似 vs 真 prismatic 滑轨的对照），新实验请用 `drawer-4dof-v2`。
+实测数落盘在 `results/reference/<spec_hash8>/course_v1.json`（`--reference-out` 写）；七活跃预设双跑逐位一致（stack 于 P2 换名后以新身份 `249d5122` 复测，episode 数据与旧身份逐位相同）；drawer v2（`f503b3a3`，P2-W6B）同口径双跑逐位一致；panda-contact-criterion（`95f75626`，P2-Wave2 升格）course+paper 双协议双跑 runs 逐集位同（吞吐为计时元数据、两次自然不同）。`drawer-4dof`（ef18ac07）自 P2-W6B 起为**对照档案**（可动盒体近似 vs 真 prismatic 滑轨的对照），新实验请用 `drawer-4dof-v2`。
 
 每份带 `meta{name, author, notes, difficulty}`；四个入口（CLI/Python/浏览器/Studio）吃同一份文件、同一个 `spec_hash`。
 
-**Studio 三库即食**：Studio `/sim` 首屏的预设卡片墙就是这六份（drawer 卡指 v2 滑轨版，v1 为对照档案不下墙；默认选中作业基线 `tabletop-4dof-pick`），点卡片即整份换装、不重载；Studio 仓 `node scripts/sync-engine-snapshot.mjs` 把本目录 + `INDEX.json` 同步进 `engine-snapshot/specs/`（另生成 `extends` 展开版给浏览器内核，spec_hash 与本表一致）。新增官方预设 = 重跑同步器 + 在 Studio `src/views/Sim.vue` 的预设目录补一张卡（卡片一句话是人写的学生文案）。
+**Studio 三库即食**：Studio `/sim` 首屏的预设卡片墙挂官方活跃预设（现六张卡：drawer 卡指 v2 滑轨版，v1 为对照档案不下墙；默认选中作业基线 `tabletop-4dof-pick`；P2-Wave2 升格的 `panda-contact-criterion` 待 Studio 侧重跑同步器 + 补卡后上墙），点卡片即整份换装、不重载；Studio 仓 `node scripts/sync-engine-snapshot.mjs` 把本目录 + `INDEX.json` 同步进 `engine-snapshot/specs/`（另生成 `extends` 展开版给浏览器内核，spec_hash 与本表一致）。新增官方预设 = 重跑同步器 + 在 Studio `src/views/Sim.vue` 的预设目录补一张卡（卡片一句话是人写的学生文案）。
 
 基线跑法（成功率 + Wilson + once/at_end 双报 + 任务专属闸）：
 

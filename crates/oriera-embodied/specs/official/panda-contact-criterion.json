@@ -1,0 +1,19 @@
+{
+  "extends": "panda-7dof-pick",
+  "meta": {
+    "name": "panda-contact-criterion",
+    "author": "oriera-embodied-maintainers",
+    "notes": "U-6 验证步（PLAN-embodied-v3 拍板项 3-A / P1-C2）：继承官方 panda-7dof-pick，仅把 gripper.holding_criterion 从缺省 TipRadius 换成 Contact。阈值取值依据 = M0b/WPA Contact 实现（crates/oriera-subsys/tests/holding_contact_criterion.rs + gripper_down_smoke 同场景实测）：min_normal_force 1.0 N —— 50 g 方块经 μ=1.4 板摩擦抵重力单板只需 ≈0.18 N，1 N 远高于重力负载又远低于 20 N 板 effort（挤压段实测法向力远超 1 N，预接触窗口 <1 N 被 exclude——这正是 U-6 要消除的假标签）；max_slip 0.05 m/s —— down-gripper 实测稳定携带滑速在其之下，区分「压住但打滑」与「真携带」。物理构建/摩擦接触逐位不变，变的只是 holding 遥测标签（Contact 判据是 v2 身份字段：spec_hash 随之不同，桌面金标锚不适用本变体；serde 外部标签枚举拼写为 'Contact'）。【升官方（P2 候选池收尾，2026-11-06）】P2-Wave2 按治理规则从 specs/lab/ 升格（PLAN-embodied-v3 §7.2 候选池 4）：物理零改动，同名同 hash 95f75626fd83f70b 仅登记 tier lab→official，lab 原件删除（同名异 hash 禁令见 README）；升格判据 = 两口径同 seeds 逐集对照零翻转（course 12 集 P1-Wave3 + paper 100 集 P2-Wave2，success/steps 逐集相同，仅 reward_sum 随 holding 标签微差），reference 重测见 results/reference/95f75626/。",
+    "difficulty": "进阶"
+  },
+  "robot": {
+    "gripper": {
+      "holding_criterion": {
+        "Contact": {
+          "min_normal_force": 1.0,
+          "max_slip": 0.05
+        }
+      }
+    }
+  }
+}

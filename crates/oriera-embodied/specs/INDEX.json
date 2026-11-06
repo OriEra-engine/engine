@@ -62,9 +62,9 @@
   "panda-contact-criterion": {
    "hash": "95f75626fd83f70b",
    "files": [
-    "lab/panda-contact-criterion.json"
+    "official/panda-contact-criterion.json"
    ],
-   "tier": "lab"
+   "tier": "official"
   },
   "pick_place": {
    "hash": "c90869dcf6a04875",

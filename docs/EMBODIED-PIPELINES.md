@@ -392,8 +392,16 @@ python -I scripts/fingerprint_dupcheck.py out/my-run out/my-run
    episodes 给深度轨四列指针，转换器把深度 PNG 原字节嵌进 data parquet 的
    `Image()` 列并补 stats（深度不再被转成有损 mp4）；深度-only 相机与 RGB-only
    对称（§6.4）。selfcheck 对账 + lerobot 加载冒烟两层见 §6.5。
-4. **Contact 判据升官方**：lab 变体 12 集对照已零翻转（P1-Wave3），升官方
-   需按治理规则重跑 `results/reference/` 并写双轨说明（PLAN 拍板项 3 的 B 侧收尾）。
+4. ~~**Contact 判据升官方**：lab 变体 12 集对照已零翻转（P1-Wave3），升官方
+   需按治理规则重跑 `results/reference/` 并写双轨说明（PLAN 拍板项 3 的 B 侧收尾）。~~
+   ✅ P2-Wave2 A 包（2026-11-06）：按治理规则升格 `official/panda-contact-criterion.json`
+   ——物理零改动、同名同 hash `95f75626` 只换登记 tier（lab→official），lab 原件删除
+   防同名异 hash；升格判据 = 同 seeds 两口径逐集对照零翻转（course 12 集 P1-Wave3 +
+   paper 100 集本包，success/steps 逐集相同、仅 reward_sum 随 holding 标签微差），
+   reference 按 course+paper 双协议重测落盘 `results/reference/95f75626/`（双跑逐位
+   一致）；双轨说明见 `specs/official/README.md` 预设表与 `baselines/README.md`
+   （Contact 判据下闸语义：`pick_place@v1` success=在区、不读 holding，闸值沿用
+   ≥75% 不因判据换装而动）。
 5. **渲染器摆 props[1..]**：叠块底座 B、料箱墙在物理与判据里都在、画面里
    看不见——wasm 侧 `prop_pose()` 真值口已通，差渲染器接线（v0.11.0
    known-limits #4）。
