@@ -6,7 +6,9 @@
 //!   2. Gymnasium 接口（reset/step/obs/pose/layout）；
 //!   3. 确定性（双跑逐位一致 + 指纹回执格式）；
 //!   4. 渲染器 FK 自洽（poses 的 FK TCP ≈ 物理遥测 TCP）；
-//!   5. kernel.js 渲染层策略纯函数（PHASES/ik/policyTick）。
+//!   5. kernel.js 渲染层策略纯函数（PHASES/ik/policyTick）；
+//!   6. P2-R 渲染全入口一致：props[1..] 全量位姿、prop 形状（内部标签）、
+//!      目标标记贴支撑面（goal_marker）。
 //! 运行：node --test examples/15-embodied-sim/engine/kernel.test.mjs
 
 import { strict as assert } from "node:assert";
@@ -225,5 +227,106 @@ describe("kernel.js 渲染层策略（纯函数，物理已退役）", () => {
   it("boot 存在且是 async（node 里不执行——three 需 DOM）", async () => {
     assert.equal(typeof kernel.boot, "function");
     assert.equal(kernel.boot.constructor.name, "AsyncFunction");
+  });
+});
+
+// ── P2-R：props[1..] 全入口渲染守卫（浏览器入口：wasm poses + kernel 几何）──
+// 现状核对（caa207c）：poses() 已全量，但 kernel.js 按外部标签读 prop 形状
+// （s.Cuboid…），spec_json 实际是内部标签 {"kind":"cuboid",…}——所有 prop
+// 一律画成 5 cm 方块（drawer-v2 12 cm 面板、旧 5-prop 料箱四壁 props[1..4]
+// 全画错）；目标圈写死 0.501（mobile-arm 地面级目标悬空半米）。
+describe("P2-R：props[1..] / 形状 / 目标标记（渲染全入口一致）", () => {
+  let kernel;
+  before(async () => { kernel = await import(pathToFileURL(path.join(ENGINE_DIR, "kernel.js")).href); });
+  const resolved = (n) => readFileSync(path.join(DEMO_DIR, "specs/resolved", `${n}.json`), "utf8");
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  // extends 展开（同 specs/sync-resolved.mjs 的 merge_overlay：对象逐键、数组逐下标、换变体整体替换）
+  const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  const merge = (base, ov) => {
+    if (isObj(base) && isObj(ov)) {
+      const bk = Object.keys(base), ok = Object.keys(ov);
+      const kindChanges = "kind" in base && "kind" in ov && base.kind !== ov.kind;
+      if (kindChanges || (bk.length === 1 && ok.length === 1 && bk[0] !== ok[0])) return ov;
+      for (const k of ok) base[k] = k in base ? merge(base[k], ov[k]) : ov[k];
+      return base;
+    }
+    if (Array.isArray(base) && Array.isArray(ov)) {
+      ov.forEach((x, i) => { if (i < base.length) base[i] = merge(base[i], x); else base.push(x); });
+      return base;
+    }
+    return ov;
+  };
+
+  it("stack：poses 的 props[1]（底座 B）在其世界位姿，不在原点", () => {
+    const sim = mod.OrieraSim.from_spec_json(resolved("stack-4dof"));
+    sim.reset(1000);
+    const p = JSON.parse(sim.poses());
+    assert.equal(p.props.length, 2);
+    assert.equal(p.props[1].name, "block_b");
+    assert.equal(p.props[1].rot_known, true);
+    assert.ok(dist(p.props[1].pos, [0.30, 0.525, 0]) < 2e-3, `B at ${p.props[1].pos}`);
+    sim.free();
+  });
+
+  it("旧 5-prop 料箱（14fc9bf8）：四壁 props[1..4] 全量位姿 + kernel 按 spec 形状建几何", () => {
+    const legacy = JSON.parse(readFileSync(path.join(REPO_ROOT,
+      "crates/oriera-embodied/tests/fixtures/bin-pick-4dof-legacy-5prop.json"), "utf8"));
+    assert.equal(legacy.extends, "tabletop-4dof-pick");
+    delete legacy.extends;
+    const spec = merge(JSON.parse(resolved("tabletop-4dof-pick")), legacy);
+    const sim = mod.OrieraSim.from_spec_json(JSON.stringify(spec));
+    assert.equal(sim.spec_hash(), "14fc9bf8c107e5da", "与 results/reference/14fc9bf8 档案同一身份");
+    sim.reset(1000);
+    const p = JSON.parse(sim.poses());
+    const s = JSON.parse(sim.spec_json());
+    assert.equal(p.props.length, 5);
+    for (let i = 1; i < 5; i++) {
+      const sp = s.scene.props[i];
+      assert.ok(dist(p.props[i].pos, sp.placement.fixed) < 0.02, `${sp.name} at ${p.props[i].pos}`);
+      assert.ok(Math.hypot(...p.props[i].pos) > 0.05, `${sp.name} 不得画在原点`);
+      assert.equal(sp.shape.kind, "cuboid", "spec_json 的 prop 形状是内部标签");
+      assert.deepEqual(kernel.propGeom(sp.shape).size, sp.shape.half.map((h) => h * 2), sp.name);
+    }
+    sim.free();
+  });
+
+  it("propGeom：内部标签三形状 + 外部标签兼容 + 缺省 5 cm 方块", () => {
+    assert.deepEqual(kernel.propGeom({ kind: "cuboid", half: [0.06, 0.025, 0.025] }),
+      { kind: "cuboid", size: [0.12, 0.05, 0.05] });
+    assert.deepEqual(kernel.propGeom({ kind: "cylinder", half_h: 0.03, radius: 0.02 }),
+      { kind: "cylinder", radius: 0.02, height: 0.06 });
+    assert.deepEqual(kernel.propGeom({ kind: "sphere", r: 0.03 }), { kind: "sphere", radius: 0.03 });
+    assert.deepEqual(kernel.propGeom({ Cuboid: { half: [0.01, 0.03, 0.11] } }).size, [0.02, 0.06, 0.22]);
+    assert.deepEqual(kernel.propGeom({ Cylinder: { half_h: 0.02, radius: 0.01 } }),
+      { kind: "cylinder", radius: 0.01, height: 0.04 });
+    assert.deepEqual(kernel.propGeom(undefined).size, [0.05, 0.05, 0.05]);
+  });
+
+  it("drawer-v2：spec_json 面板形状 → 120×50×50 mm 几何（旧读法落空成 5 cm 方块）", () => {
+    const sim = mod.OrieraSim.from_spec_json(resolved("drawer-4dof-v2"));
+    const s = JSON.parse(sim.spec_json());
+    assert.deepEqual(kernel.propGeom(s.scene.props[0].shape).size, [0.12, 0.05, 0.05]);
+    sim.free();
+  });
+
+  it("goal_marker：目标标记贴支撑面（stack/drawer 悬空目标落桌面、mobile-arm 地面、金标原样）", () => {
+    for (const [name, y, verbatim] of [
+      ["tabletop-4dof-pick", 0.5, true], ["mobile-arm-4dof", 0, true],
+      ["stack-4dof", 0.5, false], ["drawer-4dof-v2", 0.5, false],
+    ]) {
+      const sim = mod.OrieraSim.from_spec_json(resolved(name));
+      sim.reset(1000);
+      const p = JSON.parse(sim.poses());
+      assert.ok(Array.isArray(p.goal_marker), `${name}: poses 带 goal_marker`);
+      assert.equal(p.goal_marker[0], p.goal[0]);
+      assert.equal(p.goal_marker[2], p.goal[2]);
+      assert.equal(p.goal_marker[1], y, name);
+      if (verbatim) assert.deepEqual(p.goal_marker, p.goal, `${name}: 贴面目标原样`);
+      else assert.ok(p.goal[1] > y + 0.01, `${name}: 悬空目标 ${p.goal}`);
+      assert.deepEqual(kernel.goalMarkerOf(p), p.goal_marker);
+      sim.free();
+    }
+    // 旧 wasm（无 goal_marker 字段）回退旧写死高度
+    assert.deepEqual(kernel.goalMarkerOf({ goal: [0.3, 0.575, 0.1] }), [0.3, 0.5, 0.1]);
   });
 });

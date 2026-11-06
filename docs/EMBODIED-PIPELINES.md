@@ -245,9 +245,31 @@ cargo run -p oriera-agent --example embodied_cam_capture --features rigid3d,cam,
 **LeRobot 多视频轨**：每台相机一条 `observation.images.{name}` 视频轨 +
 一条 `depth.{name}` 图像轨（u16 PNG 序列，v2.1 树 `videos/chunk-000/depth.{name}/…`、
 v3 树 `videos/depth.{name}/chunk-000/file-000/…`）；`features_json` / `write_dir(v3)`
-按声明顺序展开，深度轨不进 episodes 元数据的视频指针列（image dtype 无视频时间戳，
-转换脚本按帧目录拼装）。批量采集同款能力：`embodied_sim_collect --cameras-from-spec`
+按声明顺序展开。批量采集同款能力：`embodied_sim_collect --cameras-from-spec`
 （用 spec.cameras 替换默认俯视；`--cam` 默认俯视不变）。
+
+**深度-only 相机（与 RGB-only 对称，P2-W1-D）**：`channels: {rgb: false, depth: true}`
+的相机只声明、只落盘它真有的 `depth.{name}` 轨——与 RGB-only 相机（`depth: false`）
+不声明深度轨镜像对称：info.json 不再出现没有帧的幻影 `observation.images.{name}`，
+v3 树也不再留 0 帧的空 RGB 目录（数据集层入口
+`LeRobotV21::add_camera_channels(track, rgb)`，`rgb = false` 时送入 RGB 帧即契约错误）。
+CI 用 `--set scene.cameras.0.kind.pinhole.channels.rgb=false` 从腕相机示例派生
+深度-only 变体（spec_hash `3b5880eb`），不另立 spec 文件。
+
+**深度轨的 v3 元数据（lerobot 口径，P2-W1-D）**：v3 `info.json` 按 lerobot ≥ 0.6 的
+深度图约定声明——`depth.{name}`：`dtype "image"`、`shape [h, w, 1]`、
+`names ["height", "width", "channels"]`（lerobot `dataset_to_policy_features` 读
+`names[2]`，`null` 即崩；v3 的视频特性同步补上）、`info.is_depth_map = true` +
+`info.depth_unit = "mm"`（原 `png.*` / `oriera.*` 键保留）。v3 episodes 元数据给深度轨
+与 RGB 轨同形的四列指针 `videos/depth.{name}/{chunk_index, file_index, from_timestamp,
+to_timestamp}`（帧 k 时刻 = k / fps），raw 树自证每集深度帧区间。lerobot 把 image
+特性存在 **data parquet 里**，所以转换脚本（v3）把深度 PNG **原字节**嵌成 data parquet
+的 `Image()` 列（struct<bytes, path>，lerobot ≥ 0.7 解成 float32 毫米 `(1, H, W)`），
+补算深度 stats（lerobot 图像 stats 形状 `(1, 1, 1)`，毫米原值不除 255），再删除替身
+帧目录与指针列；深度从不进 mp4。v2.1 树的深度轨仍是 PNG 帧目录（v2.1 导出逐字节冻结）。
+结构自检 `lerobot_v3_selfcheck.py` 逐项对账（相机特性契约 / 深度标记 / 指针帧数 ==
+length 且首尾相接 / 帧目录帧数 == Σ 指针 / PNG IHDR == shape / 嵌入列全非空 / 无幻影轨），
+加载冒烟 `lerobot_load_smoke.py` 复刻 lerobot 读路径（§6.5）。
 
 **定位**：这是**研究模式**的能力（PLAN §9.2 U-5 挂起项的 M3 兑现）——学生作业基线
 仍是 21 维状态向量 + 正交俯视；真机标定板全流程（拍照→cv2 标定→回填 spec）属于
@@ -259,7 +281,8 @@ v3 树 `videos/depth.{name}/chunk-000/file-000/…`）；`features_json` / `writ
 
 | 腿 | 跑什么 | 硬顶 |
 |---|---|---|
-| **data-pipeline**（新） | 三出口一致性冒烟：2 集 `embodied_sim_collect --task reach --export npz` → `jsonl_to_lerobot_v21.py` 转换 → `lerobot_v3_selfcheck.py --v21`（含 MANIFEST 哈希对账）→ `oriera_results.py aggregate` → `plot_results.py`（无 matplotlib 走 CSV 降级）。全 pass 才绿——Python 数据管线从此有 CI 钉（QA-5/DE-2 此前为零） | 15 min |
+| **data-pipeline**（新） | 三出口一致性冒烟：2 集 `embodied_sim_collect --task reach --export npz --lerobot-v3` → `jsonl_to_lerobot_v21.py` 转换 → `lerobot_v3_selfcheck.py --v21`（含 MANIFEST 哈希对账）→ `oriera_results.py aggregate` → `plot_results.py`（无 matplotlib 走 CSV 降级）。全 pass 才绿——Python 数据管线从此有 CI 钉（QA-5/DE-2 此前为零）。**P2-W1-D 并入 LeRobot 加载冒烟 a 层**：v3 树（state-only + 腕相机 RGB+深度 + `--set` 派生的深度-only 变体，相机两份 `max_steps=90` 控时）转换后过 v3 selfcheck 与 `lerobot_load_smoke.py`（emulate：零 lerobot/torch 依赖逐条复刻 lerobot v3 读路径——HF 特性↔parquet 列/类型、tasks 索引、episodes 指针、mp4 在位、`dataset_to_policy_features`、迭代 32 帧）；只加装 `imageio[ffmpeg]`，刻意不装 pandas（转换器无 pandas 回退也进门禁） | 25 min |
+| **lerobot-loader**（新，P2-W1-D b 层） | 真 lerobot 加载冒烟：钉版 `lerobot[dataset]`（默认 0.7.0；torch 走 `download.pytorch.org/whl/cpu` CPU 轮子）+ 两份相机 v3 → 转换 → 真 `LeRobotDataset(root=…, video_backend="pyav")` 加载 + 均匀抽 48 帧解码（视频 [0,1] / 深度 float32 毫米）+ `dataset_to_policy_features` + 一个 DataLoader batch；`HF_HUB_OFFLINE=1`。夜间 schedule（与 embodied-slow 同批）+ 手动 dispatch 显式勾 `lerobot_smoke`（可改 `lerobot_version` 试新版），不进 PR 门禁 | 30 min |
 | **windows-check**（新） | `cargo check/clippy -p oriera-embodied --features rigid3d,cam,spec,urdf,json` + `-p oriera-agent` 同参（ADR 0004 兼容壳 + python 桥）——PR 门禁从此不漏 Windows（本机主力平台）；check 比 test 便宜 | 25 min |
 | rust（matrix） | 各 feature 腿 test+clippy；Build 步骤按腿收窄为本腿 `-p + features`（原 `cargo build --workspace` 对 feature 腿的编译单元零复用） | 60 min |
 | **embodied-slow**（新，2026-11-06） | 慢测试分层夜间腿：`cargo test -p oriera-subsys --features rigid3d,cam -- --ignored` + `-p oriera-embodied --features rigid3d,spec,urdf -- --ignored`——抓取冒烟 ≈188s / Contact 接触判据 ≈110s / panda 7 轴跟踪等 `#[ignore = "slow: …"]` 物理长跑的 nightly 兜底（`workflow_dispatch` 可手动补跑），不进 PR 门禁 | 30 min |
@@ -271,6 +294,25 @@ job 全部跳过、只跑指纹矩阵（`gh workflow run ci.yml -f matrix_only=t
 指纹矩阵每 OS 归档 `eval_report.json` + `run_manifest.json` +
 `lerobot-v21/meta/oriera_receipt.json` 为 artifact `fp-matrix-<os>`（#17，
 离线对账不再翻日志）；browser 腿补 30 min 硬顶。
+
+**LeRobot 加载冒烟分层（P2-W1-D）**：目标是「导出的数据集能被 lerobot 真吃下去」，
+成本拆两层。**a 层**（PR 门禁，data-pipeline 腿）= `scripts/lerobot_load_smoke.py`
+默认 emulate 后端：只用 pyarrow（numpy/Pillow/imageio 有则加深），按 lerobot 0.7.0
+源码逐条复刻 v3 读路径会踩的契约（版本闸、`DatasetInfo` 正数字段、
+`get_hf_features_from_features` ↔ data parquet 列集合与类型、`tasks.parquet` 的
+task 字符串索引、episodes 指针、每集 mp4 在位、`dataset_to_policy_features`、
+迭代 N 帧的映射/时间戳/视频帧位/深度解码）——实测它在 caa207c 的产物上抓出三类
+真 bug：相机特性 `names: null`（lerobot-train 崩）、v3 深度被转换器压成 8-bit mp4
+且 data parquet 缺列、无 pandas 环境下 tasks.parquet 丢 task 索引（lerobot 读出的
+task 全是 "0"）。**b 层**（lerobot-loader 腿）= 同一脚本 `--backend lerobot`：真
+`LeRobotDataset` 加载与解码，装 torch CPU + lerobot 约 10–15 runner-min 且随上游
+发版漂移，故只在夜间 schedule（与 embodied-slow 同批，持续校准 a 层复刻不漂）与
+手动 dispatch（`gh workflow run ci.yml -f lerobot_smoke=true [-f lerobot_version=…]`；
+不勾则指纹/慢测补跑不付装 torch 的钱；`matrix_only=true` 时同其它常规 job 跳过）。
+本地等价：
+`python scripts/lerobot_load_smoke.py <转换后 v3 目录>`（a 层）/
+`python scripts/lerobot_load_smoke.py --backend lerobot <转换后 v3 目录>`（b 层，需
+`pip install "lerobot[dataset]==0.7.0"`）。
 
 **慢测试分层约定（PLAN-embodied-v3 §二 #20，2026-11-06）**：物理长跑
 测试分两层。**快层**（默认 `cargo test` 可见）随 PR 门禁 rust 矩阵腿跑；
@@ -335,12 +377,21 @@ python -I scripts/fingerprint_dupcheck.py out/my-run out/my-run
    锚体，行程限位 + 滑轨阻尼，`MultibodyJointSet` 挂 `MultibodySystem` 的
    prop 同步协议），预设 `drawer-4dof-v2.json`（`drawer@v2`，基线 12/12）；
    旧 `drawer-4dof.json`（ef18ac07）保留为对照档案。
-2. **sphere → Ball 直通**：URDF/mesh 的 sphere 碰撞体现在走 Box 包络近似
-   （`urdf.rs`：sphere → Box 包络）；`LinkShape::Ball` 直通 + `LinkShape`
-   旋转字段——mesh 碰撞量化的第一步（PLAN P2）。
-3. **深度轨 v3 元数据列**：`depth.{name}` 图像轨暂不进 LeRobot v3 episodes
+2. **sphere → Ball 直通**：~~URDF/mesh 的 sphere 碰撞体现在走 Box 包络近似~~
+   ✅ P2 深水区 Wave-1（P 包）：`LinkShape::Ball{radius}`（rapier `ball`，validate
+   拒非正半径，身份 hash 新 tag 只对新变体折叠），URDF `<sphere>` 直通（偏心落点
+   探针：Ball 滚落 vs 旧 Box 包络平顶托住，见 [URDF-IMPORT §8.4](URDF-IMPORT.md)）。
+   `PropShape::Sphere`（场景 prop）此前已是 rapier Ball 直通。**仍开放**：`LinkShape`
+   旋转字段（盒/柱任意角的轴对齐包络）、pinhole 里把 Ball 链节画成球
+   （`MultibodySystem::link_pose` 钩子已备，`scene_view` 接线待渲染包）。
+3. ~~**深度轨 v3 元数据列**：`depth.{name}` 图像轨暂不进 LeRobot v3 episodes
    元数据的视频指针列（image dtype 无视频时间戳），转换脚本按帧目录拼装
-   补齐——等官方口径或定引擎侧补位方案（v0.11.0 release-notes known-limits #3）。
+   补齐——等官方口径或定引擎侧补位方案（v0.11.0 release-notes known-limits #3）。~~
+   ✅ P2 深水区 Wave-1（D 包）：按 lerobot ≥ 0.6 深度图口径落地——v3 `info.json`
+   声明 `is_depth_map` / `depth_unit: "mm"` / `names [height, width, channels]`，
+   episodes 给深度轨四列指针，转换器把深度 PNG 原字节嵌进 data parquet 的
+   `Image()` 列并补 stats（深度不再被转成有损 mp4）；深度-only 相机与 RGB-only
+   对称（§6.4）。selfcheck 对账 + lerobot 加载冒烟两层见 §6.5。
 4. **Contact 判据升官方**：lab 变体 12 集对照已零翻转（P1-Wave3），升官方
    需按治理规则重跑 `results/reference/` 并写双轨说明（PLAN 拍板项 3 的 B 侧收尾）。
 5. **渲染器摆 props[1..]**：叠块底座 B、料箱墙在物理与判据里都在、画面里
@@ -350,9 +401,16 @@ python -I scripts/fingerprint_dupcheck.py out/my-run out/my-run
    每集指纹与 `robot`/`specHash` 透传（P2-W5A 批次）；剩余收尾是 Studio
    落盘侧（`sim.rs`）把这些字段写进 receipt/info.json（此前是空数组 +
    硬编码 robot 名）并随发版验证（PLAN P2 排期项）。
-7. **URDF base 朝向支持**：导入侧固定 Z-up→Y-up 上轴旋转，基座任意朝向的
-   URDF（吊装/壁装）还不认（PLAN P2）。
-8. **失败相位遥测进报告 + SIM_TRACE 文档化**（PLAN P2 排期项）。
+7. ~~**URDF base 朝向支持**：导入侧固定 Z-up→Y-up 上轴旋转，基座任意朝向的
+   URDF（吊装/壁装）还不认（PLAN P2）。~~ ✅ P2 深水区 Wave-1（P 包）：
+   `RobotSpecOpts::mount_rpy` + `--urdf-mount-rpy`（URDF 世界系 rpy，先于上轴换算；
+   缺省零逐位旧路径），`pitfall_warnings` 第三坑按零位链几何可判并给出修正 yaw；
+   非单位朝向 FK 一致性（运动学 + rapier 仿真）测试钉住，见 [URDF-IMPORT §8.4](URDF-IMPORT.md)。
+8. ~~**失败相位遥测进报告 + SIM_TRACE 文档化**（PLAN P2 排期项）。~~ ✅ P2 深水区
+   Wave-1（P 包）：`eval::classify_failure`（`failure_phase@v1`：reach/grasp/lift/place）
+   + `embodied_sim_baseline --failure-phases`（opt-in，不给则报告逐字节不变）→
+   `oriera_results.py` 四列 → `plot_results.py` 堆叠图；规则与 SIM_TRACE 复盘写进
+   [LAB-GUIDE §2.2](LAB-GUIDE.md)；Panda 近基失败带复核结论见 `baselines/README.md`。
 
 这批候选已同步挂进 [CONTRIBUTING.md](../CONTRIBUTING.md)「具身仿真台贡献入口」
 与 [FIRST_PR.md](FIRST_PR.md) 的指路牌（先写进文档池，转正开 issue 由维护者批量执行）。

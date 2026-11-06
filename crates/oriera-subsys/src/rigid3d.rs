@@ -647,6 +647,7 @@ pub fn collision_report(r: &RobotSpec) -> String {
             LinkShape::Capsule { half_len, radius } => {
                 format!("capsule half_len {half_len} radius {radius}")
             }
+            LinkShape::Ball { radius } => format!("ball radius {radius}"),
             LinkShape::ConvexHull { points } => format!("convex_hull {} points", points.len()),
             LinkShape::Mesh { vertices, indices } => {
                 format!("mesh {} verts / {} tris", vertices.len(), indices.len())
@@ -661,6 +662,7 @@ pub fn collision_report(r: &RobotSpec) -> String {
                 std::f32::consts::PI * radius * radius * (2.0 * half_len)
                     + 4.0 / 3.0 * std::f32::consts::PI * radius.powi(3)
             }
+            LinkShape::Ball { radius } => 4.0 / 3.0 * std::f32::consts::PI * radius.powi(3),
             LinkShape::ConvexHull { points } => {
                 let pts: Vec<Vec3> = points.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect();
                 ColliderBuilder::convex_hull(&pts).map_or(f32::NAN, |b| {
@@ -708,6 +710,10 @@ fn shape_aabb_half(s: &LinkShape) -> [f32; 3] {
                 acc([sx * (half_len + radius), *radius, *radius]);
                 acc([sx * (half_len + radius), -*radius, -*radius]);
             }
+        }
+        LinkShape::Ball { radius } => {
+            acc([*radius; 3]);
+            acc([-*radius; 3]);
         }
         LinkShape::ConvexHull { points }
         | LinkShape::Mesh {
@@ -840,6 +846,8 @@ fn bits_opt(h: u64, v: Option<f32>) -> u64 {
 /// `Contact` criterion, `AdjacentExempt`), so every pre-M2 identity
 /// hash — and the pinned goldens — are bit-stable. **M3**: a prismatic
 /// joint folds a kind tag (revolute folds nothing, same discipline).
+/// **P2**: a [`LinkShape::Ball`] link folds tag 5 + its radius (a new
+/// variant — no pre-P2 spec has one, so no existing hash moves).
 pub fn robot_identity_hash(r: &RobotSpec) -> u64 {
     let mut h = mix(0x0000_6f72_6965_7261, 0x0052_4f42_4f54); // "ROBOT"
     h = mix(h, r.joints.len() as u64);
@@ -875,6 +883,12 @@ pub fn robot_identity_hash(r: &RobotSpec) -> u64 {
             LinkShape::Box { half } => {
                 h = mix(h, 2);
                 h = bits3(h, *half);
+            }
+            // P2 Ball: a new variant (no pre-P2 spec carries it) — tag 5
+            // + radius; every existing shape's fold above is untouched.
+            LinkShape::Ball { radius } => {
+                h = mix(h, 5);
+                h = bits(h, *radius);
             }
             // M2 shapes: the resolved geometry IS identity (folded
             // wholesale — these variants never existed pre-M2, so no
@@ -1272,6 +1286,8 @@ impl MultibodySystem {
                 LinkShape::Capsule { half_len, radius } => {
                     ColliderBuilder::capsule_x(*half_len, *radius)
                 }
+                // P2: sphere → rapier Ball, straight through (no envelope).
+                LinkShape::Ball { radius } => ColliderBuilder::ball(*radius),
                 LinkShape::ConvexHull { points } => {
                     let pts: Vec<Vec3> = points.iter().map(|p| v3(*p)).collect();
                     let hull = ColliderBuilder::convex_hull(&pts).ok_or_else(|| {
@@ -1818,6 +1834,17 @@ impl MultibodySystem {
             })
         };
         Some([at(fl)?, at(fr)?])
+    }
+
+    /// World pose `(translation, rotation [x, y, z, w])` of chain link
+    /// `link`'s rigid body after the last step; `None` for an
+    /// out-of-range index. Read-only renderer hook (P2: a
+    /// [`LinkShape::Ball`] link is drawn as a sphere at
+    /// `pose · collider_offset`) — nothing in the physics reads it.
+    pub fn link_pose(&self, link: usize) -> Option<([f32; 3], [f32; 4])> {
+        let b = self.bodies.get(*self.chain.get(link)?)?;
+        let t = b.translation();
+        Some(([t.x, t.y, t.z], quat_to_arr(*b.rotation())))
     }
 
     /// Solver-side mass properties of chain link `link` (U-1
@@ -4071,5 +4098,96 @@ mod tests {
             fps
         };
         assert_eq!(run(), run(), "slide-panel runs must be bit-identical");
+    }
+
+    // --- P2 sphere → Ball 直通 guards ---------------------------------
+
+    /// Prop path: `PropShape::Sphere { r }` builds a rapier **Ball** of
+    /// radius `r` (not an envelope); the default cube stays the legacy
+    /// cuboid, bit for bit.
+    #[test]
+    fn prop_sphere_builds_a_true_ball_collider() {
+        let groups = world_groups();
+        let ball = prop_collider(PropShape::Sphere { r: 0.031 }, PropPhys::default(), groups);
+        let b = ball
+            .shape()
+            .as_ball()
+            .expect("PropShape::Sphere must be a rapier Ball");
+        assert_eq!(b.radius, 0.031, "radius passes straight through");
+        // Ball mass = ρ · 4/3 π r³ (an r-cube envelope would weigh 8 r³ ρ).
+        let want = PropPhys::default().density * 4.0 / 3.0 * PI * 0.031f32.powi(3);
+        let m = ball.mass_properties().mass();
+        assert!((m - want).abs() < want * 1e-4, "ball mass {m} vs {want}");
+        let cube = prop_collider(PropShape::default(), PropPhys::default(), groups);
+        let c = cube.shape().as_cuboid().expect("default prop is the cube");
+        assert_eq!(
+            [c.half_extents.x, c.half_extents.y, c.half_extents.z],
+            [PROP_HALF; 3]
+        );
+    }
+
+    /// Link path: `LinkShape::Ball { radius }` builds a rapier Ball on the
+    /// link body, centred on `collider_offset` (球心) with the spec radius
+    /// (半径); `link_pose` reads the body frame the offset hangs off.
+    #[test]
+    fn link_ball_builds_a_ball_centred_on_the_collider_offset() {
+        let mut spec = RobotSpec::from(&ArmDescription::default());
+        let r = 0.037f32;
+        let off = [0.0, 0.05, 0.0];
+        spec.links[0].shape = LinkShape::Ball { radius: r };
+        spec.links[0].collider_offset = off;
+        spec.validate().expect("Ball root validates");
+        let origin = spec.links[0].origin;
+        let sys = MultibodySystem::from_robot(spec, Scene3D::default()).expect("Ball builds");
+        let root_body = sys.chain[0];
+        let balls: Vec<_> = sys
+            .colliders
+            .iter()
+            .filter(|(_, c)| c.parent() == Some(root_body))
+            .filter_map(|(_, c)| c.shape().as_ball().map(|b| (b.radius, c.translation())))
+            .collect();
+        assert_eq!(balls.len(), 1, "exactly one Ball collider on the root");
+        let (radius, centre) = balls[0];
+        assert_eq!(radius, r, "半径直通");
+        let want = [origin[0] + off[0], origin[1] + off[1], origin[2] + off[2]];
+        assert!(
+            (centre.x - want[0]).abs() < 1e-6
+                && (centre.y - want[1]).abs() < 1e-6
+                && (centre.z - want[2]).abs() < 1e-6,
+            "球心 = origin + collider_offset: {centre:?} vs {want:?}"
+        );
+        let (p, q) = sys.link_pose(0).expect("root pose");
+        assert_eq!(p, origin, "link_pose = the body frame");
+        assert_eq!(q, [0.0, 0.0, 0.0, 1.0], "identity rotation at build");
+        assert!(sys.link_pose(99).is_none(), "out of range ⇒ None");
+        // report + identity: Ball is named, has the ball volume, and folds
+        // differently from the old r-cube envelope.
+        let mut ball_spec = RobotSpec::from(&ArmDescription::default());
+        ball_spec.links[0].shape = LinkShape::Ball { radius: r };
+        let report = collision_report(&ball_spec);
+        assert!(report.contains("ball radius 0.037"), "{report}");
+        let mut box_spec = ball_spec.clone();
+        box_spec.links[0].shape = LinkShape::Box { half: [r; 3] };
+        assert_ne!(
+            robot_identity_hash(&ball_spec),
+            robot_identity_hash(&box_spec),
+            "Ball is its own identity, not the envelope's"
+        );
+    }
+
+    /// Validation closes the chain: a non-positive or non-finite Ball
+    /// radius is a named BadShape, never a silent point collider.
+    #[test]
+    fn link_ball_radius_must_be_finite_and_positive() {
+        for bad in [0.0f32, -0.01, f32::NAN, f32::INFINITY] {
+            let mut spec = RobotSpec::from(&ArmDescription::default());
+            spec.links[2].shape = LinkShape::Ball { radius: bad };
+            match spec.validate() {
+                Err(RobotSpecError::BadShape { link, .. }) => {
+                    assert_eq!(link, spec.links[2].name, "radius {bad}")
+                }
+                other => panic!("radius {bad} must be BadShape, got {other:?}"),
+            }
+        }
     }
 }

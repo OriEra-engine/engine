@@ -12,6 +12,11 @@ seed 按其成功率重抽 episode 的 0/1 结果——seed 间与 episode 间�
     python scripts/plot_results.py out/results/results.csv  --bootstrap 10000
 
 无 matplotlib 时降级：只写 <out-dir>/summary.csv（均值/IQM/CI 列）并提示。
+
+失败相位（P2，opt-in）：聚合表带 `fail_reach/fail_grasp/fail_lift/fail_place`
+列时（`embodied_sim_baseline --failure-phases` → `oriera_results.py aggregate`），
+另写 `<out-dir>/failure_phases.csv`（每组四相位失败合计）并出堆叠条形图
+`failure_phases.png`；没有这几列则产物与旧版完全相同。
 """
 from __future__ import annotations
 
@@ -105,6 +110,41 @@ def wilson95(successes: int, n: int) -> tuple[float, float]:
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
+FAILURE_PHASES = ("reach", "grasp", "lift", "place")
+
+
+def _count(v) -> int | None:
+    """聚合表单元格 → 计数；空串/None/NaN（缺失失败相位块的行）→ None。"""
+    if v is None or v == "":
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else int(f)  # NaN != NaN
+
+
+def failure_phase_rows(groups: dict[str, list[dict]], keys: list[str],
+                       labels: dict[str, str]) -> list[dict]:
+    """P2：每组四相位失败合计（只统计带失败相位列的行）；无数据 → []。"""
+    out = []
+    for key in keys:
+        acc = [0, 0, 0, 0]
+        seeds = 0
+        for r in groups[key]:
+            cells = [_count(r.get(f"fail_{p}")) for p in FAILURE_PHASES]
+            if any(c is None for c in cells):
+                continue
+            seeds += 1
+            for i, c in enumerate(cells):
+                acc[i] += c
+        if seeds:
+            row = {"group": labels[key], "seeds": seeds, "failures": sum(acc)}
+            row.update({f"fail_{p}": n for p, n in zip(FAILURE_PHASES, acc)})
+            out.append(row)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("results", type=Path, help="oriera_results.py aggregate 的产物（parquet/csv）")
@@ -174,6 +214,19 @@ def main() -> int:
             f"IQM {s['iqm_once_rate']:.1%}  CI95 [{s['boot_ci95_lo']:.1%}, {s['boot_ci95_hi']:.1%}]"
         )
 
+    # P2 失败相位（opt-in：聚合表带 fail_* 列才出）——先落 CSV，绘图在下方
+    phase_rows = failure_phase_rows(groups, keys, labels)
+    if phase_rows:
+        phase_csv = args.out_dir / "failure_phases.csv"
+        with open(phase_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(phase_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(phase_rows)
+        print(f"[plot-results] 失败相位 → {phase_csv}（规则 docs/LAB-GUIDE.md §2.2）")
+        for p in phase_rows:
+            cells = " · ".join(f"{k} {p[f'fail_{k}']}" for k in FAILURE_PHASES)
+            print(f"  {p['group']:34s} seeds={p['seeds']:2d}  失败 {p['failures']:3d} → {cells}")
+
     # 图：装了 matplotlib 才画（均值 ± CI 误差棒 + IQM 点）
     try:
         import matplotlib
@@ -214,6 +267,25 @@ def main() -> int:
     png = args.out_dir / "success_rates.png"
     fig.savefig(png, dpi=150)
     print(f"[plot-results] 图 → {png}")
+    if phase_rows:
+        # 堆叠条形：每组失败集按 reach → grasp → lift → place 分段
+        fig2, ax2 = plt.subplots(figsize=(8, 0.6 * len(phase_rows) + 2))
+        ys2 = list(range(len(phase_rows)))
+        left = [0] * len(phase_rows)
+        for k in FAILURE_PHASES:
+            vals = [p[f"fail_{k}"] for p in phase_rows]
+            ax2.barh(ys2, vals, left=left, label=k)
+            left = [a + b for a, b in zip(left, vals)]
+        ax2.set_yticks(ys2)
+        ax2.set_yticklabels([p["group"] for p in phase_rows])
+        ax2.invert_yaxis()
+        ax2.set_xlabel("failed episodes (failure_phase@v1)")
+        ax2.set_title("OriEra embodied baselines — failures by phase")
+        ax2.legend(loc="lower right")
+        fig2.tight_layout()
+        png2 = args.out_dir / "failure_phases.png"
+        fig2.savefig(png2, dpi=150)
+        print(f"[plot-results] 失败相位图 → {png2}")
     # 原始摘要也落一份 JSON（对账用）
     (args.out_dir / "summary.json").write_text(
         json.dumps(summary_rows, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"

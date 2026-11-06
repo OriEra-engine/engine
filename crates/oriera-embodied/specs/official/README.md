@@ -26,7 +26,7 @@
 
 每份带 `meta{name, author, notes, difficulty}`；四个入口（CLI/Python/浏览器/Studio）吃同一份文件、同一个 `spec_hash`。
 
-**Studio 三库即食**：Studio `/sim` 首屏的预设卡片墙就是这五份（默认选中作业基线 `tabletop-4dof-pick`），点卡片即整份换装、不重载；Studio 仓 `node scripts/sync-engine-snapshot.mjs` 把本目录 + `INDEX.json` 同步进 `engine-snapshot/specs/`（另生成 `extends` 展开版给浏览器内核，spec_hash 与本表一致）。新增官方预设 = 重跑同步器 + 在 Studio `src/views/Sim.vue` 的预设目录补一张卡（卡片一句话是人写的学生文案）。
+**Studio 三库即食**：Studio `/sim` 首屏的预设卡片墙就是这六份（drawer 卡指 v2 滑轨版，v1 为对照档案不下墙；默认选中作业基线 `tabletop-4dof-pick`），点卡片即整份换装、不重载；Studio 仓 `node scripts/sync-engine-snapshot.mjs` 把本目录 + `INDEX.json` 同步进 `engine-snapshot/specs/`（另生成 `extends` 展开版给浏览器内核，spec_hash 与本表一致）。新增官方预设 = 重跑同步器 + 在 Studio `src/views/Sim.vue` 的预设目录补一张卡（卡片一句话是人写的学生文案）。
 
 基线跑法（成功率 + Wilson + once/at_end 双报 + 任务专属闸）：
 

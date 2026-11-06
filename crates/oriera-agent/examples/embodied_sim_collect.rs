@@ -75,7 +75,9 @@
 //! `--urdf-gripper <file.urdf>` 外部两指夹爪挂末体法兰；
 //! `--mesh-base <dir>` / `--mesh-package <name=dir>` 透传
 //! RobotSpecOpts（STL→凸包点集）；`--urdf-mount <x,y,z>` 落地安装位
-//! （默认 = 被替换 preset 的 base，即桌沿）；`--dump-robot-spec <file>`
+//! （默认 = 被替换 preset 的 base，即桌沿）；`--urdf-mount-rpy <r,p,y>`
+//! base 安装朝向（P2：URDF 世界系 rpy，先于 Z-up→Y-up 施加；缺省零 =
+//! 只平移）；`--dump-robot-spec <file>`
 //! 导出解析后的 RobotSpec JSON（含 skipped 降级清单与坑位警告）。
 //! 与旧 `--urdf`（4 轴投影）互斥，同给即人话报错。
 //!
@@ -84,9 +86,9 @@
 //! 跟踪」smoke 策略（home 稳定 + 关节小行程正弦跟踪 + 夹爪开合），并
 //! 把 course@v1 的 90% 硬闸自动降为 report（除非显式 `--gate`）——
 //! smoke 不解决问题，成功率如实报告，跑的是导入链端到端的采集管线。
-//! 坑位治理（用户角色集群 PUGC-2/3/4）：gap_closed≈0 / home=URDF 零位
-//! 打人话警告（非致命），base 朝向（URDF 主轴须朝 OriEra +X，导入只
-//! 平移）固定提示 + docs/URDF-IMPORT.md 写明。
+//! 坑位治理（用户角色集群 PUGC-2/3/4）：gap_closed≈0 / home=URDF 零位 /
+//! base 朝向（P2 起按零位链几何可判：水平伸展偏离 OriEra +X > 45° 报警
+//! 并给出 `--urdf-mount-rpy 0,0,<yaw>` 修正值）打人话警告（非致命）。
 //!
 //! Run:
 //! `cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- --task pick_place --episodes 12 --cam`
@@ -101,7 +103,7 @@
 //!       `--gate hard|report` · `--verify-determinism full|sample|off`
 //!       `--fingerprints FILE` · `--force`
 //!       `--urdf-robot FILE` · `--urdf-gripper FILE` · `--mesh-base DIR`
-//!       `--mesh-package name=dir` · `--urdf-mount x,y,z`
+//!       `--mesh-package name=dir` · `--urdf-mount x,y,z` · `--urdf-mount-rpy r,p,y`
 //!       `--dump-robot-spec FILE` (P1-B1 URDF full-chain family)
 //! Output: `<out>/lerobot-v21/` [+ `<out>/lerobot-v30/`] [+ `<out>/npz/`] +
 //!         `<out>/eval_report.json` + `<out>/run_manifest.json`
@@ -463,6 +465,9 @@ struct Args {
     /// P1-B1 `--urdf-mount x,y,z`：根 link 落地安装位（缺省 = 被替换
     /// preset 的 robot.base，即桌沿）。
     urdf_mount: Option<[f32; 3]>,
+    /// P2 `--urdf-mount-rpy r,p,y`：根 link 的 base 安装朝向（URDF 世界系
+    /// rpy 弧度，先于 Z-up→Y-up；缺省零 = 只平移，旧行为）。
+    urdf_mount_rpy: Option<[f32; 3]>,
     /// P1-B1 `--dump-robot-spec FILE`：导出解析后的 RobotSpec JSON
     /// （含 skipped 降级清单与坑位警告）。需与 --urdf-robot 同用。
     dump_robot_spec: Option<String>,
@@ -496,7 +501,7 @@ struct Args {
     out_given: bool,
 }
 
-const USAGE: &str = "--task/--phrase/--spec/--set/--episodes/--seed0/--seed/--cam/--no-cam/--cameras-from-spec/--out/--runs-root/--lerobot-v3/--export/--migrate/--validate/--urdf/--urdf-robot/--urdf-gripper/--mesh-base/--mesh-package/--urdf-mount/--dump-robot-spec/--protocol/--gate/--verify-determinism/--fingerprints/--sanitize/--force/--help（--help 看分节说明）";
+const USAGE: &str = "--task/--phrase/--spec/--set/--episodes/--seed0/--seed/--cam/--no-cam/--cameras-from-spec/--out/--runs-root/--lerobot-v3/--export/--migrate/--validate/--urdf/--urdf-robot/--urdf-gripper/--mesh-base/--mesh-package/--urdf-mount/--urdf-mount-rpy/--dump-robot-spec/--protocol/--gate/--verify-determinism/--fingerprints/--sanitize/--force/--help（--help 看分节说明）";
 
 /// `--export FMT[,FMT]` → whether npz was requested. `parquet` is
 /// refused with the converter route (no parquet crate in Rust — the
@@ -542,11 +547,14 @@ fn print_help() -> ! {
   --mesh-base DIR                 STL mesh 解析根目录（<collision><mesh> STL→凸包点集；不给则包络降级）
   --mesh-package name=dir         package://name/… 的包根（可多次）
   --urdf-mount x,y,z              根 link 落地安装位（缺省 = 被替换 preset 的 base，即桌沿）
+  --urdf-mount-rpy r,p,y          根 link 安装朝向（URDF 世界系 rpy 弧度，先于 Z-up→Y-up；
+                                  吊装 3.14159,0,0 · 主轴朝 −X 的臂 0,0,3.14159；缺省零 = 只平移）
   --dump-robot-spec FILE          导出解析后的 RobotSpec JSON（含 skipped 降级清单 + 坑位警告）
   （坑位警告，非致命：① 夹爪 gap_closed≈0 → 指板闭合位相触，运行时会挤飞方块，
    参考 preset 的 0.046，--set robot.gripper.gap_closed=0.046 覆盖；
    ② home 全零 = URDF 零位（可能竖直/奇异），--set \"robot.home=[q1,q2,...]\" 覆盖；
-   ③ base 朝向：URDF 主轴须朝 OriEra +X——导入只平移不旋转，详见 docs/URDF-IMPORT.md）
+   ③ base 朝向：零位链水平伸展偏离 OriEra +X > 45° → 警告并给出 --urdf-mount-rpy 0,0,<yaw>，
+   详见 docs/URDF-IMPORT.md「base 朝向」节）
   （采集策略：URDF 导入构型自动走 settle+跟踪 smoke——不解决问题、成功率如实报告，
    course@v1 硬闸自动降为 report；显式 --gate 可覆盖）
 
@@ -608,6 +616,7 @@ fn parse_args() -> Args {
         mesh_base: None,
         mesh_packages: Vec::new(),
         urdf_mount: None,
+        urdf_mount_rpy: None,
         dump_robot_spec: None,
         migrate: None,
         validate: None,
@@ -700,6 +709,24 @@ fn parse_args() -> Args {
                     ));
                 }
                 a.urdf_mount = Some([m[0], m[1], m[2]]);
+            }
+            "--urdf-mount-rpy" => {
+                let v = it
+                    .next()
+                    .unwrap_or_else(|| fail(&format!("{arg} 需要 r,p,y（弧度）")));
+                let bad = || -> ! {
+                    fail(&format!(
+                        "--urdf-mount-rpy {v:?}：须为三个逗号分隔的有限弧度（URDF 外旋 XYZ；例：吊装 3.14159,0,0）"
+                    ))
+                };
+                let m: Vec<f32> = v
+                    .split(',')
+                    .map(|s| s.trim().parse().unwrap_or_else(|_| bad()))
+                    .collect();
+                if m.len() != 3 || !m.iter().all(|x| x.is_finite()) {
+                    bad();
+                }
+                a.urdf_mount_rpy = Some([m[0], m[1], m[2]]);
             }
             "--dump-robot-spec" => {
                 a.dump_robot_spec = Some(
@@ -1280,13 +1307,18 @@ fn declare_camera_tracks(
     if args.cam && args.cameras_from_spec {
         for c in &spec.scene.cameras {
             let p = c.pinhole();
-            ds.add_camera(oriera_agent::lerobot::CameraTrack {
-                name: c.name.clone(),
-                w: p.width,
-                h: p.height,
-                fps: (1.0 / env.dt).round(),
-                depth: p.channels.depth,
-            })?;
+            // spec channels 一一对应：rgb=false 即深度-only 相机（只声明/
+            // 只落盘 depth.{name} 轨，P2-W1-D）。
+            ds.add_camera_channels(
+                oriera_agent::lerobot::CameraTrack {
+                    name: c.name.clone(),
+                    w: p.width,
+                    h: p.height,
+                    fps: (1.0 / env.dt).round(),
+                    depth: p.channels.depth,
+                },
+                p.channels.rgb,
+            )?;
         }
     } else if args.cam {
         ds.set_camera(oriera_agent::lerobot::CameraTrack {
@@ -1536,6 +1568,8 @@ fn apply_urdf_robot(spec: &mut SceneSpec, args: &Args) {
         // 落地安装位：默认 = 被替换 preset 的 base（桌沿）——URDF 臂落在
         // 原臂的位置，场景几何（桌/方块/目标）原样适用。
         mount: args.urdf_mount.unwrap_or(spec.robot.base),
+        // P2 base 安装朝向（缺省零 = 只平移，旧行为逐位不动）。
+        mount_rpy: args.urdf_mount_rpy.unwrap_or([0.0; 3]),
         // 增益/armature 缺省随所选 preset（preset 调过就跟着调）；URDF
         // 1.0 没有这个语义——这是包装层旋钮，`--set robot.joints.0.kp=…`
         // 可逐关节覆盖。
@@ -1583,8 +1617,10 @@ fn apply_urdf_robot(spec: &mut SceneSpec, args: &Args) {
         .validate()
         .unwrap_or_else(|e| fail(&format!("导入的 RobotSpec 校验失败：{e}")));
     println!(
-        "  · base 朝向：URDF 主轴（链伸展方向）须朝 OriEra +X——导入只平移（--urdf-mount）不旋转；\
-         朝向不对请先改 URDF 根（详见 docs/URDF-IMPORT.md「全链 CLI」节）"
+        "  · base 朝向：安装朝向 rpy = {:?}（--urdf-mount-rpy，URDF 世界系弧度；缺省零 = 只平移）——\
+         零位链水平伸展须朝 OriEra +X（桌面/方块侧），偏离 > 45° 会在下方警告并给出修正 yaw\
+         （详见 docs/URDF-IMPORT.md「base 朝向」节）",
+        opts.mount_rpy
     );
     // skipped 降级/缺省报告（pugc_import 原型的打印格式并入此处）。
     println!(
@@ -1596,7 +1632,14 @@ fn apply_urdf_robot(spec: &mut SceneSpec, args: &Args) {
     }
     spec.robot = robot;
     // 出处进 notes（meta 不进 spec_hash——身份仍由 robot/scene/task 决定）。
-    let provenance = format!("--urdf-robot 全链导入：{path}");
+    let provenance = if opts.mount_rpy == [0.0; 3] {
+        format!("--urdf-robot 全链导入：{path}")
+    } else {
+        format!(
+            "--urdf-robot 全链导入：{path}（base 安装朝向 rpy {:?}）",
+            opts.mount_rpy
+        )
+    };
     spec.meta.notes = Some(match spec.meta.notes.take() {
         Some(n) => format!("{n}；{provenance}"),
         None => provenance,

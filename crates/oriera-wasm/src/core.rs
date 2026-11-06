@@ -20,14 +20,13 @@
 //!
 //! What this wrapper can NOT read through the public `TableTopEnv` API
 //! (reported, not patched — `embodied_env.rs` is another work package's
-//! file): the prop's live rotation (`Pose3.rot` sits behind the env's
-//! private `world`; only `cube_pos()` is public — the payload flags
-//! this with `"rot_known": false`; the 3-line fix is a
-//! `TableTopEnv::prop_pose()` forwarder), clutter props beyond
-//! `props[0]`, and a noise-free joint-angle read when `obs_noise > 0`
-//! (FK uses the observation channel). The plate gap is no longer in
-//! that list: the ramp mirror is bit-exact (same f32 recurrence) and
-//! `gap()` exposes it (M2-A closes the M1 leftover; the engine-side
+//! file): a noise-free joint-angle read when `obs_noise > 0` (FK uses
+//! the observation channel). Every prop's live pose — `props[1..]`
+//! clutter included, rotation included — is public since M2
+//! (`TableTopEnv::prop_pose`; `poses().props` carries all of them,
+//! `rot_known: true`). The plate gap is no longer in that list either:
+//! the ramp mirror is bit-exact (same f32 recurrence) and `gap()`
+//! exposes it (M2-A closes the M1 leftover; the engine-side
 //! `MultibodySystem::gap()` read-only view exists for when the env
 //! forwards it).
 
@@ -573,6 +572,11 @@ impl SimCore {
             "fingers": fingers,
             "props": props,
             "goal": self.env.goal(),
+            // P2-R: where the goal marker goes — the goal's XZ on the
+            // static surface beneath it (`TableTopEnv::goal_marker`, the
+            // same function the pinhole disc uses), so every renderer
+            // puts the ring on the floor instead of hard-coding a height
+            "goal_marker": self.env.goal_marker(),
             "holding": self.env.holding(),
             "gripper": self.gripper_cmd,
         })
@@ -661,6 +665,45 @@ mod tests {
             (sim.fingerprint(), sim.obs().to_vec())
         };
         assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn poses_carry_every_prop_and_the_goal_marker() {
+        // P2-R: the renderer's pose feed places every prop at its live
+        // world pose — stack's base B is props[1], spawned fixed at
+        // [0.30, 0.525, 0] (the M2-era failure mode drew it at the
+        // origin) — and puts the goal marker on the surface under the
+        // goal: stack's mid-air "A on top of B" goal drops to the table
+        // top, a pick/place surface goal comes back verbatim. The demo's
+        // resolved spec = exactly what the browser loads.
+        let vec3 = |v: &serde_json::Value| -> [f32; 3] {
+            let a = v.as_array().expect("[x,y,z]");
+            [0, 1, 2].map(|i| a[i].as_f64().expect("number") as f32)
+        };
+        let stack =
+            include_str!("../../../examples/15-embodied-sim/specs/resolved/stack-4dof.json");
+        let mut sim = SimCore::from_spec_json(stack).expect("stack loads");
+        sim.reset(1000);
+        let p: serde_json::Value = serde_json::from_str(&sim.poses_json()).unwrap();
+        let props = p["props"].as_array().expect("props[]");
+        assert_eq!(props.len(), 2, "block A + base B");
+        assert_eq!(props[1]["name"], "block_b");
+        assert_eq!(props[1]["rot_known"], true);
+        let b = vec3(&props[1]["pos"]);
+        assert!(
+            dist(b, [0.30, 0.525, 0.0]) < 2e-3,
+            "props[1] must sit at its live pose, got {b:?}"
+        );
+        let (goal, marker) = (vec3(&p["goal"]), vec3(&p["goal_marker"]));
+        assert_eq!([marker[0], marker[2]], [goal[0], goal[2]]);
+        assert!(
+            marker[1] == 0.5 && goal[1] > 0.55,
+            "mid-air goal {goal:?} → marker on the table top, got {marker:?}"
+        );
+        let mut sim = SimCore::from_spec_json(SPEC).unwrap();
+        sim.reset(1000);
+        let p: serde_json::Value = serde_json::from_str(&sim.poses_json()).unwrap();
+        assert_eq!(p["goal_marker"], p["goal"], "surface goal is verbatim");
     }
 
     /// Pull an array of big u64s out of the golden JSON text — serde's

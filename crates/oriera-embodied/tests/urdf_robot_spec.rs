@@ -1104,6 +1104,154 @@ fn gap_touch_twin_trips_the_gap_warning() {
     );
 }
 
+// ── P2：base 安装朝向（RobotSpecOpts::mount_rpy）FK 一致性 ──────────────
+
+/// URDF `rpy`（外旋 XYZ：Rz·Ry·Rx）与 Z-up→Y-up 的测试侧独立实现——不借
+/// urdf.rs 的私有函数，避免「拿被测代码验被测代码」。
+fn rpy_mat(rpy: [f32; 3]) -> [[f32; 3]; 3] {
+    let (sr, cr) = rpy[0].sin_cos();
+    let (sp, cp) = rpy[1].sin_cos();
+    let (sy, cy) = rpy[2].sin_cos();
+    [
+        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+        [-sp, cp * sr, cp * cr],
+    ]
+}
+
+fn mul3(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let c = |i: usize, j: usize| (0..3).map(|k| a[i][k] * b[k][j]).sum::<f32>();
+    [
+        [c(0, 0), c(0, 1), c(0, 2)],
+        [c(1, 0), c(1, 1), c(1, 2)],
+        [c(2, 0), c(2, 1), c(2, 2)],
+    ]
+}
+
+fn apply3(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    [0, 1, 2].map(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2])
+}
+
+/// OriEra 世界里的 base 旋转：`r_up · R(rpy) · r_upᵀ`（r_up = Rx(−90°)）。
+fn oriera_base_rot(rpy: [f32; 3]) -> [[f32; 3]; 3] {
+    let up = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+    let up_t = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
+    mul3(&mul3(&up, &rpy_mat(rpy)), &up_t)
+}
+
+/// P2 base 朝向 FK 一致性（six_axis：6 轴 + mimic 夹爪 + STL 凸包链体）。
+/// 非单位安装朝向 R 下：① 运动学 FK（`ik::fk_pose`）对 8 组限位内关节角，
+/// TCP − mount = R·(平移-only 导入的 TCP − mount)、接近/开合轴 = R·原轴；
+/// ② rapier 仿真（零重力、无桌面，跟踪同一组目标）实测 TCP 与带朝向
+/// spec 的 FK 一致，且等于平移-only 仿真的 TCP 绕 mount 旋转 R。
+#[cfg(feature = "spec")]
+#[test]
+fn base_mount_rpy_keeps_fk_and_sim_consistent() {
+    use oriera_embodied::ik::fk_pose;
+    let rep = fixture(SIX_AXIS);
+    let mount = [0.0f32, 1.2, 0.0];
+    let rpy = [0.4f32, -0.3, 2.2];
+    let import = |rpy: [f32; 3]| {
+        let mut o = RobotSpecOpts {
+            mount,
+            mount_rpy: rpy,
+            ..six_axis_opts_with_meshes()
+        };
+        rep.to_robot_spec(&mut o).expect("six_axis 导入")
+    };
+    let plain = import([0.0; 3]);
+    let rot = import(rpy);
+    rot.validate().expect("带朝向导入合法");
+    let r = oriera_base_rot(rpy);
+    let rel = |p: [f32; 3]| [p[0] - mount[0], p[1] - mount[1], p[2] - mount[2]];
+    let near =
+        |a: [f32; 3], b: [f32; 3], tol: f32| a.iter().zip(b).all(|(x, y)| (x - y).abs() <= tol);
+
+    // ① 运动学 FK：确定性伪随机关节角（限位内）
+    let mut s = 0x5eed_u64;
+    let mut worst = 0.0f32;
+    for _ in 0..8 {
+        let q: Vec<f32> = plain
+            .joints
+            .iter()
+            .map(|j| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let f = (s >> 33) as f32 / (u32::MAX >> 1) as f32;
+                let (lo, hi) = (j.limits.0.max(-2.5), j.limits.1.min(2.5));
+                lo + f * (hi - lo)
+            })
+            .collect();
+        let a = fk_pose(&plain, &q);
+        let b = fk_pose(&rot, &q);
+        let want = apply3(&r, rel(a.tip));
+        worst = worst.max(
+            rel(b.tip)
+                .iter()
+                .zip(want)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0, f32::max),
+        );
+        assert!(
+            near(rel(b.tip), want, 1e-4),
+            "q {q:?}: TCP {:?} vs R·plain {want:?}",
+            b.tip
+        );
+        assert!(
+            near(b.approach, apply3(&r, a.approach), 1e-4),
+            "approach 轴随朝向转"
+        );
+        assert!(near(b.gap, apply3(&r, a.gap), 1e-4), "gap 轴随朝向转");
+    }
+    eprintln!("[base-rpy] FK 8 组关节角：TCP 最大偏差 {worst:.2e} m");
+
+    // ② 仿真：零重力（去掉随朝向变化的重力矩，只留刚体旋转对称）、远地无桌
+    let sim = |spec: RobotSpec, q: &[f32]| -> ([f32; 3], Vec<f32>) {
+        let scene = Scene3D {
+            ground: ([0.0, -5.0, 0.0], [4.0, 0.05, 4.0]),
+            table: None,
+        };
+        let mut sys = MultibodySystem::from_robot(spec, scene).expect("from_robot");
+        let mut world = World::new();
+        world.insert_resource(oriera_subsys::Gravity(0.0));
+        world.insert_resource(TimeScale(1.0));
+        let arm = world.spawn();
+        world.insert(
+            arm,
+            JointTargets {
+                angles: q.to_vec(),
+                gripper: 0.0,
+            },
+        );
+        world.insert(arm, JointTelemetry::default());
+        for i in 0..240u64 {
+            sys.run(&ctx(i), &mut world);
+        }
+        let t = world.get::<JointTelemetry>(arm).unwrap().clone();
+        (t.ee_pos, t.angles)
+    };
+    let q = [0.3f32, -0.4, 0.6, 0.2, -0.5, 0.4];
+    let (ee_plain, _) = sim(plain.clone(), &q);
+    let (ee_rot, ang_rot) = sim(rot.clone(), &q);
+    let fk_rot = fk_pose(&rot, &ang_rot).tip;
+    eprintln!(
+        "[base-rpy] sim TCP rot {ee_rot:?} · FK(rot, 实测角) {fk_rot:?} · R·(plain−mount)+mount {:?}",
+        {
+            let w = apply3(&r, rel(ee_plain));
+            [w[0] + mount[0], w[1] + mount[1], w[2] + mount[2]]
+        }
+    );
+    assert!(
+        near(ee_rot, fk_rot, 2e-3),
+        "仿真 TCP 与带朝向 spec 的 FK 一致：{ee_rot:?} vs {fk_rot:?}"
+    );
+    assert!(
+        near(rel(ee_rot), apply3(&r, rel(ee_plain)), 2e-3),
+        "仿真 TCP = 平移-only 仿真绕 mount 旋转 R"
+    );
+}
+
 #[cfg(test)]
 mod bin_fixture_gate {
     // P2 真 fixture 料箱：spec.rs:227 门改为「≥5 prop 或 ≥7 fixture」。

@@ -385,13 +385,17 @@ fn main() {
     );
     for c in &spec.scene.cameras {
         let p = c.pinhole();
-        ds.add_camera(CameraTrack {
-            name: c.name.clone(),
-            w: p.width,
-            h: p.height,
-            fps: (1.0 / env.dt).round(),
-            depth: p.channels.depth,
-        })
+        // rgb=false ⇒ 深度-only 相机：只声明 depth.{name}（P2-W1-D）
+        ds.add_camera_channels(
+            CameraTrack {
+                name: c.name.clone(),
+                w: p.width,
+                h: p.height,
+                fps: (1.0 / env.dt).round(),
+                depth: p.channels.depth,
+            },
+            p.channels.rgb,
+        )
         .unwrap_or_else(|e| fail(&e));
     }
 
@@ -688,13 +692,16 @@ fn main() {
         );
         for c in &spec.scene.cameras {
             let p = c.pinhole();
-            ds2.add_camera(CameraTrack {
-                name: c.name.clone(),
-                w: p.width,
-                h: p.height,
-                fps: (1.0 / env2.dt).round(),
-                depth: p.channels.depth,
-            })
+            ds2.add_camera_channels(
+                CameraTrack {
+                    name: c.name.clone(),
+                    w: p.width,
+                    h: p.height,
+                    fps: (1.0 / env2.dt).round(),
+                    depth: p.channels.depth,
+                },
+                p.channels.rgb,
+            )
             .unwrap();
         }
         let arm2 = IkArm::from_robot(&env2.robot).unwrap();

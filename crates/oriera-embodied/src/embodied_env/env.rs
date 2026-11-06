@@ -15,7 +15,7 @@ use oriera_subsys::{
 
 use super::cameras::CameraFrame;
 #[cfg(feature = "cam")]
-use super::cameras::{link_radius, quat_rotate, stamp_prop, CameraShot};
+use super::cameras::{link_radius, quat_rotate, stamp_fixtures_under, stamp_prop, CameraShot};
 #[cfg(feature = "cam")]
 use super::scene::CamAttach;
 use super::scene::{CameraSpec, Lcg, SceneGraph};
@@ -506,7 +506,8 @@ impl TableTopEnv {
 
     /// The world as the pinhole renderer sees it (M3-A): fixtures as
     /// boxes, props as oriented primitives, the arm skeleton as capsule
-    /// segments between joint origins, the gripper plates as two small
+    /// segments between joint origins (ball links additionally as a
+    /// sphere at pose · collider_offset), the gripper plates as two small
     /// balls, the goal as a ground disc. Flat colours double as the
     /// calibration targets (prop / arm / goal each have one exact RGB).
     #[cfg(feature = "cam")]
@@ -523,19 +524,35 @@ impl TableTopEnv {
         }
         // the fixed base link (its box never moves)
         if let Some(l) = robot.links.first() {
-            let half = match l.shape {
-                oriera_subsys::LinkShape::Box { half } => half,
-                _ => [0.03; 3],
-            };
-            prims.push(Prim::Cuboid {
-                center: [
-                    l.origin[0] + l.collider_offset[0],
-                    l.origin[1] + l.collider_offset[1],
-                    l.origin[2] + l.collider_offset[2],
-                ],
-                half,
-                color: [70, 76, 96],
-            });
+            match l.shape {
+                oriera_subsys::LinkShape::Box { half } => prims.push(Prim::Cuboid {
+                    center: [
+                        l.origin[0] + l.collider_offset[0],
+                        l.origin[1] + l.collider_offset[1],
+                        l.origin[2] + l.collider_offset[2],
+                    ],
+                    half,
+                    color: [70, 76, 96],
+                }),
+                oriera_subsys::LinkShape::Ball { radius } => prims.push(Prim::Sphere {
+                    center: [
+                        l.origin[0] + l.collider_offset[0],
+                        l.origin[1] + l.collider_offset[1],
+                        l.origin[2] + l.collider_offset[2],
+                    ],
+                    r: radius,
+                    color: [70, 76, 96],
+                }),
+                _ => prims.push(Prim::Cuboid {
+                    center: [
+                        l.origin[0] + l.collider_offset[0],
+                        l.origin[1] + l.collider_offset[1],
+                        l.origin[2] + l.collider_offset[2],
+                    ],
+                    half: [0.03; 3],
+                    color: [70, 76, 96],
+                }),
+            }
         }
         // arm skeleton: capsules between consecutive chain points,
         // radius read off the link geometry the segment belongs to
@@ -553,6 +570,20 @@ impl TableTopEnv {
                 radius,
                 color: [91, 141, 239],
             });
+        }
+        // ball links rendered as spheres at pose · collider_offset (the
+        // capsule skeleton still runs through them for continuity)
+        for (i, l) in robot.links.iter().enumerate().skip(1) {
+            if let oriera_subsys::LinkShape::Ball { radius } = l.shape {
+                if let Some((pos, rot)) = self.sys.link_pose(i) {
+                    let off = quat_rotate(rot, l.collider_offset);
+                    prims.push(Prim::Sphere {
+                        center: [pos[0] + off[0], pos[1] + off[1], pos[2] + off[2]],
+                        r: radius,
+                        color: [91, 141, 239],
+                    });
+                }
+            }
         }
         // gripper plates as two small balls (plate centres from the sys)
         if let Some([a, b]) = self.sys.plate_positions() {
@@ -590,10 +621,14 @@ impl TableTopEnv {
                 }),
             }
         }
-        // the goal marker (a hair above the surface so the z-buffer
-        // keeps it over the table slab)
+        // the goal marker: a disc on the static surface beneath the goal
+        // (`goal_marker`, P2-R — a mid-air goal such as stack's "A on
+        // top of B" no longer floats a disc over the base and hides it),
+        // a hair above that surface so the z-buffer keeps it over the
+        // slab; surface goals (pick/place) keep their exact old bytes
+        let gm = self.goal_marker();
         prims.push(Prim::Disc {
-            center: [self.goal[0], self.goal[1] + 0.002, self.goal[2]],
+            center: [gm[0], gm[1] + 0.002, gm[2]],
             radius: 0.045,
             color: [64, 200, 132],
         });
@@ -716,33 +751,90 @@ impl TableTopEnv {
         }
     }
 
-    /// One top-down frame as PNG bytes. The legacy cube (default
-    /// `PropShape`) rides the untouched `capture_png` path (byte-stable
-    /// frames); a non-default shape re-renders and stamps the true
-    /// footprint — circle for cylinder/sphere (G-3: 改一字段看得出).
+    /// The legacy top-down `--cam` frame of the current state as raw RGB
+    /// (`view.w × view.h`, row-major) — exactly the pixels the capture
+    /// path encodes into the `top` track, exposed like
+    /// [`Self::render_cameras`] so probes and tests can read the camera
+    /// track without a PNG decoder.
     #[cfg(feature = "cam")]
-    fn frame_png(&self, view: &CameraView, obj: [f32; 3]) -> Result<Vec<u8>, String> {
+    pub fn render_top(&self, view: &CameraView) -> Vec<u8> {
+        self.top_rgb(view, self.cube_pos())
+    }
+
+    /// The legacy bench — two slabs (ground + table) and one default
+    /// cube — is the only scene the M0a top view fully describes; it
+    /// keeps the byte-frozen `capture_png` path.
+    #[cfg(feature = "cam")]
+    fn top_is_legacy(&self) -> bool {
+        self.scene.fixtures.len() <= 2
+            && self.scene.props.len() <= 1
+            && self
+                .scene
+                .props
+                .first()
+                .map(|p| p.shape)
+                .unwrap_or_default()
+                == PropShape::default()
+    }
+
+    /// One top-down frame as raw RGB. The legacy bench renders through
+    /// the untouched `render_top_down`; any other scene pushes the
+    /// legacy cube marker off-screen and completes the picture (P2-R:
+    /// the M0a view drew only the table and `props[0]` — stack's base B,
+    /// the bin's walls and the drawer cabinet were missing from the
+    /// camera track): furniture `fixtures[2..]` *under* the goal/arm
+    /// ([`stamp_fixtures_under`]), the clutter `props[1..]` at their live
+    /// poses, and `props[0]` last with its true footprint — circle for
+    /// cylinder/sphere (G-3: 改一字段看得出). Integer math, deterministic.
+    #[cfg(feature = "cam")]
+    fn top_rgb(&self, view: &CameraView, obj: [f32; 3]) -> Vec<u8> {
         let chain = self.sys.chain_points();
         let scene = self.scene.to_scene3d();
-        let shape = self
-            .scene
-            .props
-            .first()
-            .map(|p| p.shape)
-            .unwrap_or_default();
-        if shape == PropShape::default() {
-            return capture_png(view, &scene, &chain, obj, self.goal);
+        if self.top_is_legacy() {
+            return render_top_down(view, &scene, &chain, obj, self.goal);
         }
-        // Push the legacy cube marker off-screen, then stamp the real
-        // footprint at the prop's position (integer math, deterministic).
         let off = [
             view.center[0] - view.extent[0] * 8.0,
             0.0,
             view.center[1] - view.extent[1] * 8.0,
         ];
         let mut rgb = render_top_down(view, &scene, &chain, off, self.goal);
+        // the table top `render_top_down` painted (its own fallback slab
+        // when the scene has none)
+        let table_top = scene.table.map_or(0.5, |(c, h)| c[1] + h[1]);
+        let furniture: Vec<([f32; 3], [f32; 3])> = self
+            .scene
+            .fixtures
+            .iter()
+            .skip(2)
+            .map(|f| (f.center, f.half))
+            .collect();
+        stamp_fixtures_under(view, &mut rgb, table_top, &furniture);
+        for (i, prop) in self.scene.props.iter().enumerate().skip(1) {
+            if let Some(pose) = self.prop_pose(i) {
+                stamp_prop(view, &mut rgb, pose.pos, prop.shape);
+            }
+        }
+        let shape = self
+            .scene
+            .props
+            .first()
+            .map(|p| p.shape)
+            .unwrap_or_default();
         stamp_prop(view, &mut rgb, obj, shape);
-        encode_png(&rgb, view.w, view.h)
+        rgb
+    }
+
+    /// One top-down frame as PNG bytes (the `top` track). The legacy
+    /// bench rides the untouched `capture_png` path (byte-stable frames);
+    /// everything else encodes [`Self::top_rgb`].
+    #[cfg(feature = "cam")]
+    fn frame_png(&self, view: &CameraView, obj: [f32; 3]) -> Result<Vec<u8>, String> {
+        if self.top_is_legacy() {
+            let chain = self.sys.chain_points();
+            return capture_png(view, &self.scene.to_scene3d(), &chain, obj, self.goal);
+        }
+        encode_png(&self.top_rgb(view, obj), view.w, view.h)
     }
 }
 
@@ -1106,6 +1198,37 @@ impl TableTopEnv {
     /// 场景 prop 总数（含任务对象）。
     pub fn prop_count(&self) -> usize {
         self.prop_ents.len()
+    }
+
+    /// Where renderers put the goal marker (P2-R): the goal's XZ on the
+    /// static surface beneath it. A goal that already sits on a surface
+    /// (pick/place: `goal.y` = the table/ground top) comes back verbatim;
+    /// a mid-air goal — stack's "A's centre on top of B", the drawer's
+    /// handle centre — drops onto the highest fixture top under it, so
+    /// the marker is a floor decal that never hides a prop (the pinhole
+    /// disc used to float 2.7 cm above stack's base B and cover it). One
+    /// function for every entry: the pinhole disc (`scene_view`) and the
+    /// wasm `poses().goal_marker` the browser ring reads. Pure read — no
+    /// physics, no fingerprint input.
+    pub fn goal_marker(&self) -> [f32; 3] {
+        const EPS: f32 = 1e-3;
+        let g = self.goal;
+        let support = self
+            .scene
+            .fixtures
+            .iter()
+            .filter(|f| {
+                (g[0] - f.center[0]).abs() <= f.half[0] && (g[2] - f.center[2]).abs() <= f.half[2]
+            })
+            .map(|f| f.center[1] + f.half[1])
+            .filter(|top| *top <= g[1] + EPS)
+            .fold(None, |best: Option<f32>, top| {
+                Some(best.map_or(top, |b| b.max(top)))
+            });
+        match support {
+            Some(top) if g[1] - top > EPS => [g[0], top, g[2]],
+            _ => g,
+        }
     }
 
     /// End-effector position (introspection for the reach baselines).

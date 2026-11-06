@@ -181,6 +181,54 @@ spec 库（P-9）：官方金标在 `crates/oriera-embodied/specs/official/`（�
 判据语义本身（pick 松爪+静止 / push 禁 holding）仍是 `success_criteria = "v1"`，
 修订版是 M2 的 `@v2`。
 
+### 2.2 失败相位遥测（`failure_phase@v1`，P2 opt-in）
+
+成功率只说「多少集失败」；**失败集死在哪个相位**才告诉你该修相位机还是该调物理。
+`embodied_sim_baseline --failure-phases` 把每集归因到 reach / grasp / lift / place
+四相位之一（成功集为 `null`），只读不写——轨迹、指纹、既有报告键零改动；
+不给这个开关，`eval_report.json` 逐字节不变。
+
+```bash
+cargo run --release -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf -- \
+  --spec crates/oriera-embodied/specs/official/panda-7dof-pick.json --protocol course@v1 \
+  --failure-phases --runs-root runs/
+python scripts/oriera_results.py aggregate runs/ --out out/results/results.csv --format csv
+python scripts/plot_results.py out/results/results.csv --out-dir out/results/plots
+```
+
+**信号**（每个 `step` 后从 env 只读通道累积；`PhaseSignals`）：TCP↔物体最近距离
+`min_ee_obj`、是否握持过 `ever_holding`（与 `holding` 观测同源：默认
+`TipRadius` 判据，spec 选 `Contact` 判据时即接触力判据）、握持期间物体相对出生
+静止位的最大抬升 `max_lift_held`、握持期间物体↔目标的最小水平距离
+`min_goal_xz_held`、末帧物体↔目标水平距离 `final_goal_xz`、末帧是否仍握持。
+
+**判定规则**（按管线顺序取**第一个没达成的里程碑**；`eval::classify_failure`）：
+
+| 相位 | 判定（失败集） | 人话 |
+|---|---|---|
+| `reach` | `min_ee_obj > 0.06 m`（引擎抓取区半径 `GRASP_RADIUS`） | TCP 从没进过物体的抓取区——IK 不可达 / 绕路 / 近基遮挡 |
+| `grasp` | 进过抓取区，但 `holding` 从未成立 | 到了没夹住——指板落点偏、闭合把物体挤走 |
+| `lift` | 握持过，但握持期间物体从未到达目标上方（水平距离 ≤ `deliver_xz`） | 抬升/搬运段丢了——滑出指板、搬运中掉落；drawer 为拖拽段没拉到位 |
+| `place` | 握持着送到过目标上方，回合仍失败 | 放置段——松爪落点出区、未静止、末帧仍握持、弹跳 |
+
+`deliver_xz` 取任务自己的区容差：pick_place / bin_pick / push = `goal_xz_tol`（0.09），
+stack = `stack_xz_tol`（0.03），drawer = `pull_distance / 4`（目标在出生位
+`pull_distance` 外，用区容差会把出生位算成已送达）。任务族：reach 任务只有
+`reach` 相位；push 无抓取（进过抓取区即记 `place`）；其余抓取任务四相位全有。
+规则版本随报告走（`failure_phases.scheme`），改规则 = 新 scheme 常量，旧报告照旧可读。
+
+**报告形态**（仅 `--failure-phases`）：每集 `runs[].failure_phase` + `runs[].phase_signals`
+（米，0.1 mm 取整），顶层 `failure_phases`：`{scheme, rules, episodes, failures,
+by_phase: {reach, grasp, lift, place}, seeds: {…}}`；`oriera_results.py` 聚合时追加
+`failure_phase_scheme` + `fail_reach/fail_grasp/fail_lift/fail_place` 四列，
+`plot_results.py` 另出 `failure_phases.csv` / `failure_phases.png`（堆叠条形）。
+
+**逐 tick 复盘**（SIM_TRACE，环境变量，stderr）：拿 `failure_phases.seeds` 里的种子单集重跑——
+`ORIERA_SIM_TRACE=10 … --seed0 <seed> --episodes 1 --verify-determinism off`
+每 10 tick 一行 `t / grip / hold / obj / B / ee / ik 残差`（非数字值 = 每 20 tick）；
+加 `ORIERA_SIM_TRACE_FK=1` 同行附 FK 接近/开合轴；`ORIERA_SIM_DEBUG=1` 每集末打
+终态（once/at_end/hold/obj/goal/ee + 实测关节角 FK）。三者只打印、不进任何产物。
+
 ## 3. Python 接入（写你自己的策略）
 
 先做完 §1 第 5 条。两层入口，任选：
