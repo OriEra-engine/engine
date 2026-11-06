@@ -188,11 +188,15 @@ panda-contact-criterion.json`（extends `panda-7dof-pick`，仅换
   （~515–555 tick）方块已入目标区、板压强衰减，TipRadius 仍标
   held 直到集末，Contact 在力掉到 1 N 以下即摘标。
 - **结论**：episode 级成功率两口径等价（10/12 = 10/12，零翻转），
-  判据差异全在标签时序——即 U-6 的设计目的。是否把 Contact 升为
-  官方预设判据，按 PLAN-embodied-v3 §三 P2（「Contact 判据出 lab
-  变体跑 12 集对比后决策升官方」）留待决策；本变体留在 `specs/lab/`
-  供复跑（`embodied_sim_baseline --spec crates/oriera-embodied/specs/
-  lab/panda-contact-criterion.json`）。
+  判据差异全在标签时序——即 U-6 的设计目的。【决策落地（P2-Wave2，
+  2026-11-06）】按 §三 P2 拍板**升官方**：`specs/official/
+  panda-contact-criterion.json`（同名同 hash `95f75626` 只换登记
+  tier，lab 原件删除防同名异 hash）；升格加验 paper@v1 100 集同
+  seeds 两口径对照——同样**零翻转**（80/100 = 80/100，steps 逐集
+  相同，仅 reward_sum 随标签微差），course+paper 双协议双跑 runs
+  逐位一致，reference 落盘 `results/reference/95f75626/`；复跑
+  `embodied_sim_baseline --spec crates/oriera-embodied/specs/
+  official/panda-contact-criterion.json`。
 
 ## 4.2 slide prop——场景侧真 prismatic 可动 fixture（P2-W6B，2026-11-05）
 

@@ -9,7 +9,8 @@
 | task | method | 文件 | 入口 | 状态 |
 |---|---|---|---|---|
 | pick_place | scripted-phases | `pick_place/scripted-phases.yaml` | `embodied_sim_collect`（4 轴解析 IK，金标路） | 实测（91.7% 锚） |
-| pick_place | dls-ik | `pick_place/dls-ik.yaml` | `embodied_sim_baseline`（任意 N-DoF；tabletop + panda 两预设） | 实测 |
+| pick_place | dls-ik | `pick_place/dls-ik.yaml` | `embodied_sim_baseline`（任意 N-DoF；tabletop + panda + panda-contact-criterion 三预设） | 实测 |
+| pick_place | dls-ik（contact 判据变体） | `pick_place/dls-ik.yaml`（presets[2]） | `embodied_sim_baseline --spec official/panda-contact-criterion.json` | 实测（P2-Wave2 升格官方，`95f75626`） |
 | pick_place | ppo-sb3 | `pick_place/ppo-sb3.yaml` | `scripts/train_ppo.py` | 实测（已知 0%，LAB-GUIDE §5） |
 | pick_place | act-lerobot | `pick_place/act-lerobot.yaml` | `lerobot-train --policy.type=act` | **占位**（M2 验收 ③ `lerobot-train` 1 step 冒烟待 CI 钉版本） |
 | reach | scripted-phases | `reach/scripted-phases.yaml` | `embodied_sim_collect --task reach` | 实测 |
@@ -19,17 +20,19 @@
 | bin_pick | dls-ik | `bin_pick/dls-ik.yaml` | `embodied_sim_baseline --spec bin-pick-4dof` | 实测 |
 | drawer | dls-ik | `drawer/dls-ik.yaml` | `embodied_sim_baseline --spec drawer-4dof` | 实测 |
 
-## 本次实测参考数（2026-11-03，`embodied_sim_baseline --protocol course@v1 --verify-determinism full --reference-out results/reference`）
+## 本次实测参考数（2026-11-03 首批；2026-11-06 增 panda-contact-criterion 双协议，`embodied_sim_baseline --protocol course@v1|paper@v1 --reference-out results/reference`）
 
 | 预设（spec_hash8） | method | once / at_end | Wilson 95% | 闸 | 吞吐（release） |
 |---|---|---|---|---|---|
 | tabletop-4dof-pick（c90869dc） | dls-ik | 11/12 · 11/12（91.7%） | [64.6%, 98.5%] | ≥90% **pass** | 781 steps/s |
 | panda-7dof-pick（b5535a74） | dls-ik | 10/12 · 10/12（83.3%） | [55.2%, 95.3%] | ≥75% **pass** | 1106 steps/s |
+| panda-contact-criterion（95f75626，P2-Wave2 升格） | dls-ik | 10/12 · 10/12（83.3%） | [55.2%, 95.3%] | ≥75% **pass** | 667 / 561 steps/s（双跑，2026-11-06） |
 | stack-4dof（ffc96325） | dls-ik | 11/12 · 11/12（91.7%） | [64.6%, 98.5%] | ≥75% **pass** | 1146 steps/s |
 | bin-pick-4dof（14fc9bf8） | dls-ik | 12/12 · 12/12（100%） | [75.8%, 100%] | ≥60% **pass** | 564 steps/s |
 | drawer-4dof（ef18ac07） | dls-ik | 10/12 · 10/12（83.3%） | [55.2%, 95.3%] | ≥60% **pass** | 627 steps/s |
 | tabletop-4dof-pick（c90869dc） | scripted-phases（collect，金标路） | 11/12（91.7%） | [64.6%, 98.5%] | ≥90% pass | 2575 steps/s（12 集 state hash = pre-m0a 锚逐个相等） |
 | panda-7dof-pick（b5535a74） | dls-ik · **paper@v1** | 80/100 · 80/100（80.0%） | [71.1%, 86.7%] | ≥75% 对应口径 **pass** | 1932 steps/s |
+| panda-contact-criterion（95f75626） | dls-ik · **paper@v1** | 80/100 · 80/100（80.0%） | [71.1%, 86.7%] | ≥75% 对应口径 **pass** | 802 / 884 steps/s（双跑，2026-11-06） |
 
 Panda paper 口径（P1-B2，2026-11-04）：相位机 ≥6 DoF 专用机制调参后（悬停沉降标定 +
 下探末重标定 + 闭爪目标钉住 + 三级抬升 + 限幅 0.028 rad/tick），paper@v1 100 集
@@ -37,6 +40,22 @@ Panda paper 口径（P1-B2，2026-11-04）：相位机 ≥6 DoF 专用机制调�
 金标桌面与其余 4 轴预设的 course@v1 参考数逐位复现不变（heavy 路只对 ≥6 DoF 生效，
 spec_hash 未变 = 无新预设文件）。失败集中拼凑：方块落在近基区（x < 0.19）的折叠臂位，
 夹爪 1.7 cm 指块摩擦挤压余量不足——下一个调参假设是 preset 的抓取带/指块几何（新文件）。
+
+**Contact 判据升官方（P2-Wave2，2026-11-06）**：lab 变体 `panda-contact-criterion`
+按治理规则升格官方（同名同 hash `95f75626` 只换登记 tier，lab 原件删除防同名异
+hash；升格脉络见 `specs/official/README.md`）。**任务专属闸语义**：判据换装不换闸
+——`pick_place@v1` 的 success = 在区（XZ < 0.09 ∧ 高度带内），不读 `holding`，
+闸值沿用 Panda pick 的 ≥75%（`baseline_gate` 按 task×robot 查表，与 holding 判据
+无关）；变的只是 `holding` 遥测标签（TipRadius 启发式 → Contact 接触力判据：双板
+法向力 ≥1.0 N ∧ 板↔物滑速 ≤0.05 m/s），进报告的只有成功率与奖励里读 holding 的
+两项（grasp_event +2.0 / 持握段塑形项）。**升格证据 = 同 seeds 两口径逐集对照零
+翻转**：course@v1 12 集、paper@v1 100 集 success / once / at_end / steps 逐集全同
+（10/12、80/100，transition 总数 6574 / 57913 也一致），仅 reward_sum 每集有差
+（holding 标签分歧的痕迹；失败 700 步集差 +9…+22——TipRadius 在未接触窗口发假
+「夹住」标签、Contact 按物理修正）。同构建 TipRadius 复跑（`panda-7dof-pick` 本体）
+course/paper 与 `results/reference/b5535a74/` 存档逐集位同——升格未动任何现有预设
+的物理与参考数；新预设两遍双跑 runs 逐集位同（吞吐为计时元数据自然不同），
+reference 落盘 `results/reference/95f75626/{course_v1,paper_v1}.json`。
 
 **失败相位复核（P2 深水区 Wave-1，`failure_phase@v1` 遥测，2026-11-06）**：同命令加
 `--failure-phases` 复跑 paper@v1——100 集与 `results/reference/b5535a74/paper_v1.json`

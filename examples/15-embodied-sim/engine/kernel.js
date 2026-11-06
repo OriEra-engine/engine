@@ -4,7 +4,8 @@
 // Rust 引擎的 JS 镜像——物理、奖励、任务判定、随机化、指纹全部来自
 // vendor/oriera/ 的 oriera-wasm（与 Rust CLI / Python wheel 同一份
 // TableTopEnv）。这里只剩：three.js 渲染、交互（键盘/滑条/相机）、
-// 录制与导出、CDP 钩子，以及一段「渲染层策略」（PHASES+ik，仅喂动作，
+// 录制与导出、CDP 钩子，以及一段「渲染层策略」（PHASES+ik 抓放节拍；
+// drawer 任务走 drawer 相位机——仅喂动作，
 // 不参与判定）。同 spec 同 seed ⇒ 浏览器与 CLI 指纹逐位一致
 // （tools/wasm_golden_check.mjs 逐集验收）。
 //
@@ -130,6 +131,109 @@ function heavyPhases(geom) {
     { grip: 0, ticks: 35, target: (_o, g) => above(g, place) },
     { grip: 0, ticks: 50, target: (_o, g) => above(g, 0.22) },
   ];
+}
+
+// ── drawer 相位机（Wave-2 B 包：移植 embodied_sim_baseline.rs drawer_phases）──
+// drawer@v2 的面板是真 prismatic 滑轨 prop，只能沿滑轨轴动；抓放节拍
+// （PHASES）合爪后「上提」把面板拽向限位、板间打滑丢抓（S 包验收缺口）。
+// 这里按 Rust drawer_phases 六段语义移植——悬停 70 → 下探 60 → 合爪 40 →
+// 拖拽 240 → 松爪 30 → 退 45，节拍/高度/领先量全照 Rust（固定节拍 =
+// 「waypoint × dwell」门控，同 PHASES 的 policyTick 判段，不新增调参）。
+// 拖拽段是领先胡萝卜：TCP 目标在面板前方 ≤3 cm、瞄过目标 1 cm、每 tick
+// 重读面板位姿；方向从 spec 滑轨轴读（scene.props[0].slide.axis），无滑轨
+// （drawer@v1 可动盒体近似）回落 Rust 原式（goal 方向）。IK = 4 轴解析
+// ik（与抓放节拍同口径；Rust 基线用 DLS，演示内核口径免责照旧）。
+
+// 任务判别：task.id 的 '@' 前缀 === "drawer"（同 Rust phases_for）。只认
+// task id——panda 预设的 params 也序列化出 pull_axis 默认值，按字段判会误伤。
+function isDrawerTask(spec) {
+  return String(spec?.task?.id ?? "").split("@")[0] === "drawer";
+}
+
+// 滑轨轴（单位向量）；无滑轨（drawer@v1）返回 null。
+function drawerAxisOf(spec) {
+  const a = spec?.scene?.props?.[0]?.slide?.axis;
+  if (!Array.isArray(a) || a.length !== 3) return null;
+  const n = Math.hypot(a[0], a[1], a[2]);
+  return n > 1e-9 ? [a[0] / n, a[1] / n, a[2] / n] : null;
+}
+
+// Rust toward()：p 沿水平方向 dir 前移 d（XZ 归一、Y 不动；dir 退化返回 p）。
+function toward(p, dir, d) {
+  const n = Math.hypot(dir[0], dir[2]);
+  if (n < 1e-6) return p;
+  return [p[0] + (dir[0] / n) * d, p[1], p[2] + (dir[2] / n) * d];
+}
+
+// drawer 排程（与 Rust drawer_phases 同表；抓取高度 geom.grasp = Rust
+// m.grasp()）。axis = drawerAxisOf(spec)（滑轨轴）或 null。
+function drawerPhases(geom, axis) {
+  const G = geom.grasp;
+  const drag = axis
+    ? (o, g) => {
+        // 滑轨版：方向 = 滑轨轴（面板只能沿它动），余程 = (goal − 面板)·轴。
+        // 引擎 DrawerTask 定义 goal = 出生位 + 轴·pull_distance，面板又被
+        // 滑轨钳在轴线上 ⇒ 与下方 Rust 原式逐值同解（drawer@v2）。
+        const rem = (g[0] - o[0]) * axis[0] + (g[1] - o[1]) * axis[1] + (g[2] - o[2]) * axis[2];
+        if (Math.abs(rem) < 1e-6) return above(o, G); // 同 Rust：已在 goal ⇒ 不领先
+        const dir = rem > 0 ? axis : [-axis[0], -axis[1], -axis[2]];
+        return above(toward(o, dir, Math.min(Math.abs(rem) + 0.01, 0.03)), G);
+      }
+    : (o, g) => {
+        // Rust 原式：瞄过 goal 1 cm（领先 → 0 时面板差 1 mm 停住），领先 ≤3 cm。
+        const d = Math.hypot(g[0] - o[0], g[2] - o[2]) + 0.01;
+        return above(toward(o, [g[0] - o[0], 0, g[2] - o[2]], Math.min(d, 0.03)), G);
+      };
+  return [
+    { grip: 0, ticks: 70, target: (o) => above(o, 0.12) }, // 对齐：面板正上方悬停
+    { grip: 0, ticks: 60, target: (o) => above(o, G) },    // 贴面板：下探到抓取高度
+    { grip: 1, ticks: 40, target: (o) => above(o, G) },    // 合爪
+    { grip: 1, ticks: 240, target: drag },                 // 沿滑轨轴拉出（领先胡萝卜）
+    { grip: 0, ticks: 30, target: (o) => above(o, G) },    // 松爪（判据：松爪 + 静止）
+    { grip: 0, ticks: 45, target: (o) => above(o, 0.22) }, // 退
+  ];
+}
+
+// drawer 策略实例（startPolicy 时建，一集一清）：排程 + 观测下标 + 判据口
+// 径的拉出量遥测。u/dist = 引擎 DrawerTask.axis()（pull_axis 水平归一）/
+// pull_distance，缺省同引擎 PULL_AXIS_DEFAULT / PULL_DISTANCE_DEFAULT。
+function drawerPolicy(spec, geom, idx) {
+  const p = spec.task.params ?? {};
+  const a = p.pull_axis ?? [-1, 0, 0];
+  const n = Math.hypot(a[0], a[2]) || 1;
+  return {
+    phases: drawerPhases(geom, drawerAxisOf(spec)),
+    idx, u: [a[0] / n, 0, a[2] / n], dist: p.pull_distance ?? 0.08,
+    pull: 0, maxPull: 0,
+  };
+}
+
+// 观测 → 面板/目标世界坐标（obj/goal = ee + rel，同 4 轴抓放分支读法）。
+function drawerObs(dr, obs) {
+  const { ee: e, obj: o, goal: g } = dr.idx;
+  const ee = [obs[e], obs[e + 1], obs[e + 2]];
+  return {
+    obj: [ee[0] + obs[o], ee[1] + obs[o + 1], ee[2] + obs[o + 2]],
+    gol: [ee[0] + obs[g], ee[1] + obs[g + 1], ee[2] + obs[g + 2]],
+  };
+}
+
+// 判据口径拉出量（纯观测）：引擎定义 goal = spawn + u·dist、pulled =
+// (obj − spawn)·u ⇒ pulled = dist − (goal − obj)·u，不另存出生位。
+function drawerPull(dr, obs) {
+  const { obj, gol } = drawerObs(dr, obs);
+  return dr.dist - ((gol[0] - obj[0]) * dr.u[0] + (gol[2] - obj[2]) * dr.u[2]);
+}
+
+// drawer 一拍：观测 → [关节目标…, 夹爪]（页面 loop 与 node 测试同一段代码）。
+// 超程后同 Rust：goal 上方 0.22 悬停、开爪。顺带记 dr.pull / dr.maxPull。
+function drawerAction(dr, arm, obs, step) {
+  const { obj, gol } = drawerObs(dr, obs);
+  dr.pull = drawerPull(dr, obs);
+  dr.maxPull = Math.max(dr.maxPull, dr.pull);
+  const ph = policyTick(dr.phases, step);
+  const phase = ph >= 0 ? dr.phases[ph] : null;
+  return phase ? [...ik(arm, phase.target(obj, gol)), phase.grip] : [...ik(arm, above(gol, 0.22)), 0];
 }
 
 // FK（转动 + prismatic）：返回 { tip, approach, gap }（世界系，单位向量）。
@@ -261,7 +365,7 @@ const K = {
   tick: 0, steps: 0, obs: null,
   recording: false, episode: null, episodes: [],
   policyMode: false, policyStep: 0, policySource: "js",
-  naxis: null, phaseGeom: null,
+  naxis: null, phaseGeom: null, drawer: null,
   iEe: 9, iObj: 12, iGoal: 15,
   redraws: 0, keys: new Set(), hudCb: null, logCb: null, recCb: null,
 };
@@ -294,6 +398,7 @@ function applySpec(specText) {
   K.dof = K.spec.robot.joints.length;
   K.arm = ikArmFromSpec(K.spec);
   K.phaseGeom = phaseGeom(K.spec);
+  K.drawer = null; // 换装 = 换任务：上一份 spec 的 drawer 相位机作废
   const names = K.layout.obs;
   K.iEe = names.indexOf("ee.x");
   K.iObj = names.indexOf("obj_rel.x");
@@ -676,13 +781,19 @@ export async function boot(viewport) {
   // 两段式规划，数值 IK 单目标 servo 拖不动（Rust 基线同样不给它 DLS，
   // 见 POSITIONING §2 的诚实边界），演示请换预设或用 CLI。
   const hasPrismatic = () => K.spec.robot.joints.some((j) => j.kind === "Prismatic");
+  // 策略分流（B 包）：drawer 任务（task.id 前缀，同 Rust phases_for）+ 4 轴
+  // 解析 IK 臂 → drawer 相位机；其余（含 N 轴 drawer——无预设、无 DLS 版排
+  // 程）走下方既有分流，逐字节不变。
+  const usesDrawerPolicy = () => isDrawerTask(K.spec) && !!K.arm;
   const policyBtn = document.getElementById("btn-policy");
+  const policyLabel = policyBtn.textContent; // 抓放原文（index.html），非 drawer 原样
   const refreshPolicyBtn = () => {
     const blocked = hasPrismatic();
     policyBtn.setAttribute("aria-disabled", blocked ? "true" : "false");
     policyBtn.title = blocked
       ? "本预设含 prismatic 关节（移动底盘），脚本策略不支持——请在卡片墙换桌面/Panda 预设"
       : "";
+    policyBtn.textContent = usesDrawerPolicy() ? "▶ 脚本策略演示（IK 拉抽屉）" : policyLabel;
   };
   refreshPolicyBtn();
   const canRunJsPolicy = () => {
@@ -694,6 +805,28 @@ export async function boot(viewport) {
   };
   const startPolicy = () => {
     K.policyMode = true; K.policyStep = 0;
+    // drawer 相位机（一集一清：排程 + 拉出量遥测）；非 drawer 置 null 回到
+    // 下方原分流。
+    K.drawer = usesDrawerPolicy()
+      ? drawerPolicy(K.spec, K.phaseGeom, { ee: K.iEe, obj: K.iObj, goal: K.iGoal })
+      : null;
+    if (K.drawer) {
+      K.naxis = null;
+      // 一整段相位机须装进本集剩余步数：Rust run_episode_once 是 reset 后从
+      // 第 0 拍跑满（485 < max_steps 700）；页面 ▶ 接着当前集跑，闲置久了余
+      // 量不够——拖到一半被截断（成功只在松爪段之后）。装不下先切新一集
+      // （录制照回合结束的规矩：≥5 行收带、开新带、查集数上限）。
+      const need = K.drawer.phases.reduce((a, p) => a + p.ticks, 0);
+      if (K.steps + need > K.sim.max_steps()) {
+        if (K.recording && K.episode && K.episode.rows.length >= 5) K.episodes.push({ ...K.episode, ...epReceipt() });
+        envReset((Math.random() * 1e9) | 0); // 会清 policyMode/policyStep——下面复位
+        K.episode = K.recording ? { task: K.sim.task_phrase(), rows: [], obs: Array.from(K.sim.obs()) } : null;
+        K.policyMode = true; K.policyStep = 0;
+        K.drawer.freshEpisode = true;
+        if (K.recording && K.episodes.length >= REC_CAP.episodes) autoStopRecording();
+      }
+      return;
+    }
     if (K.dof !== 4) {
       // N 轴 DLS 演示：heavy 排程 + 标定/钉住/限幅状态（与 baseline 调参
       // 同形；q 热启动从家位开始，一集一清）。
@@ -704,7 +837,21 @@ export async function boot(viewport) {
       };
     } else K.naxis = null;
   };
-  btn("btn-policy", () => { if (!canRunJsPolicy()) return; startPolicy(); log.textContent = "脚本策略运行中…"; });
+  // drawer 的运行/收尾日志（「显示任务成功」：成功与超时都明说拉出量与判据）。
+  const drawerRunText = () =>
+    (K.drawer.freshEpisode ? "（本集剩余步数装不下一整段相位机，已切新一集）" : "") +
+    `脚本策略运行中（抽屉相位机：对齐 → 贴面板 → 合爪 → 沿滑轨轴拉出 → 松爪 → 退；` +
+    `判据 ${K.spec.task.id}：拉出 ≥ ${K.drawer.dist} m + 松爪 + 静止）…`;
+  const drawerVerdict = (ok, finalObs) => {
+    const dr = K.drawer;
+    const end = drawerPull(dr, finalObs); // 判定拍的拉出量（收尾 obs）
+    dr.maxPull = Math.max(dr.maxPull, end);
+    return ok
+      ? `✓ 任务成功（${K.spec.task.id}）：抽屉沿滑轨拉出 ${end.toFixed(3)} m` +
+        `（max_pull ${dr.maxPull.toFixed(3)} m ≥ 判据 ${dr.dist} m）· 松爪静止 · 第 ${K.policyStep} 拍`
+      : `✗ 抽屉相位机未达判据：max_pull ${dr.maxPull.toFixed(3)} m（判据 ≥ ${dr.dist} m + 松爪静止）——已自动重置，可再点 ▶ 重试`;
+  };
+  btn("btn-policy", () => { if (!canRunJsPolicy()) return; startPolicy(); log.textContent = K.drawer ? drawerRunText() : "脚本策略运行中…"; });
   btn("btn-rec", (e) => {
     K.recording = !K.recording;
     e.target.textContent = K.recording ? "■ 停止录制" : "● 开始录制";
@@ -814,7 +961,13 @@ export async function boot(viewport) {
       }
     }
     if (K.policyMode) {
-      if (K.policySource === "wasm") {
+      if (K.drawer) {
+        // drawer 相位机（B 包）：Rust drawer_phases 六段 + 滑轨轴领先胡萝卜，
+        // 解析 ik。排在 wasm 源之前：wasm baseline_action 对 drawer 返回空
+        // 数组（?policy=wasm 下也只有这条路能拉）。
+        action = drawerAction(K.drawer, K.arm, K.sim.obs(), K.policyStep);
+        K.policyStep++;
+      } else if (K.policySource === "wasm") {
         // 同代码逐位口径（12 集验收对 91.7% 用这条）：
         action = Array.from(K.sim.baseline_action(K.policyStep));
         K.policyStep++;
@@ -931,6 +1084,8 @@ export async function boot(viewport) {
           if (K.episodes.length >= REC_CAP.episodes) autoStopRecording();
         }
         episodesRun++;
+        // drawer 收尾日志（仅 drawer 相位机在跑时；其余预设无此行）
+        if (K.drawer && K.policyMode) K.logCb?.(drawerVerdict(terminated, stepObs));
         if (terminated) {
           successCount++; K.policyMode = false;
           post({ type: "state", note: "success" });
@@ -1005,12 +1160,14 @@ export async function boot(viewport) {
       policyMode: K.policyMode,
       holding: K.holding,
       goal: [...K.sim.goal()],
-      phase: policyTick(K.naxis ? K.naxis.phases : PHASES, K.policyStep),
+      phase: policyTick(K.drawer ? K.drawer.phases : K.naxis ? K.naxis.phases : PHASES, K.policyStep),
       step: K.policyStep,
       redraws: K.redraws || 0,
       policySource: K.policySource,
       specHash: K.sim.spec_hash(),
       fingerprint: K.sim.fingerprint(),
+      // drawer 相位机遥测（判据口径拉出量；仅 drawer 相位机建过时出现）
+      ...(K.drawer ? { drawer: { pull: K.drawer.pull, maxPull: K.drawer.maxPull, dist: K.drawer.dist } } : {}),
     }),
     // 诊断出口（Studio cdp 传统）。
     debug: {
@@ -1026,3 +1183,4 @@ export const CONSTANTS = Object.freeze({
   PHASES, MAX_STEPS_FALLBACK: 700,
 });
 export { ik, above, policyTick, ikArmFromSpec, fkPose, dlsSolve, phaseGeom, heavyPhases, propGeom, goalMarkerOf };
+export { isDrawerTask, drawerAxisOf, drawerPhases, drawerPolicy, drawerPull, drawerAction };

@@ -12,6 +12,11 @@ presets:
   - name: panda-7dof-pick         # Panda 7 轴 + gripper2f（--dump-panda-spec 生成）
     spec: crates/oriera-embodied/specs/official/panda-7dof-pick.json
     gate: 0.75
+  - name: panda-contact-criterion # P2-Wave2 升格官方（95f75626）：同 panda-7dof-pick 仅 holding
+                                  # 标签换 Contact 判据（双板法向力 ≥1.0 N ∧ 滑速 ≤0.05 m/s）
+    spec: crates/oriera-embodied/specs/official/panda-contact-criterion.json
+    gate: 0.75                    # 判据换装不换闸：pick_place@v1 success=在区、不读 holding；
+                                  # 两口径同 seeds 逐集零翻转（course 12 集 + paper 100 集）
 eval:
   protocol: course@v1
   episodes: 12
