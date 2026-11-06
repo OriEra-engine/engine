@@ -52,6 +52,14 @@ use std::fmt;
 /// asset URIs are resolved by the importer (`urdf.rs` via
 /// `meshres::parse_stl`), which fills `ConvexHull` with the STL
 /// vertices; GLB stays probe-only until M3.
+///
+/// **P2 (sphere → Ball 直通)**: [`LinkShape::Ball`] is the third analytic
+/// primitive — a rapier `ball(radius)` centred on `collider_offset`.
+/// Rotation-invariant, so it needs no orientation field and survives
+/// any import rotation exactly (URDF `<sphere>` used to degrade to a
+/// `Box{[r; 3]}` envelope). Opt-in by construction: the variant is new,
+/// no pre-P2 spec carries it, so every existing identity hash and
+/// golden trajectory is untouched.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LinkShape {
@@ -59,6 +67,10 @@ pub enum LinkShape {
     Capsule { half_len: f32, radius: f32 },
     /// Axis-aligned box with the given half extents.
     Box { half: [f32; 3] },
+    /// Sphere of the given radius (m), centred on the link's
+    /// `collider_offset` — rapier `ColliderBuilder::ball`. Radius must be
+    /// finite and > 0 (`RobotSpec::validate`).
+    Ball { radius: f32 },
     /// Convex hull of a resolved point cloud (link frame, metres).
     /// Built with rapier `convex_hull` — the *stable* mesh-collision
     /// policy for chain bodies (smooth manifold contacts, unlike raw
@@ -84,6 +96,7 @@ impl LinkShape {
         match self {
             Self::Capsule { half_len, radius } => half_len.is_finite() && radius.is_finite(),
             Self::Box { half } => ok3(*half),
+            Self::Ball { radius } => radius.is_finite(),
             Self::ConvexHull { points } => points.iter().all(|p| ok3(*p)),
             Self::Mesh { vertices, .. } => vertices.iter().all(|p| ok3(*p)),
         }
@@ -651,6 +664,13 @@ impl RobotSpec {
                 reason,
             };
             match &l.shape {
+                // P2 Ball: a zero/negative radius is not a sphere (rapier
+                // would build a point collider that never touches anything).
+                LinkShape::Ball { radius } if *radius <= 0.0 => {
+                    return Err(shape_err(format!(
+                        "Ball radius must be > 0 (m), got {radius}"
+                    )));
+                }
                 LinkShape::ConvexHull { points } if points.len() < 4 => {
                     return Err(shape_err(format!(
                         "ConvexHull needs >= 4 points, got {}",

@@ -177,16 +177,21 @@ HUD 文案（含 G-5「作业证据一律以 CLI eval_report 为准」）、导�
 
 ## 7. 已知边界与 API 缺口（报告项，未改 oriera-agent）
 
-1. **prop 旋转不可见**：`Pose3.rot` 在 `TableTopEnv` 私有字段里，公开 API
-   只有 `cube_pos()`。渲染器方块的**位置精确、姿态恒等**（`poses()` 里
-   标了 `"rot_known": false`）。建议补 `pub fn prop_pose(&self, i) -> Pose3`。
+1. ~~prop 旋转不可见~~（**M2 已关**）：`TableTopEnv::prop_pose(i)` 公开全部
+   prop 的位置 + 旋转，`poses().props` 逐个带 `"rot_known": true`。
 2. **夹爪指板为镜像**：`MultibodySystem::gap_now`/`fingers` 私有；
    oriera-wasm 按同一 ramp 公式镜像（`gap_open/closed/rate` 来自 spec，
    每步推进）。建议补 `pub fn debug_contact_state` 转发或 `pub fn gap()`。
 3. **obs_noise>0 时 FK 用带噪关节角**（观测通道是唯一公开角度源）；
    建议补 `pub fn angles()`（真值）。默认 spec obs_noise=0，无影响。
-4. 杂物 props（props[1..]）无公开读数——渲染器只画 specs 里能读到的
-   props[0]（默认场景只有它）。
+4. ~~杂物 props（props[1..]）无公开读数~~（**M2 + P2-R 已关**）：`poses().props`
+   全量（stack 的底座 B、旧 5-prop 料箱四壁）；P2-R 补齐渲染侧——kernel.js
+   按 spec 的**内部标签** `{"kind":"cuboid",…}` 建 prop 几何（旧读法落空，
+   全画成 5 cm 方块）、`poses().goal_marker`（目标标记落到 goal 正下方的
+   静态支撑面，与 pinhole 目标盘同一函数）；CPU 光栅侧 pinhole 目标盘不再
+   悬空盖住 stack 的 B，legacy `--cam` 俯视轨补画 `fixtures[2..]`/`props[1..]`
+   （金标默认场景字节不变）。守卫：`tests/embodied_cam.rs::p2r_props_render`
+   + `kernel.test.mjs` P2-R 组。
 5. `pyproject.toml` 两处 maturin 配置 bug（未改，验证用临时副本构建）：
    `features = ["pyo3/python"]` → pyo3 无 `python` feature，应为
    `["python"]`（oriera-agent 的 feature）；`python-source = "scripts"`

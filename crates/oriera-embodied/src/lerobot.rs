@@ -64,6 +64,13 @@ pub struct CamTrackData {
 /// Camera track declaration (feature `cam`): the legacy fixed top-down
 /// view, or one spec camera (M3-A). `depth` adds the `depth.{name}`
 /// millimetre u16 PNG track next to `observation.images.{name}`.
+///
+/// P2-W1-D（深度-only 对称）：spec `channels: {rgb: false, depth: true}`
+/// 的深度-only 相机经 [`LeRobotV21::add_camera_channels`]`(track, false)`
+/// 声明——与 RGB-only 相机（`depth = false`）镜像对称：只声明、只落盘它
+/// 真有的那条轨（不再声明没有帧的幻影 `observation.images.{name}` 视频
+/// 特性，v3 树也不再建空 RGB 帧目录）。（RGB 开关不做成本结构体字段：
+/// 字段增删会打断所有 struct 字面量调用点。）
 #[derive(Debug, Clone)]
 pub struct CameraTrack {
     /// LeRobot feature key suffix: `observation.images.<name>`.
@@ -74,6 +81,16 @@ pub struct CameraTrack {
     pub fps: f32,
     /// Also export `depth.<name>` (16-bit grayscale PNG, millimetres).
     pub depth: bool,
+}
+
+/// Which info.json `features` dialect to render. v2.1 is byte-frozen
+/// (金标铁律：v2.1 既有导出逐字节不动); v3.0 carries the lerobot ≥ 0.4
+/// image/video `names` contract (`dataset_to_policy_features` indexes
+/// `names[2]`) and the lerobot depth-map markers (P2-W1-D).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeatureDialect {
+    V21,
+    V30,
 }
 
 /// A dataset under construction. Features: `observation.state`
@@ -95,6 +112,10 @@ pub struct LeRobotV21 {
     /// `observation.images.{name}` (+ `depth.{name}` when declared).
     /// Empty ⇒ state-only dataset.
     pub cameras: Vec<CameraTrack>,
+    /// Names of the depth-only cameras among `cameras` (declared via
+    /// [`Self::add_camera_channels`] with `rgb = false`): no RGB
+    /// feature, no RGB frame dir, RGB frames rejected (P2-W1-D).
+    depth_only: Vec<String>,
     /// `(slice name, start, end)` runs over the state vector and the
     /// action vector — the modality.json / v3-metadata source. Empty ⇒
     /// the legacy fixed-layout fallback (byte-stable 21/5 output).
@@ -120,6 +141,7 @@ impl LeRobotV21 {
             episodes: Vec::new(),
             current: None,
             cameras: Vec::new(),
+            depth_only: Vec::new(),
             obs_slices: Vec::new(),
             action_slices: Vec::new(),
             next_index: 0,
@@ -147,6 +169,7 @@ impl LeRobotV21 {
             episodes: Vec::new(),
             current: None,
             cameras: Vec::new(),
+            depth_only: Vec::new(),
             next_index: 0,
         }
     }
@@ -156,11 +179,14 @@ impl LeRobotV21 {
     /// use [`Self::add_camera`].
     pub fn set_camera(&mut self, track: CameraTrack) {
         self.cameras = vec![track];
+        self.depth_only.clear();
     }
 
     /// Add one camera track (M3-A multi-video: one entry per spec
     /// camera, declaration order = feature order). Duplicate names are
-    /// a contract error — they are LeRobot feature keys.
+    /// a contract error — they are LeRobot feature keys. The track
+    /// exports RGB (+ depth when `track.depth`); a depth-only camera
+    /// goes through [`Self::add_camera_channels`].
     pub fn add_camera(&mut self, track: CameraTrack) -> Result<(), String> {
         if self.cameras.iter().any(|c| c.name == track.name) {
             return Err(format!(
@@ -170,6 +196,32 @@ impl LeRobotV21 {
         }
         self.cameras.push(track);
         Ok(())
+    }
+
+    /// [`Self::add_camera`] with the spec's `channels` spelled out:
+    /// `rgb = false` declares a **depth-only** camera (P2-W1-D) — only
+    /// its `depth.{name}` track is declared and written, symmetric with
+    /// an RGB-only camera (`track.depth = false`). Turning both channels
+    /// off is a contract error (the camera would declare nothing).
+    pub fn add_camera_channels(&mut self, track: CameraTrack, rgb: bool) -> Result<(), String> {
+        if !rgb && !track.depth {
+            return Err(format!(
+                "相机轨 {:?}：rgb/depth 至少开一条（两条都关 = 不声明任何特性）",
+                track.name
+            ));
+        }
+        let name = track.name.clone();
+        self.add_camera(track)?;
+        if !rgb {
+            self.depth_only.push(name);
+        }
+        Ok(())
+    }
+
+    /// Whether camera `c` exports the RGB `observation.images.{name}`
+    /// track (every camera except the declared depth-only ones).
+    pub fn has_rgb(&self, c: &CameraTrack) -> bool {
+        !self.depth_only.contains(&c.name)
     }
 
     /// Record one camera frame (the env's [`CameraFrame`]) for the open
@@ -184,13 +236,22 @@ impl LeRobotV21 {
         let track = self.cameras.iter().find(|c| c.name == cam).ok_or_else(|| {
             format!("push_frame：相机 {cam:?} 未声明（先 set_camera/add_camera）")
         })?;
+        let rgb_declared = self.has_rgb(track);
+        let depth_declared = track.depth;
         let ep = self
             .current
             .as_mut()
             .ok_or("push_frame 前须 start_episode")?;
-        if depth_png.is_some() && !track.depth {
+        if depth_png.is_some() && !depth_declared {
             return Err(format!(
                 "push_frame：相机 {cam:?} 送来 depth 帧但未声明 depth 轨（CameraTrack.depth = false）"
+            ));
+        }
+        // 对称校验（深度-only 相机，P2-W1-D）：未声明 RGB 轨的相机送来
+        // RGB 帧同为契约错误。
+        if rgb_png.is_some() && !rgb_declared {
+            return Err(format!(
+                "push_frame：相机 {cam:?} 送来 RGB 帧但它是深度-only 相机（add_camera_channels(.., rgb = false)）"
             ));
         }
         let data = match ep.tracks.iter_mut().find(|t| t.cam == cam) {
@@ -287,30 +348,50 @@ impl LeRobotV21 {
         )
     }
 
-    /// The `features` block shared by the v2.1 and v3.0 info.json
-    /// (dtypes/shapes/names derive from the layouts — M0a P-8). One
-    /// video entry per camera + one image entry per declared depth
-    /// track (M3-A multi-video).
-    fn features_json(&self) -> String {
+    /// The `features` block of the v2.1 / v3.0 info.json (dtypes/shapes/
+    /// names derive from the layouts — M0a P-8). One video entry per
+    /// RGB-declaring camera + one image entry per declared depth track
+    /// (M3-A multi-video; a depth-only camera declares only its depth
+    /// track — P2-W1-D).
+    ///
+    /// v2.1 strings are byte-frozen (`names: null` and the original
+    /// depth `info`); v3.0 renders the lerobot ≥ 0.4 contract:
+    /// image/video `names = ["height","width","channels"]` (lerobot's
+    /// `dataset_to_policy_features` reads `names[2]` and crashes on
+    /// null) and the depth-map markers `info.is_depth_map = true` +
+    /// `info.depth_unit = "mm"` (lerobot ≥ 0.6 `depth_keys` /
+    /// `rescale_depth_stats`; ≥ 0.7 decodes 16-bit PNG images to
+    /// float32 millimetres), the OriEra PNG/unit keys kept alongside.
+    fn features_json(&self, dialect: FeatureDialect) -> String {
         let state_shape = self.obs_names.len().to_string();
         let action_shape = self.action_names.len().to_string();
         let obs_names = json_string_array(&self.obs_names);
         let action_names = json_string_array(&self.action_names);
+        let names = match dialect {
+            FeatureDialect::V21 => "null",
+            FeatureDialect::V30 => "[\"height\",\"width\",\"channels\"]",
+        };
+        let depth_markers = match dialect {
+            FeatureDialect::V21 => "",
+            FeatureDialect::V30 => "\"is_depth_map\":true,\"depth_unit\":\"mm\",",
+        };
         // Camera features (feature `cam`): video entries whose frames
         // the converter assembles into mp4; depth tracks ride as u16
         // PNG sequences (dtype "image" — no mp4 for depth).
         let mut cam_feats = String::new();
         for c in &self.cameras {
-            cam_feats.push_str(&format!(
-                ",\"observation.images.{name}\":{{\"dtype\":\"video\",\"shape\":[{h},{w},3],\"names\":null,\"info\":{{\"video.fps\":{fps},\"video.codec\":\"libx264\",\"video.pix_fmt\":\"yuv420p\",\"has_audio\":false}}}}",
-                name = c.name,
-                h = c.h,
-                w = c.w,
-                fps = c.fps
-            ));
+            if self.has_rgb(c) {
+                cam_feats.push_str(&format!(
+                    ",\"observation.images.{name}\":{{\"dtype\":\"video\",\"shape\":[{h},{w},3],\"names\":{names},\"info\":{{\"video.fps\":{fps},\"video.codec\":\"libx264\",\"video.pix_fmt\":\"yuv420p\",\"has_audio\":false}}}}",
+                    name = c.name,
+                    h = c.h,
+                    w = c.w,
+                    fps = c.fps
+                ));
+            }
             if c.depth {
                 cam_feats.push_str(&format!(
-                    ",\"depth.{name}\":{{\"dtype\":\"image\",\"shape\":[{h},{w},1],\"names\":null,\"info\":{{\"png.bit_depth\":16,\"png.color_type\":\"grayscale\",\"oriera.unit\":\"millimetre\",\"oriera.no_return\":0}}}}",
+                    ",\"depth.{name}\":{{\"dtype\":\"image\",\"shape\":[{h},{w},1],\"names\":{names},\"info\":{{{depth_markers}\"png.bit_depth\":16,\"png.color_type\":\"grayscale\",\"oriera.unit\":\"millimetre\",\"oriera.no_return\":0}}}}",
                     name = c.name,
                     h = c.h,
                     w = c.w
@@ -368,7 +449,7 @@ impl LeRobotV21 {
             tasks = self.tasks.len(),
             videos = total_videos,
             fps = self.fps,
-            features = self.features_json(),
+            features = self.features_json(FeatureDialect::V21),
         )
     }
 
@@ -779,16 +860,27 @@ impl LeRobotV21 {
     //                             stand-in: PNG frame dir; the converter
     //                             concatenates episodes into one mp4 per
     //                             file using the episodes' from/to timestamps
+    //   depth.<name> (dtype image, info.is_depth_map + depth_unit "mm")
+    //                             lerobot stores image features INSIDE the
+    //                             data parquet; stand-in: the u16 PNG frame
+    //                             dir videos/depth.<name>/chunk-000/file-000/
+    //                             + per-episode `videos/depth.<name>/…`
+    //                             pointers (P2-W1-D). The converter embeds
+    //                             the PNG bytes verbatim as the `Image()`
+    //                             column, adds the depth stats, and drops
+    //                             the stand-in dir + pointer columns.
     //
     // Small datasets (≤1000 episodes, far below 100 MB) land in exactly
     // one chunk and one file — the templates stay v3-correct.
 
     /// v3.0 `meta/info.json`. Per the public format: chunk/file templates
     /// + `data_files_size_in_mb`/`video_files_size_in_mb`; no
-    ///   total_chunks/total_videos; `video_path` null without a camera.
+    ///   total_chunks/total_videos; `video_path` null without a video
+    ///   feature (no camera, or depth-only cameras only — depth is an
+    ///   image feature and lives in the data parquet once converted).
     fn info_json_v3(&self) -> String {
         let n_eps = self.episodes.len();
-        let video_path = if self.cameras.is_empty() {
+        let video_path = if !self.cameras.iter().any(|c| self.has_rgb(c)) {
             "null".to_string()
         } else {
             "\"videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4\"".to_string()
@@ -809,14 +901,29 @@ impl LeRobotV21 {
             tasks = self.tasks.len(),
             fps = self.fps,
             video_path = video_path,
-            features = self.features_json(),
+            features = self.features_json(FeatureDialect::V30),
         )
     }
 
     /// One v3 `meta/episodes` row per episode: the episode boundary and
     /// pointer metadata the v3 reader reconstructs episodes from, plus
     /// this episode's per-feature stats (`stats/<col>/min|...`).
-    fn episode_row_v3(&self, ep_index: usize, ep: &Episode, from_index: u64) -> String {
+    ///
+    /// `depth_from[i]` = depth frames of camera `i` written before this
+    /// episode (the running frame counter of its shared `file-000` dir).
+    /// P2-W1-D：深度轨与 RGB 轨对称——每台声明 depth 的相机每集都带
+    /// `videos/depth.{name}/chunk_index|file_index|from_timestamp|
+    /// to_timestamp` 四列指针（帧 k 的时刻 = k / fps，与 RGB 帧目录同一
+    /// 时钟；按实际深度帧数累加，帧==行时与 RGB 指针数值相同）。指针只
+    /// 服务 raw 树：转换器把深度 PNG 原字节嵌进 data parquet（lerobot 的
+    /// image 特性语义）后删除这四列。
+    fn episode_row_v3(
+        &self,
+        ep_index: usize,
+        ep: &Episode,
+        from_index: u64,
+        depth_from: &[u64],
+    ) -> String {
         let length = ep.rows.len();
         let to_index = from_index + length as u64;
         let mut rows: Vec<Vec<f32>> = Vec::new();
@@ -834,19 +941,31 @@ impl LeRobotV21 {
             let from_t = from_index as f32 / self.fps;
             let to_t = to_index as f32 / self.fps;
             let mut meta = String::new();
-            for c in &self.cameras {
-                if track_rgb(ep, &c.name).is_empty() {
-                    continue;
+            for (ci, c) in self.cameras.iter().enumerate() {
+                if !track_rgb(ep, &c.name).is_empty() {
+                    meta.push_str(&format!(
+                        ",\"videos/observation.images.{name}/chunk_index\":0,\
+                         \"videos/observation.images.{name}/file_index\":0,\
+                         \"videos/observation.images.{name}/from_timestamp\":{ft:.6},\
+                         \"videos/observation.images.{name}/to_timestamp\":{tt:.6}",
+                        name = c.name,
+                        ft = from_t,
+                        tt = to_t
+                    ));
                 }
-                meta.push_str(&format!(
-                    ",\"videos/observation.images.{name}/chunk_index\":0,\
-                     \"videos/observation.images.{name}/file_index\":0,\
-                     \"videos/observation.images.{name}/from_timestamp\":{ft:.6},\
-                     \"videos/observation.images.{name}/to_timestamp\":{tt:.6}",
-                    name = c.name,
-                    ft = from_t,
-                    tt = to_t
-                ));
+                if c.depth {
+                    let k0 = depth_from.get(ci).copied().unwrap_or(0);
+                    let n = track_depth(ep, &c.name).len() as u64;
+                    meta.push_str(&format!(
+                        ",\"videos/depth.{name}/chunk_index\":0,\
+                         \"videos/depth.{name}/file_index\":0,\
+                         \"videos/depth.{name}/from_timestamp\":{ft:.6},\
+                         \"videos/depth.{name}/to_timestamp\":{tt:.6}",
+                        name = c.name,
+                        ft = k0 as f32 / self.fps,
+                        tt = (k0 + n) as f32 / self.fps
+                    ));
+                }
             }
             meta
         };
@@ -929,9 +1048,15 @@ impl LeRobotV21 {
         // everything below 1000 episodes / 100 MB is chunk-000/file-000)
         let mut ep_meta = String::new();
         let mut from_index = 0u64;
+        // per-camera running depth-frame counter (the depth pointers'
+        // position in the camera's shared depth frame dir)
+        let mut depth_from: Vec<u64> = vec![0; self.cameras.len()];
         for (i, ep) in self.episodes.iter().enumerate() {
-            ep_meta.push_str(&self.episode_row_v3(i, ep, from_index));
+            ep_meta.push_str(&self.episode_row_v3(i, ep, from_index, &depth_from));
             from_index += ep.rows.len() as u64;
+            for (ci, c) in self.cameras.iter().enumerate() {
+                depth_from[ci] += track_depth(ep, &c.name).len() as u64;
+            }
         }
         put("meta/episodes/chunk-000/file-000.jsonl", ep_meta.as_bytes())?;
 
@@ -952,21 +1077,26 @@ impl LeRobotV21 {
         // converter concatenates every episode's run into the single
         // mp4 the episodes metadata points into. Depth tracks get a
         // parallel `depth.{name}` dir of the same u16 PNG frames.
+        // P2-W1-D：RGB 目录只为声明了 RGB 的相机建（深度-only 相机此前
+        // 会留一个 0 帧的幻影 `observation.images.{name}` 空目录）——与
+        // RGB-only 相机不建深度目录对称。
         for cam in &self.cameras {
-            let dir = root.join(format!(
-                "videos/observation.images.{}/chunk-000/file-000",
-                cam.name
-            ));
-            std::fs::create_dir_all(&dir)?;
-            let mut k = 0u64;
-            for ep in &self.episodes {
-                for png in track_rgb(ep, &cam.name) {
-                    let rel = format!(
-                        "videos/observation.images.{}/chunk-000/file-000/frame_{k:06}.png",
-                        cam.name
-                    );
-                    put(&rel, png)?;
-                    k += 1;
+            if self.has_rgb(cam) {
+                let dir = root.join(format!(
+                    "videos/observation.images.{}/chunk-000/file-000",
+                    cam.name
+                ));
+                std::fs::create_dir_all(&dir)?;
+                let mut k = 0u64;
+                for ep in &self.episodes {
+                    for png in track_rgb(ep, &cam.name) {
+                        let rel = format!(
+                            "videos/observation.images.{}/chunk-000/file-000/frame_{k:06}.png",
+                            cam.name
+                        );
+                        put(&rel, png)?;
+                        k += 1;
+                    }
                 }
             }
             if cam.depth {
@@ -1708,6 +1838,229 @@ mod tests {
             manifest.contains("videos/chunk-000/depth.wrist/episode_000000/frame_000000.png"),
             "{manifest}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ----- P2-W1-D: depth-only camera symmetry + v3 depth metadata -----
+
+    /// top = RGB-only, wrist = depth-only (spec `channels: {rgb: false,
+    /// depth: true}`); two episodes of different lengths.
+    fn rgb_only_plus_depth_only() -> LeRobotV21 {
+        let mut ds = LeRobotV21::new(60.0, "t", vec!["s".into()], vec!["a".into()]);
+        ds.add_camera(CameraTrack {
+            name: "top".into(),
+            w: 8,
+            h: 6,
+            fps: 60.0,
+            depth: false,
+        })
+        .unwrap();
+        ds.add_camera_channels(
+            CameraTrack {
+                name: "wrist".into(),
+                w: 4,
+                h: 3,
+                fps: 60.0,
+                depth: true,
+            },
+            false,
+        )
+        .unwrap();
+        for (ep, len) in [(0u8, 2usize), (1, 3)] {
+            ds.start_episode("pick up the cube");
+            for k in 0..len {
+                ds.push_step(&[k as f32], &[0.5]).unwrap();
+                ds.push_frame(rgb_frame("top", vec![ep, k as u8, 1]))
+                    .unwrap();
+                ds.push_frame(crate::embodied_env::CameraFrame {
+                    cam: "wrist".into(),
+                    rgb_png: None,
+                    depth_png: Some(vec![ep, k as u8, 2]),
+                })
+                .unwrap();
+            }
+            ds.finish_episode();
+        }
+        ds
+    }
+
+    #[test]
+    fn depth_only_camera_declares_and_writes_only_its_depth_track() {
+        let ds = rgb_only_plus_depth_only();
+        assert!(ds.has_rgb(&ds.cameras[0]) && !ds.has_rgb(&ds.cameras[1]));
+        // both info dialects: no phantom RGB video feature for the
+        // depth-only camera, symmetric with no depth feature for top
+        for info in [ds.info_json(), ds.info_json_v3()] {
+            assert!(info.contains("\"observation.images.top\""), "{info}");
+            assert!(info.contains("\"depth.wrist\""), "{info}");
+            assert!(
+                !info.contains("\"observation.images.wrist\""),
+                "depth-only camera must not declare an RGB track: {info}"
+            );
+            assert!(!info.contains("\"depth.top\""), "{info}");
+        }
+        // v2.1: only the frame dirs that have frames
+        let root21 = std::env::temp_dir().join(format!("oriera-donly21-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root21);
+        ds.write_dir(&root21).expect("v21 tree");
+        for rel in [
+            "videos/chunk-000/observation.images.top/episode_000001/frame_000002.png",
+            "videos/chunk-000/depth.wrist/episode_000000/frame_000001.png",
+            "videos/chunk-000/depth.wrist/episode_000001/frame_000002.png",
+        ] {
+            assert!(root21.join(rel).exists(), "missing {rel}");
+        }
+        assert!(!root21
+            .join("videos/chunk-000/observation.images.wrist")
+            .exists());
+        assert!(!root21.join("videos/chunk-000/depth.top").exists());
+        // v3: the phantom empty RGB dir of the depth-only camera is gone
+        let root3 = std::env::temp_dir().join(format!("oriera-donly30-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root3);
+        ds.write_dir_v3(&root3).expect("v3 tree");
+        assert!(root3
+            .join("videos/observation.images.top/chunk-000/file-000/frame_000004.png")
+            .exists());
+        assert!(root3
+            .join("videos/depth.wrist/chunk-000/file-000/frame_000004.png")
+            .exists());
+        assert!(
+            !root3.join("videos/observation.images.wrist").exists(),
+            "no empty RGB frame dir for a depth-only camera"
+        );
+        assert!(!root3.join("videos/depth.top").exists());
+        let _ = std::fs::remove_dir_all(&root21);
+        let _ = std::fs::remove_dir_all(&root3);
+    }
+
+    #[test]
+    fn depth_only_contract_errors() {
+        let mut ds = rgb_only_plus_depth_only();
+        ds.start_episode("pick up the cube");
+        // RGB frame for a depth-only camera is a contract error
+        let err = ds.push_frame(rgb_frame("wrist", vec![9])).unwrap_err();
+        assert!(err.contains("深度-only"), "{err}");
+        // neither channel on = declares nothing
+        let err = ds
+            .add_camera_channels(
+                CameraTrack {
+                    name: "blind".into(),
+                    w: 1,
+                    h: 1,
+                    fps: 60.0,
+                    depth: false,
+                },
+                false,
+            )
+            .unwrap_err();
+        assert!(err.contains("至少开一条"), "{err}");
+        // set_camera (legacy single view) resets the depth-only set
+        ds.set_camera(CameraTrack {
+            name: "wrist".into(),
+            w: 4,
+            h: 3,
+            fps: 60.0,
+            depth: false,
+        });
+        assert!(ds.has_rgb(&ds.cameras[0]));
+    }
+
+    /// v3 info.json: lerobot image/video `names` contract + depth-map
+    /// markers; v2.1 keeps its byte-frozen form (names null, original
+    /// depth info) for RGB+depth cameras.
+    #[test]
+    fn v3_declares_lerobot_depth_semantics_v21_stays_frozen() {
+        let mut ds = LeRobotV21::new(60.0, "t", vec!["s".into()], vec!["a".into()]);
+        ds.add_camera(CameraTrack {
+            name: "wrist".into(),
+            w: 160,
+            h: 120,
+            fps: 60.0,
+            depth: true,
+        })
+        .unwrap();
+        let v21 = ds.info_json();
+        assert!(v21.contains(",\"observation.images.wrist\":{\"dtype\":\"video\",\"shape\":[120,160,3],\"names\":null,\"info\":{\"video.fps\":60,\"video.codec\":\"libx264\",\"video.pix_fmt\":\"yuv420p\",\"has_audio\":false}}"), "{v21}");
+        assert!(v21.contains(",\"depth.wrist\":{\"dtype\":\"image\",\"shape\":[120,160,1],\"names\":null,\"info\":{\"png.bit_depth\":16,\"png.color_type\":\"grayscale\",\"oriera.unit\":\"millimetre\",\"oriera.no_return\":0}}"), "{v21}");
+        assert!(!v21.contains("is_depth_map"), "v2.1 is byte-frozen: {v21}");
+        let v3 = ds.info_json_v3();
+        let info: serde_json::Value = serde_json::from_str(&v3).expect("v3 info parses");
+        let depth = &info["features"]["depth.wrist"];
+        assert_eq!(depth["dtype"], "image");
+        assert_eq!(depth["shape"], serde_json::json!([120, 160, 1]));
+        assert_eq!(
+            depth["names"],
+            serde_json::json!(["height", "width", "channels"])
+        );
+        assert_eq!(depth["info"]["is_depth_map"], true);
+        assert_eq!(depth["info"]["depth_unit"], "mm");
+        assert_eq!(depth["info"]["png.bit_depth"], 16);
+        assert_eq!(depth["info"]["oriera.unit"], "millimetre");
+        let rgb = &info["features"]["observation.images.wrist"];
+        assert_eq!(
+            rgb["names"],
+            serde_json::json!(["height", "width", "channels"])
+        );
+        assert!(rgb["info"].get("is_depth_map").is_none());
+        assert!(info["video_path"].is_string());
+        // depth-only only ⇒ no video feature ⇒ video_path null
+        let mut d = LeRobotV21::new(60.0, "t", vec!["s".into()], vec!["a".into()]);
+        d.add_camera_channels(
+            CameraTrack {
+                name: "wrist".into(),
+                w: 4,
+                h: 3,
+                fps: 60.0,
+                depth: true,
+            },
+            false,
+        )
+        .unwrap();
+        let info: serde_json::Value = serde_json::from_str(&d.info_json_v3()).unwrap();
+        assert!(info["video_path"].is_null(), "{info}");
+    }
+
+    /// v3 episodes metadata: every depth track gets the four
+    /// `videos/depth.{name}/…` pointer columns on every episode row,
+    /// counted in the track's own frame dir and contiguous across
+    /// episodes — the same shape as the RGB pointers.
+    #[test]
+    fn v3_episode_rows_carry_depth_pointers() {
+        let ds = rgb_only_plus_depth_only();
+        let root = std::env::temp_dir().join(format!("oriera-dptr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        ds.write_dir_v3(&root).expect("v3 tree");
+        let body =
+            std::fs::read_to_string(root.join("meta/episodes/chunk-000/file-000.jsonl")).unwrap();
+        let rows: Vec<serde_json::Value> = body
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        let ts = |r: &serde_json::Value, k: &str| r[k].as_f64().unwrap();
+        for (r, (from, to)) in rows
+            .iter()
+            .zip([(0.0, 2.0 / 60.0), (2.0 / 60.0, 5.0 / 60.0)])
+        {
+            assert_eq!(r["videos/depth.wrist/chunk_index"], 0);
+            assert_eq!(r["videos/depth.wrist/file_index"], 0);
+            assert!((ts(r, "videos/depth.wrist/from_timestamp") - from).abs() < 1e-5);
+            assert!((ts(r, "videos/depth.wrist/to_timestamp") - to).abs() < 1e-5);
+            // RGB pointers of top and depth pointers agree (frames == rows)
+            assert_eq!(
+                r["videos/observation.images.top/from_timestamp"],
+                r["videos/depth.wrist/from_timestamp"]
+            );
+            assert!(r
+                .get("videos/observation.images.wrist/from_timestamp")
+                .is_none());
+            assert!(r.get("videos/depth.top/from_timestamp").is_none());
+        }
+        // 2 + 3 depth frames in the shared dir, numbered contiguously
+        let n = std::fs::read_dir(root.join("videos/depth.wrist/chunk-000/file-000"))
+            .unwrap()
+            .count();
+        assert_eq!(n, 5);
         let _ = std::fs::remove_dir_all(&root);
     }
 

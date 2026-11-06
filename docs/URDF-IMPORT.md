@@ -111,7 +111,7 @@ OriEra 的 Y-up（`RobotSpecOpts.up_axis`，`(x,y,z) ↦ (x, z, −y)`）；
 |---|---|---|
 | `<collision><box size>` | `LinkShape::Box`（半尺寸 = size/2 经旋转取轴对齐包络；90° 整数倍旋转时精确） | — |
 | `<collision><cylinder>` | 世界轴 ≈ ±X → `LinkShape::Capsule{half_len: L/2, radius}`（LinkShape 唯一有向 primitive，沿局部 +X） | 其他朝向 → Box 轴对齐包络（入 `skipped`；`LinkShape` 无旋转字段，M0b） |
-| `<collision><sphere>` | `LinkShape::Box{half:[r,r,r]}`（包络） | — |
+| `<collision><sphere>` | **P2：`LinkShape::Ball{radius}` 直通**（rapier `ball`，球心 = `collider_offset`；旋转不变，任意 base 朝向下逐位保持；无 `<inertial>` 时按真球体积 4/3·πr³ 反推密度）。此前为 `Box{half:[r,r,r]}` 包络——离心落点接触行为不同（球面滚落 vs 平顶托住，见 §8.4 探针数） | 半径非正/非有限 → 链段包络（入 `skipped`），不产出 validate 必拒的 Ball |
 | `<collision><mesh filename>` | **诚实降级**：链段包络（见下）；`mesh_uri` 留 `None`（否则 `validate()` 拒绝），**URI 原文进 `opts.skipped`（M2 消费）** | — |
 | 无 `<collision>` | 链段包络（入 `skipped`） | — |
 | `<collision><origin xyz rpy>` | `collider_offset`（旋到世界系）；primitive 朝向同旋 | — |
@@ -154,6 +154,7 @@ TCP 同系全对齐（Panda 法兰朝下构型的 `approach_axis = [0,−1,0]`�
 |---|---|---|
 | `<robot name>` | `RobotSpec.name` | 缺省 `"urdf"` |
 | `opts.mount` | `RobotSpec.base` 与根 link `origin` | 缺省原点 |
+| `opts.mount_rpy`（P2） | 不增字段：base 安装朝向整体烘进 anchor / axis / origin / 碰撞体 / 惯量 / 夹爪板系（见 §8.4） | 缺省零 = 只平移，逐位旧路径 |
 | —— | `home` = 零位（限位不含零时钳到最近限位，如 Panda joint4 → −0.0698） | — |
 | —— | `action_scale = vec![2.0; n]`、`mass_scale = 1.0`（预设同款，包装层旋钮） | — |
 
@@ -231,6 +232,8 @@ M0b 补了板系朝向字段；**M2-A（2026-11-03）已勾掉两项**：
 | `LinkShape` 无 Mesh 变体 | **M2-A**：`LinkShape::ConvexHull`/`Mesh` 落地；STL（给了 `opts.mesh_base_dir`）经 `meshres::parse_stl` 全量解析，顶点旋到体轴填进 ConvexHull（链体=凸包策略，接触稳定）；GLB 仍探针 → 包络降级（全量解码 M3）；`mesh_uri` 降级为 provenance 元数据（validate 不再拒）；人话报告 `collision_report()` | ✅ 闭环（无旋转字段——体轴对齐点集本身即表示；盒/柱 primitive 的任意角旋转包络仍保守） |
 | `JointSpec` 无关节类型（仅 revolute） | **M3**：`JointKind::Prismatic` 落地，串联链上的 prismatic 真导入（限位 m / effort N / velocity m/s / 独立 N·m 增益缺省）；两指夹爪的 prismatic 手指对仍由 GripperSpec 检测消费、不入链；**仍在范围外**：floating/planar（断链人话报错）、revolute 连杆夹爪（Robotiq 式） | ✅ prismatic 闭环（M3）；floating/planar、连杆夹爪 ⏳ |
 | 每链仅一个 `<collision>` 被消费 | 只取首个 collision | ⏳ 链体多 collider 列表，后续包 |
+| `LinkShape` 无球体（sphere 走 `Box{[r;3]}` 包络） | **P2**：`LinkShape::Ball{radius}` 落地（rapier `ball`、validate 拒非正/非有限半径、身份 hash 新 tag 只对新变体折叠——旧 hash 逐位不动），URDF `<sphere>` 直通 | ✅ 闭环（渲染：pinhole 骨架按 Ball 半径画胶囊段；根/链节画成球体待 `scene_view` 接线 `MultibodySystem::link_pose`，见 §8.4 遗留） |
+| **base 朝向**（导入只平移不旋转；PUGC 实测 arm6 主轴朝 −X） | **P2**：`RobotSpecOpts::mount_rpy` + CLI `--urdf-mount-rpy`；`pitfall_warnings` 第三坑按零位链几何可判并给出修正 yaw（§8.4） | ✅ 闭环 |
 | **PUGC 第一公里断裂**（20 角色集群实测）：`--urdf` 只走 4 轴投影（`first_revolute_chain(4)` 静默降级），U4 全链没有 CLI 入口——自家臂必须手写 Rust（审查 agent 被迫写 `examples/pugc_import.rs` 原型） | **P1-B1**：`--urdf-robot` 全链 CLI 进 `embodied_sim_collect`（§8）：N 轴 + mimic 夹爪 + `--mesh-base`/`--mesh-package` 凸包 + `--urdf-mount` + `--dump-robot-spec`（含 skipped 清单）；坑位三警告；`pugc_import.rs` 原型删除（能力并入） | ✅ 闭环（§8） |
 
 策略文档与验收数字：`docs/PHYSICS-FIDELITY.md`（每项 spec 字段、
@@ -261,6 +264,7 @@ cargo run -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,
 | `--mesh-base <dir>` | STL mesh 解析根目录（透传 `RobotSpecOpts.mesh_base_dir`）：`<collision><mesh>` 的 STL 全量解析 → `LinkShape::ConvexHull`；不给 / GLB / 文件缺失 → 链段包络降级（URI 进 skipped，绝不静默） |
 | `--mesh-package <name=dir>` | `package://name/…` 的包根表（可多次） |
 | `--urdf-mount <x,y,z>` | 根 link 落地安装位；缺省 = 被替换 preset 的 `robot.base`（桌沿 `[0.02, 0.5, 0]`）——URDF 臂落在原臂位置，场景几何原样适用 |
+| `--urdf-mount-rpy <r,p,y>`（P2） | 根 link 安装朝向（透传 `RobotSpecOpts.mount_rpy`）：URDF 世界系 rpy 弧度（外旋 XYZ，同 `<origin rpy>`），**先于** Z-up→Y-up 施加；缺省零 = 只平移（旧行为逐位不动）。语义与示例见 §8.4 |
 | `--dump-robot-spec <file>` | 导出导入结果（含 `--set` 覆盖）的 RobotSpec JSON（`{"robot", "skipped", "warnings"}`）；控制台同时打印 skipped 报告（原 `pugc_import.rs` 原型的打印格式并入，该原型已删） |
 
 **采集策略随 robot 走**：4 轴预设臂保持解析 IK 脚本相位机（金标路径
@@ -287,7 +291,7 @@ URDF robot 有意义——提前施加会撞 4 关节 preset 的形状校验）�
 |---|---|---|
 | **gap_closed ≈ 0**（< 0.01 m） | 指板闭合位相触——运行时一碰方块就挤飞，抓取永不成立 | 人话警告（非致命，`UrdfReport::pitfall_warnings`，tests/urdf_robot_spec.rs 钉死）：点名 preset 参考值 0.046 与 `--set robot.gripper.gap_closed=0.046` 出口（实测输出见下） |
 | **home = URDF 零位** | 竖直/奇异构型是常态，脚本/策略从零位出发够不着桌面 | 人话警告（非致命）+ `--set "robot.home=[q1,q2,…]"` 覆盖 |
-| **base 朝向** | URDF 主轴（链伸展方向）不朝 OriEra +X 时，臂朝反方向伸（PUGC 实测 arm6 主轴朝 −X） | 文档化：**导入只平移（`--urdf-mount`）不旋转**——URDF +X 经 Z-up→Y-up 换算后仍是 OriEra +X；主轴朝别的方向请先改 URDF 根变换。每次导入固定打印一行提醒 |
+| **base 朝向** | URDF 主轴（链伸展方向）不朝 OriEra +X 时，臂朝反方向伸（PUGC 实测 arm6 主轴朝 −X） | ~~文档化：导入只平移不旋转，请先改 URDF 根变换~~ → **P2 可判 + 可修**：`--urdf-mount-rpy` 旋转安装朝向；`pitfall_warnings` 按零位链几何判（根原点 → 末端/TCP 的水平伸展 ≥ 5 cm 且偏离 OriEra +X > 45° 报警）并算好修正值 `--urdf-mount-rpy 0,0,<yaw>`（§8.4）；导入时固定打印一行当前安装朝向 |
 
 ### 8.3 实测输出（合成 6 轴 + mimic 夹爪 + mesh，验收原样）
 
@@ -333,6 +337,70 @@ gap-touch 孪生夹具（`six_axis_gap_touch.urdf`，指板零偏移）实测警
                       采集照常进行，scene/task/DR 沿用 preset
   --urdf FILE         旧 4 轴投影入口（first_revolute_chain(4)，只落盘不采集）——仅为兼容保留
 ```
+
+> 注（P2）：上面 §8.3 的输出是 P1-B1 当时的验收原样；P2 起首行固定提示改为
+> 「base 朝向：安装朝向 rpy = [..]（--urdf-mount-rpy …）」，第三坑由 §8.4 的
+> 可判警告接管。
+
+### 8.4 base 朝向（P2，PLAN-embodied-v3 P2 深水区 Wave-1 · P 包）
+
+**语义**：`RobotSpecOpts::mount_rpy` / `--urdf-mount-rpy r,p,y` = 根 link 在
+**URDF 世界系**（上轴约定同 `up_axis`，REP-103 即 Z-up）里的安装朝向，外旋
+XYZ 弧度（与 `<origin rpy>` 同约定），**先于** Z-up→Y-up 施加：
+
+```
+R_world = R_up · R(mount_rpy)        （mount_rpy = 0 时直接取 R_up，逐位旧路径）
+```
+
+等价于在 URDF 外面套一层 `world →(fixed, origin rpy=mount_rpy)→ 根 link`——
+URDF 内**自带**这种 world 根变换时，导入经 fixed 吸收照样进 FK（不丢
+base 姿态），两条路的关节表逐项相等（`urdf.rs` 测试
+`mount_rpy_equals_a_fixed_world_root`）。RobotSpec 的 link 体系在 home 位姿
+与世界对齐，朝向整体烘进 anchor / axis / origin / collider_offset / 惯量
+（质心旋转、张量 R·I·Rᵀ）/ 夹爪板系（approach/gap 轴、tcp_offset）——
+**RobotSpec 不新增字段**，身份 hash 随几何自然变化（新安装朝向 = 新实验）。
+
+| 场景 | `--urdf-mount-rpy` |
+|---|---|
+| 主轴朝 −X 的臂（PUGC arm6） | `0,0,3.14159`（或用警告给出的精确 yaw） |
+| 吊装（倒挂，基座朝下） | `3.14159,0,0` |
+| 壁装（基座朝 OriEra +X / −X） | `0,1.5708,0` / `0,-1.5708,0`（绕 URDF +Y 俯仰 90°） |
+
+**可判警告**（`pitfall_warnings` 第三坑）：零位链几何（RobotSpec 的 link
+origin 即零位 FK）的根原点 → 末端（有夹爪取 TCP）水平伸展 ≥ 5 cm 且偏离
+OriEra +X 超过 45° 时报警，并给出修正 yaw = `atan2(h_z, h_x)`（REP-103 URDF 绕
++Z）：未给安装朝向时即 `--urdf-mount-rpy 0,0,<yaw>`，已给 `r,p,y` 时把它加到 y 上
+（外旋 XYZ 的 `R(r,p,y+ψ) = Rz(ψ)·R(r,p,y)`，绕竖直轴整体转 ψ）。竖直臂（水平伸展 < 5 cm）
+不判；既有夹具不误报（`gap_touch_twin_trips_the_gap_warning` 钉住 panda7 零警告），
+主轴朝 −X 的反例触警、按警告给的 yaw 重导入后伸展朝 +X 且警告消失（`urdf.rs` 单测
+`backward_arm_trips_the_base_heading_warning_and_the_hint_fixes_it`）。
+
+**诚实边界**：
+
+- 盒/柱 primitive 的任意角旋转仍取轴对齐包络（`LinkShape` 无旋转字段——
+  90° 整数倍精确，其余保守）；`Ball` 与凸包点集旋转后逐点精确。
+- URDF 自带的 world 根若无 `<collision>`（常见：Gazebo 的 `world` dummy link），
+  根体碰撞体走链段包络并入 `skipped`——fixed 吸收进来的 base_link 几何不合并
+  （「每链仅一个 `<collision>`」同一遗留项）；用 `mount_rpy` 代替 world 根即可
+  保留 base_link 自己的碰撞体。
+
+**验收（FK 一致性，非单位朝向 `rpy = [0.4, −0.3, 2.2]`）**：
+
+- 导入层（`urdf.rs` 单测 `mount_rpy_rotates_the_imported_chain_rigidly`）：
+  anchor / axis / origin−mount / collider_offset / 惯量质心逐项 = 平移-only
+  导入值左乘 OriEra 系旋转 `R_up·R(rpy)·R_upᵀ`（≤1e-6），张量迹不变，Ball 逐位不变；
+  零 rpy（含 −0.0）与缺省导入逐位相等。
+- 运动学 + 仿真（`tests/urdf_robot_spec.rs::base_mount_rpy_keeps_fk_and_sim_consistent`，
+  six_axis 6 轴 + mimic 夹爪 + STL 凸包）：8 组限位内关节角 `ik::fk_pose` 的 TCP
+  最大偏差 **3.6e−7 m**、接近/开合轴同转；rapier 零重力跟踪 240 tick 后实测
+  TCP、带朝向 spec 的 FK、平移-only 仿真 TCP 绕 mount 旋转三者一致（实测差
+  < 1e−6 m，门槛 2 mm）。
+
+**sphere → Ball 探针（旧 vs 新，`crates/oriera-subsys/tests/ball_link_contact.rs`）**：
+半径 0.04 m 的固定 Ball 根体（球心 = origin + collider_offset = (0, 0.30, 0)）上
+落 r = 0.02 m 球形 prop——正上方落下静止于 y = 0.35973（理论 0.36，接触容差
+0.27 mm，球心 + 半径成立）；**偏心 0.02 m** 落下 240 tick：新 `Ball` → 球面滚落、
+停在地面 (1.236, 0.0199, 0)；旧 `Box{[r;3]}` 包络 → 平顶托住、停在 (0.02, 0.35973, 0)。
 
 ## 附录：MJCF 全量交叉验证（2026-11-01 · MuJoCo 3.17.0）
 

@@ -23,12 +23,21 @@
 //!       `--dump-panda-spec FILE`（一次性生成逻辑：panda7.urdf + gripper2f.urdf
 //!       → `panda-7dof-pick` 预设落盘，kp/kd 用 WP-D 验证过的 300/30）
 //!       `--force`
+//!       `--failure-phases`（P2 opt-in 遥测：失败集按 reach/grasp/lift/place 归因，
+//!       eval_report 增 `failure_phases` 块 + 每集 `failure_phase`/`phase_signals`；
+//!       不给则报告逐字节不变。判定规则 docs/LAB-GUIDE.md §2.2）
 //! Output: `<out>/eval_report.json` + `<out>/run_manifest.json`
 //!         （`--reference-out` 另写 `<dir>/<spec_hash8>/<protocol>.json`）
+//!
+//! 逐 tick 轨迹：`ORIERA_SIM_TRACE=<N>`（每 N tick 一行 grip/hold/obj/B/ee/ik 残差，
+//! 非数字 = 20）、`ORIERA_SIM_TRACE_FK=1`（同行附 FK 接近/开合轴）、
+//! `ORIERA_SIM_DEBUG=1`（每集末一行终态 + FK）——都打到 stderr，配合
+//! `--failure-phases` 给出的失败 seed 用 `--seed0 <seed> --episodes 1` 单集复盘。
 
 use oriera_agent::embodied_env::{task_entry, EmbodiedEnv, ObsLayout, TableTopEnv};
 use oriera_agent::eval::{
-    self, baseline_gate, EpisodeOutcome, EpisodeRow, EvalProtocol, Gate, SuccessView,
+    self, baseline_gate, classify_failure, summarize_failure_phases, EpisodeOutcome, EpisodeRow,
+    EvalProtocol, FailurePhaseRules, Gate, PhaseSignals, SuccessView,
 };
 use oriera_agent::ik::DlsIk;
 use oriera_agent::manifest::{write_run_manifest_opts, ManifestExtra};
@@ -742,9 +751,11 @@ struct Args {
     dump_panda_spec: Option<String>,
     force: bool,
     sanitize: bool,
+    /// P2 `--failure-phases`：失败相位遥测进报告（opt-in；缺省报告逐字节不变）。
+    failure_phases: bool,
 }
 
-const USAGE: &str = "--spec/--set/--episodes/--seed0/--seed/--protocol/--gate/--out/--runs-root/--reference-out/--verify-determinism/--dump-panda-spec/--force";
+const USAGE: &str = "--spec/--set/--episodes/--seed0/--seed/--protocol/--gate/--out/--runs-root/--reference-out/--verify-determinism/--dump-panda-spec/--failure-phases/--force";
 
 fn fail(msg: &str) -> ! {
     eprintln!("错误：{msg}");
@@ -766,6 +777,7 @@ fn parse_args() -> Args {
         dump_panda_spec: None,
         sanitize: false,
         force: false,
+        failure_phases: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -816,6 +828,7 @@ fn parse_args() -> Args {
                 a.dump_panda_spec = Some(it.next().expect("--dump-panda-spec 需要一个文件路径"))
             }
             "--force" => a.force = true,
+            "--failure-phases" => a.failure_phases = true,
             other => fail(&format!("未知参数 {other}（可用 {USAGE}）")),
         }
     }
@@ -971,6 +984,9 @@ fn dump_panda_spec(out: &str) {
 struct RunResult {
     rows: Vec<EpisodeRow>,
     views: Vec<SuccessView>,
+    /// P2 failure-phase signals per kept episode (draw order) — always
+    /// folded (read-only), emitted only under `--failure-phases`.
+    signals: Vec<PhaseSignals>,
     hashes: Vec<u64>,
     total_steps: u64,
     draws: u64,
@@ -984,7 +1000,9 @@ fn make_env(spec: &SceneSpec) -> TableTopEnv {
 /// One episode: reset(seed) → phase script → DLS per tick. Dual success
 /// (once / at_end) tracked here and returned alongside; the row's
 /// `success` keeps the legacy once-semantics so the frozen protocol
-/// struct is unchanged.
+/// struct is unchanged. The failure-phase signals are folded from
+/// read-only env channels after every step (P2) — no write, so the
+/// trajectory is the pre-P2 one bit for bit.
 fn run_episode_once(
     env: &mut TableTopEnv,
     seed: u64,
@@ -992,8 +1010,9 @@ fn run_episode_once(
     ik: &mut DlsIk,
     idx: &ObsIdx,
     geom: &PhaseGeom,
-) -> Result<(EpisodeOutcome, SuccessView), String> {
+) -> Result<(EpisodeOutcome, SuccessView, PhaseSignals), String> {
     let mut obs = env.reset(seed);
+    let mut signals = PhaseSignals::start(env.cube_pos());
     let dof = env.robot.dof();
     let down = [0.0f32, -1.0, 0.0];
     // The solver restarts from home with the arm: an episode's IK path
@@ -1017,6 +1036,7 @@ fn run_episode_once(
     while step < env.spec().max_steps && !terminated && !truncated {
         let action = policy(&obs, idx, phases, step, ik, dof, down, geom, &mut state);
         let out = env.step(&action);
+        signals.observe(env.ee_pos(), env.cube_pos(), env.goal(), env.holding());
         if trace && step.is_multiple_of(trace_every) {
             let c = env.cube_pos();
             let e = env.ee_pos();
@@ -1047,7 +1067,7 @@ fn run_episode_once(
         step += 1;
     }
     if step < 5 {
-        return Ok((EpisodeOutcome::Degenerate, SuccessView::default()));
+        return Ok((EpisodeOutcome::Degenerate, SuccessView::default(), signals));
     }
     let fp = env.fingerprint();
     let rand = env.randomization_receipt().to_string();
@@ -1098,6 +1118,7 @@ fn run_episode_once(
             rand,
         }),
         view,
+        signals,
     ))
 }
 
@@ -1109,16 +1130,19 @@ fn collect(spec: &SceneSpec, protocol: &EvalProtocol) -> Result<RunResult, Strin
     let mut ik = DlsIk::new(&env.robot, &env.robot.home);
     let mut total_steps = 0u64;
     let mut views: Vec<SuccessView> = Vec::new();
+    let mut signals: Vec<PhaseSignals> = Vec::new();
     let result = eval::evaluate(protocol, |seed, _draw| {
-        let (out, view) = run_episode_once(&mut env, seed, &phases, &mut ik, &idx, &geom)?;
+        let (out, view, sig) = run_episode_once(&mut env, seed, &phases, &mut ik, &idx, &geom)?;
         if let EpisodeOutcome::Done(row) = &out {
             total_steps += row.steps;
             views.push(view);
+            signals.push(sig);
         }
         Ok(out)
     })?;
     Ok(RunResult {
         views,
+        signals,
         hashes: result.rows.iter().map(|r| r.fingerprint_v1).collect(),
         rows: result.rows,
         total_steps,
@@ -1219,7 +1243,7 @@ fn main() {
             let geom = PhaseGeom::from_robot(&env.robot);
             let phases = phases_for(&spec.task.id, geom.sag_comp).unwrap_or_else(|e| fail(&e));
             let mut ik = DlsIk::new(&env.robot, &env.robot.home);
-            let (re, _) = run_episode_once(&mut env, seed0, &phases, &mut ik, &idx, &geom)
+            let (re, _, _) = run_episode_once(&mut env, seed0, &phases, &mut ik, &idx, &geom)
                 .unwrap_or_else(|e| fail(&format!("sample 复核失败：{e}")));
             let row = match re {
                 EpisodeOutcome::Done(row) => row,
@@ -1287,13 +1311,55 @@ fn main() {
         gate_threshold * 100.0
     );
 
+    // P2 失败相位遥测（opt-in）：每集按 failure_phase@v1 规则归因（成功集
+    // 为 null），聚合块 + 每集信号只在 `--failure-phases` 下进报告——不给
+    // 则 eval_report.json 逐字节不变（只增不改，既有键零改动）。
+    let phase_rules = FailurePhaseRules::for_task(&spec.task.id, &spec.task.params);
+    let phase_rows: Vec<(u64, Option<eval::FailurePhase>)> = r1
+        .rows
+        .iter()
+        .zip(&r1.signals)
+        .map(|(row, sig)| (row.seed, classify_failure(row.success, sig, &phase_rules)))
+        .collect();
+    let phase_summary = summarize_failure_phases(&phase_rows, phase_rules);
+    if args.failure_phases {
+        let b = &phase_summary.by_phase;
+        let s = &phase_summary.seeds;
+        let seeds_txt: Vec<String> = [
+            ("reach", &s.reach),
+            ("grasp", &s.grasp),
+            ("lift", &s.lift),
+            ("place", &s.place),
+        ]
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| format!("{k} {v:?}"))
+        .collect();
+        println!(
+            "  · 失败相位（{}）：失败 {}/{} → reach {} · grasp {} · lift {} · place {}{}",
+            phase_summary.scheme,
+            phase_summary.failures,
+            phase_summary.episodes,
+            b.reach,
+            b.grasp,
+            b.lift,
+            b.place,
+            if seeds_txt.is_empty() {
+                String::new()
+            } else {
+                format!("（seeds：{}）", seeds_txt.join("；"))
+            }
+        );
+    }
+
     // eval_report.json（双报：once / at_end + Wilson；协议 + 判据 + 闸）
     let per_ep: Vec<serde_json::Value> = r1
         .rows
         .iter()
         .zip(r1.views.iter())
-        .map(|(row, view)| {
-            serde_json::json!({
+        .enumerate()
+        .map(|(i, (row, view))| {
+            let mut v = serde_json::json!({
                 "seed": row.seed,
                 "success": row.success,
                 "success_once": view.once,
@@ -1301,10 +1367,15 @@ fn main() {
                 "steps": row.steps,
                 "reward_sum": ((row.reward_sum as f64) * 1000.0).round() / 1000.0,
                 "rand": row.rand.replace('"', "'"),
-            })
+            });
+            if args.failure_phases {
+                v["failure_phase"] = serde_json::json!(phase_rows[i].1.map(|p| p.as_str()));
+                v["phase_signals"] = phase_signals_json(&r1.signals[i]);
+            }
+            v
         })
         .collect();
-    let report = serde_json::json!({
+    let mut report = serde_json::json!({
         "task": entry.phrase,
         "task_id": spec.task.id,
         "method": "dls-ik",
@@ -1340,6 +1411,14 @@ fn main() {
         "verify_determinism": match args.verify { Verify::Full => "full", Verify::Sample => "sample", Verify::Off => "off" },
         "runs": per_ep,
     });
+    if args.failure_phases {
+        // 经字符串回读：f32 阈值按 ryu 最短表示落盘（0.09 而非 f64 展开的
+        // 0.09000000357627869）。
+        report["failure_phases"] = serde_json::from_str(
+            &serde_json::to_string(&phase_summary).expect("failure-phase summary serializes"),
+        )
+        .expect("failure-phase summary re-parses");
+    }
     let report_path = out.join("eval_report.json");
     std::fs::write(
         &report_path,
@@ -1398,6 +1477,26 @@ fn main() {
 
 fn env_phrase(spec: &SceneSpec) -> &'static str {
     task_entry(&spec.task.id).map(|e| e.phrase).unwrap_or("")
+}
+
+/// Round to 0.1 mm for the report (the classifier ran on full precision).
+fn r4(v: f32) -> f64 {
+    ((v as f64) * 1e4).round() / 1e4
+}
+
+/// One episode's `phase_signals` report object (`--failure-phases`).
+fn phase_signals_json(s: &PhaseSignals) -> serde_json::Value {
+    serde_json::json!({
+        "obj0": s.obj0.map(r4),
+        "ticks": s.ticks,
+        "min_ee_obj": r4(s.min_ee_obj),
+        "ever_holding": s.ever_holding,
+        "holding_ticks": s.holding_ticks,
+        "max_lift_held": r4(s.max_lift_held),
+        "min_goal_xz_held": s.min_goal_xz_held.map(r4),
+        "final_goal_xz": r4(s.final_goal_xz),
+        "holding_at_end": s.holding_at_end,
+    })
 }
 
 /// The legacy once-rate (EpisodeRow.success), identical to

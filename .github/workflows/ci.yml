@@ -7,13 +7,22 @@ on:
   schedule:
     # 慢测试分层夜间腿（embodied-slow，PLAN-embodied-v3 §二 #20）：
     # #[ignore] 慢层物理长跑只在 nightly 兜底，不进 PR 门禁。
+    # LeRobot 真加载冒烟（lerobot-loader，P2-W1-D b 层）同一夜间调度。
     - cron: "23 3 * * *"
-  workflow_dispatch: # 指纹矩阵手动触发用（embodied-fingerprints-matrix）+ embodied-slow 手动补跑
+  workflow_dispatch: # 指纹矩阵手动触发用（embodied-fingerprints-matrix）+ embodied-slow 手动补跑 + lerobot-loader 可选腿
     inputs:
       matrix_only:
         description: "只跑指纹矩阵（跳过全部常规 job，PLAN-embodied-v3 §二 #18）"
         type: boolean
         default: false
+      lerobot_smoke:
+        description: "加跑 LeRobot 真加载冒烟腿（b 层：pip 装钉版 lerobot + 真 LeRobotDataset；matrix_only=true 时不跑）"
+        type: boolean
+        default: false
+      lerobot_version:
+        description: "lerobot-loader 钉的 lerobot 版本（试新版时改这里；0.7.0 = 首个原生把 16-bit PNG 深度解成毫米的版本）"
+        type: string
+        default: "0.7.0"
 
 # 同分支新推送取消旧跑：省 runner 分钟，也避免旧红掩盖新绿
 # （PLAN-embodied-v3 §二 #18，CI 工程师 P1）。
@@ -178,11 +187,20 @@ jobs:
   # 三出口 CI 冒烟腿（PLAN-embodied-v3 §二 #14，QA-5 + DE-2）：采集 →
   # npz → converter → selfcheck → aggregate → plot 的 Python 数据管线
   # 此前零 CI、三出口一致性靠人肉。2 集 + debug 构建（速度优先），
-  # 全部 pass 才绿；15 分钟硬顶。
+  # 全部 pass 才绿。
+  # P2-W1-D 并入 LeRobot 加载冒烟 a 层（PR 门禁，零 lerobot/torch 依赖）：
+  # v3 树转换后过 `lerobot_load_smoke.py`（emulate：逐条复刻 lerobot v3
+  # 读路径——HF 特性↔parquet 列/类型、tasks 索引、episodes 指针、mp4
+  # 在位、dataset_to_policy_features、迭代 32 帧）；另采两份相机 v3
+  # （腕相机 RGB+深度 + 俯拍；同 spec 经 --set 派生的深度-only 变体，
+  # max_steps=90 控时）钉住深度轨元数据 / 深度嵌 parquet / 深度-only
+  # 对称三件。依赖只加 imageio[ffmpeg]（mp4 + numpy/Pillow）；刻意不装
+  # pandas——转换器无 pandas 回退路径也在门禁里。硬顶 15→25 min（两份
+  # 相机采集 + mp4 转码）。
   data-pipeline:
     if: inputs.matrix_only != true
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -192,23 +210,103 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install pyarrow (converter / aggregate)
-        run: python -m pip install pyarrow
+      - name: Install pyarrow + imageio[ffmpeg] (converter / aggregate / camera mp4)
+        run: python -m pip install pyarrow imageio imageio-ffmpeg
       - name: Build collect (debug — 2 集冒烟速度优先)
         run: cargo build -q -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf
-      - name: Collect 2 episodes (reach → npz + lerobot-v21)
+      - name: Collect 2 episodes (reach → npz + lerobot-v21 + lerobot-v30)
         run: >
           cargo run -q -p oriera-agent --example embodied_sim_collect
           --features rigid3d,cam,spec,urdf
-          -- --task reach --episodes 2 --export npz --out out/smoke
+          -- --task reach --episodes 2 --export npz --lerobot-v3 --out out/smoke
       - name: Convert JSONL → parquet (LeRobot v2.1)
         run: python scripts/jsonl_to_lerobot_v21.py out/smoke/lerobot-v21
       - name: Selfcheck converted v2.1 tree (incl. MANIFEST 对账)
         run: python scripts/lerobot_v3_selfcheck.py --v21 out/smoke/lerobot-v21
+      - name: Convert + selfcheck + loader smoke a 层 (LeRobot v3.0, state-only)
+        run: |
+          python scripts/jsonl_to_lerobot_v21.py out/smoke/lerobot-v30
+          python scripts/lerobot_v3_selfcheck.py out/smoke/lerobot-v30
+          python scripts/lerobot_load_smoke.py out/smoke/lerobot-v30
+      - name: Collect camera v3 (wrist RGB+depth + top RGB; depth-only variant via --set)
+        run: |
+          cargo run -q -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- \
+            --spec crates/oriera-embodied/specs/lab/wrist-cam-demo.json --set max_steps=90 \
+            --episodes 2 --cam --cameras-from-spec --lerobot-v3 --gate report --verify-determinism off \
+            --out out/smoke-rgbd
+          cargo run -q -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- \
+            --spec crates/oriera-embodied/specs/lab/wrist-cam-demo.json --set max_steps=90 \
+            --set scene.cameras.0.kind.pinhole.channels.rgb=false \
+            --episodes 2 --cam --cameras-from-spec --lerobot-v3 --gate report --verify-determinism off \
+            --out out/smoke-donly
+      - name: Camera trees — v2.1 raw selfcheck + v3 convert/selfcheck/loader smoke a 层
+        run: |
+          for variant in rgbd donly; do
+            python scripts/lerobot_v3_selfcheck.py --v21 out/smoke-$variant/lerobot-v21
+            python scripts/jsonl_to_lerobot_v21.py out/smoke-$variant/lerobot-v30
+            python scripts/lerobot_v3_selfcheck.py out/smoke-$variant/lerobot-v30
+            python scripts/lerobot_load_smoke.py out/smoke-$variant/lerobot-v30
+          done
       - name: Aggregate eval_report → results table
         run: python scripts/oriera_results.py aggregate out/smoke --out out/smoke-results/results.csv --format csv
       - name: Plot summary (无 matplotlib 走 CSV 降级)
         run: python scripts/plot_results.py out/smoke-results/results.csv --out-dir out/smoke-results/plots
+
+  # LeRobot 真加载冒烟（P2-W1-D b 层）：装钉版 lerobot（torch 走
+  # download.pytorch.org/whl/cpu 的 CPU 轮子——PyPI 默认 Linux torch 带
+  # CUDA 依赖链约 2.5 GB）→ 采两份相机 v3（同 data-pipeline）→ 转换 →
+  # 真 `LeRobotDataset(root=…, video_backend="pyav")` 加载 + 均匀抽 48 帧
+  # 解码（视频 [0,1] / 深度 float32 毫米）+ dataset_to_policy_features
+  # （lerobot-train 入口）+ 一个 DataLoader batch。HF_HUB_OFFLINE=1：本地
+  # 读失败就地红，不去 Hub 兜底。
+  # 选型：装依赖（torch CPU ~200 MB + lerobot[dataset]）是大头，整腿约
+  # 10–15 runner-min 且受上游发版节奏影响——不进 PR 门禁（PR 由
+  # data-pipeline 的 emulate 读路径复刻兜底）；夜间 schedule 与
+  # embodied-slow 同批跑，持续校准 a 层复刻与真 lerobot 不漂；手动
+  # dispatch 须显式勾 lerobot_smoke（不让每次指纹/慢测补跑都付装 torch
+  # 的钱），可改 lerobot_version 试新版。matrix_only=true 时与其它常规
+  # job 一样跳过。
+  lerobot-loader:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.lerobot_smoke && inputs.matrix_only != true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HF_HUB_OFFLINE: "1"
+      LEROBOT_VERSION: ${{ inputs.lerobot_version || '0.7.0' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: lerobot-loader
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned lerobot[dataset] (CPU torch wheels) + converter deps
+        run: >
+          python -m pip install "lerobot[dataset]==${LEROBOT_VERSION}" imageio imageio-ffmpeg
+          --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Build collect (debug)
+        run: cargo build -q -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf
+      - name: Collect camera v3 (wrist RGB+depth + top RGB; depth-only variant via --set)
+        run: |
+          cargo run -q -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- \
+            --spec crates/oriera-embodied/specs/lab/wrist-cam-demo.json --set max_steps=90 \
+            --episodes 2 --cam --cameras-from-spec --lerobot-v3 --gate report --verify-determinism off \
+            --out out/lr-rgbd
+          cargo run -q -p oriera-agent --example embodied_sim_collect --features rigid3d,cam,spec,urdf -- \
+            --spec crates/oriera-embodied/specs/lab/wrist-cam-demo.json --set max_steps=90 \
+            --set scene.cameras.0.kind.pinhole.channels.rgb=false \
+            --episodes 2 --cam --cameras-from-spec --lerobot-v3 --gate report --verify-determinism off \
+            --out out/lr-donly
+      - name: Convert + selfcheck + real LeRobotDataset load (b 层)
+        run: |
+          for variant in rgbd donly; do
+            python scripts/jsonl_to_lerobot_v21.py out/lr-$variant/lerobot-v30
+            python scripts/lerobot_v3_selfcheck.py out/lr-$variant/lerobot-v30
+            python scripts/lerobot_load_smoke.py out/lr-$variant/lerobot-v30
+            python scripts/lerobot_load_smoke.py --backend lerobot --frames 48 out/lr-$variant/lerobot-v30
+          done
 
   # 慢测试分层夜间腿（PLAN-embodied-v3 §二 #20，QA/DE）：抓取冒烟
   # （4 集双跑 ≈188s）、Contact 接触判据（3×610 tick ≈110s）、panda 7 轴

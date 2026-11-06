@@ -340,10 +340,36 @@ function syncVisuals() {
     if (p.props[0].rot_known) K.visuals.cube.quaternion.fromArray(p.props[0].rot);
     else K.visuals.cube.quaternion.set(0, 0, 0, 1);
   }
-  if (K.visuals.goal) K.visuals.goal.position.set(p.goal[0], 0.501, p.goal[2]);
-  if (K.visuals.beam) K.visuals.beam.position.set(p.goal[0], 0.66, p.goal[2]);
+  // 目标圈/光柱贴 goal 正下方的静态支撑面（P2-R）：goal_marker 由 wasm 算
+  // （与 pinhole 目标盘同一函数）——桌面/地面目标原样（金标 0.501/0.66 不
+  // 变），stack 的「A 叠到 B 上」悬空目标落回桌面、mobile-arm 的地面级
+  // 目标落到地面（旧写死 0.501 = 悬在地面上方半米）。旧 wasm 无此字段回退旧值。
+  const gm = goalMarkerOf(p);
+  if (K.visuals.goal) K.visuals.goal.position.set(gm[0], gm[1] + 0.001, gm[2]);
+  if (K.visuals.beam) K.visuals.beam.position.set(gm[0], gm[1] + 0.16, gm[2]);
   K.goal = p.goal.slice();
   return p;
+}
+
+// poses() → 目标标记落点（纯函数，node 可测）。
+function goalMarkerOf(p) {
+  return Array.isArray(p.goal_marker) ? p.goal_marker : [p.goal[0], 0.5, p.goal[2]];
+}
+
+// prop 形状 → three.js 几何参数（纯函数，node 可测）。PropShape 的 serde 是
+// **内部标签**（subsys rigid3d.rs `tag = "kind"`）：{"kind":"cuboid","half":[…]}
+// / {"kind":"cylinder","half_h","radius"} / {"kind":"sphere","r"}。旧读法按外部
+// 标签取 s.Cuboid/s.Cylinder/s.Sphere，永远落空 → 所有 prop 一律画成默认 5 cm
+// 方块（drawer-v2 的 12 cm 面板、旧 5-prop 料箱四壁 props[1..4] 全画错，P2-R
+// 浏览器实测）。外部标签写法照旧兼容（手写 JSON / 旧快照）。
+function propGeom(shape) {
+  const s = shape ?? {};
+  const kind = s.kind ?? (s.Cylinder ? "cylinder" : s.Sphere ? "sphere" : "cuboid");
+  const b = s.kind ? s : (s.Cuboid ?? s.Cylinder ?? s.Sphere ?? {});
+  if (kind === "cylinder") return { kind, radius: b.radius, height: b.half_h * 2 };
+  if (kind === "sphere") return { kind, radius: b.r };
+  const h = Array.isArray(b.half) ? b.half : [0.025, 0.025, 0.025]; // 缺省 = PROP_HALF 方块
+  return { kind: "cuboid", size: [h[0] * 2, h[1] * 2, h[2] * 2] };
 }
 
 // ── 从 spec 搭建 three.js 场景（fixtures / 机器人 / 夹爪 / 方块 / 目标圈）
@@ -464,13 +490,13 @@ function buildSceneFromSpec(scene) {
     delete K.visuals.plateL;
     delete K.visuals.plateR;
   }
-  // 动态 prop（props[0] = 任务物；其余杂物同为渲染层）
+  // 动态 prop（props[0] = 任务物；其余杂物同为渲染层）——形状逐个按 spec
+  // （propGeom 读内部标签），不再一律默认方块。
   for (const prop of K.spec.scene.props) {
-    let geo;
-    const s = prop.shape;
-    if (s && s.Cylinder) geo = new THREE.CylinderGeometry(s.Cylinder.radius, s.Cylinder.radius, s.Cylinder.half_h * 2, 32);
-    else if (s && s.Sphere) geo = new THREE.SphereGeometry(s.Sphere.r, 24, 16);
-    else { const h = (s && s.Cuboid) ? s.Cuboid.half : [0.025, 0.025, 0.025]; geo = new THREE.BoxGeometry(h[0] * 2, h[1] * 2, h[2] * 2); }
+    const g = propGeom(prop.shape);
+    const geo = g.kind === "cylinder" ? new THREE.CylinderGeometry(g.radius, g.radius, g.height, 32)
+      : g.kind === "sphere" ? new THREE.SphereGeometry(g.radius, 24, 16)
+      : new THREE.BoxGeometry(g.size[0], g.size[1], g.size[2]);
     const mesh = new THREE.Mesh(geo, mat(0xffd479));
     mesh.castShadow = mesh.receiveShadow = true;
     if (prop === K.spec.scene.props[0]) K.visuals.cube = mesh;
@@ -999,4 +1025,4 @@ export async function boot(viewport) {
 export const CONSTANTS = Object.freeze({
   PHASES, MAX_STEPS_FALLBACK: 700,
 });
-export { ik, above, policyTick, ikArmFromSpec, fkPose, dlsSolve, phaseGeom, heavyPhases };
+export { ik, above, policyTick, ikArmFromSpec, fkPose, dlsSolve, phaseGeom, heavyPhases, propGeom, goalMarkerOf };

@@ -371,3 +371,308 @@ fn pinhole_from_spec_geometry() {
         );
     }
 }
+
+/// P2-R render guard (PLAN-embodied-v3 P2 深水区 Wave-1 · R 包): every
+/// prop — `props[1..]` included — and every fixture standing on the
+/// table must reach BOTH CPU camera tracks at its live world pose.
+/// Pre-fix probes (caa207c) on these presets found two broken entries:
+///
+/// * pinhole (`render_pinhole` via `scene_view`): stack's base B
+///   (`props[1]`) hidden under the goal disc, which floated at the
+///   mid-air goal "A's centre on top of B" (y 0.577 > B's top 0.55);
+/// * legacy `--cam` top track: only the table and `props[0]` were ever
+///   drawn — B, the bin's double walls (`fixtures[2..9]`), the legacy
+///   5-prop bin's walls (`props[1..4]`) and the drawer-v2 cabinet missing.
+///
+/// Probe: an overhead calibrated camera; per object, the centre of its
+/// top face must show the object's own colour AND win the z-buffer
+/// (depth = the top face's camera depth — not hidden, not drawn at the
+/// origin); in the top track the object must own its pixels.
+mod p2r_props_render {
+    use super::nearest_color;
+    use oriera_embodied::embodied_env::{
+        CamAttach, CamChannels, CameraKind, CameraSpec, DistortionSpec, EmbodiedEnv, PinholeSpec,
+        TableTopEnv,
+    };
+    use oriera_embodied::spec::SceneSpec;
+    use oriera_subsys::camera::{encode_png, CameraView};
+    use oriera_subsys::rigid3d::PropShape;
+
+    const PROP_COLOR: [u8; 3] = [255, 206, 110];
+    /// `scene_view`'s colour for every non-ground fixture (the table
+    /// shares it — the depth check is what separates a wall from it).
+    const FIXTURE_COLOR: [u8; 3] = [56, 68, 88];
+    /// The legacy top track's furniture colour (`fixtures[2..]`).
+    const TOP_FURNITURE: [u8; 3] = [112, 126, 154];
+
+    fn load(rel: &str) -> SceneSpec {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        SceneSpec::load_file(&path)
+            .unwrap_or_else(|e| panic!("{rel}: {e}"))
+            .spec
+    }
+
+    /// Straight-down world camera over the whole work area, RGB + depth.
+    fn overhead() -> CameraSpec {
+        CameraSpec {
+            name: "guard_top".into(),
+            kind: CameraKind::Pinhole(PinholeSpec {
+                width: 320,
+                height: 240,
+                fx: 300.0,
+                fy: 300.0,
+                cx: 160.0,
+                cy: 120.0,
+                dist: DistortionSpec::default(),
+                pos: [0.20, 1.20, 0.0],
+                look_at: [0.20, 0.50, 0.0],
+                up: [0.0, 0.0, 1.0],
+                channels: CamChannels {
+                    rgb: true,
+                    depth: true,
+                },
+                attach: CamAttach::World,
+            }),
+        }
+    }
+
+    /// `rel` reset at seed 1000 with the overhead camera mounted and the
+    /// arm swung to the −X side (base yaw → π) so no link hangs over the
+    /// work area — occlusion by the arm is not what this guard measures.
+    fn swung_env(rel: &str) -> TableTopEnv {
+        let mut env = load(rel).to_env();
+        env.set_cameras(vec![overhead()]);
+        env.reset(1000);
+        for _ in 0..240 {
+            if env.ee_pos()[0] < -0.30 {
+                break;
+            }
+            env.step(&[3.0, 0.0, 0.0, 0.0, 0.0]);
+        }
+        assert!(
+            env.ee_pos()[0] < -0.30,
+            "{rel}: the arm never cleared the work area (tip {:?})",
+            env.ee_pos()
+        );
+        env
+    }
+
+    fn rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+        let u = [q[0], q[1], q[2]];
+        let cross = |a: [f32; 3], b: [f32; 3]| {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        let t = cross(u, v);
+        let t = [2.0 * t[0], 2.0 * t[1], 2.0 * t[2]];
+        let c = cross(u, t);
+        [
+            v[0] + q[3] * t[0] + c[0],
+            v[1] + q[3] * t[1] + c[1],
+            v[2] + q[3] * t[2] + c[2],
+        ]
+    }
+
+    /// The legacy top view's pixel of a world point (`CameraView::px`).
+    fn top_px(view: &CameraView, p: [f32; 3]) -> (i32, i32) {
+        let x = ((p[0] - (view.center[0] - view.extent[0] / 2.0)) / view.extent[0] * view.w as f32)
+            .round() as i32;
+        let y = ((p[2] - (view.center[1] - view.extent[1] / 2.0)) / view.extent[1] * view.h as f32)
+            .round() as i32;
+        (x, y)
+    }
+
+    fn rgb_at(rgb: &[u8], w: u32, (x, y): (i32, i32)) -> [u8; 3] {
+        let i = (y as usize * w as usize + x as usize) * 3;
+        [rgb[i], rgb[i + 1], rgb[i + 2]]
+    }
+
+    /// Check every prop and every raised fixture on both CPU tracks;
+    /// returns how many objects were checked.
+    fn assert_scene_on_both_cpu_tracks(name: &str, env: &TableTopEnv) -> usize {
+        let shots = env.render_cameras();
+        let shot = &shots[0];
+        let rgb = shot.rgb.as_deref().expect("rgb on");
+        let depth = shot.depth.as_deref().expect("depth on");
+        let view = CameraView::default();
+        let top = env.render_top(&view);
+        let table_top = env
+            .scene
+            .fixtures
+            .get(1)
+            .map_or(0.5, |f| f.center[1] + f.half[1]);
+        // pinhole: a colour-matched pixel within 1 px of the top-face
+        // centre (shared `nearest_color`, depth-filtered) AND the z-buffer
+        // at the centre holding that face's own depth (front-most)
+        let pinhole = |what: &str, top_face: [f32; 3], color: [u8; 3]| {
+            let (u, v, z) = shot
+                .pinhole
+                .project(top_face)
+                .unwrap_or_else(|| panic!("{name} {what}: behind the camera"));
+            assert!(
+                (0.0..shot.w as f32).contains(&u) && (0.0..shot.h as f32).contains(&v),
+                "{name} {what}: out of frame (u={u:.1} v={v:.1})"
+            );
+            let err = nearest_color(rgb, shot.w, shot.h, (u, v), color, Some(depth), z);
+            let (x, y) = (u.round() as i32, v.round() as i32);
+            let d = depth[y as usize * shot.w as usize + x as usize];
+            assert!(
+                err <= 1.0,
+                "{name} {what}: not the front-most {color:?} surface at its top face \
+                 (px ({x},{y}) = {:?}, depth {d} mm vs top face {:.0} mm) — hidden or drawn elsewhere",
+                rgb_at(rgb, shot.w, (x, y)),
+                z * 1000.0
+            );
+            assert!(
+                (d as f32 - z * 1000.0).abs() <= 3.0,
+                "{name} {what}: z-buffer holds {d} mm at its top-face centre, the face is at {:.0} mm",
+                z * 1000.0
+            );
+        };
+        let mut checked = 0;
+        for (i, p) in env.scene.props.iter().enumerate() {
+            let what = format!("props[{i}] {}", p.name);
+            let pose = env
+                .prop_pose(i)
+                .unwrap_or_else(|| panic!("{name} {what}: no pose"));
+            let h = match p.shape {
+                PropShape::Cuboid { half } => half[1],
+                PropShape::Cylinder { half_h, .. } => half_h,
+                PropShape::Sphere { r } => r,
+            };
+            let up = rotate(pose.rot, [0.0, h, 0.0]);
+            let face = [
+                pose.pos[0] + up[0],
+                pose.pos[1] + up[1],
+                pose.pos[2] + up[2],
+            ];
+            pinhole(&what, face, PROP_COLOR);
+            let px = top_px(&view, pose.pos);
+            assert_eq!(
+                rgb_at(&top, view.w, px),
+                PROP_COLOR,
+                "{name} {what}: missing from the legacy top track at px {px:?}"
+            );
+            checked += 1;
+        }
+        for (i, f) in env.scene.fixtures.iter().enumerate().skip(2) {
+            let what = format!("fixtures[{i}] {}", f.name);
+            let top_y = f.center[1] + f.half[1];
+            if top_y <= table_top + 1e-3 {
+                // flush with the table (the bin floor): coplanar, same
+                // colour — the table wins the tie in both tracks
+                continue;
+            }
+            pinhole(&what, [f.center[0], top_y, f.center[2]], FIXTURE_COLOR);
+            // top track: the slab owns the majority of its footprint (the
+            // goal disc / props legitimately paint over a few pixels)
+            let (cx, cy) = top_px(&view, f.center);
+            let hw = (f.half[0] / view.extent[0] * view.w as f32).round() as i32;
+            let hh = (f.half[2] / view.extent[1] * view.h as f32).round() as i32;
+            let (mut own, mut all) = (0, 0);
+            for y in (cy - hh)..=(cy + hh) {
+                for x in (cx - hw)..=(cx + hw) {
+                    all += 1;
+                    if rgb_at(&top, view.w, (x, y)) == TOP_FURNITURE {
+                        own += 1;
+                    }
+                }
+            }
+            assert!(
+                own * 2 > all,
+                "{name} {what}: missing from the legacy top track ({own}/{all} footprint px)"
+            );
+            checked += 1;
+        }
+        checked
+    }
+
+    #[test]
+    fn stack_base_b_reaches_both_cpu_camera_tracks() {
+        let env = swung_env("specs/official/stack-4dof.json");
+        assert_eq!(
+            assert_scene_on_both_cpu_tracks("stack-4dof", &env),
+            2,
+            "block A + base B (props[1])"
+        );
+    }
+
+    #[test]
+    fn bin_walls_reach_both_cpu_camera_tracks() {
+        // P2 bin: cube + the 8 wall slabs fixtures[2..9] (floor is flush)
+        let env = swung_env("specs/official/bin-pick-4dof.json");
+        assert_eq!(assert_scene_on_both_cpu_tracks("bin-pick-4dof", &env), 9);
+        // the M2 approximation (archive 14fc9bf8): walls are props[1..4]
+        let env = swung_env("tests/fixtures/bin-pick-4dof-legacy-5prop.json");
+        assert_eq!(assert_scene_on_both_cpu_tracks("bin-legacy-5prop", &env), 5);
+    }
+
+    #[test]
+    fn drawer_v2_panel_and_cabinet_reach_both_cpu_camera_tracks() {
+        // slide panel props[0] (non-default 120 mm cuboid) + back + rails
+        let env = swung_env("specs/official/drawer-4dof-v2.json");
+        assert_eq!(assert_scene_on_both_cpu_tracks("drawer-4dof-v2", &env), 4);
+    }
+
+    /// `render_top` is exactly the `top` track the capture path exports
+    /// — on the legacy bench (the byte-frozen `capture_png` path) and on
+    /// a completed scene (stack) alike.
+    #[test]
+    fn render_top_is_the_exported_top_track() {
+        for rel in [
+            "specs/official/tabletop-4dof-pick.json",
+            "specs/official/stack-4dof.json",
+        ] {
+            let mut env = load(rel).to_env();
+            let view = CameraView::default();
+            env.set_camera(Some(view.clone()));
+            env.reset(1000);
+            for i in 0..3 {
+                let expect = encode_png(&env.render_top(&view), view.w, view.h).unwrap();
+                env.step(&[0.1 * i as f32, 0.2, -0.3, 0.1, 0.0]);
+                let frames = env.take_frames();
+                let top = frames
+                    .iter()
+                    .find(|(_, f)| f.cam == "top")
+                    .expect("top frame");
+                assert_eq!(
+                    top.1.rgb_png.as_deref(),
+                    Some(expect.as_slice()),
+                    "{rel} step {i}: render_top ≠ the exported top track"
+                );
+            }
+        }
+    }
+
+    /// The goal marker is a floor decal: a surface goal comes back
+    /// verbatim (the golden bench keeps its marker bytes), a mid-air goal
+    /// drops onto the table top beneath it — XZ always the goal's.
+    #[test]
+    fn goal_marker_rests_on_the_surface_under_the_goal() {
+        for (rel, dropped_to) in [
+            ("specs/official/tabletop-4dof-pick.json", None),
+            ("specs/official/mobile-arm-4dof.json", None),
+            ("specs/official/stack-4dof.json", Some(0.5f32)),
+            ("specs/official/drawer-4dof-v2.json", Some(0.5f32)),
+        ] {
+            let mut env = load(rel).to_env();
+            env.reset(1000);
+            let (g, m) = (env.goal(), env.goal_marker());
+            assert_eq!(
+                [m[0], m[2]],
+                [g[0], g[2]],
+                "{rel}: marker keeps the goal XZ"
+            );
+            match dropped_to {
+                None => assert_eq!(m, g, "{rel}: a surface goal comes back verbatim"),
+                Some(y) => assert!(
+                    m[1] == y && g[1] > y + 0.01,
+                    "{rel}: mid-air goal {g:?} must drop onto the table top {y} (got {m:?})"
+                ),
+            }
+        }
+    }
+}

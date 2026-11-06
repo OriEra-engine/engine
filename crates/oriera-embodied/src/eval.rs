@@ -420,6 +420,252 @@ pub fn summarize_success(views: &[SuccessView]) -> DualSuccessSummary {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Failure-phase telemetry (P2, PLAN-embodied-v3 P2 深水区 Wave-1 · P 包):
+// WHICH phase a failed episode died in — reach / grasp / lift / place —
+// judged from channels every env already exposes (TCP and object
+// positions, the goal, the `holding` flag). Pure bookkeeping on top of the
+// episode loop: it reads, never writes, so trajectories and every receipt
+// key stay byte-identical; the report block is opt-in at the entrance
+// (`embodied_sim_baseline --failure-phases`). Rules live in
+// docs/LAB-GUIDE.md §2.2 and are versioned by `FAILURE_PHASE_SCHEME_V1`.
+// ---------------------------------------------------------------------------
+
+/// Scheme tag of the failure-phase rules below — bump it (new constant)
+/// on any rule change; a report always names the rules it was judged by.
+pub const FAILURE_PHASE_SCHEME_V1: &str = "failure_phase@v1";
+
+/// The phase a failed episode died in (pick-family order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailurePhase {
+    /// The TCP never entered the grasp zone around the object.
+    Reach,
+    /// Reached, but `holding` never turned true.
+    Grasp,
+    /// Held, but the object never arrived over the goal under grip
+    /// (slipped out on the lift, dropped in transit; drawer: the drag).
+    Lift,
+    /// Delivered over the goal under grip, the episode still failed
+    /// (released off-zone, not resting, still held at the end, bounced).
+    Place,
+}
+
+impl FailurePhase {
+    /// All four, in pipeline order (report/CSV column order).
+    pub const ALL: [Self; 4] = [Self::Reach, Self::Grasp, Self::Lift, Self::Place];
+
+    /// The snake_case report key.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reach => "reach",
+            Self::Grasp => "grasp",
+            Self::Lift => "lift",
+            Self::Place => "place",
+        }
+    }
+}
+
+/// Which phases a task family has: reach tasks die only in `reach`;
+/// push has no grasp (`reach` → `place`); every grasp task (pick_place /
+/// bin_pick / stack / drawer) runs all four.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseFamily {
+    Reach,
+    Push,
+    Pick,
+}
+
+/// The classifier thresholds (recorded next to every summary).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FailurePhaseRules {
+    pub family: PhaseFamily,
+    /// TCP→object distance that counts as "reached" (m): the engine's
+    /// grasp zone [`oriera_subsys::GRASP_RADIUS`] (0.06) — the `TipRadius`
+    /// holding criterion's own radius.
+    pub reach_radius: f32,
+    /// Horizontal object→goal distance that counts as "delivered" while
+    /// held (m): the task's own zone tolerance — `goal_xz_tol` for
+    /// pick_place / bin_pick / push, `stack_xz_tol` for stack,
+    /// `pull_distance / 4` for drawer (its goal sits `pull_distance`
+    /// from the spawn, so the zone tolerance would count the spawn as
+    /// delivered).
+    pub deliver_xz: f32,
+}
+
+impl FailurePhaseRules {
+    /// The rules for a task id (`base@vN` — the version does not move the
+    /// phase taxonomy) and its spec-resolved thresholds.
+    pub fn for_task(task_id: &str, params: &crate::embodied_env::TaskParams) -> Self {
+        let base = task_id.split('@').next().unwrap_or(task_id);
+        let (family, deliver_xz) = match base {
+            "reach" => (PhaseFamily::Reach, params.reach_radius),
+            "push" => (PhaseFamily::Push, params.goal_xz_tol),
+            "stack" => (PhaseFamily::Pick, params.stack_xz_tol),
+            "drawer" => (PhaseFamily::Pick, params.pull_distance * 0.25),
+            _ => (PhaseFamily::Pick, params.goal_xz_tol),
+        };
+        Self {
+            family,
+            reach_radius: oriera_subsys::GRASP_RADIUS,
+            deliver_xz,
+        }
+    }
+}
+
+/// Per-episode phase signals, folded tick by tick (after every `step`)
+/// from read-only env channels.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PhaseSignals {
+    /// Object position at reset (settled spawn) — the lift reference.
+    pub obj0: [f32; 3],
+    /// Ticks observed.
+    pub ticks: u64,
+    /// min |TCP − object| over the episode (m).
+    pub min_ee_obj: f32,
+    /// `holding` true on any tick.
+    pub ever_holding: bool,
+    /// Ticks with `holding` true.
+    pub holding_ticks: u64,
+    /// max(object.y − obj0.y) over holding ticks (m; 0 if never held).
+    pub max_lift_held: f32,
+    /// min horizontal |object − goal| over holding ticks (m; `None` if
+    /// never held).
+    pub min_goal_xz_held: Option<f32>,
+    /// Horizontal |object − goal| on the last tick (m).
+    pub final_goal_xz: f32,
+    /// `holding` on the last tick.
+    pub holding_at_end: bool,
+}
+
+impl PhaseSignals {
+    /// Start an episode's fold at the reset pose of the task object.
+    pub fn start(obj0: [f32; 3]) -> Self {
+        Self {
+            obj0,
+            ticks: 0,
+            min_ee_obj: f32::MAX,
+            ever_holding: false,
+            holding_ticks: 0,
+            max_lift_held: 0.0,
+            min_goal_xz_held: None,
+            final_goal_xz: f32::MAX,
+            holding_at_end: false,
+        }
+    }
+
+    /// Fold one post-step observation: TCP, object, goal, holding flag.
+    pub fn observe(&mut self, ee: [f32; 3], obj: [f32; 3], goal: [f32; 3], holding: bool) {
+        let d_ee =
+            ((ee[0] - obj[0]).powi(2) + (ee[1] - obj[1]).powi(2) + (ee[2] - obj[2]).powi(2)).sqrt();
+        let d_goal_xz = ((obj[0] - goal[0]).powi(2) + (obj[2] - goal[2]).powi(2)).sqrt();
+        self.ticks += 1;
+        self.min_ee_obj = self.min_ee_obj.min(d_ee);
+        self.final_goal_xz = d_goal_xz;
+        self.holding_at_end = holding;
+        if holding {
+            self.ever_holding = true;
+            self.holding_ticks += 1;
+            self.max_lift_held = self.max_lift_held.max(obj[1] - self.obj0[1]);
+            self.min_goal_xz_held = Some(
+                self.min_goal_xz_held
+                    .map_or(d_goal_xz, |m: f32| m.min(d_goal_xz)),
+            );
+        }
+    }
+}
+
+/// Classify one episode (`failure_phase@v1`): `None` for a success,
+/// otherwise the FIRST phase whose milestone was never reached —
+///
+/// 1. `min_ee_obj > reach_radius` → [`FailurePhase::Reach`];
+/// 2. never `holding` → [`FailurePhase::Grasp`] (push: → `Place`, it has
+///    no grasp; reach tasks stop at step 1 — any failure is `Reach`);
+/// 3. never held within `deliver_xz` (horizontal) of the goal →
+///    [`FailurePhase::Lift`];
+/// 4. otherwise → [`FailurePhase::Place`].
+pub fn classify_failure(
+    success: bool,
+    s: &PhaseSignals,
+    rules: &FailurePhaseRules,
+) -> Option<FailurePhase> {
+    if success {
+        return None;
+    }
+    let reached = s.min_ee_obj <= rules.reach_radius;
+    Some(match rules.family {
+        PhaseFamily::Reach => FailurePhase::Reach,
+        PhaseFamily::Push if !reached => FailurePhase::Reach,
+        PhaseFamily::Push => FailurePhase::Place,
+        PhaseFamily::Pick if !reached => FailurePhase::Reach,
+        PhaseFamily::Pick if !s.ever_holding => FailurePhase::Grasp,
+        PhaseFamily::Pick if s.min_goal_xz_held.is_none_or(|d| d > rules.deliver_xz) => {
+            FailurePhase::Lift
+        }
+        PhaseFamily::Pick => FailurePhase::Place,
+    })
+}
+
+/// Failed-episode counts per phase (serialized in pipeline order).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhaseCounts {
+    pub reach: usize,
+    pub grasp: usize,
+    pub lift: usize,
+    pub place: usize,
+}
+
+/// Failed seeds per phase (drill-down: `ORIERA_SIM_TRACE` one of them).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhaseSeeds {
+    pub reach: Vec<u64>,
+    pub grasp: Vec<u64>,
+    pub lift: Vec<u64>,
+    pub place: Vec<u64>,
+}
+
+/// The `failure_phases` report block: the scheme, the rules, the
+/// per-phase failure counts and seeds over one episode set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FailurePhaseSummary {
+    /// [`FAILURE_PHASE_SCHEME_V1`].
+    pub scheme: String,
+    pub rules: FailurePhaseRules,
+    pub episodes: usize,
+    pub failures: usize,
+    pub by_phase: PhaseCounts,
+    pub seeds: PhaseSeeds,
+}
+
+/// Summarize `(seed, phase)` rows (draw order; `None` = success).
+pub fn summarize_failure_phases(
+    rows: &[(u64, Option<FailurePhase>)],
+    rules: FailurePhaseRules,
+) -> FailurePhaseSummary {
+    let mut by_phase = PhaseCounts::default();
+    let mut seeds = PhaseSeeds::default();
+    for (seed, phase) in rows {
+        let Some(p) = phase else { continue };
+        let (n, v) = match p {
+            FailurePhase::Reach => (&mut by_phase.reach, &mut seeds.reach),
+            FailurePhase::Grasp => (&mut by_phase.grasp, &mut seeds.grasp),
+            FailurePhase::Lift => (&mut by_phase.lift, &mut seeds.lift),
+            FailurePhase::Place => (&mut by_phase.place, &mut seeds.place),
+        };
+        *n += 1;
+        v.push(*seed);
+    }
+    FailurePhaseSummary {
+        scheme: FAILURE_PHASE_SCHEME_V1.into(),
+        rules,
+        episodes: rows.len(),
+        failures: rows.iter().filter(|(_, p)| p.is_some()).count(),
+        by_phase,
+        seeds,
+    }
+}
+
 /// The M2 per-preset honest baseline gate (PLAN §四 M2): the threshold
 /// a scripted/numeric baseline must clear on a preset, keyed by task id
 /// and robot name. New first-version tasks get honest floors (75% /
@@ -715,6 +961,154 @@ mod tests {
         assert!(v.once && v.at_end);
         let v = SuccessView::legacy(false);
         assert!(!v.once && !v.at_end);
+    }
+
+    // --- P2: failure-phase telemetry (failure_phase@v1) -------------
+
+    /// Fold a scripted `(tcp, object, holding)` path into signals.
+    fn sig_path(
+        obj0: [f32; 3],
+        goal: [f32; 3],
+        path: &[([f32; 3], [f32; 3], bool)],
+    ) -> PhaseSignals {
+        let mut s = PhaseSignals::start(obj0);
+        for (ee, obj, hold) in path {
+            s.observe(*ee, *obj, goal, *hold);
+        }
+        s
+    }
+
+    #[test]
+    fn failure_phase_rules_name_the_first_missed_milestone() {
+        let params = crate::embodied_env::TaskParams::default();
+        let rules = FailurePhaseRules::for_task("pick_place@v1", &params);
+        assert_eq!(rules.family, PhaseFamily::Pick);
+        assert_eq!(rules.reach_radius, oriera_subsys::GRASP_RADIUS);
+        assert_eq!(rules.deliver_xz, params.goal_xz_tol);
+        let goal = [0.28, 0.5, 0.0];
+        let o = [0.18, 0.525, 0.0];
+        // reach: the TCP never came within the 6 cm grasp zone
+        let s = sig_path(o, goal, &[([0.18, 0.70, 0.0], o, false)]);
+        assert_eq!(
+            classify_failure(false, &s, &rules),
+            Some(FailurePhase::Reach)
+        );
+        // grasp: reached (3 cm), never held
+        let s = sig_path(o, goal, &[([0.18, 0.555, 0.0], o, false)]);
+        assert_eq!(
+            classify_failure(false, &s, &rules),
+            Some(FailurePhase::Grasp)
+        );
+        // lift: held, rose 1 cm, slipped out before the goal
+        let s = sig_path(
+            o,
+            goal,
+            &[
+                ([0.18, 0.555, 0.0], o, true),
+                ([0.18, 0.565, 0.0], [0.18, 0.535, 0.0], true),
+                ([0.18, 0.62, 0.0], o, false),
+            ],
+        );
+        assert_eq!(
+            classify_failure(false, &s, &rules),
+            Some(FailurePhase::Lift)
+        );
+        assert!((s.max_lift_held - 0.01).abs() < 1e-6, "{}", s.max_lift_held);
+        assert_eq!(
+            (s.ever_holding, s.holding_ticks, s.holding_at_end),
+            (true, 2, false)
+        );
+        // place: carried over the goal under grip, released off-zone
+        let s = sig_path(
+            o,
+            goal,
+            &[
+                ([0.18, 0.555, 0.0], o, true),
+                ([0.27, 0.70, 0.0], [0.27, 0.67, 0.0], true),
+                ([0.30, 0.60, 0.1], [0.40, 0.525, 0.12], false),
+            ],
+        );
+        assert_eq!(
+            classify_failure(false, &s, &rules),
+            Some(FailurePhase::Place)
+        );
+        assert!(s.final_goal_xz > params.goal_xz_tol);
+        // a success is never a failure, whatever the signals
+        assert_eq!(classify_failure(true, &s, &rules), None);
+    }
+
+    #[test]
+    fn failure_phase_families_follow_the_task() {
+        let p = crate::embodied_env::TaskParams::default();
+        let o = [0.18, 0.525, 0.0];
+        let goal = [0.28, 0.5, 0.0];
+        let near_no_hold = sig_path(o, goal, &[([0.18, 0.555, 0.0], o, false)]);
+        let far = sig_path(o, goal, &[([0.18, 0.70, 0.0], o, false)]);
+        // reach tasks only have the reach phase
+        let r = FailurePhaseRules::for_task("reach@v2", &p);
+        assert_eq!(r.family, PhaseFamily::Reach);
+        assert_eq!(
+            classify_failure(false, &near_no_hold, &r),
+            Some(FailurePhase::Reach)
+        );
+        // push has no grasp: reached-but-failed is a placement failure
+        let r = FailurePhaseRules::for_task("push@v1", &p);
+        assert_eq!(
+            classify_failure(false, &near_no_hold, &r),
+            Some(FailurePhase::Place)
+        );
+        assert_eq!(classify_failure(false, &far, &r), Some(FailurePhase::Reach));
+        // stack / drawer deliver at their own tolerances
+        assert_eq!(
+            FailurePhaseRules::for_task("stack@v1", &p).deliver_xz,
+            p.stack_xz_tol
+        );
+        let d = FailurePhaseRules::for_task("drawer@v1", &p);
+        assert_eq!(
+            (d.family, d.deliver_xz),
+            (PhaseFamily::Pick, p.pull_distance * 0.25)
+        );
+        assert!(
+            d.deliver_xz < p.pull_distance,
+            "the drawer spawn ({} m from its goal) must not count as delivered",
+            p.pull_distance
+        );
+    }
+
+    #[test]
+    fn failure_phase_summary_counts_seeds_in_pipeline_order() {
+        let rules = FailurePhaseRules::for_task(
+            "pick_place@v1",
+            &crate::embodied_env::TaskParams::default(),
+        );
+        let rows = [
+            (1000, None),
+            (1001, Some(FailurePhase::Lift)),
+            (1002, Some(FailurePhase::Lift)),
+            (1003, Some(FailurePhase::Grasp)),
+        ];
+        let s = summarize_failure_phases(&rows, rules);
+        assert_eq!(s.scheme, FAILURE_PHASE_SCHEME_V1);
+        assert_eq!((s.episodes, s.failures), (4, 3));
+        assert_eq!(
+            s.by_phase,
+            PhaseCounts {
+                reach: 0,
+                grasp: 1,
+                lift: 2,
+                place: 0
+            }
+        );
+        assert_eq!(s.seeds.lift, [1001, 1002]);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(
+            json.contains(r#""by_phase":{"reach":0,"grasp":1,"lift":2,"place":0}"#),
+            "pipeline order, all four keys: {json}"
+        );
+        assert_eq!(
+            FailurePhase::ALL.map(FailurePhase::as_str),
+            ["reach", "grasp", "lift", "place"]
+        );
     }
 
     #[test]

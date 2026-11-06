@@ -11,6 +11,16 @@ schema keys, the data/video path templates and chunk/file naming, the
 episodes metadata columns and contiguity, and (when pyarrow is
 installed) the parquet tables' columns/row counts.
 
+v3.0 相机/深度对账（P2-W1-D）：image/video 特性须满足 lerobot 相机契约
+（三维 shape + `names == [height, width, channels]`——lerobot
+`dataset_to_policy_features` 读 names[2]）；深度图（image, c=1）须带
+`info.is_depth_map=true` + `depth_unit`；`video_path` 与 video 特性一致；
+video 轨与 raw 树 image 替身轨每集四列 `videos/<key>/…` 指针、帧数 ==
+length、同文件首尾相接、帧目录帧数 == Σ 指针帧数、PNG IHDR 与 shape
+一致（深度 = 16-bit 灰度）；转换后 image 特性须嵌在 data parquet（Image
+struct 全非空 PNG）、无失效指针、stats 为 lerobot 图像形状 (1,1,1)；
+videos/ 下无幻影轨目录 / 空帧目录（深度-only 相机与 RGB-only 对称）。
+
 v2.1（`--v21`，PLAN-embodied-v3 §二 #14 QA-5）检查引擎直出/转换后的
 v2.1 目录：info.json 键集与模板、meta/tasks|episodes|stats|modality、
 per-episode 数据文件列集与行数、videos 布局（帧目录 ↔ mp4 ↔ depth
@@ -18,9 +28,11 @@ PNG 序列）、以及 **MANIFEST 哈希对账**（splitmix64 byte-fold 的 Pyth
 对拍实现；转换后目录按 `MANIFEST.converted.json` 标记改对 raw_jsonl/
 归档与在位文件核验——DE-P1 提交点语义）。
 
-HONESTY NOTE: this is a *structure* audit. 本机没有 lerobot，它不能（也
-不声称）证明 `LeRobotDataset(repo_id)` 能加载这个目录——那一步要等 CI
-钉住 lerobot 版本后跑 `lerobot-train` 1-step 冒烟（M2 验收）。
+HONESTY NOTE: this is a *structure* audit. 它不（也不声称）证明
+`LeRobotDataset(repo_id)` 能加载这个目录——加载那一步是
+`scripts/lerobot_load_smoke.py`（P2-W1-D：默认 emulate 后端零依赖复刻
+lerobot v3 读路径，PR 门禁 a 层；`--backend lerobot` 真加载，CI 夜间/手动
+b 层，钉版 lerobot）。
 
 Usage:
     python scripts/lerobot_v3_selfcheck.py out/embodied-sim/lerobot-v30
@@ -76,6 +88,57 @@ REQUIRED_EPISODE_COLS = [
 
 DATA_SCALAR_COLS = ["index", "episode_index", "frame_index", "task_index", "timestamp"]
 
+# lerobot 相机特性契约（P2-W1-D）：`dataset_to_policy_features` 对 image/
+# video 特性要求三维 shape 并读 `names[2]`（null 直接 TypeError）；深度图
+# 以 `info.is_depth_map` 标记、`info.depth_unit` 记单位（lerobot ≥ 0.6）。
+CAMERA_NAMES = ["height", "width", "channels"]
+POINTER_SUFFIXES = ("chunk_index", "file_index", "from_timestamp", "to_timestamp")
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def _png_ihdr(data: bytes) -> tuple[int, int, int, int] | None:
+    """(width, height, bit_depth, colour_type) of a PNG, None if not one."""
+    if len(data) < 26 or data[:8] != PNG_MAGIC or data[12:16] != b"IHDR":
+        return None
+    return (int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big"),
+            data[24], data[25])
+
+
+def _png_matches(data: bytes, feat: dict) -> bool:
+    """PNG frame agrees with an image feature's declared shape [h, w, c]:
+    c == 1 ⇒ 16-bit grayscale (the depth.{name} contract)."""
+    ihdr = _png_ihdr(data)
+    shape = feat.get("shape") or []
+    if ihdr is None or len(shape) != 3:
+        return False
+    w, h, bit_depth, colour = ihdr
+    if (h, w) != (shape[0], shape[1]):
+        return False
+    return (bit_depth, colour) == (16, 0) if shape[2] == 1 else colour in (2, 6)
+
+
+def _pointer_frames(rows: list[dict], key: str, fps: float) -> list[tuple[int, int, int, int]] | None:
+    """Per-episode `(chunk, file, k0, k1)` frame ranges of one track's
+    `videos/<key>/…` pointer columns; None when any row lacks them."""
+    out = []
+    for r in rows:
+        if any(f"videos/{key}/{s}" not in r for s in POINTER_SUFFIXES):
+            return None
+        out.append((r[f"videos/{key}/chunk_index"], r[f"videos/{key}/file_index"],
+                    round(r[f"videos/{key}/from_timestamp"] * fps),
+                    round(r[f"videos/{key}/to_timestamp"] * fps)))
+    return out
+
+
+def _pointers_contiguous(ranges: list[tuple[int, int, int, int]]) -> bool:
+    """Within one chunk/file the episodes' frame ranges tile from 0 with no gap/overlap."""
+    cursor: dict[tuple[int, int], int] = {}
+    for ci, fi, k0, k1 in ranges:
+        if k0 != cursor.get((ci, fi), 0) or k1 < k0:
+            return False
+        cursor[(ci, fi)] = k1
+    return True
+
 
 class Check:
     def __init__(self) -> None:
@@ -92,7 +155,7 @@ class Check:
             print(f"  ✗ {line}")
         print(
             f"\n{len(self.ok)} 项通过，{len(self.bad)} 项失败。"
-            "注意：这是结构自检，未经 lerobot 实机加载验证（本机无 lerobot）。"
+            "注意：这是结构自检；能否被 lerobot 加载见 scripts/lerobot_load_smoke.py。"
         )
         return 1 if self.bad else 0
 
@@ -137,6 +200,8 @@ def check(root: Path) -> int:
     fps = info.get("fps")
     c.expect(isinstance(fps, (int, float)) and fps > 0, f"fps 为正数（当前 {fps!r}）")
     feats = info.get("features", {})
+    video_feats = [k for k, v in feats.items() if v.get("dtype") == "video"]
+    image_feats = [k for k, v in feats.items() if v.get("dtype") == "image"]
     for name, feat in feats.items():
         if name in ("timestamp", "frame_index", "episode_index", "index", "task_index"):
             c.expect(feat.get("dtype") == ("float32" if name == "timestamp" else "int64"),
@@ -147,9 +212,31 @@ def check(root: Path) -> int:
         shape = feat.get("shape", [])
         c.expect(isinstance(shape, list) and len(shape) >= 1 and shape[0] >= 1,
                  f"features[{name}].shape[0] ≥ 1（{shape}）")
+        if feat.get("dtype") in ("video", "image"):
+            # P2-W1-D：lerobot dataset_to_policy_features 契约（names null 即崩）
+            c.expect(len(shape) == 3 and shape[2] in (1, 3) and feat.get("names") == CAMERA_NAMES,
+                     f"features[{name}] 为 lerobot 相机特性：shape [h,w,c∈{{1,3}}] + "
+                     f"names == {CAMERA_NAMES}（当前 {shape} / {feat.get('names')!r}）")
+        if feat.get("dtype") == "image" and len(shape) == 3 and shape[2] == 1:
+            fi = feat.get("info") or {}
+            c.expect(fi.get("is_depth_map") is True and fi.get("depth_unit") in ("mm", "m"),
+                     f"features[{name}] 深度标记 info.is_depth_map=true + depth_unit∈{{mm,m}}"
+                     f"（当前 {fi.get('is_depth_map')!r} / {fi.get('depth_unit')!r}）")
+    c.expect((video_path is not None) == bool(video_feats),
+             f"video_path 与 video 特性一致（有 video 特性 ⇔ 模板非空；video 特性 {len(video_feats)} 个）")
 
     total_eps = info.get("total_episodes", -1)
     total_frames = info.get("total_frames", -1)
+
+    # data files 先读（image 特性的口径——raw 替身帧目录 or 已嵌入 parquet——
+    # 由 data 文件里有没有该列决定，episodes/videos/stats 各项都按它分家）
+    data_files = sorted(root.glob("data/chunk-*/file-*"))
+    data_read: list[tuple[Path, list[dict] | None, str]] = [(f, *_read_rows(f)) for f in data_files]
+    embedded: set[str] = set()
+    for _f, got, _fmt in data_read:
+        if got:
+            embedded |= {k for k in image_feats if k in got[0]}
+    raw_images = [k for k in image_feats if k not in embedded]
 
     # meta tasks + episodes metadata（parquet 或 jsonl 代理）
     tasks_p, tasks_f = root / "meta" / "tasks.parquet", root / "meta" / "tasks.jsonl"
@@ -203,29 +290,53 @@ def check(root: Path) -> int:
             first_tasks = rows[0].get("tasks")
             c.expect(isinstance(first_tasks, list) and bool(first_tasks),
                      "episodes 行带 tasks 字符串列表")
+        # P2-W1-D 指针对账：video 轨与 raw 树的 image（深度）替身轨同一形状——
+        # 每集四列 videos/<key>/{chunk,file,from_ts,to_ts}，帧数 == length，
+        # 同一 chunk/file 内首尾相接；已嵌入 parquet 的 image 轨不得残留指针。
+        fps_f = float(fps) if isinstance(fps, (int, float)) and fps > 0 else 0.0
+        for key in video_feats + raw_images:
+            kind = "video" if key in video_feats else "image 替身帧目录"
+            ranges = _pointer_frames(rows, key, fps_f) if fps_f else None
+            c.expect(ranges is not None,
+                     f"episodes 每行带 videos/{key}/{{chunk_index,file_index,from_timestamp,to_timestamp}}（{kind}）")
+            if ranges is not None:
+                spans = [k1 - k0 for (_ci, _fi, k0, k1) in ranges]
+                c.expect(spans == [r.get("length") for r in rows] and _pointers_contiguous(ranges),
+                         f"videos/{key} 指针帧数 == 每集 length 且同文件首尾相接")
+        for key in sorted(embedded):
+            stale = sorted({col for r in rows for col in r if col.startswith(f"videos/{key}/")})
+            c.expect(not stale, f"{key} 已嵌入 data parquet：无失效替身指针列（残留 {stale or '无'}）")
 
     # data files
-    data_files = sorted(root.glob("data/chunk-*/file-*"))
     c.expect(bool(data_files), "data/chunk-XXX/file-XXX 存在")
     total_rows = 0
-    for f in data_files:
+    numeric = {k for k in feats if k not in ("timestamp", "frame_index", "episode_index", "index", "task_index")
+               and feats[k].get("dtype") not in ("video", "image")}
+    for f, got, fmt in data_read:
         rel = f.relative_to(root).as_posix()
         c.expect(bool(CHUNK_FILE_RE.match(f.parent.name + "/" + f.stem)),
                  f"{rel} 命名符合 chunk-XXX/file-XXX")
-        got, fmt = _read_rows(f)
         if got is None:
             c.expect(False, f"{rel}: {fmt}")
             continue
         total_rows += len(got)
-        need = set(DATA_SCALAR_COLS) | set(
-            k for k in feats if k not in ("timestamp", "frame_index", "episode_index", "index", "task_index")
-            and feats[k].get("dtype") != "video"
-        )
+        # image 特性：parquet（lerobot 直读的口径）里必须是列；raw JSONL
+        # 行只装数值，image 由替身帧目录承载（下方 videos 段对账）
+        need = set(DATA_SCALAR_COLS) | numeric | (set(image_feats) if fmt == "parquet" else set())
         missing = need - set(got[0].keys()) if got else need
         c.expect(not missing, f"{rel} 数据列齐全（{fmt}，缺 {sorted(missing) if missing else '无'}）")
         if got:
             c.expect(got[0].get("timestamp") == 0.0,
                      f"{rel} 第一行 timestamp == 0（episode 内秒数）")
+        for key in sorted(k for k in image_feats if got and k in got[0]):
+            vals = [r.get(key) for r in got]
+            blobs = [v.get("bytes") if isinstance(v, dict) else None for v in vals]
+            c.expect(all(isinstance(b, (bytes, bytearray)) and b[:8] == PNG_MAGIC for b in blobs),
+                     f"{rel} 的 {key} 列为 Image struct：{len(vals)} 行全为内嵌 PNG")
+            c.expect(bool(blobs) and all(isinstance(b, (bytes, bytearray)) and _png_matches(b, feats[key])
+                                         for b in (blobs[0], blobs[-1])),
+                     f"{rel} 的 {key} 首末帧 PNG 与 shape {feats[key].get('shape')} 一致"
+                     + ("（16-bit 灰度）" if (feats[key].get("shape") or [0, 0, 0])[-1] == 1 else ""))
     c.expect(total_rows == total_frames, f"数据行数 == total_frames（{total_rows}/{total_frames}）")
 
     # video files / frame dirs
@@ -233,15 +344,63 @@ def check(root: Path) -> int:
         frame_dirs = sorted(root.glob("videos/*/chunk-*/file-*"))
         mp4s = sorted(root.glob("videos/*/chunk-*/file-*.mp4"))
         c.expect(bool(frame_dirs or mp4s), "videos/<key>/chunk-XXX/file-XXX 存在（帧目录或 mp4）")
+        # lerobot `_check_cached_episodes_sufficient`：每集每个 video 键的
+        # 指针文件都要在（转换后 = mp4；raw = 帧目录）
+        for key in video_feats:
+            ranges = _pointer_frames(rows, key, float(fps)) if rows and isinstance(fps, (int, float)) and fps > 0 else None
+            refs = sorted({(ci, fi) for ci, fi, _k0, _k1 in ranges}) if ranges else []
+            absent = [f"chunk-{ci:03d}/file-{fi:03d}" for ci, fi in refs
+                      if not (root / "videos" / key / f"chunk-{ci:03d}" / f"file-{fi:03d}.mp4").is_file()
+                      and not any((root / "videos" / key / f"chunk-{ci:03d}" / f"file-{fi:03d}").glob("frame_*.png"))]
+            c.expect(bool(refs) and not absent,
+                     f"videos/{key} 指针引用的 chunk/file 都有 mp4 或帧目录（"
+                     + (f"缺 {absent or '无'}" if refs else "无指针可核") + "）")
+    # raw image 替身帧目录：帧数 == Σ 指针帧数，首末帧 PNG 与 shape 一致
+    for key in raw_images:
+        ranges = _pointer_frames(rows, key, float(fps)) if rows and isinstance(fps, (int, float)) and fps > 0 else None
+        files = sorted({(ci, fi) for ci, fi, _k0, _k1 in ranges}) if ranges else [(0, 0)]
+        n_frames = 0
+        pngs: list[Path] = []
+        for ci, fi in files:
+            d = root / "videos" / key / f"chunk-{ci:03d}" / f"file-{fi:03d}"
+            got_pngs = sorted(d.glob("frame_*.png")) if d.is_dir() else []
+            n_frames += len(got_pngs)
+            pngs += got_pngs
+        want = sum(k1 - k0 for _ci, _fi, k0, k1 in ranges) if ranges else total_frames
+        c.expect(n_frames == want and n_frames > 0,
+                 f"videos/{key} 替身帧目录帧数 == Σ 指针帧数（{n_frames}/{want}）")
+        if pngs:
+            c.expect(all(_png_matches(p.read_bytes(), feats[key]) for p in (pngs[0], pngs[-1])),
+                     f"videos/{key} 首末帧 PNG 与 shape {feats[key].get('shape')} 一致（16-bit 灰度）")
+    # 无幻影轨（件2 深度-only 对称）：videos/ 下每个轨目录都对应已声明的
+    # video 或 raw image 特性，且没有空帧目录
+    vroot = root / "videos"
+    if vroot.is_dir():
+        declared = set(video_feats) | set(raw_images)
+        undeclared = sorted(d.name for d in vroot.iterdir() if d.is_dir() and d.name not in declared)
+        empty = sorted(d.relative_to(root).as_posix() for d in vroot.glob("*/chunk-*/file-*")
+                       if d.is_dir() and not any(d.glob("frame_*.png")))
+        c.expect(not undeclared and not empty,
+                 f"videos/ 无幻影轨：轨目录都对应已声明特性、无空帧目录（未声明 {undeclared or '无'}，空 {empty or '无'}）")
 
     # stats.json（真实数据集惯例：只含观测/动作/时间戳，不含簿记整型列）
+    # image 特性：已嵌入 parquet 时必须有 lerobot 形状 (C,1,1) 的 stats（转换器
+    # 补算）；raw 树引擎不解码 PNG，不要求。
     stats = root / "meta" / "stats.json"
     if stats.exists():
         st = json.loads(stats.read_text(encoding="utf-8"))
         for name, feat in feats.items():
-            if feat.get("dtype") in ("video", "int64"):
+            if feat.get("dtype") in ("video", "int64") or name in raw_images:
                 continue
             c.expect(name in st, f"stats.json 有 {name}")
+            if feat.get("dtype") == "image" and name in st:
+                s = st[name]
+                c.expect(all(isinstance(s.get(k), list) and len(s[k]) == 1
+                             and isinstance(s[k][0], list) and len(s[k][0]) == 1
+                             and isinstance(s[k][0][0], list) and len(s[k][0][0]) == 1
+                             for k in ("min", "max", "mean", "std"))
+                         and s.get("count") == [s.get("count", [0])[0]],
+                         f"stats.json 的 {name} 为 lerobot 图像 stats 形状 (1,1,1) + count")
     else:
         c.expect(False, "meta/stats.json 存在")
 
@@ -448,6 +607,13 @@ def check_v21(root: Path) -> int:
             subs = [x for x in d.glob("episode_*") if x.is_dir()]
             c.expect(bool(subs) and all(any(x.glob("frame_*.png")) for x in subs),
                      f"{key} 至少一个 episode 帧目录且含 frame_*.png")
+    # 无幻影轨（P2-W1-D 深度-only 对称）：videos/chunk-000/ 下每个轨目录
+    # 都对应已声明的 video/image 特性（深度-only 相机不再声明没有帧的
+    # observation.images.<name>，RGB-only 相机本就不声明 depth.<name>）
+    if videos_root.is_dir():
+        declared = set(video_feats) | set(image_feats)
+        undeclared = sorted(d.name for d in videos_root.iterdir() if d.is_dir() and d.name not in declared)
+        c.expect(not undeclared, f"videos/chunk-000/ 无幻影轨：轨目录都对应已声明特性（未声明 {undeclared or '无'}）")
 
     # MANIFEST 提交点对账（DE-P1）：
     # - raw 树：逐条在位重算哈希；

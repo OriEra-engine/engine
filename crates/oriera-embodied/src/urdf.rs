@@ -41,6 +41,13 @@
 //! 与 docs/URDF-IMPORT.md「全链 CLI」节）；本模块只补了
 //! [`pitfall_warnings`]——导入结果的人话坑位警告（gap_closed≈0 /
 //! home=URDF 零位），解析与映射零改动。
+//!
+//! **P2（PLAN-embodied-v3 P2 深水区 Wave-1 · P 包）**：两处映射补齐，默认
+//! 路径逐位不动——① `<collision><sphere>` → [`LinkShape::Ball`] 直通（此前
+//! `Box{[r;3]}` 包络，体积/质量等价随之用真球体积）；② base 安装朝向
+//! [`RobotSpecOpts::mount_rpy`]（URDF 世界系 rpy，先于上轴换算；零 = 旧
+//! 行为），[`pitfall_warnings`] 的第三坑（base 朝向）从「CLI 固定提示」
+//! 变成按零位链几何的可判警告 + 可算的修正 yaw。
 
 use oriera_subsys::{
     ArmDescription, GripperKind, GripperSpec, Inertial, JointKind, JointSpec, LinkShape, LinkSpec,
@@ -572,6 +579,16 @@ pub struct RobotSpecOpts {
     /// URDF 根 link 系原点落在 OriEra 世界的位置（→ [`RobotSpec::base`]，
     /// 全部 link `origin` 由此累加）。
     pub mount: [f32; 3],
+    /// **P2 base 朝向**：根 link 的安装朝向——URDF 世界系（上轴约定同
+    /// [`Self::up_axis`]）里的 rpy（外旋 XYZ、弧度，与 URDF `<origin rpy>`
+    /// 同约定），**先于**上轴换算施加：等价于在 URDF 外面套一层
+    /// `world →(fixed, rpy)→ 根 link`。吊装 `[π, 0, 0]`、壁装
+    /// `[±π/2, 0, 0]`、主轴朝 −X 的臂 `[0, 0, π]`。RobotSpec 的 link 体系
+    /// 在 home 位姿与世界对齐，朝向整体烘进 anchor / axis / origin / 碰撞体 /
+    /// 惯量 / 夹爪板系（RobotSpec 不增字段；身份 hash 随几何自然变化）。
+    /// 缺省全零 = 旧行为逐位不变（零 rpy 直接跳过复合，连一次恒等矩阵乘都
+    /// 不做）。
+    pub mount_rpy: [f32; 3],
     pub up_axis: UpAxis,
     /// 引擎 tick 频率（Hz）：只用来把手指 `<limit velocity>`（m/s）换成
     /// [`GripperSpec::gap_rate`]（m/tick）。
@@ -598,6 +615,7 @@ impl Default for RobotSpecOpts {
             default_armature: 0.02,
             per_joint: BTreeMap::new(),
             mount: [0.0; 3],
+            mount_rpy: [0.0; 3],
             up_axis: UpAxis::Z,
             tick_hz: 60.0,
             skipped: Vec::new(),
@@ -631,6 +649,16 @@ fn rpy_to_mat(rpy: V3) -> Mat3 {
     let ry = [[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]];
     let rz = [[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]];
     mat_mul(&rz, &mat_mul(&ry, &rx))
+}
+
+/// URDF 世界 → OriEra 世界的总旋转（P2 base 朝向）：上轴换算 ∘ 安装朝向
+/// `R(mount_rpy)`。零 rpy 原样返回上轴矩阵——默认导入逐位走旧路径。
+fn mount_rotation(r_up: Mat3, mount_rpy: V3) -> Mat3 {
+    if mount_rpy == [0.0; 3] {
+        r_up
+    } else {
+        mat_mul(&r_up, &rpy_to_mat(mount_rpy))
+    }
 }
 
 fn v_add(a: V3, b: V3) -> V3 {
@@ -710,6 +738,11 @@ fn capsule_volume(half_len: f32, r: f32) -> f32 {
     PI * r * r * (2.0 * half_len) + 4.0 / 3.0 * PI * r * r * r
 }
 
+/// 球体积（P2 sphere → Ball 直通的质量等价密度用）。
+fn ball_volume(r: f32) -> f32 {
+    4.0 / 3.0 * PI * r * r * r
+}
+
 /// URDF 世界里的一个刚体系（home 位姿）。
 #[derive(Debug, Clone, Copy)]
 struct Frame {
@@ -780,6 +813,8 @@ struct ChainWalk<'a> {
 }
 
 struct LinkCtx<'a> {
+    /// URDF 世界 → OriEra 世界的总旋转：上轴换算（`up_axis`）∘ 安装朝向
+    /// （`mount_rpy`，P2）。下游所有「URDF 世界向量 → OriEra」都过它。
     r_up: Mat3,
     preset_root: &'a LinkSpec,
     preset_dyn: &'a LinkSpec,
@@ -868,7 +903,7 @@ impl UrdfReport {
     ///   / `default_kd_prismatic`（N/m、N·s/m）；floating/planar 断链报错。
     /// - **link**：`<collision>` box → Box（旋转后取轴对齐包络）、
     ///   cylinder → Capsule（世界轴 ≈ ±X 时）否则 Box 包络、sphere →
-    ///   Box 包络、**mesh → STL 且给了 `opts.mesh_base_dir` 时经
+    ///   **Ball 直通**（P2，旋转不变、真球体积；此前 Box 包络）、**mesh → STL 且给了 `opts.mesh_base_dir` 时经
     ///   `meshres` 全量解析为 [`LinkShape::ConvexHull`]（顶点旋到体轴，
     ///   `mesh_uri` 留原文作 provenance）；GLB/缺失/未给根目录 → 链段
     ///   包络降级（URI 进 `opts.skipped`）**；`<inertial>` 全张量直进
@@ -880,6 +915,10 @@ impl UrdfReport {
     ///   运动学双板近似（见 [`Self::to_robot_spec_with_gripper`]）。无 →
     ///   `None`。
     /// - **上轴**：缺省把 URDF 的 Z-up 旋到 OriEra Y-up（[`UpAxis`]）。
+    /// - **base 朝向**（P2）：`opts.mount_rpy` 给根 link 的安装朝向（URDF
+    ///   世界系 rpy，先于上轴换算）；缺省零 = 只平移（`opts.mount`）。URDF
+    ///   内自带的 `world →(fixed, rpy)→ base` 根变换照常经 fixed 吸收进 FK，
+    ///   两条路等价（`tests`：`mount_rpy_equals_a_fixed_world_root`）。
     ///
     /// 返回的 spec **未**经 `validate()`——gripper-only 的 URDF（无臂关节）
     /// 也能返回 Ok 以便把它的 GripperSpec 移植到别的臂上；要进
@@ -1090,9 +1129,26 @@ impl UrdfReport {
                     (LinkShape::Box { half }, col_off, box_volume(half), None)
                 }
             }
+            Some(UrdfGeom::Sphere { radius }) if radius.is_finite() && *radius > 0.0 => {
+                // P2 sphere → Ball 直通（此前 Box{[r;3]} 包络）：球体旋转
+                // 不变——collider_offset 已旋到体轴即全部位姿信息；体积取
+                // 真球体积，无 <inertial> 时的质量等价密度随之精确。
+                (
+                    LinkShape::Ball { radius: *radius },
+                    col_off,
+                    ball_volume(*radius),
+                    None,
+                )
+            }
             Some(UrdfGeom::Sphere { radius }) => {
-                let half = [*radius; 3];
-                (LinkShape::Box { half }, col_off, box_volume(half), None)
+                // 非有限/非正半径不是球：诚实降级为链段包络（入 skipped），
+                // 不产出 validate 必拒的 Ball{r ≤ 0}。
+                skipped.push(format!(
+                    "link {} sphere radius {radius} 非正/非有限 → 链段包络",
+                    l.name
+                ));
+                let (s, o, v) = envelope(seg, mass, rho, ctx.default_radius);
+                (s, o, v, None)
             }
             Some(UrdfGeom::Mesh { uri }) => {
                 match self.resolve_mesh_hull(uri, &r_body, col_off, ctx) {
@@ -1374,11 +1430,19 @@ impl UrdfReport {
             .gripper
             .as_ref()
             .ok_or("预设 RobotSpec 缺 gripper（robot.rs 契约变化）")?;
+        if !opts.mount_rpy.iter().all(|v| v.is_finite()) {
+            return Err(format!(
+                "opts.mount_rpy = {:?}：base 安装朝向须为有限弧度（URDF 外旋 XYZ，如吊装 [3.14159, 0, 0]）",
+                opts.mount_rpy
+            ));
+        }
+        let r_up = match opts.up_axis {
+            UpAxis::Z => MAT_Z_UP_TO_Y_UP,
+            UpAxis::Y => MAT_IDENTITY,
+        };
         let ctx = LinkCtx {
-            r_up: match opts.up_axis {
-                UpAxis::Z => MAT_Z_UP_TO_Y_UP,
-                UpAxis::Y => MAT_IDENTITY,
-            },
+            // P2：base 安装朝向先于上轴换算（零 rpy = 旧矩阵原样）。
+            r_up: mount_rotation(r_up, opts.mount_rpy),
             preset_root: &preset.links[0],
             preset_dyn: &preset.links[1],
             default_radius: ArmDescription::default().link_radius,
@@ -1533,14 +1597,21 @@ impl UrdfReport {
     }
 }
 
-/// P1-B1 坑位治理（用户角色集群 PUGC-2/3 实测两坑）：全链导入结果的人话
-/// 警告清单——**非致命**，CLI 打印后照跑。第三坑（base 朝向）无法从
-/// [`RobotSpec`] 判定（导入只平移不旋转），由 CLI 面固定提示 + 文档写明。
+/// P1-B1 坑位治理（用户角色集群 PUGC-2/3/4 实测三坑）：全链导入结果的
+/// 人话警告清单——**非致命**，CLI 打印后照跑。
 ///
 /// - **gap_closed ≈ 0**（< 0.01 m）：指板闭合位相触——运行时一碰方块就
 ///   把它挤飞，抓取永不成立；给 preset 参考值与 `--set` 覆盖路径。
 /// - **home 全零**：home = URDF 零位钳限位的结果，竖直/奇异构型是常态；
 ///   给 `--set robot.home=…` 覆盖路径。
+/// - **base 朝向**（P2：此前「无法从 RobotSpec 判定、导入只平移不旋转」，
+///   只能 CLI 固定提示）：按零位链几何判——根 link 原点 → 末端（有夹爪取
+///   TCP）的**水平**伸展向量长 ≥ [`BASE_HEADING_MIN_REACH`] 且偏离 OriEra
+///   +X（场景桌面/方块所在侧）超过 [`BASE_HEADING_MAX_DEG`]° 时报警，并
+///   算好修正 yaw = `atan2(h_z, h_x)`（REP-103 Z-up URDF 绕 +Z；未给安装
+///   朝向时即 `--urdf-mount-rpy 0,0,<yaw>`，已给时叠加到现值的 y 上——外旋
+///   XYZ 的 `R(r,p,y+ψ) = Rz(ψ)·R(r,p,y)`）。竖直臂（水平伸展 < 5 cm）
+///   不判。
 pub fn pitfall_warnings(robot: &RobotSpec) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(g) = &robot.gripper {
@@ -1559,7 +1630,46 @@ pub fn pitfall_warnings(robot: &RobotSpec) -> Vec<String> {
                 .to_string(),
         );
     }
+    if let Some((deg, yaw, reach)) = base_heading(robot) {
+        if deg > BASE_HEADING_MAX_DEG {
+            out.push(format!(
+                "base 朝向：零位链水平伸展 {reach:.3} m、方向偏离 OriEra +X {deg:.0}°（桌面/方块在 +X 侧，臂会朝别处伸）\
+                 ——安装朝向再绕 URDF +Z 转 {yaw:.4} rad 即朝 +X：未给 --urdf-mount-rpy 时用 --urdf-mount-rpy 0,0,{yaw:.4}，\
+                 已给 r,p,y 时把它加到 y 上（外旋 XYZ 的 yaw 可直接相加）；吊装/壁装另给 roll/pitch，\
+                 见 docs/URDF-IMPORT.md「base 朝向」节"
+            ));
+        }
+    }
     out
+}
+
+/// [`pitfall_warnings`] 的 base 朝向判据：水平伸展短于此值（m）不判（竖直
+/// 臂零位常态，方向无意义）。
+pub const BASE_HEADING_MIN_REACH: f32 = 0.05;
+/// [`pitfall_warnings`] 的 base 朝向判据：水平伸展方向偏离 OriEra +X 超过
+/// 此角度（°）即报警。
+pub const BASE_HEADING_MAX_DEG: f32 = 45.0;
+
+/// 零位链几何的水平伸展：`(偏离 +X 的角度°, 修正 yaw rad, 水平长度 m)`。
+/// 末端 = 夹爪挂载 link 原点 + `tcp_offset`（无夹爪取最后一个关节的子
+/// link 原点）——RobotSpec 的 link 体系在零位与世界对齐，原点即零位 FK。
+/// 水平伸展 < [`BASE_HEADING_MIN_REACH`] → `None`。
+fn base_heading(robot: &RobotSpec) -> Option<(f32, f32, f32)> {
+    let root = robot.root_link()?;
+    let (end, tcp) = match &robot.gripper {
+        Some(g) => (g.attach_link, g.tcp_offset),
+        None => (robot.joints.last()?.child_link, [0.0; 3]),
+    };
+    let base = robot.links.get(root)?.origin;
+    let tip = robot.links.get(end)?.origin;
+    let hx = tip[0] + tcp[0] - base[0];
+    let hz = tip[2] + tcp[2] - base[2];
+    let reach = (hx * hx + hz * hz).sqrt();
+    if !(reach.is_finite() && reach >= BASE_HEADING_MIN_REACH) {
+        return None;
+    }
+    let yaw = hz.atan2(hx);
+    Some((yaw.abs().to_degrees(), yaw, reach))
 }
 
 #[cfg(test)]
@@ -2230,5 +2340,298 @@ mod tests {
         // 无关节无夹爪 → 人话错
         let rep3 = UrdfReport::parse(r#"<robot name="e"><link name="only"/></robot>"#).unwrap();
         assert!(rep3.to_robot_spec(&mut RobotSpecOpts::default()).is_err());
+    }
+
+    // ── P2：sphere → Ball 直通 + base 安装朝向（mount_rpy）──────────────
+
+    /// P2 fixture：4 轴（j2 原点带 yaw 0.3 的非主轴 rpy）、偏置 collision
+    /// origin 的盒基座、带非对角惯量的 l2、**球形工具 link**（偏置 2 cm）。
+    const P2_FIXTURE: &str = r#"<robot name="p2_arm">
+      <link name="base"><collision><origin xyz="0 0 0.03"/><geometry><box size="0.10 0.10 0.06"/></geometry></collision></link>
+      <link name="l1"><collision><geometry><cylinder radius="0.02" length="0.12"/></geometry></collision></link>
+      <link name="l2">
+        <inertial><origin xyz="0.1 0 0"/><mass value="1.2"/><inertia ixx="0.002" iyy="0.01" izz="0.011" ixy="0.0004"/></inertial>
+        <collision><origin xyz="0.1 0 0"/><geometry><box size="0.2 0.04 0.04"/></geometry></collision>
+      </link>
+      <link name="l3"><collision><geometry><box size="0.12 0.03 0.03"/></geometry></collision></link>
+      <link name="tool"><collision><origin xyz="0.02 0 0"/><geometry><sphere radius="0.025"/></geometry></collision></link>
+      <joint name="j1" type="revolute"><parent link="base"/><child link="l1"/>
+        <origin xyz="0 0 0.08"/><axis xyz="0 0 1"/><limit lower="-3" upper="3" effort="50" velocity="2"/></joint>
+      <joint name="j2" type="revolute"><parent link="l1"/><child link="l2"/>
+        <origin xyz="0 0 0.12" rpy="0 0 0.3"/><axis xyz="0 1 0"/><limit lower="-2" upper="2" effort="50" velocity="2"/></joint>
+      <joint name="j3" type="revolute"><parent link="l2"/><child link="l3"/>
+        <origin xyz="0.2 0 0"/><axis xyz="0 1 0"/><limit lower="-2" upper="2" effort="30" velocity="2"/></joint>
+      <joint name="j4" type="revolute"><parent link="l3"/><child link="tool"/>
+        <origin xyz="0.12 0 0"/><axis xyz="1 0 0"/><limit lower="-3" upper="3" effort="10" velocity="3"/></joint>
+    </robot>"#;
+
+    /// 非单位 base 朝向（三轴都非零、非 90° 整倍）。
+    const P2_RPY: V3 = [0.4, -0.3, 2.2];
+
+    fn near3(a: V3, b: V3, tol: f32) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() <= tol)
+    }
+
+    /// OriEra 世界系里的 base 旋转：`r_up · R(rpy) · r_upᵀ`（把「平移-only
+    /// 导入」的世界向量映到「带朝向导入」的世界向量）。
+    fn oriera_mount_rot(rpy: V3) -> Mat3 {
+        let up = MAT_Z_UP_TO_Y_UP;
+        let up_t = [
+            [up[0][0], up[1][0], up[2][0]],
+            [up[0][1], up[1][1], up[2][1]],
+            [up[0][2], up[1][2], up[2][2]],
+        ];
+        mat_mul(&mat_mul(&up, &rpy_to_mat(rpy)), &up_t)
+    }
+
+    #[test]
+    fn sphere_collision_imports_as_a_ball_straight_through() {
+        let rep = UrdfReport::parse(P2_FIXTURE).unwrap();
+        let mut opts = RobotSpecOpts::default();
+        let spec = rep.to_robot_spec(&mut opts).expect("P2 fixture 导入");
+        assert_eq!(spec.joints.len(), 4);
+        let tool = spec.links.iter().find(|l| l.name == "tool").unwrap();
+        assert_eq!(
+            tool.shape,
+            LinkShape::Ball { radius: 0.025 },
+            "sphere → Ball 直通（不再是 Box{{[r;3]}} 包络）"
+        );
+        // 球心 = collision origin 经链 FK（j2 原点 yaw 0.3）旋到 OriEra
+        let want = mat_vec(
+            &MAT_Z_UP_TO_Y_UP,
+            mat_vec(&rpy_to_mat([0.0, 0.0, 0.3]), [0.02, 0.0, 0.0]),
+        );
+        assert!(
+            near3(tool.collider_offset, want, 1e-7),
+            "{:?} vs {want:?}",
+            tool.collider_offset
+        );
+        assert!(
+            !opts.skipped.iter().any(|s| s.contains("tool")),
+            "Ball 直通不登记降级：{:?}",
+            opts.skipped
+        );
+        spec.validate().expect("Ball 链合法");
+        let report = oriera_subsys::collision_report(&spec);
+        assert!(report.contains("ball radius 0.025"), "{report}");
+        assert!(
+            oriera_subsys::MultibodySystem::from_robot(spec, oriera_subsys::Scene3D::default())
+                .is_ok(),
+            "Ball 链体进 multibody"
+        );
+        // 非正半径不是球：诚实降级为链段包络并登记，不产出 validate 必拒的 Ball
+        let bad = P2_FIXTURE.replace(r#"radius="0.025""#, r#"radius="0""#);
+        let mut o2 = RobotSpecOpts::default();
+        let spec2 = UrdfReport::parse(&bad)
+            .unwrap()
+            .to_robot_spec(&mut o2)
+            .unwrap();
+        assert!(!matches!(spec2.links[4].shape, LinkShape::Ball { .. }));
+        assert!(
+            o2.skipped
+                .iter()
+                .any(|s| s.contains("tool") && s.contains("sphere")),
+            "{:?}",
+            o2.skipped
+        );
+        spec2.validate().expect("降级后仍合法");
+    }
+
+    /// 零 rpy（含 −0.0）走旧路径：与缺省 opts 逐位相等。
+    #[test]
+    fn zero_mount_rpy_is_the_legacy_import_bit_for_bit() {
+        let rep = UrdfReport::parse(P2_FIXTURE).unwrap();
+        let legacy = rep.to_robot_spec(&mut RobotSpecOpts::default()).unwrap();
+        for zero in [[0.0f32; 3], [-0.0, 0.0, -0.0]] {
+            let mut o = RobotSpecOpts {
+                mount_rpy: zero,
+                ..RobotSpecOpts::default()
+            };
+            assert_eq!(rep.to_robot_spec(&mut o).unwrap(), legacy, "{zero:?}");
+        }
+        assert_eq!(RobotSpecOpts::default().mount_rpy, [0.0; 3]);
+        // 非有限朝向 = 人话错（点名字段）
+        let mut o = RobotSpecOpts {
+            mount_rpy: [f32::NAN, 0.0, 0.0],
+            ..RobotSpecOpts::default()
+        };
+        let err = rep.to_robot_spec(&mut o).unwrap_err();
+        assert!(err.contains("mount_rpy"), "{err}");
+    }
+
+    /// FK 一致性（导入层）：非单位 base 朝向 = 整条链绕安装点刚体旋转——
+    /// anchor / axis / origin−mount / collider_offset / 惯量质心逐项等于
+    /// 「平移-only 导入」的值左乘 OriEra 世界里的 base 旋转；Ball 旋转不变。
+    #[test]
+    fn mount_rpy_rotates_the_imported_chain_rigidly() {
+        let rep = UrdfReport::parse(P2_FIXTURE).unwrap();
+        let mount = [0.1, 0.6, -0.05];
+        let plain = rep
+            .to_robot_spec(&mut RobotSpecOpts {
+                mount,
+                ..RobotSpecOpts::default()
+            })
+            .unwrap();
+        let rot = rep
+            .to_robot_spec(&mut RobotSpecOpts {
+                mount,
+                mount_rpy: P2_RPY,
+                ..RobotSpecOpts::default()
+            })
+            .unwrap();
+        let r = oriera_mount_rot(P2_RPY);
+        assert_eq!(rot.base, mount, "base 仍是安装点");
+        assert_eq!(rot.links[0].origin, mount, "根原点 = 安装点（旋转中心）");
+        for (a, b) in plain.joints.iter().zip(&rot.joints) {
+            assert!(
+                near3(b.anchor, mat_vec(&r, a.anchor), 1e-6),
+                "{} anchor",
+                a.name
+            );
+            assert!(near3(b.axis, mat_vec(&r, a.axis), 1e-6), "{} axis", a.name);
+            assert_eq!(
+                (a.limits, a.effort, a.velocity_limit, a.damping),
+                (b.limits, b.effort, b.velocity_limit, b.damping),
+                "{} 标量不随朝向变",
+                a.name
+            );
+        }
+        for (a, b) in plain.links.iter().zip(&rot.links) {
+            let rel = |o: V3| v_sub(o, mount);
+            assert!(
+                near3(rel(b.origin), mat_vec(&r, rel(a.origin)), 1e-6),
+                "{} origin",
+                a.name
+            );
+            assert!(
+                near3(b.collider_offset, mat_vec(&r, a.collider_offset), 1e-6),
+                "{} collider_offset",
+                a.name
+            );
+            if let (Some(ia), Some(ib)) = (&a.inertial, &b.inertial) {
+                assert_eq!(ia.mass, ib.mass);
+                assert!(near3(ib.com, mat_vec(&r, ia.com), 1e-6), "{} com", a.name);
+                let tr = |i: &Inertial| i.ixx + i.iyy + i.izz;
+                assert!((tr(ia) - tr(ib)).abs() < 1e-6, "{} 张量迹不变", a.name);
+            }
+        }
+        // Ball 旋转不变（半径逐位），而盒体的轴对齐包络随朝向变化（诚实包络）
+        assert_eq!(rot.links[4].shape, LinkShape::Ball { radius: 0.025 });
+        assert_eq!(plain.links[4].shape, rot.links[4].shape);
+        rot.validate().expect("带朝向导入仍合法");
+        assert_ne!(
+            oriera_subsys::rigid3d::robot_identity_hash(&plain),
+            oriera_subsys::rigid3d::robot_identity_hash(&rot),
+            "朝向烘进几何 = 新身份"
+        );
+    }
+
+    /// `to_robot_spec` 不丢 URDF 内自带的 base 姿态：`world →(fixed, rpy)→
+    /// base` 根变换经 fixed 吸收进 FK，关节表与 `mount_rpy` 同值导入逐项
+    /// 相等（两条路等价）。根体碰撞体不同——world link 无 `<collision>`
+    /// 走链段包络（已登记 skipped；P2 遗留：fixed 吸收 link 的几何不合并）。
+    #[test]
+    fn mount_rpy_equals_a_fixed_world_root() {
+        let wrapped = P2_FIXTURE.replace(
+            r#"<link name="base">"#,
+            r#"<link name="world"/>
+      <joint name="world_mount" type="fixed"><parent link="world"/><child link="base"/>
+        <origin xyz="0 0 0" rpy="0.4 -0.3 2.2"/></joint>
+      <link name="base">"#,
+        );
+        let rep_w = UrdfReport::parse(&wrapped).unwrap();
+        assert_eq!(rep_w.root, "world");
+        let mut ow = RobotSpecOpts::default();
+        let via_root = rep_w.to_robot_spec(&mut ow).unwrap();
+        let via_opts = UrdfReport::parse(P2_FIXTURE)
+            .unwrap()
+            .to_robot_spec(&mut RobotSpecOpts {
+                mount_rpy: P2_RPY,
+                ..RobotSpecOpts::default()
+            })
+            .unwrap();
+        assert_eq!(via_root.joints.len(), via_opts.joints.len());
+        for (a, b) in via_root.joints.iter().zip(&via_opts.joints) {
+            assert!(near3(a.anchor, b.anchor, 1e-6), "{} anchor", a.name);
+            assert!(near3(a.axis, b.axis, 1e-6), "{} axis", a.name);
+        }
+        for (a, b) in via_root.links.iter().zip(&via_opts.links).skip(1) {
+            assert!(near3(a.origin, b.origin, 1e-6), "{} origin", a.name);
+            // 盒体包络经两条矩阵乘序得到，末位可差——按 1e-6 比；Ball 逐位
+            let same_shape = match (&a.shape, &b.shape) {
+                (LinkShape::Box { half: ha }, LinkShape::Box { half: hb }) => near3(*ha, *hb, 1e-6),
+                (x, y) => x == y,
+            };
+            assert!(
+                same_shape,
+                "{} 非根链体几何一致：{:?} vs {:?}",
+                a.name, a.shape, b.shape
+            );
+        }
+        assert!(
+            ow.skipped
+                .iter()
+                .any(|s| s.contains("world") && s.contains("链段包络")),
+            "{:?}",
+            ow.skipped
+        );
+    }
+
+    /// 第三坑可判 + 可修：链伸展朝 −X 的 URDF 触发 base 朝向警告并给出修正
+    /// yaw；按建议的 yaw 重导入后伸展朝 +X、警告消失。正常朝向不触警。
+    #[test]
+    fn backward_arm_trips_the_base_heading_warning_and_the_hint_fixes_it() {
+        let rep = UrdfReport::parse(P2_FIXTURE).unwrap();
+        let ok = rep.to_robot_spec(&mut RobotSpecOpts::default()).unwrap();
+        assert!(
+            !pitfall_warnings(&ok)
+                .iter()
+                .any(|w| w.contains("base 朝向")),
+            "伸展偏 17°（j2 yaw 0.3）不触警"
+        );
+        let backward = P2_FIXTURE.replace(
+            r#"<origin xyz="0 0 0.08"/>"#,
+            r#"<origin xyz="0 0 0.08" rpy="0 0 3.14159265"/>"#,
+        );
+        let rep_b = UrdfReport::parse(&backward).unwrap();
+        let spec_b = rep_b.to_robot_spec(&mut RobotSpecOpts::default()).unwrap();
+        let warns = pitfall_warnings(&spec_b);
+        let w = warns
+            .iter()
+            .find(|w| w.contains("base 朝向"))
+            .expect("主轴朝 −X 必须触发 base 朝向警告");
+        assert!(w.contains("--urdf-mount-rpy 0,0,"), "{w}");
+        let (deg, yaw, _) = base_heading(&spec_b).unwrap();
+        assert!(deg > 150.0, "伸展近 −X：{deg}°");
+        let fixed = rep_b
+            .to_robot_spec(&mut RobotSpecOpts {
+                mount_rpy: [0.0, 0.0, yaw],
+                ..RobotSpecOpts::default()
+            })
+            .unwrap();
+        let (deg2, _, _) = base_heading(&fixed).unwrap();
+        assert!(deg2 < 1e-2, "按建议 yaw 旋转后伸展朝 +X：{deg2}°");
+        assert!(!pitfall_warnings(&fixed)
+            .iter()
+            .any(|w| w.contains("base 朝向")));
+        // 已给安装朝向（带 roll）时，建议 yaw 叠加到现值 y 上同样修正——外旋
+        // XYZ 的 R(r,p,y+ψ) = Rz(ψ)·R(r,p,y)，绕竖直轴整体转 ψ。
+        let tilted = [0.2f32, 0.0, 3.0];
+        let spec_t = rep
+            .to_robot_spec(&mut RobotSpecOpts {
+                mount_rpy: tilted,
+                ..RobotSpecOpts::default()
+            })
+            .unwrap();
+        let (deg_t, yaw_t, _) = base_heading(&spec_t).unwrap();
+        assert!(deg_t > BASE_HEADING_MAX_DEG, "{deg_t}°");
+        let spec_t2 = rep
+            .to_robot_spec(&mut RobotSpecOpts {
+                mount_rpy: [tilted[0], tilted[1], tilted[2] + yaw_t],
+                ..RobotSpecOpts::default()
+            })
+            .unwrap();
+        let (deg_t2, _, _) = base_heading(&spec_t2).unwrap();
+        assert!(deg_t2 < 1e-2, "yaw 叠加后朝 +X：{deg_t2}°");
     }
 }

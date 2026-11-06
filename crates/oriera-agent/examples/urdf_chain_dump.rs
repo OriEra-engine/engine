@@ -152,6 +152,9 @@ fn main() {
                             serde_json::json!({"kind": "box", "half": half}),
                         oriera_subsys::LinkShape::Capsule { half_len, radius } =>
                             serde_json::json!({"kind": "capsule", "half_len": half_len, "radius": radius}),
+                        // P2: URDF <sphere> → Ball 直通（此前 Box 包络）
+                        oriera_subsys::LinkShape::Ball { radius } =>
+                            serde_json::json!({"kind": "ball", "radius": radius}),
                         // M2-A: resolved mesh-derived colliders (点集为体轴
                         // 坐标，provenance 见 mesh_uri)
                         oriera_subsys::LinkShape::ConvexHull { points } =>

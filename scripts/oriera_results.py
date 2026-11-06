@@ -15,6 +15,11 @@
 
 输出格式自动降级：装了 pandas+pyarrow 写 parquet；否则写 CSV 并提示
 （列名一致，plot_results.py 两种都吃）。
+
+失败相位列（P2，opt-in）：只要有一份 eval_report.json 带 `failure_phases` 块
+（`embodied_sim_baseline --failure-phases` 产出，规则 docs/LAB-GUIDE.md §2.2），
+全表追加 `failure_phase_scheme` + `fail_reach/fail_grasp/fail_lift/fail_place`
+（无该块的行留空）并按组打印相位合计；一份都没有则输出逐字节同旧版。
 """
 from __future__ import annotations
 
@@ -24,6 +29,23 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+
+# P2 失败相位遥测（opt-in）：eval_report.json 的 `failure_phases.by_phase` 四键
+# → 聚合表的四列（管线顺序）。
+FAILURE_PHASES = ("reach", "grasp", "lift", "place")
+FAILURE_COLUMNS = ["failure_phase_scheme"] + [f"fail_{p}" for p in FAILURE_PHASES]
+
+
+def failure_phase_cells(report: dict) -> dict | None:
+    """`failure_phases` 块 → 五列；报告没有该块（未开 --failure-phases）→ None。"""
+    block = report.get("failure_phases")
+    if not isinstance(block, dict):
+        return None
+    by_phase = block.get("by_phase") or {}
+    cells = {"failure_phase_scheme": block.get("scheme", "")}
+    for p in FAILURE_PHASES:
+        cells[f"fail_{p}"] = int(by_phase.get(p, 0) or 0)
+    return cells
 
 
 
@@ -101,7 +123,17 @@ def aggregate(runs_root: Path) -> list[dict]:
             "arch": build.get("arch", ""),
             "run_dir": str(run_dir),
         }
+        phases = failure_phase_cells(report)
+        if phases is not None:
+            row["_failure_phases"] = phases
         rows.append(row)
+    # 只增不改：任一报告带失败相位块 → 全表追加五列（缺块行留空——None：
+    # CSV 写空串、parquet 写 null，不混 int/str）；一份都没有 → 列集与旧版
+    # 逐字节相同。
+    if any("_failure_phases" in r for r in rows):
+        for r in rows:
+            cells = r.pop("_failure_phases", None) or {c: None for c in FAILURE_COLUMNS}
+            r.update(cells)
     return rows
 
 
@@ -174,7 +206,28 @@ def main() -> int:
         # EV-P1：once ≥ at_end 恒成立——展示面只报 once 会天然偏高
         print(f"  {h8} × {method:20s} seeds={len(rates):2d}  "
               f"once {mean:.1%}{ae_txt}")
+    print_failure_phases(rows)
     return 0
+
+
+def print_failure_phases(rows: list[dict]) -> None:
+    """P2：按 (spec_hash8, method) 汇总失败相位（只在表里有这几列时打印）。"""
+    if not rows or "fail_reach" not in rows[0]:
+        return
+    sums: dict[tuple[str, str], list[int]] = {}
+    for r in rows:
+        if r.get("fail_reach") in ("", None):
+            continue
+        key = (r["spec_hash8"], r["method"])
+        acc = sums.setdefault(key, [0, 0, 0, 0])
+        for i, p in enumerate(FAILURE_PHASES):
+            acc[i] += int(r.get(f"fail_{p}") or 0)
+    if not sums:
+        return
+    print("[oriera-results] 失败相位（failure_phase 遥测，规则见 docs/LAB-GUIDE.md §2.2）：")
+    for (h8, method), acc in sorted(sums.items()):
+        cells = " · ".join(f"{p} {n}" for p, n in zip(FAILURE_PHASES, acc))
+        print(f"  {h8} × {method:20s} 失败 {sum(acc):3d} → {cells}")
 
 
 if __name__ == "__main__":

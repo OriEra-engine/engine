@@ -65,7 +65,7 @@
     <h1>具身仿真台 · 六预设卡片墙</h1>
     <div class="sub">点下方卡片换装（六预设），键盘或右侧滑条遥控机械臂，或点「▶ 脚本策略演示」看它自己抓放</div>
   </div>
-  <span class="tag">工程信息：example/15-embodied-sim · oriera-wasm（与 Rust CLI 同一份物理）↔ oriera_agent::embodied_env</span>
+  <span class="tag">工程信息：example/15-embodied-sim · oriera-wasm（与 Rust CLI 同一份物理）↔ oriera_embodied::embodied_env</span>
 </header>
 <div id="toolbar">
   <button class="primary" id="btn-reset">↺ 重置（随机种子）</button>
@@ -96,16 +96,17 @@
   boot(document.getElementById("viewport"));
 
   // ── 预设卡片墙（P1-B2，PLAN-embodied-v3 P1 #15）──────────────────
-  // 六预设 = crates/oriera-agent/specs/official/（resolved 展开版由
-  // specs/sync-resolved.mjs 生成、随仓入库）。点选 = fetch resolved JSON
-  // → postMessage {cmd:"spec", json, seed} 换装（协议与 Studio 一致，
-  // kernel.js 已支持；?spec= URL 参数仍在 boot 时优先）。
+  // 六预设 = crates/oriera-embodied/specs/official/ 的现行六份（drawer 卡 =
+  // drawer-4dof-v2 真 prismatic 滑轨；v1 drawer-4dof 是对照档案，不上墙）。
+  // resolved 展开版由 specs/sync-resolved.mjs 生成、随仓入库。点选 = fetch
+  // resolved JSON → postMessage {cmd:"spec", json, seed} 换装（协议与 Studio
+  // 一致，kernel.js 已支持；?spec= URL 参数仍在 boot 时优先）。
   const PRESETS = [
     { name: "tabletop-4dof-pick", nm: "金标桌面 4 轴", ds: "教学臂桌面抓放（金标锚 91.7%，脚本策略解析 IK）", df: "入门" },
     { name: "panda-7dof-pick", nm: "Panda 7 轴", ds: "Franka Panda + 平行夹爪（URDF 真惯量；演示走 N 轴 DLS）", df: "进阶" },
     { name: "stack-4dof", nm: "叠块", ds: "把方块 A 搬上 B（判据 @v2：松爪 + 静止）", df: "进阶" },
-    { name: "bin-pick-4dof", nm: "料箱抓取", ds: "从料箱（四面重墙 prop 近似）里把方块抓出来", df: "挑战" },
-    { name: "drawer-4dof", nm: "抽屉拉出", ds: "抓住把手块沿 −X 拉出 ≥8 cm，松爪静止", df: "进阶" },
+    { name: "bin-pick-4dof", nm: "料箱抓取", ds: "从真料箱（双层壁 + 底面 fixture）里把方块抓出来，放到箱外目标区", df: "挑战" },
+    { name: "drawer-4dof-v2", nm: "抽屉拉出", ds: "沿 −Z 拉开真 prismatic 抽屉面板 ≥8 cm（滑轨 + 柜体 fixture），松爪静止", df: "进阶" },
     { name: "mobile-arm-4dof", nm: "移动底盘臂", ds: "prismatic 龙门底盘 + 4 轴臂（先开轨道再抓放；策略演示不支持）", df: "挑战", exp: true },
   ];
   const wrap = document.getElementById("presets");
@@ -139,10 +140,11 @@
     byName.get(name)?.classList.add("active");
   }
   // boot 默认装金标（或 ?spec= 指定的 URL spec——按文件名匹配卡片，匹配
-  // 不上就不高亮：加载的不是卡片墙预设）。
+  // 不上就不高亮：加载的不是卡片墙预设；旧写法回退高亮金标卡，与实际
+  // 装载的 spec 不符）。
   const urlSpec = new URLSearchParams(location.search).get("spec");
   const m = urlSpec?.match(/([A-Za-z0-9_-]+)\.json/);
-  select(m && byName.has(m[1]) ? m[1] : PRESETS[0].name);
+  select(!urlSpec ? PRESETS[0].name : m && byName.has(m[1]) ? m[1] : null);
   // Studio/本页共用的确认回执：kernel 换装成功会回 specHash——这里只认
   // 卡片高亮已由点击给出，回执失败（非法 spec 被内核拒绝）时清高亮。
   addEventListener("message", (e) => {

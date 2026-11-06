@@ -38,6 +38,22 @@ Panda paper 口径（P1-B2，2026-11-04）：相位机 ≥6 DoF 专用机制调�
 spec_hash 未变 = 无新预设文件）。失败集中拼凑：方块落在近基区（x < 0.19）的折叠臂位，
 夹爪 1.7 cm 指块摩擦挤压余量不足——下一个调参假设是 preset 的抓取带/指块几何（新文件）。
 
+**失败相位复核（P2 深水区 Wave-1，`failure_phase@v1` 遥测，2026-11-06）**：同命令加
+`--failure-phases` 复跑 paper@v1——100 集与 `results/reference/b5535a74/paper_v1.json`
+逐集 (seed, success, steps) 100/100 相同（80/100），**20 个失败集全部归 `lift` 相位**：
+每集握持 126–127 tick、`max_lift_held = 0`（夹持下方块从未离桌）、`min_ee_obj ≤ 5 mm`
+（够得着、夹得到）——是抬升起步即滑脱，不是 IK 够不着、也不是没夹上。空间分布：20/20 都在
+近基带 x < 0.19（近基 20/69 = 29% vs 远端 0/31），且集中在 **x < 0.16 ∧ z ≥ 0 一侧
+（15/18 = 83%；同 x 带 z < 0 为 0/12）**。结论：原假设「近基折叠臂位 + 指块摩擦挤压余量
+不足」在相位上**成立**、在空间上**收窄为 +z 侧近基口袋**。单集复盘
+（`ORIERA_SIM_TRACE=20 ORIERA_SIM_TRACE_FK=1 … --seed0 132105 --episodes 1`）：闭爪期
+TCP 在方块中心上方 5 mm、开合轴与世界 Z 偏差 ≤ 0.3°、接近轴向 −X 倾 4.6°（近基折叠位的
+工具倾角，z < 0 的成功集同样 4.6°），t≈280 臂起而方块不动。下一个调参假设收窄为 +z 侧
+近基口袋的抓取带/指块几何（或该侧 wrist 解支），仍按「改字段 = 新文件」走。
+course@v1 12 集同遥测（`--failure-phases --runs-root`）：tabletop 1 lift · panda 2 lift ·
+stack 1 place · drawer-4dof 2 place · bin-pick / drawer v2 / mobile-arm 0（判定规则见
+[LAB-GUIDE §2.2](../docs/LAB-GUIDE.md)）。
+
 once 与 at_end 相同是因为六预设都走 `terminate_on_success = true`（首次满足即终止；tabletop / panda / stack / bin-pick / drawer v2 / mobile-arm 同款）；`--set task.params.terminate_on_success=false` 跑满 700 步才会分开。
 
 约定：
