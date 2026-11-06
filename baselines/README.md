@@ -25,14 +25,14 @@
 | 预设（spec_hash8） | method | once / at_end | Wilson 95% | 闸 | 吞吐（release） |
 |---|---|---|---|---|---|
 | tabletop-4dof-pick（c90869dc） | dls-ik | 11/12 · 11/12（91.7%） | [64.6%, 98.5%] | ≥90% **pass** | 781 steps/s |
-| panda-7dof-pick（b5535a74） | dls-ik | 10/12 · 10/12（83.3%） | [55.2%, 95.3%] | ≥75% **pass** | 1106 steps/s |
-| panda-contact-criterion（95f75626，P2-Wave2 升格） | dls-ik | 10/12 · 10/12（83.3%） | [55.2%, 95.3%] | ≥75% **pass** | 667 / 561 steps/s（双跑，2026-11-06） |
+| panda-7dof-pick（b5535a74） | dls-ik | 12/12 · 12/12（100%） | [75.8%, 100%] | ≥75% **pass** | 1380 / 1340 steps/s（双跑，2026-11-07 P2-Wave-3B 治理后） |
+| panda-contact-criterion（95f75626，P2-Wave2 升格） | dls-ik | 12/12 · 12/12（100%） | [75.8%, 100%] | ≥75% **pass** | 1651 / 1619 steps/s（双跑，2026-11-07） |
 | stack-4dof（ffc96325） | dls-ik | 11/12 · 11/12（91.7%） | [64.6%, 98.5%] | ≥75% **pass** | 1146 steps/s |
 | bin-pick-4dof（14fc9bf8） | dls-ik | 12/12 · 12/12（100%） | [75.8%, 100%] | ≥60% **pass** | 564 steps/s |
 | drawer-4dof（ef18ac07） | dls-ik | 10/12 · 10/12（83.3%） | [55.2%, 95.3%] | ≥60% **pass** | 627 steps/s |
 | tabletop-4dof-pick（c90869dc） | scripted-phases（collect，金标路） | 11/12（91.7%） | [64.6%, 98.5%] | ≥90% pass | 2575 steps/s（12 集 state hash = pre-m0a 锚逐个相等） |
-| panda-7dof-pick（b5535a74） | dls-ik · **paper@v1** | 80/100 · 80/100（80.0%） | [71.1%, 86.7%] | ≥75% 对应口径 **pass** | 1932 steps/s |
-| panda-contact-criterion（95f75626） | dls-ik · **paper@v1** | 80/100 · 80/100（80.0%） | [71.1%, 86.7%] | ≥75% 对应口径 **pass** | 802 / 884 steps/s（双跑，2026-11-06） |
+| panda-7dof-pick（b5535a74） | dls-ik · **paper@v1** | 95/100 · 95/100（95.0%） | [88.8%, 97.8%] | ≥75% 对应口径 **pass** | 2095 / 2082 steps/s（双跑，2026-11-07 P2-Wave-3B 治理后） |
+| panda-contact-criterion（95f75626） | dls-ik · **paper@v1** | 95/100 · 95/100（95.0%） | [88.8%, 97.8%] | ≥75% 对应口径 **pass** | 2628 / 2384 steps/s（双跑，2026-11-07） |
 
 Panda paper 口径（P1-B2，2026-11-04）：相位机 ≥6 DoF 专用机制调参后（悬停沉降标定 +
 下探末重标定 + 闭爪目标钉住 + 三级抬升 + 限幅 0.028 rad/tick），paper@v1 100 集
@@ -71,7 +71,37 @@ TCP 在方块中心上方 5 mm、开合轴与世界 Z 偏差 ≤ 0.3°、接近�
 近基口袋的抓取带/指块几何（或该侧 wrist 解支），仍按「改字段 = 新文件」走。
 course@v1 12 集同遥测（`--failure-phases --runs-root`）：tabletop 1 lift · panda 2 lift ·
 stack 1 place · drawer-4dof 2 place · bin-pick / drawer v2 / mobile-arm 0（判定规则见
-[LAB-GUIDE §2.2](../docs/LAB-GUIDE.md)）。
+[LAB-GUIDE §2.2](../docs/LAB-GUIDE.md)）。（上段「下一个调参假设」已由下节 P2-Wave-3B
+解决——真因不是几何余量而是接触流形冻结，无需新预设文件。）
+
+**Panda lift 相位治理（P2-Wave-3B，2026-11-07）**：沿 Wave-1 遥测继续逐 tick 复盘
++z 侧近基失败集，真因落到 rapier 接触层而非几何：**幽灵夹持（ghost grip）**——板↔方块
+的碰撞对在接近姿态下创建时，流形冻结在创建时刻的推测接触（speculative contacts）上，
+这些点算「活跃接触」使碰撞对的回收预算放大到整段 5 cm，而 21 mm 的闭爪扫掠永远跨不过
+它，求解器于是输出恰好 0 N——抬升时板子从方块两侧「穿」上去而方块纹丝不动（Wave-1 测到的
+`max_lift_held = 0` 正是此现象）。扫掠、抬升、绕轴旋转都无法让一个活的碰撞对刷新流形；
+**唯一有效的是杀掉它再重生**：远离方块重生的碰撞对尚无流形点，回收预算被 ~2 cm 预测距离封顶，
+21 mm 的再闭爪即可跨过预算、接触在形成那一刻被精确重算。落地机制（`embodied_sim_baseline.rs`
+heavy 路，`SWAP_*` 常量）：首段抬升开始后第 `SCRUB_DETECT_AFTER=8` tick 检测方块抬升量
+< `SCRUB_DETECT_RISE=4 mm` 即判幽灵夹持 → 开爪上撤 `SWAP_RISE_HEIGHT=8 cm`（30 tick，碰撞对
+在 broad-phase 消亡）→ 驻留 6 tick → 开爪降回同一组 ±z 面（25 tick）→ 全力重闭 →
+`SWAP_SETTLE_TICKS=40` 保持挤压再进入竖直抬升（直接放进 carry 段的水平猛拉会把刚夹住的
+方块扯脱——这一项是从 83% 到 95% 的关键一步）。撤离全程开爪，撞不到东西；误触发（慢但真的
+夹持）只是把方块放回原位一厘米再重夹一次。
+
+数字（paper@v1 100 集，seeds 1000..，与存档同协议同 seed 带）：**80/100 → 95/100**
+（Wilson [88.8%, 97.8%]）；course@v1 **10/12 → 12/12**。失败相位前后对照：lift 20 → **5**
+（reach/grasp/place 全程 0），残余 5 集 = seeds 132091 / 197645 / 197647 / 197660 / 525382
+（TipRadius 口径归 lift；Contact 口径同 5 集归 **grasp**——Contact 不把 0 N 的幽灵接触算
+「夹住」，归因落到正确相位，再次印证 U-6 判据设计）。`panda-contact-criterion` 同机制同
+升幅（12/12、95/100，transitions 55378 与母预设全等）。**门控证据**：机制只在 heavy
+（≥6 DoF，`sag_comp`）路径启用——tabletop 4 轴金标与 HEAD 二进制 12 集逐字段全等、
+`reanchor_golden` 三口径 no drift；mobile-arm（7 DoF，但从不触发）同样 12 集逐字段全等；
+两个 panda 预设 reference 双跑逐集位同后重写
+`results/reference/{b5535a74,95f75626}/{course_v1,paper_v1}.json`。**试过无效、已撤的**：
+重闭 12-tick 挤压斜坡（残余 5 集零恢复）、`SCRUB_DETECT_AFTER` 8→16（退步）、水平偏航撤离
+（无增益）。残余 5 集未再追（seed 66549 的 19 mm 误触发阈值也未重标定）——按「负结果也是
+结果」收手入档。
 
 once 与 at_end 相同是因为六预设都走 `terminate_on_success = true`（首次满足即终止；tabletop / panda / stack / bin-pick / drawer v2 / mobile-arm 同款）；`--set task.params.terminate_on_success=false` 跑满 700 步才会分开。
 

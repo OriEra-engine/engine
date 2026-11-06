@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>具身仿真台 · 六预设卡片墙 — OriEra</title>
+    <title>具身仿真台 · 七预设卡片墙 — OriEra</title>
 <script type="importmap">
 {
   "imports": {
@@ -29,7 +29,7 @@
   button.rec { background:#7a2d3a; border-color:#a04050; color:#ffd9df; }
   /* 独立打开（未嵌 Studio）时导出按钮置灰：kernel.js 设 aria-disabled + title（CLI 指引） */
   button[aria-disabled="true"], button[aria-disabled="true"]:hover { background:#161a24; color:#5d6478; border-color:#232837; cursor:not-allowed; }
-  /* 预设卡片墙（P1-B2：六预设换装；?spec= URL 参数仍优先） */
+  /* 预设卡片墙（P1-B2：七预设换装；?spec= URL 参数仍优先） */
   #presets { padding:8px 14px; border-bottom:1px solid #222633; display:flex; gap:8px;
              overflow-x:auto; scrollbar-width:thin; }
   .preset { flex:0 0 auto; width:196px; text-align:left; padding:8px 10px; background:#141a28;
@@ -62,8 +62,8 @@
 <body>
 <header>
   <div>
-    <h1>具身仿真台 · 六预设卡片墙</h1>
-    <div class="sub">点下方卡片换装（六预设），键盘或右侧滑条遥控机械臂，或点「▶ 脚本策略演示」看它自己抓放</div>
+    <h1>具身仿真台 · 七预设卡片墙</h1>
+    <div class="sub">点下方卡片换装（七预设），键盘或右侧滑条遥控机械臂，或点「▶ 脚本策略演示」看它自己抓放</div>
   </div>
   <span class="tag">工程信息：example/15-embodied-sim · oriera-wasm（与 Rust CLI 同一份物理）↔ oriera_embodied::embodied_env</span>
 </header>
@@ -85,7 +85,7 @@
     <h3>夹爪 <span class="kbd">Space</span></h3>
     <div class="row"><label>开 合</label><input type="range" id="j-grip" min="0" max="1" step="0.05" value="0"><span class="val" id="v-grip">开</span></div>
     <h3>任务</h3>
-    <div style="color:#8a90a6;line-height:1.7">把 <b style="color:#ffd479">方块</b> 抓起来放到
+    <div id="task-desc" style="color:#8a90a6;line-height:1.7">把 <b style="color:#ffd479">方块</b> 抓起来放到
       <b style="color:#7be0a0">绿色目标圈</b>。9cm 落区内即成功。<br>奖励：接近 → 抓住 → 提升 → 送达。</div>
     <h3>采集日志</h3>
     <div id="log">（尚未录制）</div>
@@ -96,14 +96,16 @@
   boot(document.getElementById("viewport"));
 
   // ── 预设卡片墙（P1-B2，PLAN-embodied-v3 P1 #15）──────────────────
-  // 六预设 = crates/oriera-embodied/specs/official/ 的现行六份（drawer 卡 =
+  // 七预设 = crates/oriera-embodied/specs/official/ 的现行七份（drawer 卡 =
   // drawer-4dof-v2 真 prismatic 滑轨；v1 drawer-4dof 是对照档案，不上墙）。
+  // contact 卡 = panda-contact-criterion（Contact 夹持判据，extends panda）。
   // resolved 展开版由 specs/sync-resolved.mjs 生成、随仓入库。点选 = fetch
   // resolved JSON → postMessage {cmd:"spec", json, seed} 换装（协议与 Studio
   // 一致，kernel.js 已支持；?spec= URL 参数仍在 boot 时优先）。
   const PRESETS = [
     { name: "tabletop-4dof-pick", nm: "金标桌面 4 轴", ds: "教学臂桌面抓放（金标锚 91.7%，脚本策略解析 IK）", df: "入门" },
     { name: "panda-7dof-pick", nm: "Panda 7 轴", ds: "Franka Panda + 平行夹爪（URDF 真惯量；演示走 N 轴 DLS）", df: "进阶" },
+    { name: "panda-contact-criterion", nm: "Panda 接触判据", ds: "同 Panda 抓放但「夹住」按接触力判定（≥1 N 法向力，防贴住假标签；extends panda）", df: "进阶" },
     { name: "stack-4dof", nm: "叠块", ds: "把方块 A 搬上 B（判据 @v2：松爪 + 静止）", df: "进阶" },
     { name: "bin-pick-4dof", nm: "料箱抓取", ds: "从真料箱（双层壁 + 底面 fixture）里把方块抓出来，放到箱外目标区", df: "挑战" },
     { name: "drawer-4dof-v2", nm: "抽屉拉出", ds: "沿 −Z 拉开真 prismatic 抽屉面板 ≥8 cm（滑轨 + 柜体 fixture），松爪静止", df: "进阶" },

@@ -1187,6 +1187,32 @@ impl TableTopEnv {
             .unwrap_or([0.0; 3])
     }
 
+    /// Per-plate normal force (N) on the task object (props[0]) —
+    /// introspection probe (P2-Wave-3B, read-only telemetry; the
+    /// dynamics never read it). `[0, 0]` without a gripper or contact.
+    pub fn plate_forces_on_cube(&self) -> [f32; 2] {
+        self.sys.plate_force_on(self.obj)
+    }
+
+    /// Plate world centres `(left, right)` and the live gap (m) —
+    /// introspection probe (P2-Wave-3B, read-only telemetry).
+    pub fn debug_plate_state(&self) -> ([f32; 3], [f32; 3], f32) {
+        self.sys.debug_plate_state()
+    }
+
+    /// `(plate↔cube contact pairs on left/right, cube body is_sleeping,
+    /// plate collider world translations)` — introspection probe
+    /// (P2-Wave-3B, read-only).
+    pub fn debug_plate_cube_contact(&self) -> (usize, usize, bool, [[f32; 3]; 2]) {
+        self.sys.debug_plate_prop_contact(self.obj)
+    }
+
+    /// `(plate↔cube manifold points, max |impulse|, min point dist,
+    /// active points)` — introspection probe (P2-Wave-3B, read-only).
+    pub fn debug_plate_cube_manifolds(&self) -> (usize, f32, f32, usize) {
+        self.sys.debug_plate_prop_manifolds(self.obj)
+    }
+
     /// 姿态快照（M2 渲染全量 props 用；rot 自 WPA 起公开）。
     pub fn prop_pose(&self, i: usize) -> Option<Pose3> {
         self.prop_ents

@@ -102,6 +102,10 @@
 //!       `--migrate FILE` · `--validate FILE` · `--urdf FILE` · `--protocol ID`
 //!       `--gate hard|report` · `--verify-determinism full|sample|off`
 //!       `--fingerprints FILE` · `--force`
+//!       `--failure-phases`（P2 opt-in 遥测，与 `embodied_sim_baseline` 同款
+//!       `failure_phase@v1`：eval_report 增 `failure_phases` 块 + 每集
+//!       `failure_phase`/`phase_signals`；不给则不折信号、报告逐字节不变。
+//!       判定规则 docs/LAB-GUIDE.md §2.2）
 //!       `--urdf-robot FILE` · `--urdf-gripper FILE` · `--mesh-base DIR`
 //!       `--mesh-package name=dir` · `--urdf-mount x,y,z` · `--urdf-mount-rpy r,p,y`
 //!       `--dump-robot-spec FILE` (P1-B1 URDF full-chain family)
@@ -109,7 +113,10 @@
 //!         `<out>/eval_report.json` + `<out>/run_manifest.json`
 
 use oriera_agent::embodied_env::{CameraFrame, EmbodiedEnv, ObsLayout, TableTopEnv, TaskKind};
-use oriera_agent::eval::{self, EpisodeOutcome, EpisodeRow, EvalProtocol, EvalResult, Gate};
+use oriera_agent::eval::{
+    self, classify_failure, summarize_failure_phases, EpisodeOutcome, EpisodeRow, EvalProtocol,
+    EvalResult, FailurePhaseRules, Gate, PhaseSignals,
+};
 use oriera_agent::lerobot::LeRobotV21;
 use oriera_agent::manifest::{write_run_manifest_opts, ManifestExtra};
 use oriera_agent::spec::SceneSpec;
@@ -499,9 +506,13 @@ struct Args {
     force: bool,
     /// `--out` 是否显式给出（`--runs-root` 同给时打忽略警告——SRE 遗留）。
     out_given: bool,
+    /// P2 `--failure-phases`：失败相位遥测进报告（opt-in，与
+    /// `embodied_sim_baseline` 同款 `failure_phase@v1`）。不给 = 不折信号、
+    /// 不出新键——默认路径的数据集/回执/eval_report 逐字节不变。
+    failure_phases: bool,
 }
 
-const USAGE: &str = "--task/--phrase/--spec/--set/--episodes/--seed0/--seed/--cam/--no-cam/--cameras-from-spec/--out/--runs-root/--lerobot-v3/--export/--migrate/--validate/--urdf/--urdf-robot/--urdf-gripper/--mesh-base/--mesh-package/--urdf-mount/--urdf-mount-rpy/--dump-robot-spec/--protocol/--gate/--verify-determinism/--fingerprints/--sanitize/--force/--help（--help 看分节说明）";
+const USAGE: &str = "--task/--phrase/--spec/--set/--episodes/--seed0/--seed/--cam/--no-cam/--cameras-from-spec/--out/--runs-root/--lerobot-v3/--export/--migrate/--validate/--urdf/--urdf-robot/--urdf-gripper/--mesh-base/--mesh-package/--urdf-mount/--urdf-mount-rpy/--dump-robot-spec/--protocol/--gate/--verify-determinism/--fingerprints/--failure-phases/--sanitize/--force/--help（--help 看分节说明）";
 
 /// `--export FMT[,FMT]` → whether npz was requested. `parquet` is
 /// refused with the converter route (no parquet crate in Rust — the
@@ -582,6 +593,11 @@ fn print_help() -> ! {
                                   full = 双跑逐位一致（默认）；sample = 首集复核；off = 单跑信任种子
   --fingerprints FILE             写 scheme-v2 金标指纹文件
 
+评测遥测（P2，opt-in）
+  --failure-phases                失败相位归因 failure_phase@v1（与 embodied_sim_baseline 同款）：
+                                  失败集按 reach/grasp/lift/place 归因，eval_report 增 failure_phases 块
+                                  + 每集 failure_phase/phase_signals；不给则报告逐字节不变（LAB-GUIDE §2.2）
+
 断点续跑（P1-A1）
   每完成一集即落盘 checkpoint：episode JSONL + 相机帧（最终 v2.1 布局）+ progress.json
   抽签日志。同一输出目录中途崩溃/kill 后，重跑同一条命令即续采——已记录的抽签按日志
@@ -629,6 +645,7 @@ fn parse_args() -> Args {
         sanitize: false,
         force: false,
         out_given: false,
+        failure_phases: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -820,6 +837,7 @@ fn parse_args() -> Args {
             }
             "--sanitize" => a.sanitize = true,
             "--force" => a.force = true,
+            "--failure-phases" => a.failure_phases = true,
             "--out" => {
                 a.out = it
                     .next()
@@ -895,6 +913,9 @@ struct RunResult {
     /// Total draws and degenerate re-draws (from `evaluate`).
     draws: u64,
     redraws: u64,
+    /// P2 `--failure-phases` 信号（保留集按抽签序，与 `rows` 一一对齐）。
+    /// 只在开关下折叠；不给开关恒为空（默认路径不读任何额外通道）。
+    signals: Vec<PhaseSignals>,
 }
 
 // ===================== episode 级 checkpoint/resume（P1-A1） =====================
@@ -1341,16 +1362,25 @@ fn declare_camera_tracks(
 /// smoke), dataset rows+frames, the degenerate check (spawn-in-goal
 /// ends on step ~1 → discard, redraw). When `ds` is `None` the episode
 /// runs "dry" (the `sample` determinism re-check).
+///
+/// `sig`（P2 `--failure-phases`）= `Some` 时从 env 只读通道（TCP / 物体 /
+/// 目标 / holding，全是 `&self` getter）逐 tick 折叠失败相位信号，与
+/// `embodied_sim_baseline` 同口径（reset 后定 obj0，每次 `step` 后 observe）；
+/// `None`（默认路径）一条额外调用都不做——轨迹、数据集、指纹逐位不动。
 fn run_episode_once(
     env: &mut TableTopEnv,
     seed: u64,
     strat: &Policy,
     idx: &ObsIdx,
     mut ds: Option<&mut LeRobotV21>,
+    mut sig: Option<&mut PhaseSignals>,
 ) -> Result<EpisodeOutcome, String> {
     let mut obs = env.reset(seed);
     if let Some(ds) = ds.as_deref_mut() {
         ds.start_episode(env.task.phrase());
+    }
+    if let Some(s) = sig.as_deref_mut() {
+        *s = PhaseSignals::start(env.cube_pos());
     }
     let mut step = 0u64;
     let mut terminated = false;
@@ -1362,6 +1392,9 @@ fn run_episode_once(
         // row t = (state_t, action_t), then drain. Frame count ==
         // row count by construction (off-by-one, round-2 review).
         let out = env.step(&action);
+        if let Some(s) = sig.as_deref_mut() {
+            s.observe(env.ee_pos(), env.cube_pos(), env.goal(), env.holding());
+        }
         if let Some(ds) = ds.as_deref_mut() {
             ds.push_step(&obs, &action)?;
             #[cfg(feature = "cam")]
@@ -1445,6 +1478,11 @@ fn collect(
     }
     let task_phrase = env.task.phrase().to_string();
     let mut total_steps = 0u64;
+    // P2 `--failure-phases`：保留集的失败相位信号（抽签序，与 rows 对齐）。
+    // 不给开关时两者恒为空/None——默认路径不建信号槽、不开干跑 env。
+    let fold = args.failure_phases;
+    let mut signals: Vec<PhaseSignals> = Vec::new();
+    let mut dry_env: Option<TableTopEnv> = None;
     let result = eval::evaluate(protocol, |seed, draw| {
         // 续跑重放：抽签日志里已有的 draw 按记录处理——保留集从盘上
         // 读回（不重采），退化集重放 65536 位移种子带。seed 对不上 =
@@ -1470,12 +1508,37 @@ fn collect(
                     "  ↷ 抽签 {draw}（seed {seed}）：checkpoint 已有（{} 步），读回不重采",
                     row.steps
                 );
+                if fold {
+                    // 读回的集没有本跑折出的信号：在无相机干跑 env 上按同 seed
+                    // 重演补折（reset(seed) 全量重置 ⇒ 与原采同一轨迹，同
+                    // sample 复核口径）。重演与 checkpoint 记录对不上 = 信号不
+                    // 属于该集，人话拒绝而不是静默错配。
+                    let dry = dry_env.get_or_insert_with(|| make_env(spec, false));
+                    let mut s = PhaseSignals::start([0.0; 3]);
+                    match run_episode_once(dry, seed, &strat, &idx, None, Some(&mut s))? {
+                        EpisodeOutcome::Done(re)
+                            if (re.steps, re.success, re.fingerprint_v1)
+                                == (row.steps, row.success, row.fingerprint_v1) =>
+                        {
+                            signals.push(s)
+                        }
+                        _ => {
+                            return Err(format!(
+                                "--failure-phases：续跑重演 seed {seed} 与 checkpoint 记录不一致——失败相位信号无法对齐该集，用 --force 全量重跑"
+                            ))
+                        }
+                    }
+                }
                 return Ok(EpisodeOutcome::Done(row.clone()));
             }
         }
-        let out = run_episode_once(&mut env, seed, &strat, &idx, Some(&mut ds))?;
+        let mut sig = fold.then(|| PhaseSignals::start([0.0; 3]));
+        let out = run_episode_once(&mut env, seed, &strat, &idx, Some(&mut ds), sig.as_mut())?;
         if let EpisodeOutcome::Done(row) = &out {
             total_steps += row.steps;
+            if let Some(s) = sig.take() {
+                signals.push(s);
+            }
             if std::env::var("ORIERA_SIM_DEBUG").is_ok() {
                 println!("  · 抽签 {draw}（seed {seed}）保留");
             }
@@ -1512,6 +1575,7 @@ fn collect(
         total_steps,
         draws: result.draws,
         redraws: result.redraws,
+        signals,
     })
 }
 
@@ -1991,6 +2055,13 @@ fn main() {
                     "camera frames must be bit-equal (ep {i})"
                 );
             }
+            if args.failure_phases {
+                // 开关下信号随双跑一并逐位复核（第二跑纯内存全量重采）。
+                assert_eq!(
+                    r1.signals, r2.signals,
+                    "failure-phase signals must be bit-identical"
+                );
+            }
             println!("  ✓ 确定性复核（full）：双跑逐位一致");
         }
         Verify::Sample => {
@@ -1998,7 +2069,7 @@ fn main() {
             let mut env = make_env(&spec, false);
             let strat = Policy::for_env(&env, smoke).unwrap_or_else(|e| fail(&e));
             let idx = ObsIdx::from_layout(env.obs_layout());
-            let re = match run_episode_once(&mut env, seed0, &strat, &idx, None)
+            let re = match run_episode_once(&mut env, seed0, &strat, &idx, None, None)
                 .unwrap_or_else(|e| fail(&format!("sample 复核失败：{e}")))
             {
                 EpisodeOutcome::Done(row) => row,
@@ -2055,6 +2126,50 @@ fn main() {
         draws: r1.draws,
         redraws: r1.redraws,
     };
+
+    // P2 失败相位遥测（opt-in，与 embodied_sim_baseline 同款 failure_phase@v1）：
+    // 每集按规则归因（成功集 null），控制台一行 + eval_report 增 failure_phases
+    // 块与每集 failure_phase/phase_signals。不给开关 = None：不归因、不打印、
+    // 不出新键，默认路径逐字节不变。排在闸之前：90% 闸未过（exit 2、不出
+    // 数据）时也先把「失败死在哪个相位」打出来。
+    let phase_report = args.failure_phases.then(|| {
+        let rules = FailurePhaseRules::for_task(&spec.task.id, &spec.task.params);
+        let rows: Vec<(u64, Option<eval::FailurePhase>)> = result
+            .rows
+            .iter()
+            .zip(&r1.signals)
+            .map(|(row, sig)| (row.seed, classify_failure(row.success, sig, &rules)))
+            .collect();
+        let summary = summarize_failure_phases(&rows, rules);
+        let b = &summary.by_phase;
+        let s = &summary.seeds;
+        let seeds_txt: Vec<String> = [
+            ("reach", &s.reach),
+            ("grasp", &s.grasp),
+            ("lift", &s.lift),
+            ("place", &s.place),
+        ]
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| format!("{k} {v:?}"))
+        .collect();
+        println!(
+            "  · 失败相位（{}）：失败 {}/{} → reach {} · grasp {} · lift {} · place {}{}",
+            summary.scheme,
+            summary.failures,
+            summary.episodes,
+            b.reach,
+            b.grasp,
+            b.lift,
+            b.place,
+            if seeds_txt.is_empty() {
+                String::new()
+            } else {
+                format!("（seeds：{}）", seeds_txt.join("；"))
+            }
+        );
+        (rows, summary)
+    });
 
     // Solvability gate: course@v1's Hard90 refuses to publish below
     // 90% (两级渐降相位机 + 肘限位 -2.5 后实测 pick 91.7% / reach
@@ -2213,14 +2328,20 @@ fn main() {
     let per_ep: Vec<serde_json::Value> = result
         .rows
         .iter()
-        .map(|row| {
-            serde_json::json!({
+        .enumerate()
+        .map(|(i, row)| {
+            let mut v = serde_json::json!({
                 "seed": row.seed,
                 "success": row.success,
                 "steps": row.steps,
                 "reward_sum": ((row.reward_sum as f64) * 1000.0).round() / 1000.0,
                 "rand": row.rand.replace('"', "'"),
-            })
+            });
+            if let Some((rows, _)) = &phase_report {
+                v["failure_phase"] = serde_json::json!(rows[i].1.map(|p| p.as_str()));
+                v["phase_signals"] = phase_signals_json(&r1.signals[i]);
+            }
+            v
         })
         .collect();
     let report = serde_json::json!({
@@ -2260,6 +2381,14 @@ fn main() {
         .as_object_mut()
         .unwrap()
         .insert("fingerprints".into(), fp_val);
+    if let Some((_, summary)) = &phase_report {
+        // 经字符串回读：f32 阈值按 ryu 最短表示落盘（0.09 而非 f64 展开的
+        // 0.09000000357627869）——与 embodied_sim_baseline 同字段同形。
+        report["failure_phases"] = serde_json::from_str(
+            &serde_json::to_string(summary).expect("failure-phase summary serializes"),
+        )
+        .expect("failure-phase summary re-parses");
+    }
     let report_path = out.join("eval_report.json");
     std::fs::write(
         &report_path,
@@ -2351,4 +2480,26 @@ fn main() {
 /// `pick_place@v1` → `pick_place` (the CLI task spelling).
 fn task_base(id: &str) -> String {
     id.split('@').next().unwrap_or(id).to_string()
+}
+
+/// Round to 0.1 mm for the report (the classifier ran on full precision).
+fn r4(v: f32) -> f64 {
+    ((v as f64) * 1e4).round() / 1e4
+}
+
+/// One episode's `phase_signals` report object (`--failure-phases`) —
+/// field-for-field the `embodied_sim_baseline` shape, so
+/// `scripts/oriera_results.py` aggregates both entrances alike.
+fn phase_signals_json(s: &PhaseSignals) -> serde_json::Value {
+    serde_json::json!({
+        "obj0": s.obj0.map(r4),
+        "ticks": s.ticks,
+        "min_ee_obj": r4(s.min_ee_obj),
+        "ever_holding": s.ever_holding,
+        "holding_ticks": s.holding_ticks,
+        "max_lift_held": r4(s.max_lift_held),
+        "min_goal_xz_held": s.min_goal_xz_held.map(r4),
+        "final_goal_xz": r4(s.final_goal_xz),
+        "holding_at_end": s.holding_at_end,
+    })
 }

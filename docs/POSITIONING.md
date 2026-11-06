@@ -25,8 +25,8 @@
 | 预设（spec_hash8） | 机器人 / 关节 | 抓取模型要点 | 伺服参数 | 基线（course@v1，12 集） | 吞吐（单环境，release） |
 |---|---|---|---|---|---|
 | `tabletop-4dof-pick`（c90869dc） | 4 轴转动（yaw/肩/肘/腕） | 6×9 cm 板、开 75 mm / 合 46 mm（2 mm/侧挤压） | kp/kd 60/4 N·m/rad、armature 0.02、effort 80 N·m | 脚本 11/12 = 91.7%（金标锚）· DLS 11/12 | 采集 2334 steps/s（本轮实测）· DLS 781 |
-| `panda-7dof-pick`（b5535a74） | Panda 7 轴（URDF 真惯量全张量） | 外部 gripper2f：1.7 cm 指块、开 88 mm / 合 46 mm | 300/30、armature 0.05、effort 87/12、阻尼 1.0 | DLS 10/12 = 83.3% · paper@v1 100 集 **80%**（P1-B2 相位机调参，heavy 排程只动 ≥6 DoF） | 1106（course）· 1932（paper 抽验单跑） |
-| `panda-contact-criterion`（95f75626，P2-Wave2 升格） | Panda 7 轴（同上） | 同 `panda-7dof-pick`；仅 `holding` 标签换 Contact 判据（物理逐位不变，success 不读 holding——两口径同 seeds 逐集零翻转，course 12 + paper 100） | 同 Panda | DLS 10/12 = 83.3% · paper@v1 100 集 80% | 667 / 561（course 双跑）· 802 / 884（paper 双跑） |
+| `panda-7dof-pick`（b5535a74） | Panda 7 轴（URDF 真惯量全张量） | 外部 gripper2f：1.7 cm 指块、开 88 mm / 合 46 mm | 300/30、armature 0.05、effort 87/12、阻尼 1.0 | DLS 12/12 = 100% · paper@v1 100 集 **95%**（P2-Wave-3B 幽灵夹持破除器：碰撞对杀掉重生 + 40 tick 挤压沉降；heavy 排程只动 ≥6 DoF；此前 P1-B2 调参 80%） | 1380 / 1340（course 双跑）· 2095 / 2082（paper 双跑） |
+| `panda-contact-criterion`（95f75626，P2-Wave2 升格） | Panda 7 轴（同上） | 同 `panda-7dof-pick`；仅 `holding` 标签换 Contact 判据（物理逐位不变，success 不读 holding——两口径同 seeds 逐集零翻转，course 12 + paper 100；残余 5 失败集 Contact 口径归 grasp、TipRadius 归 lift） | 同 Panda | DLS 12/12 = 100% · paper@v1 100 集 95% | 1651 / 1619（course 双跑）· 2628 / 2384（paper 双跑） |
 | `stack-4dof`（249d5122，旧身份 ffc96325 复测逐位同） | 4 轴 | 同桌面板；判据 @v2（松爪 + 静止 10 步） | 同桌面 | DLS 11/12 = 91.7% | 1146 |
 | `bin-pick-4dof`（1a7cfc40，P2 真 fixture 升级） | 4 轴 | 料箱 = 真 fixtures（双层壁 + 底面，P2 升级；四面重墙 prop 近似为旧身份 14fc9bf8 对照） | 同桌面 | DLS 12/12 = 100% | 564 |
 | `drawer-4dof-v2`（f503b3a3，P2-W6B 真滑轨；ef18ac07 为 prop 近似对照档案 10/12） | 4 轴 | 面板 = slide prop（真 prismatic，撞不走、限位钳制），柜体 = 真 fixtures | 同桌面 | DLS 12/12 = 100%（双跑逐位一致，2026-11-05） | 1940（P2-W6B 重测入 `results/reference/f503b3a3`） |

@@ -186,7 +186,9 @@ spec 库（P-9）：官方金标在 `crates/oriera-embodied/specs/official/`（�
 成功率只说「多少集失败」；**失败集死在哪个相位**才告诉你该修相位机还是该调物理。
 `embodied_sim_baseline --failure-phases` 把每集归因到 reach / grasp / lift / place
 四相位之一（成功集为 `null`），只读不写——轨迹、指纹、既有报告键零改动；
-不给这个开关，`eval_report.json` 逐字节不变。
+不给这个开关，`eval_report.json` 逐字节不变。采集入口 `embodied_sim_collect`
+同款开关同口径（`--failure-phases`，信号折叠/续跑重演补折与报告块形态一致，
+checkpoint 读回的集在干跑 env 上按同 seed 重演补信号，对不上即拒绝）。
 
 ```bash
 cargo run --release -p oriera-agent --example embodied_sim_baseline --features rigid3d,spec,urdf -- \

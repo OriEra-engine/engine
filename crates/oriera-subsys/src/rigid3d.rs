@@ -1789,6 +1789,140 @@ impl MultibodySystem {
         robot_identity_hash(&self.robot)
     }
 
+    /// Contact-inspection probe (P2-Wave-3B): per-plate normal force
+    /// (N) the gripper plates apply to one prop entity — read-only
+    /// telemetry (solver impulse / substep dt, see
+    /// [`Self::plate_prop_forces`]); `[0, 0]` without a gripper or
+    /// contact. The dynamics never read it.
+    pub fn plate_force_on(&self, e: Entity) -> [f32; 2] {
+        self.plate_prop_forces()
+            .get(&key(e))
+            .copied()
+            .unwrap_or([0.0; 2])
+    }
+
+    /// Contact-inspection probe (P2-Wave-3B): plate world centres
+    /// `(left, right)` and the live gap (m) — read-only telemetry.
+    pub fn debug_plate_state(&self) -> ([f32; 3], [f32; 3], f32) {
+        let pos = |h: RigidBodyHandle| {
+            self.bodies
+                .get(h)
+                .map(|b| {
+                    let t = b.translation();
+                    [t.x, t.y, t.z]
+                })
+                .unwrap_or([f32::NAN; 3])
+        };
+        let (fl, fr) = self.fingers.unwrap_or_default();
+        (pos(fl), pos(fr), self.gap_now)
+    }
+
+    /// Contact-inspection probe (P2-Wave-3B): `(pairs_on_left,
+    /// pairs_on_right, prop_body_is_sleeping, collider_world_translations)`
+    /// for the plates against one prop's body — read-only telemetry. Pair
+    /// counts are plate-collider ↔ prop-collider contact pairs in the
+    /// narrow phase (0 = no contact at all); `is_sleeping` explains
+    /// zero solver impulses on an existing pair (the solver skips
+    /// sleeping bodies).
+    pub fn debug_plate_prop_contact(&self, e: Entity) -> (usize, usize, bool, [[f32; 3]; 2]) {
+        let no = (0usize, 0usize, false, [[f32::NAN; 3]; 2]);
+        let Some((fl, fr)) = self.fingers else {
+            return no;
+        };
+        let cube = self.map.get(&key(e)).copied();
+        let cube_asleep = cube
+            .and_then(|h| self.bodies.get(h))
+            .map(|b| b.is_sleeping())
+            .unwrap_or(false);
+        let pairs_with = |ph: RigidBodyHandle| -> usize {
+            let Some(pb) = self.bodies.get(ph) else {
+                return 0;
+            };
+            let mut n = 0usize;
+            for ch in pb.colliders() {
+                for pair in self.narrow_phase.contact_pairs_with(*ch) {
+                    let other = if pair.collider1 == *ch {
+                        pair.collider2
+                    } else {
+                        pair.collider1
+                    };
+                    if let Some(par) = self.colliders.get(other).and_then(|c| c.parent()) {
+                        if cube == Some(par) {
+                            n += 1;
+                        }
+                    }
+                }
+            }
+            n
+        };
+        let col_pos = |ph: RigidBodyHandle| -> [f32; 3] {
+            self.bodies
+                .get(ph)
+                .and_then(|pb| pb.colliders().first().copied())
+                .and_then(|ch| self.colliders.get(ch))
+                .map(|c| {
+                    let t = c.translation();
+                    [t.x, t.y, t.z]
+                })
+                .unwrap_or([f32::NAN; 3])
+        };
+        (
+            pairs_with(fl),
+            pairs_with(fr),
+            cube_asleep,
+            [col_pos(fl), col_pos(fr)],
+        )
+    }
+
+    /// Contact-inspection probe (P2-Wave-3B): `(manifold_points,
+    /// max_abs_impulse_over_points, min_point_dist, active_points)`
+    /// summed over both plates' contact pairs with one prop — read-only
+    /// telemetry. Zero points with an existing pair means the narrow
+    /// phase still sees the shapes as separate; points with zero impulse
+    /// means the solver skipped the contact; `min_point_dist` (negative
+    /// = penetrating) and `active_points` (num_active_contacts sum)
+    /// separate "not touching" from "skipped by the solver".
+    pub fn debug_plate_prop_manifolds(&self, e: Entity) -> (usize, f32, f32, usize) {
+        let Some((_fl, _fr)) = self.fingers else {
+            return (0, 0.0, 0.0, 0);
+        };
+        let cube = self.map.get(&key(e)).copied();
+        let mut points = 0usize;
+        let mut active = 0usize;
+        let mut max_imp = 0.0f32;
+        let mut min_dist = f32::INFINITY;
+        for ph in self.fingers.into_iter().flat_map(|(a, b)| [a, b]) {
+            let Some(pb) = self.bodies.get(ph) else {
+                continue;
+            };
+            for ch in pb.colliders() {
+                for pair in self.narrow_phase.contact_pairs_with(*ch) {
+                    let other = if pair.collider1 == *ch {
+                        pair.collider2
+                    } else {
+                        pair.collider1
+                    };
+                    if let Some(par) = self.colliders.get(other).and_then(|c| c.parent()) {
+                        if cube != Some(par) {
+                            continue;
+                        }
+                    }
+                    if let Some(rigid) = pair.rigid() {
+                        for m in rigid.manifolds.iter() {
+                            active += m.data.num_active_contacts();
+                            for p in m.points.iter() {
+                                points += 1;
+                                max_imp = max_imp.max(p.data.impulse.abs());
+                                min_dist = min_dist.min(p.dist);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (points, max_imp, min_dist, active)
+    }
+
     /// Contact-inspection probe (temporary): plate world positions and
     /// per-prop contact-pair counts. Plates read `NaN` without a gripper.
     pub fn debug_contact_state(&self) -> (Vec<[f32; 3]>, Vec<usize>) {

@@ -7,8 +7,36 @@
   },
   "draws": 109,
   "dt": 0.01666666753590107,
-  "engine": "oriera-engine/0.10.0",
+  "engine": "oriera-engine/0.11.0",
   "episodes": 100,
+  "failure_phases": {
+    "by_phase": {
+      "grasp": 0,
+      "lift": 5,
+      "place": 0,
+      "reach": 0
+    },
+    "episodes": 100,
+    "failures": 5,
+    "rules": {
+      "deliver_xz": 0.09,
+      "family": "pick",
+      "reach_radius": 0.06
+    },
+    "scheme": "failure_phase@v1",
+    "seeds": {
+      "grasp": [],
+      "lift": [
+        132091,
+        197645,
+        197647,
+        197660,
+        525382
+      ],
+      "place": [],
+      "reach": []
+    }
+  },
   "identity_hash": "1e6473af0cdbafa3",
   "method": "dls-ik",
   "protocol": {
@@ -23,6 +51,22 @@
   "redraws": 9,
   "runs": [
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0186,
+        "holding_at_end": true,
+        "holding_ticks": 372,
+        "max_lift_held": 0.2735,
+        "min_ee_obj": 0.0012,
+        "min_goal_xz_held": 0.0013,
+        "obj0": [
+          0.1598,
+          0.5249,
+          -0.0562
+        ],
+        "ticks": 557
+      },
       "rand": "cube_density=494kg/m3 cube_friction=1.02 profile=default",
       "reward_sum": 15.37,
       "seed": 1000,
@@ -32,6 +76,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.086,
+        "holding_at_end": true,
+        "holding_ticks": 8,
+        "max_lift_held": 0.0011,
+        "min_ee_obj": 0.0033,
+        "min_goal_xz_held": 0.086,
+        "obj0": [
+          0.2113,
+          0.5249,
+          0.0261
+        ],
+        "ticks": 193
+      },
       "rand": "cube_density=489kg/m3 cube_friction=0.96 profile=default",
       "reward_sum": 3.729,
       "seed": 66538,
@@ -41,15 +101,47 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.011,
+        "holding_at_end": true,
+        "holding_ticks": 303,
+        "max_lift_held": 0.2129,
+        "min_ee_obj": 0.0026,
+        "min_goal_xz_held": 0.005,
+        "obj0": [
+          0.1837,
+          0.5249,
+          -0.0554
+        ],
+        "ticks": 549
+      },
       "rand": "cube_density=324kg/m3 cube_friction=0.99 profile=default",
-      "reward_sum": -63.052,
+      "reward_sum": 5.372,
       "seed": 66539,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 549,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0154,
+        "holding_at_end": true,
+        "holding_ticks": 371,
+        "max_lift_held": 0.2677,
+        "min_ee_obj": 0.0018,
+        "min_goal_xz_held": 0.0019,
+        "obj0": [
+          0.1865,
+          0.5249,
+          -0.0108
+        ],
+        "ticks": 556
+      },
       "rand": "cube_density=418kg/m3 cube_friction=0.89 profile=default",
       "reward_sum": 16.17,
       "seed": 66540,
@@ -59,6 +151,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0138,
+        "holding_at_end": true,
+        "holding_ticks": 362,
+        "max_lift_held": 0.2068,
+        "min_ee_obj": 0.0012,
+        "min_goal_xz_held": 0.0099,
+        "obj0": [
+          0.1589,
+          0.5249,
+          -0.0923
+        ],
+        "ticks": 547
+      },
       "rand": "cube_density=253kg/m3 cube_friction=0.92 profile=default",
       "reward_sum": 12.012,
       "seed": 66541,
@@ -68,6 +176,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0147,
+        "holding_at_end": true,
+        "holding_ticks": 364,
+        "max_lift_held": 0.2098,
+        "min_ee_obj": 0.0011,
+        "min_goal_xz_held": 0.0011,
+        "obj0": [
+          0.1617,
+          0.5249,
+          -0.0477
+        ],
+        "ticks": 549
+      },
       "rand": "cube_density=348kg/m3 cube_friction=0.81 profile=default",
       "reward_sum": 19.653,
       "seed": 66542,
@@ -77,6 +201,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0147,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.251,
+        "min_ee_obj": 0.0007,
+        "min_goal_xz_held": 0.0001,
+        "obj0": [
+          0.2141,
+          0.5249,
+          0.0708
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=583kg/m3 cube_friction=0.85 profile=default",
       "reward_sum": 7.192,
       "seed": 66543,
@@ -86,6 +226,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0126,
+        "holding_at_end": true,
+        "holding_ticks": 372,
+        "max_lift_held": 0.2781,
+        "min_ee_obj": 0.0026,
+        "min_goal_xz_held": 0.0025,
+        "obj0": [
+          0.2169,
+          0.5249,
+          -0.0846
+        ],
+        "ticks": 557
+      },
       "rand": "cube_density=277kg/m3 cube_friction=0.74 profile=default",
       "reward_sum": 10.638,
       "seed": 66544,
@@ -95,6 +251,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0154,
+        "holding_at_end": true,
+        "holding_ticks": 372,
+        "max_lift_held": 0.2774,
+        "min_ee_obj": 0.002,
+        "min_goal_xz_held": 0.0009,
+        "obj0": [
+          0.1893,
+          0.5249,
+          0.0338
+        ],
+        "ticks": 557
+      },
       "rand": "cube_density=512kg/m3 cube_friction=0.78 profile=default",
       "reward_sum": 24.448,
       "seed": 66545,
@@ -104,6 +276,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0136,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2536,
+        "min_ee_obj": 0.0026,
+        "min_goal_xz_held": 0.0008,
+        "obj0": [
+          0.192,
+          0.5249,
+          0.0784
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=606kg/m3 cube_friction=0.67 profile=default",
       "reward_sum": 12.826,
       "seed": 66546,
@@ -113,6 +301,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0123,
+        "holding_at_end": true,
+        "holding_ticks": 364,
+        "max_lift_held": 0.2177,
+        "min_ee_obj": 0.0021,
+        "min_goal_xz_held": 0.0036,
+        "obj0": [
+          0.1644,
+          0.5249,
+          -0.0031
+        ],
+        "ticks": 549
+      },
       "rand": "cube_density=442kg/m3 cube_friction=0.70 profile=default",
       "reward_sum": 19.399,
       "seed": 66547,
@@ -122,15 +326,47 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.015,
+        "holding_at_end": true,
+        "holding_ticks": 309,
+        "max_lift_held": 0.2506,
+        "min_ee_obj": 0.0027,
+        "min_goal_xz_held": 0.0016,
+        "obj0": [
+          0.1672,
+          0.5249,
+          0.0415
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=536kg/m3 cube_friction=0.60 profile=default",
-      "reward_sum": -62.473,
+      "reward_sum": 6.687,
       "seed": 66548,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 555,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0152,
+        "holding_at_end": true,
+        "holding_ticks": 366,
+        "max_lift_held": 0.2236,
+        "min_ee_obj": 0.003,
+        "min_goal_xz_held": 0.0062,
+        "obj0": [
+          0.1396,
+          0.5249,
+          -0.04
+        ],
+        "ticks": 551
+      },
       "rand": "cube_density=371kg/m3 cube_friction=0.63 profile=default",
       "reward_sum": 13.145,
       "seed": 66549,
@@ -140,6 +376,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0205,
+        "holding_at_end": true,
+        "holding_ticks": 372,
+        "max_lift_held": 0.2701,
+        "min_ee_obj": 0.0032,
+        "min_goal_xz_held": 0.0004,
+        "obj0": [
+          0.1424,
+          0.5249,
+          0.0046
+        ],
+        "ticks": 557
+      },
       "rand": "cube_density=465kg/m3 cube_friction=0.52 profile=default",
       "reward_sum": 13.08,
       "seed": 66550,
@@ -149,6 +401,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0153,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2557,
+        "min_ee_obj": 0.0012,
+        "min_goal_xz_held": 0.0018,
+        "obj0": [
+          0.1948,
+          0.5249,
+          -0.077
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=301kg/m3 cube_friction=0.56 profile=default",
       "reward_sum": 19.111,
       "seed": 66551,
@@ -158,15 +426,47 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0119,
+        "holding_at_end": true,
+        "holding_ticks": 309,
+        "max_lift_held": 0.2549,
+        "min_ee_obj": 0.0024,
+        "min_goal_xz_held": 0.0021,
+        "obj0": [
+          0.1811,
+          0.5249,
+          -0.0716
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=434kg/m3 cube_friction=1.07 profile=default",
-      "reward_sum": -68.48,
+      "reward_sum": 1.55,
       "seed": 132089,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 555,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0156,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2538,
+        "min_ee_obj": 0.0018,
+        "min_goal_xz_held": 0.0019,
+        "obj0": [
+          0.1839,
+          0.5249,
+          -0.0269
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=528kg/m3 cube_friction=0.96 profile=default",
       "reward_sum": 19.364,
       "seed": 132090,
@@ -176,8 +476,24 @@
       "success_once": true
     },
     {
+      "failure_phase": "lift",
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.1324,
+        "holding_at_end": false,
+        "holding_ticks": 154,
+        "max_lift_held": 0.009,
+        "min_ee_obj": 0.0042,
+        "min_goal_xz_held": 0.122,
+        "obj0": [
+          0.1563,
+          0.5249,
+          0.0915
+        ],
+        "ticks": 700
+      },
       "rand": "cube_density=363kg/m3 cube_friction=1.00 profile=default",
-      "reward_sum": -66.411,
+      "reward_sum": -60.412,
       "seed": 132091,
       "steps": 700,
       "success": false,
@@ -185,6 +501,22 @@
       "success_once": false
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0195,
+        "holding_at_end": true,
+        "holding_ticks": 371,
+        "max_lift_held": 0.2701,
+        "min_ee_obj": 0.0013,
+        "min_goal_xz_held": 0.0016,
+        "obj0": [
+          0.1591,
+          0.5249,
+          -0.0638
+        ],
+        "ticks": 556
+      },
       "rand": "cube_density=458kg/m3 cube_friction=0.89 profile=default",
       "reward_sum": 10.388,
       "seed": 132092,
@@ -194,6 +526,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0122,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2532,
+        "min_ee_obj": 0.0009,
+        "min_goal_xz_held": 0.0017,
+        "obj0": [
+          0.2115,
+          0.5249,
+          0.0546
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=293kg/m3 cube_friction=0.92 profile=default",
       "reward_sum": 15.208,
       "seed": 132093,
@@ -203,6 +551,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0149,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2637,
+        "min_ee_obj": 0.0007,
+        "min_goal_xz_held": 0.0013,
+        "obj0": [
+          0.2143,
+          0.5249,
+          0.0992
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=387kg/m3 cube_friction=0.81 profile=default",
       "reward_sum": 5.621,
       "seed": 132094,
@@ -212,6 +576,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0161,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.255,
+        "min_ee_obj": 0.0019,
+        "min_goal_xz_held": 0.0006,
+        "obj0": [
+          0.1867,
+          0.5249,
+          0.0177
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=622kg/m3 cube_friction=0.85 profile=default",
       "reward_sum": 18.321,
       "seed": 132095,
@@ -221,6 +601,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0161,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2563,
+        "min_ee_obj": 0.0018,
+        "min_goal_xz_held": 0.0009,
+        "obj0": [
+          0.1895,
+          0.5249,
+          0.0623
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=316kg/m3 cube_friction=0.74 profile=default",
       "reward_sum": 18.799,
       "seed": 132096,
@@ -230,6 +626,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0173,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2585,
+        "min_ee_obj": 0.0017,
+        "min_goal_xz_held": 0.0021,
+        "obj0": [
+          0.1619,
+          0.5249,
+          -0.0192
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=552kg/m3 cube_friction=0.78 profile=default",
       "reward_sum": 14.094,
       "seed": 132097,
@@ -239,6 +651,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0175,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2483,
+        "min_ee_obj": 0.0018,
+        "min_goal_xz_held": 0.0004,
+        "obj0": [
+          0.1647,
+          0.5249,
+          0.0254
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=246kg/m3 cube_friction=0.67 profile=default",
       "reward_sum": 14.0,
       "seed": 132098,
@@ -248,6 +676,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0091,
+        "holding_at_end": true,
+        "holding_ticks": 368,
+        "max_lift_held": 0.2406,
+        "min_ee_obj": 0.0021,
+        "min_goal_xz_held": 0.0011,
+        "obj0": [
+          0.2171,
+          0.5249,
+          -0.0562
+        ],
+        "ticks": 553
+      },
       "rand": "cube_density=481kg/m3 cube_friction=0.71 profile=default",
       "reward_sum": 16.336,
       "seed": 132099,
@@ -257,6 +701,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0169,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2505,
+        "min_ee_obj": 0.0033,
+        "min_goal_xz_held": 0.0008,
+        "obj0": [
+          0.1399,
+          0.5249,
+          -0.0116
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=575kg/m3 cube_friction=0.60 profile=default",
       "reward_sum": 13.049,
       "seed": 132100,
@@ -266,6 +726,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0112,
+        "holding_at_end": true,
+        "holding_ticks": 364,
+        "max_lift_held": 0.2162,
+        "min_ee_obj": 0.0025,
+        "min_goal_xz_held": 0.006,
+        "obj0": [
+          0.1923,
+          0.5249,
+          -0.0931
+        ],
+        "ticks": 549
+      },
       "rand": "cube_density=411kg/m3 cube_friction=0.63 profile=default",
       "reward_sum": 14.327,
       "seed": 132101,
@@ -275,6 +751,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0153,
+        "holding_at_end": true,
+        "holding_ticks": 372,
+        "max_lift_held": 0.2759,
+        "min_ee_obj": 0.002,
+        "min_goal_xz_held": 0.0007,
+        "obj0": [
+          0.195,
+          0.5249,
+          -0.0485
+        ],
+        "ticks": 557
+      },
       "rand": "cube_density=505kg/m3 cube_friction=0.53 profile=default",
       "reward_sum": 15.308,
       "seed": 132102,
@@ -284,6 +776,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0139,
+        "holding_at_end": true,
+        "holding_ticks": 361,
+        "max_lift_held": 0.2096,
+        "min_ee_obj": 0.0023,
+        "min_goal_xz_held": 0.011,
+        "obj0": [
+          0.1674,
+          0.5249,
+          0.07
+        ],
+        "ticks": 546
+      },
       "rand": "cube_density=340kg/m3 cube_friction=0.56 profile=default",
       "reward_sum": 12.22,
       "seed": 132103,
@@ -293,6 +801,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0176,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2631,
+        "min_ee_obj": 0.0014,
+        "min_goal_xz_held": 0.0025,
+        "obj0": [
+          0.1703,
+          0.5249,
+          -0.0853
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=434kg/m3 cube_friction=1.05 profile=default",
       "reward_sum": 17.787,
       "seed": 132104,
@@ -302,24 +826,72 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0324,
+        "holding_at_end": false,
+        "holding_ticks": 287,
+        "max_lift_held": 0.1999,
+        "min_ee_obj": 0.0038,
+        "min_goal_xz_held": 0.0033,
+        "obj0": [
+          0.1427,
+          0.5249,
+          0.0331
+        ],
+        "ticks": 539
+      },
       "rand": "cube_density=270kg/m3 cube_friction=1.09 profile=default",
-      "reward_sum": -65.394,
+      "reward_sum": 0.623,
       "seed": 132105,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 539,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0129,
+        "holding_at_end": true,
+        "holding_ticks": 299,
+        "max_lift_held": 0.2044,
+        "min_ee_obj": 0.004,
+        "min_goal_xz_held": 0.0031,
+        "obj0": [
+          0.1455,
+          0.5249,
+          0.0777
+        ],
+        "ticks": 545
+      },
       "rand": "cube_density=364kg/m3 cube_friction=0.98 profile=default",
-      "reward_sum": -69.155,
+      "reward_sum": -0.143,
       "seed": 132106,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 545,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0136,
+        "holding_at_end": true,
+        "holding_ticks": 372,
+        "max_lift_held": 0.2741,
+        "min_ee_obj": 0.0016,
+        "min_goal_xz_held": 0.0033,
+        "obj0": [
+          0.1971,
+          0.5249,
+          -0.0399
+        ],
+        "ticks": 557
+      },
       "rand": "cube_density=359kg/m3 cube_friction=0.91 profile=default",
       "reward_sum": 14.087,
       "seed": 197644,
@@ -329,8 +901,24 @@
       "success_once": true
     },
     {
+      "failure_phase": "lift",
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.1406,
+        "holding_at_end": false,
+        "holding_ticks": 155,
+        "max_lift_held": 0.0127,
+        "min_ee_obj": 0.0035,
+        "min_goal_xz_held": 0.1243,
+        "obj0": [
+          0.1695,
+          0.5249,
+          0.0785
+        ],
+        "ticks": 700
+      },
       "rand": "cube_density=594kg/m3 cube_friction=0.95 profile=default",
-      "reward_sum": -66.39,
+      "reward_sum": -61.683,
       "seed": 197645,
       "steps": 700,
       "success": false,
@@ -338,6 +926,22 @@
       "success_once": false
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0158,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2569,
+        "min_ee_obj": 0.0014,
+        "min_goal_xz_held": 0.0015,
+        "obj0": [
+          0.1723,
+          0.5249,
+          -0.0768
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=288kg/m3 cube_friction=0.84 profile=default",
       "reward_sum": 10.756,
       "seed": 197646,
@@ -347,8 +951,24 @@
       "success_once": true
     },
     {
+      "failure_phase": "lift",
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.1576,
+        "holding_at_end": false,
+        "holding_ticks": 153,
+        "max_lift_held": 0.0099,
+        "min_ee_obj": 0.004,
+        "min_goal_xz_held": 0.1472,
+        "obj0": [
+          0.1447,
+          0.5249,
+          0.0416
+        ],
+        "ticks": 700
+      },
       "rand": "cube_density=523kg/m3 cube_friction=0.88 profile=default",
-      "reward_sum": -72.335,
+      "reward_sum": -67.372,
       "seed": 197647,
       "steps": 700,
       "success": false,
@@ -356,15 +976,47 @@
       "success_once": false
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.012,
+        "holding_at_end": true,
+        "holding_ticks": 297,
+        "max_lift_held": 0.1986,
+        "min_ee_obj": 0.004,
+        "min_goal_xz_held": 0.0034,
+        "obj0": [
+          0.1474,
+          0.5249,
+          0.0862
+        ],
+        "ticks": 543
+      },
       "rand": "cube_density=618kg/m3 cube_friction=0.77 profile=default",
-      "reward_sum": -61.461,
+      "reward_sum": 5.258,
       "seed": 197648,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 543,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0171,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2497,
+        "min_ee_obj": 0.0014,
+        "min_goal_xz_held": 0.0014,
+        "obj0": [
+          0.1999,
+          0.5249,
+          0.0047
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=453kg/m3 cube_friction=0.81 profile=default",
       "reward_sum": 20.426,
       "seed": 197649,
@@ -374,6 +1026,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0151,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.256,
+        "min_ee_obj": 0.0022,
+        "min_goal_xz_held": 0.002,
+        "obj0": [
+          0.2026,
+          0.5249,
+          0.0493
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=547kg/m3 cube_friction=0.70 profile=default",
       "reward_sum": 26.069,
       "seed": 197650,
@@ -383,6 +1051,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0188,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2497,
+        "min_ee_obj": 0.0007,
+        "min_goal_xz_held": 0.0008,
+        "obj0": [
+          0.175,
+          0.5249,
+          -0.0322
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=382kg/m3 cube_friction=0.73 profile=default",
       "reward_sum": 16.23,
       "seed": 197651,
@@ -392,6 +1076,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0163,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2504,
+        "min_ee_obj": 0.0019,
+        "min_goal_xz_held": 0.0025,
+        "obj0": [
+          0.1778,
+          0.5249,
+          0.0124
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=476kg/m3 cube_friction=0.62 profile=default",
       "reward_sum": 17.515,
       "seed": 197652,
@@ -401,6 +1101,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0177,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2465,
+        "min_ee_obj": 0.0017,
+        "min_goal_xz_held": 0.0008,
+        "obj0": [
+          0.1502,
+          0.5249,
+          -0.0692
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=312kg/m3 cube_friction=0.66 profile=default",
       "reward_sum": -3.319,
       "seed": 197653,
@@ -410,6 +1126,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.015,
+        "holding_at_end": true,
+        "holding_ticks": 364,
+        "max_lift_held": 0.2107,
+        "min_ee_obj": 0.0018,
+        "min_goal_xz_held": 0.0044,
+        "obj0": [
+          0.153,
+          0.5249,
+          -0.0246
+        ],
+        "ticks": 549
+      },
       "rand": "cube_density=406kg/m3 cube_friction=0.55 profile=default",
       "reward_sum": 19.128,
       "seed": 197654,
@@ -419,6 +1151,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.015,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2575,
+        "min_ee_obj": 0.0019,
+        "min_goal_xz_held": 0.0004,
+        "obj0": [
+          0.2054,
+          0.5249,
+          0.0939
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=241kg/m3 cube_friction=0.59 profile=default",
       "reward_sum": 10.871,
       "seed": 197655,
@@ -428,6 +1176,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0084,
+        "holding_at_end": true,
+        "holding_ticks": 363,
+        "max_lift_held": 0.2079,
+        "min_ee_obj": 0.0014,
+        "min_goal_xz_held": 0.0039,
+        "obj0": [
+          0.2083,
+          0.5249,
+          -0.0614
+        ],
+        "ticks": 548
+      },
       "rand": "cube_density=335kg/m3 cube_friction=1.08 profile=default",
       "reward_sum": 16.613,
       "seed": 197656,
@@ -437,6 +1201,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0167,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2528,
+        "min_ee_obj": 0.002,
+        "min_goal_xz_held": 0.0018,
+        "obj0": [
+          0.1806,
+          0.5249,
+          0.057
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=571kg/m3 cube_friction=0.52 profile=default",
       "reward_sum": 18.285,
       "seed": 197657,
@@ -446,6 +1226,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0127,
+        "holding_at_end": true,
+        "holding_ticks": 365,
+        "max_lift_held": 0.2201,
+        "min_ee_obj": 0.0026,
+        "min_goal_xz_held": 0.0063,
+        "obj0": [
+          0.1835,
+          0.5249,
+          -0.0983
+        ],
+        "ticks": 550
+      },
       "rand": "cube_density=265kg/m3 cube_friction=1.01 profile=default",
       "reward_sum": 6.059,
       "seed": 197658,
@@ -455,6 +1251,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0202,
+        "holding_at_end": true,
+        "holding_ticks": 371,
+        "max_lift_held": 0.2619,
+        "min_ee_obj": 0.0027,
+        "min_goal_xz_held": 0.0009,
+        "obj0": [
+          0.1559,
+          0.5249,
+          0.0201
+        ],
+        "ticks": 556
+      },
       "rand": "cube_density=500kg/m3 cube_friction=1.04 profile=default",
       "reward_sum": 11.302,
       "seed": 197659,
@@ -464,8 +1276,24 @@
       "success_once": true
     },
     {
+      "failure_phase": "lift",
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.1436,
+        "holding_at_end": false,
+        "holding_ticks": 154,
+        "max_lift_held": 0.0098,
+        "min_ee_obj": 0.004,
+        "min_goal_xz_held": 0.1321,
+        "obj0": [
+          0.1587,
+          0.5249,
+          0.0647
+        ],
+        "ticks": 700
+      },
       "rand": "cube_density=594kg/m3 cube_friction=0.93 profile=default",
-      "reward_sum": -69.773,
+      "reward_sum": -63.687,
       "seed": 197660,
       "steps": 700,
       "success": false,
@@ -473,15 +1301,47 @@
       "success_once": false
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.076,
+        "holding_at_end": false,
+        "holding_ticks": 177,
+        "max_lift_held": 0.1826,
+        "min_ee_obj": 0.004,
+        "min_goal_xz_held": 0.1003,
+        "obj0": [
+          0.1449,
+          0.5249,
+          0.0701
+        ],
+        "ticks": 434
+      },
       "rand": "cube_density=328kg/m3 cube_friction=0.84 profile=default",
-      "reward_sum": -64.897,
+      "reward_sum": -12.877,
       "seed": 263198,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 434,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0147,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2599,
+        "min_ee_obj": 0.0013,
+        "min_goal_xz_held": 0.0013,
+        "obj0": [
+          0.1964,
+          0.5249,
+          -0.0476
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=322kg/m3 cube_friction=0.78 profile=default",
       "reward_sum": 14.697,
       "seed": 328736,
@@ -491,6 +1351,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0205,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2582,
+        "min_ee_obj": 0.0028,
+        "min_goal_xz_held": 0.0001,
+        "obj0": [
+          0.1688,
+          0.5249,
+          0.0709
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=558kg/m3 cube_friction=0.81 profile=default",
       "reward_sum": 16.836,
       "seed": 328737,
@@ -500,6 +1376,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0165,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2534,
+        "min_ee_obj": 0.0005,
+        "min_goal_xz_held": 0.002,
+        "obj0": [
+          0.1716,
+          0.5249,
+          -0.0845
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=252kg/m3 cube_friction=0.70 profile=default",
       "reward_sum": 4.716,
       "seed": 328738,
@@ -509,24 +1401,72 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.032,
+        "holding_at_end": false,
+        "holding_ticks": 277,
+        "max_lift_held": 0.1967,
+        "min_ee_obj": 0.0038,
+        "min_goal_xz_held": 0.0051,
+        "obj0": [
+          0.144,
+          0.5249,
+          0.0339
+        ],
+        "ticks": 528
+      },
       "rand": "cube_density=487kg/m3 cube_friction=0.74 profile=default",
-      "reward_sum": -72.402,
+      "reward_sum": -6.448,
       "seed": 328739,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 528,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0161,
+        "holding_at_end": true,
+        "holding_ticks": 308,
+        "max_lift_held": 0.2444,
+        "min_ee_obj": 0.004,
+        "min_goal_xz_held": 0.0024,
+        "obj0": [
+          0.1468,
+          0.5249,
+          0.0785
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=581kg/m3 cube_friction=0.63 profile=default",
-      "reward_sum": -79.637,
+      "reward_sum": -7.586,
       "seed": 328740,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 554,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0102,
+        "holding_at_end": true,
+        "holding_ticks": 366,
+        "max_lift_held": 0.2258,
+        "min_ee_obj": 0.0023,
+        "min_goal_xz_held": 0.0024,
+        "obj0": [
+          0.213,
+          0.5249,
+          0.0839
+        ],
+        "ticks": 551
+      },
       "rand": "cube_density=315kg/m3 cube_friction=0.54 profile=default",
       "reward_sum": 11.996,
       "seed": 394278,
@@ -536,6 +1476,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0159,
+        "holding_at_end": true,
+        "holding_ticks": 372,
+        "max_lift_held": 0.2542,
+        "min_ee_obj": 0.0018,
+        "min_goal_xz_held": 0.0002,
+        "obj0": [
+          0.1854,
+          0.5249,
+          0.0023
+        ],
+        "ticks": 557
+      },
       "rand": "cube_density=550kg/m3 cube_friction=0.58 profile=default",
       "reward_sum": 15.17,
       "seed": 394279,
@@ -545,6 +1501,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0164,
+        "holding_at_end": true,
+        "holding_ticks": 371,
+        "max_lift_held": 0.2459,
+        "min_ee_obj": 0.0017,
+        "min_goal_xz_held": 0.001,
+        "obj0": [
+          0.1883,
+          0.5249,
+          0.047
+        ],
+        "ticks": 556
+      },
       "rand": "cube_density=244kg/m3 cube_friction=1.07 profile=default",
       "reward_sum": 19.322,
       "seed": 394280,
@@ -554,6 +1526,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0171,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.247,
+        "min_ee_obj": 0.0015,
+        "min_goal_xz_held": 0.001,
+        "obj0": [
+          0.1606,
+          0.5249,
+          -0.0346
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=479kg/m3 cube_friction=0.51 profile=default",
       "reward_sum": 4.701,
       "seed": 394281,
@@ -563,6 +1551,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0123,
+        "holding_at_end": true,
+        "holding_ticks": 362,
+        "max_lift_held": 0.2077,
+        "min_ee_obj": 0.0027,
+        "min_goal_xz_held": 0.0036,
+        "obj0": [
+          0.1635,
+          0.5249,
+          0.0101
+        ],
+        "ticks": 547
+      },
       "rand": "cube_density=573kg/m3 cube_friction=1.00 profile=default",
       "reward_sum": 25.899,
       "seed": 394282,
@@ -572,6 +1576,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0083,
+        "holding_at_end": true,
+        "holding_ticks": 363,
+        "max_lift_held": 0.2113,
+        "min_ee_obj": 0.0009,
+        "min_goal_xz_held": 0.0034,
+        "obj0": [
+          0.2159,
+          0.5249,
+          -0.0714
+        ],
+        "ticks": 548
+      },
       "rand": "cube_density=409kg/m3 cube_friction=1.03 profile=default",
       "reward_sum": 12.463,
       "seed": 394283,
@@ -581,6 +1601,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0155,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2496,
+        "min_ee_obj": 0.0015,
+        "min_goal_xz_held": 0.0011,
+        "obj0": [
+          0.1874,
+          0.5249,
+          0.0109
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=404kg/m3 cube_friction=0.97 profile=default",
       "reward_sum": 14.416,
       "seed": 459821,
@@ -590,6 +1626,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0157,
+        "holding_at_end": true,
+        "holding_ticks": 372,
+        "max_lift_held": 0.2707,
+        "min_ee_obj": 0.0019,
+        "min_goal_xz_held": 0.0007,
+        "obj0": [
+          0.1902,
+          0.5249,
+          0.0555
+        ],
+        "ticks": 557
+      },
       "rand": "cube_density=498kg/m3 cube_friction=0.86 profile=default",
       "reward_sum": 10.558,
       "seed": 459822,
@@ -599,6 +1651,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0169,
+        "holding_at_end": true,
+        "holding_ticks": 372,
+        "max_lift_held": 0.273,
+        "min_ee_obj": 0.0016,
+        "min_goal_xz_held": 0.0007,
+        "obj0": [
+          0.1626,
+          0.5249,
+          -0.026
+        ],
+        "ticks": 557
+      },
       "rand": "cube_density=333kg/m3 cube_friction=0.89 profile=default",
       "reward_sum": 18.093,
       "seed": 459823,
@@ -608,6 +1676,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0173,
+        "holding_at_end": true,
+        "holding_ticks": 371,
+        "max_lift_held": 0.2626,
+        "min_ee_obj": 0.0017,
+        "min_goal_xz_held": 0.0018,
+        "obj0": [
+          0.1654,
+          0.5249,
+          0.0186
+        ],
+        "ticks": 556
+      },
       "rand": "cube_density=427kg/m3 cube_friction=0.79 profile=default",
       "reward_sum": 10.795,
       "seed": 459824,
@@ -617,6 +1701,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0137,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2589,
+        "min_ee_obj": 0.002,
+        "min_goal_xz_held": 0.001,
+        "obj0": [
+          0.2178,
+          0.5249,
+          -0.0629
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=263kg/m3 cube_friction=0.82 profile=default",
       "reward_sum": 9.843,
       "seed": 459825,
@@ -626,6 +1726,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.019,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2539,
+        "min_ee_obj": 0.0021,
+        "min_goal_xz_held": 0.001,
+        "obj0": [
+          0.1406,
+          0.5249,
+          -0.0183
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=357kg/m3 cube_friction=0.71 profile=default",
       "reward_sum": 3.653,
       "seed": 459826,
@@ -635,6 +1751,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0157,
+        "holding_at_end": true,
+        "holding_ticks": 372,
+        "max_lift_held": 0.2757,
+        "min_ee_obj": 0.0012,
+        "min_goal_xz_held": 0.0008,
+        "obj0": [
+          0.193,
+          0.5249,
+          -0.0999
+        ],
+        "ticks": 557
+      },
       "rand": "cube_density=592kg/m3 cube_friction=0.75 profile=default",
       "reward_sum": 6.167,
       "seed": 459827,
@@ -644,6 +1776,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.015,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2535,
+        "min_ee_obj": 0.0019,
+        "min_goal_xz_held": 0.0027,
+        "obj0": [
+          0.1958,
+          0.5249,
+          -0.0553
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=286kg/m3 cube_friction=0.64 profile=default",
       "reward_sum": 7.945,
       "seed": 459828,
@@ -653,6 +1801,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0201,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2521,
+        "min_ee_obj": 0.0029,
+        "min_goal_xz_held": 0.0003,
+        "obj0": [
+          0.1682,
+          0.5249,
+          0.0632
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=521kg/m3 cube_friction=0.68 profile=default",
       "reward_sum": 16.753,
       "seed": 459829,
@@ -662,33 +1826,97 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0143,
+        "holding_at_end": true,
+        "holding_ticks": 308,
+        "max_lift_held": 0.2461,
+        "min_ee_obj": 0.001,
+        "min_goal_xz_held": 0.0025,
+        "obj0": [
+          0.1709,
+          0.5249,
+          -0.0922
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=616kg/m3 cube_friction=0.57 profile=default",
-      "reward_sum": -85.466,
+      "reward_sum": -11.893,
       "seed": 459830,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 554,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0348,
+        "holding_at_end": false,
+        "holding_ticks": 277,
+        "max_lift_held": 0.1966,
+        "min_ee_obj": 0.0038,
+        "min_goal_xz_held": 0.0048,
+        "obj0": [
+          0.1434,
+          0.5249,
+          0.0263
+        ],
+        "ticks": 527
+      },
       "rand": "cube_density=451kg/m3 cube_friction=0.60 profile=default",
-      "reward_sum": -74.549,
+      "reward_sum": -8.345,
       "seed": 459831,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 527,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0026,
+        "holding_at_end": false,
+        "holding_ticks": 293,
+        "max_lift_held": 0.2171,
+        "min_ee_obj": 0.0039,
+        "min_goal_xz_held": 0.0013,
+        "obj0": [
+          0.1462,
+          0.5249,
+          0.0709
+        ],
+        "ticks": 546
+      },
       "rand": "cube_density=545kg/m3 cube_friction=1.10 profile=default",
-      "reward_sum": -73.454,
+      "reward_sum": -5.317,
       "seed": 459832,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 546,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0178,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2485,
+        "min_ee_obj": 0.0008,
+        "min_goal_xz_held": 0.0011,
+        "obj0": [
+          0.1985,
+          0.5249,
+          -0.0107
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=380kg/m3 cube_friction=0.53 profile=default",
       "reward_sum": 18.987,
       "seed": 459833,
@@ -698,6 +1926,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0137,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2525,
+        "min_ee_obj": 0.0008,
+        "min_goal_xz_held": 0.0012,
+        "obj0": [
+          0.2014,
+          0.5249,
+          0.034
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=475kg/m3 cube_friction=1.02 profile=default",
       "reward_sum": 16.602,
       "seed": 459834,
@@ -707,6 +1951,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0133,
+        "holding_at_end": true,
+        "holding_ticks": 362,
+        "max_lift_held": 0.206,
+        "min_ee_obj": 0.0006,
+        "min_goal_xz_held": 0.0098,
+        "obj0": [
+          0.1738,
+          0.5249,
+          -0.0475
+        ],
+        "ticks": 547
+      },
       "rand": "cube_density=310kg/m3 cube_friction=1.06 profile=default",
       "reward_sum": 18.469,
       "seed": 459835,
@@ -716,6 +1976,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0164,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2589,
+        "min_ee_obj": 0.0018,
+        "min_goal_xz_held": 0.0025,
+        "obj0": [
+          0.1766,
+          0.5249,
+          -0.0029
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=404kg/m3 cube_friction=0.95 profile=default",
       "reward_sum": 18.193,
       "seed": 459836,
@@ -725,6 +2001,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0125,
+        "holding_at_end": true,
+        "holding_ticks": 362,
+        "max_lift_held": 0.2085,
+        "min_ee_obj": 0.0027,
+        "min_goal_xz_held": 0.0091,
+        "obj0": [
+          0.149,
+          0.5249,
+          -0.0844
+        ],
+        "ticks": 547
+      },
       "rand": "cube_density=639kg/m3 cube_friction=0.99 profile=default",
       "reward_sum": 7.262,
       "seed": 459837,
@@ -734,6 +2026,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0131,
+        "holding_at_end": true,
+        "holding_ticks": 363,
+        "max_lift_held": 0.2007,
+        "min_ee_obj": 0.0018,
+        "min_goal_xz_held": 0.0025,
+        "obj0": [
+          0.1518,
+          0.5249,
+          -0.0398
+        ],
+        "ticks": 548
+      },
       "rand": "cube_density=333kg/m3 cube_friction=0.88 profile=default",
       "reward_sum": 13.756,
       "seed": 459838,
@@ -743,6 +2051,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0126,
+        "holding_at_end": true,
+        "holding_ticks": 365,
+        "max_lift_held": 0.2224,
+        "min_ee_obj": 0.0026,
+        "min_goal_xz_held": 0.0047,
+        "obj0": [
+          0.2042,
+          0.5249,
+          0.0786
+        ],
+        "ticks": 550
+      },
       "rand": "cube_density=569kg/m3 cube_friction=0.91 profile=default",
       "reward_sum": 18.518,
       "seed": 459839,
@@ -752,6 +2076,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0117,
+        "holding_at_end": true,
+        "holding_ticks": 369,
+        "max_lift_held": 0.2541,
+        "min_ee_obj": 0.0012,
+        "min_goal_xz_held": 0.0011,
+        "obj0": [
+          0.207,
+          0.5249,
+          -0.0767
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=263kg/m3 cube_friction=0.81 profile=default",
       "reward_sum": 17.031,
       "seed": 459840,
@@ -761,6 +2101,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0161,
+        "holding_at_end": true,
+        "holding_ticks": 372,
+        "max_lift_held": 0.2758,
+        "min_ee_obj": 0.002,
+        "min_goal_xz_held": 0.0028,
+        "obj0": [
+          0.1794,
+          0.5249,
+          0.0417
+        ],
+        "ticks": 557
+      },
       "rand": "cube_density=498kg/m3 cube_friction=0.84 profile=default",
       "reward_sum": 19.034,
       "seed": 459841,
@@ -770,6 +2126,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0195,
+        "holding_at_end": true,
+        "holding_ticks": 371,
+        "max_lift_held": 0.2705,
+        "min_ee_obj": 0.0026,
+        "min_goal_xz_held": 0.0015,
+        "obj0": [
+          0.1822,
+          0.5249,
+          0.0863
+        ],
+        "ticks": 556
+      },
       "rand": "cube_density=592kg/m3 cube_friction=0.73 profile=default",
       "reward_sum": 17.852,
       "seed": 459842,
@@ -779,6 +2151,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0147,
+        "holding_at_end": true,
+        "holding_ticks": 365,
+        "max_lift_held": 0.2123,
+        "min_ee_obj": 0.0034,
+        "min_goal_xz_held": 0.0079,
+        "obj0": [
+          0.1546,
+          0.5249,
+          0.0048
+        ],
+        "ticks": 550
+      },
       "rand": "cube_density=428kg/m3 cube_friction=0.77 profile=default",
       "reward_sum": 19.446,
       "seed": 459843,
@@ -788,17 +2176,49 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.012,
+        "holding_at_end": true,
+        "holding_ticks": 305,
+        "max_lift_held": 0.2121,
+        "min_ee_obj": 0.0036,
+        "min_goal_xz_held": 0.0036,
+        "obj0": [
+          0.1574,
+          0.5249,
+          0.0494
+        ],
+        "ticks": 551
+      },
       "rand": "cube_density=522kg/m3 cube_friction=0.66 profile=default",
-      "reward_sum": -63.266,
+      "reward_sum": 4.653,
       "seed": 459844,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 551,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": "lift",
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.1286,
+        "holding_at_end": false,
+        "holding_ticks": 152,
+        "max_lift_held": 0.0062,
+        "min_ee_obj": 0.0041,
+        "min_goal_xz_held": 0.1231,
+        "obj0": [
+          0.1436,
+          0.5249,
+          0.0547
+        ],
+        "ticks": 700
+      },
       "rand": "cube_density=255kg/m3 cube_friction=0.57 profile=default",
-      "reward_sum": -63.521,
+      "reward_sum": -58.214,
       "seed": 525382,
       "steps": 700,
       "success": false,
@@ -806,6 +2226,22 @@
       "success_once": false
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0135,
+        "holding_at_end": true,
+        "holding_ticks": 368,
+        "max_lift_held": 0.2416,
+        "min_ee_obj": 0.0018,
+        "min_goal_xz_held": 0.0017,
+        "obj0": [
+          0.1961,
+          0.5249,
+          -0.0268
+        ],
+        "ticks": 553
+      },
       "rand": "cube_density=490kg/m3 cube_friction=0.61 profile=default",
       "reward_sum": 19.245,
       "seed": 525383,
@@ -815,6 +2251,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0198,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2523,
+        "min_ee_obj": 0.0023,
+        "min_goal_xz_held": 0.0017,
+        "obj0": [
+          0.1675,
+          0.5249,
+          0.0555
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=485kg/m3 cube_friction=0.54 profile=default",
       "reward_sum": 6.452,
       "seed": 590921,
@@ -824,6 +2276,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.013,
+        "holding_at_end": true,
+        "holding_ticks": 364,
+        "max_lift_held": 0.2135,
+        "min_ee_obj": 0.002,
+        "min_goal_xz_held": 0.0077,
+        "obj0": [
+          0.1704,
+          0.5249,
+          -0.0998
+        ],
+        "ticks": 549
+      },
       "rand": "cube_density=579kg/m3 cube_friction=1.03 profile=default",
       "reward_sum": 7.172,
       "seed": 590922,
@@ -833,24 +2301,72 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0182,
+        "holding_at_end": true,
+        "holding_ticks": 308,
+        "max_lift_held": 0.2443,
+        "min_ee_obj": 0.0011,
+        "min_goal_xz_held": 0.0004,
+        "obj0": [
+          0.1428,
+          0.5249,
+          0.0186
+        ],
+        "ticks": 554
+      },
       "rand": "cube_density=415kg/m3 cube_friction=1.07 profile=default",
-      "reward_sum": -79.087,
+      "reward_sum": -5.099,
       "seed": 590923,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 554,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0688,
+        "holding_at_end": false,
+        "holding_ticks": 177,
+        "max_lift_held": 0.184,
+        "min_ee_obj": 0.0039,
+        "min_goal_xz_held": 0.1156,
+        "obj0": [
+          0.1456,
+          0.5249,
+          0.0633
+        ],
+        "ticks": 431
+      },
       "rand": "cube_density=509kg/m3 cube_friction=0.96 profile=default",
-      "reward_sum": -74.437,
+      "reward_sum": -19.614,
       "seed": 590924,
-      "steps": 700,
-      "success": false,
-      "success_at_end": false,
-      "success_once": false
+      "steps": 431,
+      "success": true,
+      "success_at_end": true,
+      "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0136,
+        "holding_at_end": true,
+        "holding_ticks": 370,
+        "max_lift_held": 0.2623,
+        "min_ee_obj": 0.0011,
+        "min_goal_xz_held": 0.0025,
+        "obj0": [
+          0.198,
+          0.5249,
+          -0.0183
+        ],
+        "ticks": 555
+      },
       "rand": "cube_density=344kg/m3 cube_friction=1.00 profile=default",
       "reward_sum": 17.114,
       "seed": 590925,
@@ -860,6 +2376,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0169,
+        "holding_at_end": true,
+        "holding_ticks": 371,
+        "max_lift_held": 0.2695,
+        "min_ee_obj": 0.0021,
+        "min_goal_xz_held": 0.0005,
+        "obj0": [
+          0.2008,
+          0.5249,
+          0.0264
+        ],
+        "ticks": 556
+      },
       "rand": "cube_density=438kg/m3 cube_friction=0.89 profile=default",
       "reward_sum": 18.825,
       "seed": 590926,
@@ -869,6 +2401,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0156,
+        "holding_at_end": true,
+        "holding_ticks": 371,
+        "max_lift_held": 0.2668,
+        "min_ee_obj": 0.0017,
+        "min_goal_xz_held": 0.0011,
+        "obj0": [
+          0.1732,
+          0.5249,
+          -0.0552
+        ],
+        "ticks": 556
+      },
       "rand": "cube_density=274kg/m3 cube_friction=0.92 profile=default",
       "reward_sum": 6.638,
       "seed": 590927,
@@ -878,6 +2426,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0165,
+        "holding_at_end": true,
+        "holding_ticks": 364,
+        "max_lift_held": 0.2111,
+        "min_ee_obj": 0.0018,
+        "min_goal_xz_held": 0.0084,
+        "obj0": [
+          0.176,
+          0.5249,
+          -0.0106
+        ],
+        "ticks": 549
+      },
       "rand": "cube_density=368kg/m3 cube_friction=0.81 profile=default",
       "reward_sum": 19.792,
       "seed": 590928,
@@ -887,6 +2451,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0142,
+        "holding_at_end": true,
+        "holding_ticks": 363,
+        "max_lift_held": 0.2078,
+        "min_ee_obj": 0.0031,
+        "min_goal_xz_held": 0.0088,
+        "obj0": [
+          0.1484,
+          0.5249,
+          -0.0921
+        ],
+        "ticks": 548
+      },
       "rand": "cube_density=603kg/m3 cube_friction=0.85 profile=default",
       "reward_sum": -0.603,
       "seed": 590929,
@@ -896,6 +2476,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0156,
+        "holding_at_end": true,
+        "holding_ticks": 364,
+        "max_lift_held": 0.2061,
+        "min_ee_obj": 0.0028,
+        "min_goal_xz_held": 0.0018,
+        "obj0": [
+          0.1512,
+          0.5249,
+          -0.0475
+        ],
+        "ticks": 549
+      },
       "rand": "cube_density=297kg/m3 cube_friction=0.74 profile=default",
       "reward_sum": 7.804,
       "seed": 590930,
@@ -905,6 +2501,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0109,
+        "holding_at_end": true,
+        "holding_ticks": 364,
+        "max_lift_held": 0.2117,
+        "min_ee_obj": 0.0028,
+        "min_goal_xz_held": 0.0059,
+        "obj0": [
+          0.2036,
+          0.5249,
+          0.071
+        ],
+        "ticks": 549
+      },
       "rand": "cube_density=533kg/m3 cube_friction=0.78 profile=default",
       "reward_sum": 18.488,
       "seed": 590931,
@@ -914,6 +2526,22 @@
       "success_once": true
     },
     {
+      "failure_phase": null,
+      "phase_signals": {
+        "ever_holding": true,
+        "final_goal_xz": 0.0123,
+        "holding_at_end": true,
+        "holding_ticks": 373,
+        "max_lift_held": 0.2857,
+        "min_ee_obj": 0.0016,
+        "min_goal_xz_held": 0.0011,
+        "obj0": [
+          0.2064,
+          0.5249,
+          -0.0844
+        ],
+        "ticks": 558
+      },
       "rand": "cube_density=627kg/m3 cube_friction=0.67 profile=default",
       "reward_sum": 8.115,
       "seed": 590932,
@@ -924,20 +2552,20 @@
     }
   ],
   "spec_hash": "b5535a74f18fb57b",
-  "success_at_end_rate": 0.8,
-  "success_once_rate": 0.8,
-  "success_rate": 0.8,
-  "successes": 80,
+  "success_at_end_rate": 0.95,
+  "success_once_rate": 0.95,
+  "success_rate": 0.95,
+  "successes": 95,
   "task": "pick up the cube and place it at the target",
   "task_id": "pick_place@v1",
-  "throughput_steps_per_s": 1202.2169517476868,
+  "throughput_steps_per_s": 2081.7517576025066,
   "verify_determinism": "sample",
   "wilson95_at_end": [
-    0.7111708344068411,
-    0.8666330666689676
+    0.8882495307680808,
+    0.9784563208456319
   ],
   "wilson95_once": [
-    0.7111708344068411,
-    0.8666330666689676
+    0.8882495307680808,
+    0.9784563208456319
   ]
 }
