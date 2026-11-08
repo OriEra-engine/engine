@@ -25,7 +25,13 @@
   #report b { color:#7fd18a; }
   #report .warn { color:#e8b85b; }
   #report .off { color:#555b6e; }
+  .surface { position:relative; }
   canvas { width:100%; height:520px; background:#000; border-radius:6px; display:block; }
+  #fps { position:absolute; left:10px; top:8px; padding:3px 8px;
+         background:rgba(8,10,16,.72); border:1px solid #2a3040; border-radius:4px;
+         font-size:11px; color:#7fd18a; pointer-events:none;
+         font-variant-numeric: tabular-nums; }
+  #budget { margin-top:8px; font-size:11px; color:#8a90a6; line-height:1.6; }
   .footer { padding:0 20px 20px; color:#555b6e; font-size:11px;}
 </style>
 </head>
@@ -45,7 +51,11 @@
 
   <section class="panel">
     <h2>WebGPU Surface</h2>
-    <canvas id="canvas"></canvas>
+    <div class="surface">
+      <canvas id="canvas"></canvas>
+      <div id="fps">FPS —</div>
+    </div>
+    <div id="budget"></div>
     <div class="footer" id="gpuinfo">WebGPU 检测中…</div>
   </section>
 </main>
@@ -81,9 +91,21 @@ const PLATFORMS = {
         caps: 0n /* 永不设置 BCI_EEG */ },
 };
 
+// 每个端一个三角形颜色：PC 蓝 / Mobile 绿 / Web 紫 / AR 橙 / BCI 灰。
+// 换端只改这个 uniform，不重建 pipeline。
+const TINTS = {
+  pc:     [0.36, 0.56, 0.93, 1.0],
+  mobile: [0.30, 0.78, 0.45, 1.0],
+  web:    [0.62, 0.40, 0.92, 1.0],
+  ar:     [0.96, 0.60, 0.22, 1.0],
+  bci:    [0.55, 0.57, 0.62, 1.0],
+};
+
 // Build the platform picker UI
 const targetsEl = document.getElementById("targets");
 const reportEl = document.getElementById("report");
+const budgetEl = document.getElementById("budget");
+const fpsEl = document.getElementById("fps");
 let current = "web";
 
 function render() {
@@ -92,10 +114,24 @@ function render() {
     const b = document.createElement("button");
     b.className = "target" + (key===current ? " active" : "");
     b.innerHTML = `${p.label}<small>${p.sub}</small>`;
-    b.onclick = () => { current = key; render(); draw(); };
+    b.onclick = () => selectPlatform(key);
     targetsEl.appendChild(b);
   }
   reportEl.innerHTML = renderReport(PLATFORMS[current]);
+  renderBudget(PLATFORMS[current]);
+}
+
+// 端切换只做三件事：改当前端、刷新报告/预算、让渲染循环下一帧换颜色。
+function selectPlatform(key) {
+  current = key;
+  render();
+}
+
+function renderBudget(p) {
+  const ms = (p.frame_us / 1000).toFixed(2);
+  const cap = (1e6 / p.frame_us).toFixed(1);
+  budgetEl.innerHTML = `frame_budget_us <b>${p.frame_us}</b>（≈ ${ms} ms · 上限 ${cap} fps） · ` +
+    `vram_budget_mb <b>${p.vram_mb}</b>（≈ ${(p.vram_mb/1024).toFixed(1)} GB）`;
 }
 
 function renderReport(p) {
@@ -124,18 +160,31 @@ function renderReport(p) {
 const canvas = document.getElementById("canvas");
 const gpuinfo = document.getElementById("gpuinfo");
 
-async function draw() {
+let gpu = null;        // { device, ctx, pipeline, bindGroup, tintBuffer }
+let lastT = 0;         // 上一帧的 rAF 时间戳
+let emaMs = 0;         // 帧间隔的指数滑动平均，避免数字跳
+let tintedKey = "";    // 上一次写进 uniform 的端，省掉重复 writeBuffer
+
+async function initGPU() {
   if (!navigator.gpu) {
     gpuinfo.innerHTML = "<span class='warn'>当前浏览器不支持 WebGPU。请用 Chrome/Edge 113+ 并开启 chrome://flags/#enable-unsafe-webgpu（如需要）。</span>";
+    fpsEl.textContent = "FPS —（无 WebGPU）";
     return;
   }
   const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) {
+    gpuinfo.innerHTML = "<span class='warn'>拿不到 WebGPU adapter（可能被驱动/浏览器策略拒绝）。</span>";
+    fpsEl.textContent = "FPS —（无 adapter）";
+    return;
+  }
   const device = await adapter.requestDevice();
   const ctx = canvas.getContext("webgpu");
   const format = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({ device, format, alphaMode: "opaque" });
 
   const module = device.createShaderModule({ code: `
+    @group(0) @binding(0) var<uniform> tint: vec4f;
+
     @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
       var pos = array<vec2f, 3>(
         vec2f( 0.0,  0.6),
@@ -145,8 +194,8 @@ async function draw() {
       return vec4f(pos[i], 0.0, 1.0);
     }
     @fragment fn fs() -> @location(0) vec4f {
-      // Hue shifts with selected platform to prove the frame loop sees state.
-      return vec4f(0.36, 0.56, 0.93, 1.0);
+      // 颜色由端决定，帧循环每帧从 uniform 读，不重建 pipeline。
+      return tint;
     }
   `});
   const pipeline = device.createRenderPipeline({
@@ -155,6 +204,33 @@ async function draw() {
     fragment: { module, entryPoint: "fs", targets: [{ format }] },
     primitive: { topology: "triangle-list" },
   });
+
+  const tintBuffer = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const bindGroup = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: tintBuffer } }],
+  });
+
+  gpu = { device, ctx, pipeline, bindGroup, tintBuffer };
+
+  const info = await adapter.requestAdapterInfo?.() ?? {};
+  gpuinfo.innerHTML = `WebGPU OK · adapter: <b>${info.description || "unknown"}</b> · limits: ` +
+    `${adapter.limits.maxComputeWorkgroupsPerDimension} workgroups`;
+
+  requestAnimationFrame(loop);
+}
+
+function loop(t) {
+  if (!gpu) return;
+  const { device, ctx, pipeline, bindGroup, tintBuffer } = gpu;
+
+  if (tintedKey !== current) {
+    device.queue.writeBuffer(tintBuffer, 0, new Float32Array(TINTS[current]));
+    tintedKey = current;
+  }
 
   const encoder = device.createCommandEncoder();
   const pass = encoder.beginRenderPass({
@@ -165,17 +241,28 @@ async function draw() {
     }],
   });
   pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindGroup);
   pass.draw(3);
   pass.end();
   device.queue.submit([encoder.finish()]);
 
-  const info = await adapter.requestAdapterInfo?.() ?? {};
-  gpuinfo.innerHTML = `WebGPU OK · adapter: <b>${info.description || "unknown"}</b> · limits: ` +
-    `${adapter.limits.maxComputeWorkgroupsPerDimension} workgroups`;
+  // FPS 用 rAF 时间戳差算；滑动平均是因为单帧间隔抖得利害，直接显示没法看。
+  if (lastT) {
+    const dt = t - lastT;
+    emaMs = emaMs ? emaMs * 0.9 + dt * 0.1 : dt;
+    const budgetMs = PLATFORMS[current].frame_us / 1000;
+    const over = emaMs > budgetMs;
+    fpsEl.textContent = `FPS ${(1000 / emaMs).toFixed(1)} · ${emaMs.toFixed(1)} ms · ${PLATFORMS[current].label}` +
+      (over ? " · 超预算" : "");
+    fpsEl.style.color = over ? "#e8b85b" : "#7fd18a";
+  }
+  lastT = t;
+
+  requestAnimationFrame(loop);
 }
 
 render();
-draw();
+initGPU();
 </script>
 </body>
 </html>
