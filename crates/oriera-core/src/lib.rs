@@ -6,6 +6,7 @@
 //! systems receive `&mut W` each frame. No shared global state crosses
 //! layer boundaries (book T3 §3.8.1).
 
+#![doc = include_str!("../README.md")]
 use oriera_common::{FrameIndex, Grants, Timestamp};
 use std::collections::VecDeque;
 use web_time::Instant;

@@ -8,6 +8,7 @@
 //! handle churn. Content-addressable handles (`hash == identity`,
 //! book T7) remain the v0.2 plan.
 
+#![doc = include_str!("../README.md")]
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
