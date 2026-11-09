@@ -35,6 +35,7 @@ pub use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Transform {
     pub translation: Vec3,
+    /// A normalized quaternion, as required by glam's rotation matrices.
     pub rotation: Quat,
     pub scale: Vec3,
 }
@@ -56,7 +57,7 @@ impl Transform {
         }
     }
 
-    /// Rotation only, at the origin, unit scale.
+    /// Rotation only, at the origin, unit scale. `rotation` must be normalized.
     pub const fn from_rotation(rotation: Quat) -> Self {
         Self {
             translation: Vec3::ZERO,
@@ -90,26 +91,46 @@ impl Transform {
         self.to_matrix().transform_vector3(vector)
     }
 
-    /// The inverse placement, or `None` when a scale component is zero
-    /// (that matrix is singular and has no inverse to return).
+    /// The inverse as a matrix, applying inverse translation, then inverse
+    /// rotation, then inverse scale.
     ///
-    /// Cheaper and more accurate than inverting the 4x4: the rotation
-    /// inverts as the conjugate quaternion, the scale as a reciprocal.
-    pub fn inverse(&self) -> Option<Self> {
-        if self.scale.x == 0.0 || self.scale.y == 0.0 || self.scale.z == 0.0 {
+    /// Nonuniform scale and rotation do not generally commute, so the inverse
+    /// cannot in general be represented by another scale-rotate-translate
+    /// [`Transform`]. Use [`Mat4::transform_point3`] or
+    /// [`Mat4::transform_vector3`] on the returned matrix.
+    ///
+    /// Returns `None` for zero scale, nonfinite fields, a non-normalized
+    /// rotation, or when computing the inverse produces nonfinite values.
+    /// Negative scale is supported.
+    ///
+    /// ```
+    /// use oriera_common::{Transform, Vec3};
+    ///
+    /// let transform = Transform::from_translation(Vec3::new(1.0, 2.0, 3.0));
+    /// let inverse = transform.inverse().unwrap();
+    /// assert_eq!(inverse.transform_point3(transform.translation), Vec3::ZERO);
+    /// ```
+    pub fn inverse(&self) -> Option<Mat4> {
+        if !self.translation.is_finite()
+            || !self.rotation.is_finite()
+            || !self.rotation.is_normalized()
+            || !self.scale.is_finite()
+            || self.scale.x == 0.0
+            || self.scale.y == 0.0
+            || self.scale.z == 0.0
+        {
             return None;
         }
-        let inv_scale = Vec3::new(1.0 / self.scale.x, 1.0 / self.scale.y, 1.0 / self.scale.z);
-        let inv_rotation = self.rotation.conjugate();
-        // (T R S)^-1 = S^-1 R^-1 T^-1: the inverse translation is the
-        // conjugated rotation applied to the negated, inverse-scaled
-        // translation.
-        let inv_translation = inv_rotation * (-self.translation * inv_scale);
-        Some(Self {
-            translation: inv_translation,
-            rotation: inv_rotation,
-            scale: inv_scale,
-        })
+        let inv_scale = self.scale.recip();
+        if !inv_scale.is_finite() {
+            return None;
+        }
+        // (T R S)^-1 = S^-1 R^-1 T^-1. Keep these factors in matrix form;
+        // putting them back in a Transform would reverse S^-1 and R^-1.
+        let inverse = Mat4::from_scale(inv_scale)
+            * Mat4::from_quat(self.rotation.conjugate())
+            * Mat4::from_translation(-self.translation);
+        inverse.is_finite().then_some(inverse)
     }
 }
 
@@ -127,6 +148,13 @@ mod tests {
     fn assert_close(actual: Vec3, expected: Vec3) {
         assert!(
             (actual - expected).length() <= 1e-5,
+            "expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    fn assert_matrix_close(actual: Mat4, expected: Mat4) {
+        assert!(
+            actual.abs_diff_eq(expected, 1e-5),
             "expected {expected:?}, got {actual:?}"
         );
     }
@@ -175,10 +203,10 @@ mod tests {
         let t = Transform {
             translation: Vec3::new(0.0, 0.0, 5.0),
             rotation: Quat::from_rotation_z(FRAC_PI_2),
-            scale: Vec3::splat(2.0),
+            scale: Vec3::new(2.0, 3.0, 4.0),
         };
-        // scale (1,0,0) -> (2,0,0), rotate -> (0,2,0), translate -> +5 z.
-        assert_close(t.transform_point(Vec3::X), Vec3::new(0.0, 2.0, 5.0));
+        // scale (1,1,1) -> (2,3,4), rotate -> (-3,2,4), translate -> +5 z.
+        assert_close(t.transform_point(Vec3::ONE), Vec3::new(-3.0, 2.0, 9.0));
     }
 
     #[test]
@@ -190,12 +218,135 @@ mod tests {
         };
         let inv = t.inverse().expect("non-singular transform");
         let world = t.transform_point(Vec3::new(1.0, 0.5, 0.25));
-        assert_close(inv.transform_point(world), Vec3::new(1.0, 0.5, 0.25));
+        assert_close(inv.transform_point3(world), Vec3::new(1.0, 0.5, 0.25));
+    }
+
+    #[test]
+    fn inverse_nonuniform_scale_round_trips_points_and_vectors() {
+        for scale in [Vec3::new(2.0, 3.0, 4.0), Vec3::new(-2.0, 3.0, -4.0)] {
+            let t = Transform {
+                translation: Vec3::new(3.0, -1.0, 0.5),
+                rotation: Quat::from_axis_angle(Vec3::new(1.0, 2.0, 3.0).normalize(), 0.7),
+                scale,
+            };
+            let inv = t.inverse().expect("non-singular transform");
+            for point in [
+                Vec3::ZERO,
+                Vec3::new(1.0, 0.5, 0.25),
+                Vec3::new(-2.0, 3.0, 1.0),
+            ] {
+                assert_close(inv.transform_point3(t.transform_point(point)), point);
+                assert_close(t.transform_point(inv.transform_point3(point)), point);
+            }
+            for vector in [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(1.0, -2.0, 3.0)] {
+                assert_close(inv.transform_vector3(t.transform_vector(vector)), vector);
+                assert_close(t.transform_vector(inv.transform_vector3(vector)), vector);
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_nonuniform_scale_is_a_two_sided_matrix_inverse() {
+        let t = Transform {
+            translation: Vec3::new(3.0, -1.0, 0.5),
+            rotation: Quat::from_axis_angle(Vec3::new(1.0, 2.0, 3.0).normalize(), 0.7),
+            scale: Vec3::new(2.0, 3.0, -4.0),
+        };
+        let matrix = t.to_matrix();
+        let inv = t.inverse().expect("non-singular transform");
+        assert_matrix_close(inv * matrix, Mat4::IDENTITY);
+        assert_matrix_close(matrix * inv, Mat4::IDENTITY);
+        assert_matrix_close(inv, matrix.inverse());
     }
 
     #[test]
     fn inverse_refuses_singular_scale() {
-        let t = Transform::from_scale(Vec3::new(1.0, 0.0, 1.0));
+        for zero in [0.0, -0.0] {
+            for scale in [
+                Vec3::new(zero, 1.0, 1.0),
+                Vec3::new(1.0, zero, 1.0),
+                Vec3::new(1.0, 1.0, zero),
+            ] {
+                assert!(Transform::from_scale(scale).inverse().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_handles_identity_and_single_components() {
+        for t in [
+            Transform::IDENTITY,
+            Transform::from_translation(Vec3::new(3.0, -1.0, 0.5)),
+            Transform::from_rotation(Quat::from_rotation_z(0.7)),
+            Transform::from_scale(Vec3::new(-2.0, 3.0, 4.0)),
+        ] {
+            let inv = t.inverse().expect("non-singular transform");
+            assert_matrix_close(inv * t.to_matrix(), Mat4::IDENTITY);
+            assert_matrix_close(t.to_matrix() * inv, Mat4::IDENTITY);
+        }
+    }
+
+    #[test]
+    fn inverse_handles_finite_scales_with_extreme_determinants() {
+        // A generic f32 determinant underflows/overflows for these scales,
+        // but the individual scale reciprocals and inverse matrices are finite.
+        for scale in [1e-20, 1e20] {
+            let t = Transform {
+                scale: Vec3::splat(scale),
+                rotation: Quat::from_rotation_z(0.7),
+                ..Transform::IDENTITY
+            };
+            let inv = t.inverse().expect("finite inverse");
+            assert!(inv.is_finite());
+            assert_matrix_close(inv * t.to_matrix(), Mat4::IDENTITY);
+            assert_matrix_close(t.to_matrix() * inv, Mat4::IDENTITY);
+        }
+    }
+
+    #[test]
+    fn inverse_refuses_nonfinite_fields() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for vector in [
+                Vec3::new(value, 1.0, 1.0),
+                Vec3::new(1.0, value, 1.0),
+                Vec3::new(1.0, 1.0, value),
+            ] {
+                assert!(Transform::from_translation(vector).inverse().is_none());
+                assert!(Transform::from_scale(vector).inverse().is_none());
+            }
+            for rotation in [
+                Quat::from_xyzw(value, 0.0, 0.0, 1.0),
+                Quat::from_xyzw(0.0, value, 0.0, 1.0),
+                Quat::from_xyzw(0.0, 0.0, value, 1.0),
+                Quat::from_xyzw(0.0, 0.0, 0.0, value),
+            ] {
+                assert!(Transform::from_rotation(rotation).inverse().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_refuses_non_normalized_rotation() {
+        for rotation in [
+            Quat::from_xyzw(0.0, 0.0, 0.0, 0.0),
+            Quat::from_xyzw(0.0, 0.0, 0.0, 2.0),
+        ] {
+            assert!(Transform::from_rotation(rotation).inverse().is_none());
+        }
+    }
+
+    #[test]
+    fn inverse_refuses_nonfinite_results() {
+        // This nonzero scale has a reciprocal outside the finite f32 range.
+        let tiny_scale = Vec3::new(f32::from_bits(1), 1.0, 1.0);
+        assert!(Transform::from_scale(tiny_scale).inverse().is_none());
+
+        // Finite inputs and reciprocals can still overflow the translation.
+        let t = Transform {
+            translation: Vec3::splat(f32::MAX),
+            scale: Vec3::splat(0.5),
+            ..Transform::IDENTITY
+        };
         assert!(t.inverse().is_none());
     }
 
