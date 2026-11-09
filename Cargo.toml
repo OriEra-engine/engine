@@ -8,6 +8,7 @@ members = [
     "crates/oriera-ecs",     # L3
     "crates/oriera-asset",   # L4
     "crates/oriera-render",  # L5
+    "crates/oriera-splat",   # L5 Gaussian splatting CPU reference (PLAN-splat v2 M0)
     "crates/oriera-subsys",  # L6
     "crates/oriera-infer",   # L7
     "crates/oriera-genai",   # L8 (ADR 0003)
@@ -41,6 +42,7 @@ oriera-core = { path = "crates/oriera-core", version = "0.12.0" }
 oriera-ecs = { path = "crates/oriera-ecs", version = "0.12.0" }
 oriera-asset = { path = "crates/oriera-asset", version = "0.12.0" }
 oriera-render = { path = "crates/oriera-render", version = "0.12.0" }
+oriera-splat = { path = "crates/oriera-splat", version = "0.12.0" }
 oriera-subsys = { path = "crates/oriera-subsys", version = "0.12.0" }
 oriera-infer = { path = "crates/oriera-infer", version = "0.12.0" }
 oriera-genai = { path = "crates/oriera-genai", version = "0.12.0" }

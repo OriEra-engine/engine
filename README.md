@@ -138,8 +138,8 @@ graph TB
 | 引擎主语言 | Rust（L1–L7、L9 实时层） |
 | Web 分发 | Wasm + WebGPU（wgpu 统一后端） |
 | 对象模型 | ECS（SoA 布局，TypedArray 参考实现已跑） |
-| 渲染 | wgpu / WebGPU，未来支持 3DGS 神经渲染 |
-| 物理 | Jolt（Rust），Web 参考实现已跑 |
+| 渲染 | wgpu / WebGPU；高斯泼溅 CPU 参考内核 `oriera-splat`（实验性：标准 3DGS PLY → EWA 泼溅，逐字节可复现），GPU 路径与 3DGS 神经渲染在路线图 |
+| 物理 | rapier2d / rapier3d（纯 Rust，`rigid`/`rigid3d` feature；Jolt 评估后不做），Web 参考实现已跑 |
 | Agent | LangGraph + MCP 协议（v1 规则解析，未来接 LLM） |
 | 契约 | Protobuf + JSON Schema 2020-12 |
 | 构建 | Cargo workspace（JS 侧编辑器/SDK 落地时再引入 pnpm） |

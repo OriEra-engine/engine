@@ -1,0 +1,2 @@
+# Golden pixel buffers are raw bytes: never let autocrlf touch them.
+*.rgba binary
