@@ -69,7 +69,7 @@
 以下能力**尚未达到上述承诺**,使用前须知:
 - L5 默认构建仍为计数占位;真 GPU 光栅化已通过 `render-wgpu` feature 无头闭环
   (wgpu,本机 Intel GL 后端实测出图;windows-gnu 下 DX12/Vulkan 枚举崩溃故默认钳制 GL),
-  但 Pass 图/材质/纹理/相机矩阵尚未落地,且 Rust 引擎与浏览器 demo 之间仍无编译关系;
+  但 Pass 图/材质/纹理/相机矩阵尚未落地(`oriera-splat` 自带的泼溅专用相机不算,见下),且 Rust 引擎与浏览器 demo 之间仍无编译关系;
 - L7 同步 `complete()` 仍是默认路径(离线规则后端零成本);异步作业层 `InferJobs` +
   认知/导演 `with_async()` 已落地(提交-收割,帧不阻塞网络,真 LLM 接入的壳层应启用),
   工具调用(OpenAI/Anthropic 双方言 wire)与 SSE 真流式已随 native-http 落地
@@ -79,3 +79,13 @@
 - GLB 解码取 POSITION/NORMAL/三角索引 + 材质基础色 baseColorFactor(深校验;
   顶点兰伯特光照已闭环,像素级验证),纹理贴图/蒙皮/KHR 扩展未解码;
   生成→落地→解码→GPU 出图全链已闭环(示例 `glb_headless --from-l8`,3 项集成测试)。
+- `oriera-splat`(L5,PLAN-splat v2 M0,契约 `oriera.render.splat.v1` 与 L4 `oriera.asset.splat_ply.v1`
+  均标 unstable)是**实验性 CPU 参考内核**:只有 EWA 投影(相机进入 splat 内部会失真,射线类方法未实现),
+  颜色只用 SH DC 项(无视角相关光照);PLY 只认 binary_little_endian 且 vertex 为首个 element,
+  压缩 PLY/SPZ/RAD 未解码(一律显式报错);CPU 光栅受 `RasterBudget` 约束(默认 5 千 splat、
+  1280×720,超限返回 `OverBudget`,绝不静默降级)。**非实时**——本机 release 单线程实测(criterion):
+  排序 1 万/10 万/100 万 splat = 0.19/3.2/39 ms,投影 10 万 = 7.1 ms,解码 10 万 = 5.4 ms,
+  5 千细长 splat 光栅 640×360 = 91 ms、1280×720 = 343 ms;CC0 真扫描样本(10,330 splat,SH 2 阶)
+  960×540 出图 92 ms。观测触发:排序超过 2 ms/帧(约 6 万 splat)即提级 GPU radix(PLAN-splat M3)。
+  GPU 路径未实现(随 #152 相机+深度底座落地),CI 不编译任何 splat GPU 代码;
+  不读也不置 `NEURAL_RENDER_3DGS`(经典泼溅属 ADR 0002 的 passthrough 侧)。

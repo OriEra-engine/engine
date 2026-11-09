@@ -7,13 +7,14 @@
 **目标版本：0.x → 1.0**
 **核心目标**：五端跑通、闭环成立、能在 AR 眼镜上 90fps 跑 demo。
 
-### 2026 Q4（当前，v0.1）
+### 2026 Q4（当前，v0.12）
 - [x] Monorepo 骨架（Rust + pnpm workspace）
 - [x] L1 PAL 能力位图 + 五端入口
 - [x] 开源治理文件（CONTRIBUTING / GOVERNANCE / Code of Conduct）
 - [x] 02-ecs-spawn：ECS demo 已上线（浏览器 20 万粒子 SoA）
 - [x] 架构整理：层↔crate 对照、LayerManifest、依赖规则（见 docs/ARCHITECTURE.md）
 - [x] L8 骨架提前落地：GenerationProvider 边界 + Mock + 校验 + L4 热替换（ADR 0003，2028 管线做深）
+- [x] L5 高斯泼溅 CPU 参考内核提前落地：`oriera-splat` + L4 `ply` 解码（实验性，EWA + SH DC，非实时；GPU 路径随 L5 Render Graph / #152，见 docs/STABILITY.md）
 - [ ] 01-hello-triangle 升级为 wgpu 原生窗口（不只是网页版）
 
 ### 2027 H1（v0.2 – v0.4）

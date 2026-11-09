@@ -14,11 +14,19 @@ spec:
       stability: stable
       note: hysteresis governor; over budget -> batch harder, headroom
         -> recover
+    - id: oriera.render.splat.v1
+      contract: rust:oriera_splat::{project,depth_order,rasterize,SplatImage}
+      stability: unstable
+      note: classic EWA splatting CPU reference (crate oriera-splat);
+        deterministic front-to-back order; a RasterBudget overrun is an
+        explicit OverBudget error, never a silent downgrade
   requires:
     - id: oriera.core.scheduler.v1
       optional: false
     - id: oriera.ecs.world.v1
       optional: false
+    - id: oriera.asset.splat_ply.v1
+      optional: true   # only the experimental splat path decodes PLY
   # NOTE: must NOT depend on L6 subsystems (layering violation,
   # fixed in the 2026-10 architecture pass).
 
@@ -49,3 +57,8 @@ spec:
     land v0.2+ (book T8). A NeuralRefine pass type may join the pass
     graph only after it exists, and must obey ADR 0002 (integer-step
     pacing, bounded display queue, capability-gated passthrough).
+    oriera-splat (PLAN-splat v2 M0) is classic, deterministic
+    rasterization: the passthrough side of ADR 0002's degrade
+    semantics. It neither reads nor sets NEURAL_RENDER_3DGS; that bit
+    stays reserved for a future NeuralRefine pass. GPU splatting lands
+    on #152's camera + depth base, cross-checked against the CPU path.

@@ -7,11 +7,16 @@
 //! resolving through [`AssetStore::get_named`] — no entity rebuilds, no
 //! handle churn. Content-addressable handles (`hash == identity`,
 //! book T7) remain the v0.2 plan.
+//!
+//! Decoders live here too, one module per format: [`glb`] (minimal
+//! mesh) and [`ply`] (3DGS Gaussian splats, consumed by L5
+//! `oriera-splat`).
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
 pub mod glb;
+pub mod ply;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AssetHandle(pub u64);

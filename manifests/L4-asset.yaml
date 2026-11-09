@@ -14,6 +14,12 @@ spec:
       stability: stable
       note: logical-name registry; re-insert atomically swaps payload
         behind the same handle — the landing pad for L8 generation
+    - id: oriera.asset.splat_ply.v1
+      contract: rust:oriera_asset::ply::{decode_splat_ply,SplatCloud}
+      stability: unstable
+      note: 3DGS binary_little_endian PLY mapped by property name;
+        stores KHR_gaussian_splatting activated values (linear scale and
+        opacity, xyzw unit quaternion); length checked before allocating
   requires: []   # in-memory store today; L1 storage streams land v0.2
 
   budgets:

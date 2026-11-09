@@ -1,0 +1,22 @@
+[package]
+name = "oriera-splat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OriEra L5 Gaussian splatting: EWA projection, deterministic depth order, CPU reference rasterizer"
+
+[lib]
+name = "oriera_splat"
+path = "src/lib.rs"
+
+[dependencies]
+# L5 → L4 向下依赖:PLY 解码与 SplatCloud 归资产层(PLAN-splat v2 资产管线评审)
+oriera-asset.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "splat"
+harness = false
