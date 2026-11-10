@@ -60,6 +60,7 @@ agent(L9) → infer(L7) → subsys(L6)（具身 API 经兼容层 re-export，ADR
 wasm(L9 壳) → embodied(L9)（ADR 0004：不再穿透 agent 拖认知层）
 render(L5) → ecs(L3) → core(L2)
 splat(L5) → asset(L4)（PLY 解码归资产层；零第三方依赖，不依赖 render/ecs）
+splat(L5, `splat-wgpu` feature) → render(L5)（仅消费相机；同层依赖先例 agent→embodied，ADR 0004）
 pal(L1)：只被平台壳（platforms/*）引用，不被上层 crate 直接依赖
 ```
 
@@ -130,9 +131,14 @@ MSVC 工具链不受此限。
 同一输入逐字节同输出，`SplatImage::fingerprint` 与 `World::state_hash` 同种子，可进回放审计。
 真扫描实测出图见 [docs/media/splat-cpu-dragon.png](media/splat-cpu-dragon.png)（CC0-1.0 样本
 spatialdragon-3dgs，10,330 splat，SH 2 阶，属性顺序非 INRIA 布局；960×540 出图 92 ms）。
+2026-11 落地 **GPU 路径**（PLAN-splat M1，feature `splat-wgpu` 默认关）：确定性数学
+（投影/排序）仍在 CPU，GPU 只做实例化四边形展开 + 后到前 over 混合（**fp32 目标**，
+unorm8/fp16 的逐层混合舍入会在热点像素累积超差——实测踩过）；相机消费 #152 首刀的
+`camera::Camera`（`SplatCamera::from_view` 换算，闭式单测钉死），同层依赖先例
+agent→embodied（ADR 0004）。与 CPU 参考按评审门槛互证：99.9% 像素每通道 ≤2/255 且
+RMS ≤1/255、倾斜 splat 交叉项 ≤2、单 splat 逐位一致（本机 Intel GL 实测）。
 数学出处为 Kerbl et al. 2023 与 Zwicker et al. 2001；排序键打包借鉴 World Labs Spark/Radix（MIT）公开文档，
-实现为原创。CPU 路径非实时（实测见 [STABILITY.md](STABILITY.md) §三）；GPU 路径随 #152 的相机+深度底座落地，
-届时与本 CPU 参考按容差互证。
+实现为原创。CPU 路径非实时（实测见 [STABILITY.md](STABILITY.md) §三）。
 
 ### L6 · oriera-subsys — 子系统服务
 

@@ -17,16 +17,18 @@ spec:
     - id: oriera.render.splat.v1
       contract: rust:oriera_splat::{project,depth_order,rasterize,SplatImage}
       stability: unstable
-      note: classic EWA splatting CPU reference (crate oriera-splat);
-        deterministic front-to-back order; a RasterBudget overrun is an
-        explicit OverBudget error, never a silent downgrade
+      note: classic EWA splatting (crate oriera-splat); CPU reference +
+        GPU path (feature splat-wgpu, back-to-front over on an fp32
+        target, cross-checked against the CPU reference within the
+        review gate); deterministic front-to-back order; a RasterBudget
+        overrun is an explicit OverBudget error, never a silent downgrade
     - id: oriera.render.camera.v1
       contract: rust:oriera_render::camera::Camera
       stability: unstable
       note: '#152 first cut: look_at view + perspective (WebGPU NDC
         z in [0,1]); consumed by gpu::HeadlessRenderer::render_mesh_view
-        (MVP uniform + Depth32Float) and, next, by the splat GPU path
-        (PLAN-splat M1) and native glTF'
+        (MVP uniform + Depth32Float), by the splat GPU path (PLAN-splat
+        M1, via SplatCamera::from_view) and, next, by native glTF'
   requires:
     - id: oriera.core.scheduler.v1
       optional: false
@@ -34,6 +36,8 @@ spec:
       optional: false
     - id: oriera.asset.splat_ply.v1
       optional: true   # only the experimental splat path decodes PLY
+    - id: oriera.render.camera.v1
+      optional: true   # only the splat-wgpu GPU path consumes the camera base
   # NOTE: must NOT depend on L6 subsystems (layering violation,
   # fixed in the 2026-10 architecture pass).
 
@@ -67,5 +71,6 @@ spec:
     oriera-splat (PLAN-splat v2 M0) is classic, deterministic
     rasterization: the passthrough side of ADR 0002's degrade
     semantics. It neither reads nor sets NEURAL_RENDER_3DGS; that bit
-    stays reserved for a future NeuralRefine pass. GPU splatting lands
-    on #152's camera + depth base, cross-checked against the CPU path.
+    stays reserved for a future NeuralRefine pass. GPU splatting
+    (PLAN-splat M1) landed on #152's camera base, cross-checked
+    against the CPU path within the review gate.
