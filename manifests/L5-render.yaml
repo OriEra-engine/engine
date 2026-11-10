@@ -20,6 +20,13 @@ spec:
       note: classic EWA splatting CPU reference (crate oriera-splat);
         deterministic front-to-back order; a RasterBudget overrun is an
         explicit OverBudget error, never a silent downgrade
+    - id: oriera.render.camera.v1
+      contract: rust:oriera_render::camera::Camera
+      stability: unstable
+      note: '#152 first cut: look_at view + perspective (WebGPU NDC
+        z in [0,1]); consumed by gpu::HeadlessRenderer::render_mesh_view
+        (MVP uniform + Depth32Float) and, next, by the splat GPU path
+        (PLAN-splat M1) and native glTF'
   requires:
     - id: oriera.core.scheduler.v1
       optional: false

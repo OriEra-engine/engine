@@ -153,6 +153,10 @@ jobs:
         run: cargo check -p oriera-agent --features rigid3d,cam,spec,urdf,json
       - name: Clippy (-p oriera-agent, same features)
         run: cargo clippy -p oriera-agent --features rigid3d,cam,spec,urdf,json -- -D warnings
+      - name: Check (-p oriera-render, render-wgpu — #152 camera+depth base)
+        run: cargo check -p oriera-render --features render-wgpu
+      - name: Clippy (-p oriera-render, render-wgpu)
+        run: cargo clippy -p oriera-render --features render-wgpu --all-targets -- -D warnings
 
   # studio_e2e（离线验收 example）独占一腿：panic 即红（#106），且
   # 避免与其他 feature 腿抢同一个 cargo 锁。
