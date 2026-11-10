@@ -9,7 +9,7 @@
 | 02 ECS Spawn | L3 | oriera-ecs | 20 万粒子 SoA ECS——数据驱动架构上限 | `examples/02-ecs-spawn/` |
 | 03 Physics Sandbox | L6 | oriera-subsys | 重力+碰撞+鼠标拖拽——实时物理沙盒 | `examples/03-physics/` |
 | 04 Agent Chat | L9→L3 | oriera-agent | 自然语言控制粒子世界（规则后端离线可跑） | `examples/04-agent-chat/` |
-| 05 glTF Model | L4+L5 | oriera-asset | Three.js 加载带动画 3D 角色 | `examples/05-gltf-model/` |
+| 05 glTF 模型 | L4+L5 | oriera-asset | 原生 glTF 渲染:JS 镜像与 decode_glb_scene 金样对拍,裸 WebGL2(sRGB 纹理×兰伯特),零依赖 | `examples/05-gltf-model/` |
 | 06 Agent Physics | L9×L6 | oriera-agent | 自然语言指挥物理世界（「生成 20 个」「关掉重力」） | `examples/06-agent-physics/` |
 | 07 WebGPU Particles | L5 | oriera-render | GPU 计算百万粒子流场 | `examples/07-webgpu-particles/` |
 | 08 ECS Visualizer | L3 | oriera-ecs | 实体-组件-系统数据流可视化 | `examples/08-ecs-visualizer/` |

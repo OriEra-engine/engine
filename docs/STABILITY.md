@@ -95,6 +95,11 @@
   仍未解码:蒙皮动画、IBL/PBR 完整着色、mipmap;Duck 官方样例为 SCEA 共享源许可,
   按「许可先行」红线不入库(参考 KhronosGroup/glTF-Sample-Models 2.0/Duck);
   生成→落地→解码→GPU 出图全链已闭环(示例 `glb_headless --from-l8`,3 项集成测试)。
+- demo 05 已**原生渲染**(2026-11-10,#152 第三刀):JS 镜像 `engine/gltf.js` 与
+  decode_glb_scene 公式同源、双端金样 `contracts/golden/gltf_golden.json` 对拍
+  (变换顶点/法线容差 1e-4,索引/材质摊位精确),裸 WebGL2(sRGB 纹理×兰伯特+
+  栅格线)替代 three.js——本 demo 零外部依赖、完全离线;Duck 仍为运行时拉取
+  (SCEA 许可不入库)。demo 11/13 的 three.js 为场景渲染用途,摘除属后续刀次。
 - `oriera-splat`(L5,PLAN-splat v2 M0,契约 `oriera.render.splat.v1` 与 L4 `oriera.asset.splat_ply.v1`
   均标 unstable)是**实验性 CPU 参考内核**:只有 EWA 投影(相机进入 splat 内部会失真,射线类方法未实现),
   颜色只用 SH DC 项(无视角相关光照);PLY 只认 binary_little_endian 且 vertex 为首个 element,

@@ -1,0 +1,120 @@
+{
+  "expect": {
+    "primitive_count": 2,
+    "primitives": [
+      {
+        "base_color": null,
+        "indices": [
+          0,
+          1,
+          2
+        ],
+        "metallic": 1.0,
+        "normals": null,
+        "positions": [
+          [
+            0.5,
+            0.5,
+            0.0
+          ],
+          [
+            -0.5,
+            0.5,
+            0.0
+          ],
+          [
+            0.0,
+            -0.5,
+            0.0
+          ]
+        ],
+        "roughness": 1.0,
+        "texture_len": 18,
+        "texture_mime": "image/png",
+        "uvs": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.5,
+            1.0
+          ]
+        ]
+      },
+      {
+        "base_color": [
+          0.800000011920929,
+          0.20000000298023224,
+          0.10000000149011612,
+          1.0
+        ],
+        "indices": [
+          0,
+          1,
+          2
+        ],
+        "metallic": 0.25,
+        "normals": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "positions": [
+          [
+            1.0000001192092896,
+            1.9999998807907104,
+            0.0
+          ],
+          [
+            -0.9999998807907104,
+            1.1920928955078125e-7,
+            0.0
+          ],
+          [
+            1.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "roughness": 0.75,
+        "texture_len": null,
+        "texture_mime": null,
+        "uvs": null
+      }
+    ]
+  },
+  "glb_base64": "Z2xURgIAAACwBgAA4AUAAEpTT057ImFjY2Vzc29ycyI6W3siYnVmZmVyVmlldyI6MCwiYnl0ZU9mZnNldCI6NCwiY29tcG9uZW50VHlwZSI6NTEyNiwiY291bnQiOjMsInR5cGUiOiJWRUMzIn0seyJidWZmZXJWaWV3IjoxLCJieXRlT2Zmc2V0IjowLCJjb21wb25lbnRUeXBlIjo1MTI2LCJjb3VudCI6MywidHlwZSI6IlZFQzMifSx7ImJ1ZmZlclZpZXciOjIsImJ5dGVPZmZzZXQiOjAsImNvbXBvbmVudFR5cGUiOjUxMjMsImNvdW50IjozLCJ0eXBlIjoiU0NBTEFSIn0seyJidWZmZXJWaWV3IjozLCJieXRlT2Zmc2V0IjowLCJjb21wb25lbnRUeXBlIjo1MTI2LCJjb3VudCI6MywidHlwZSI6IlZFQzMifSx7ImJ1ZmZlclZpZXciOjQsImJ5dGVPZmZzZXQiOjAsImNvbXBvbmVudFR5cGUiOjUxMjYsImNvdW50IjozLCJ0eXBlIjoiVkVDMiJ9LHsiYnVmZmVyVmlldyI6NSwiYnl0ZU9mZnNldCI6MCwiY29tcG9uZW50VHlwZSI6NTEyMywiY291bnQiOjMsInR5cGUiOiJTQ0FMQVIifV0sImFzc2V0Ijp7InZlcnNpb24iOiIyLjAifSwiYnVmZmVyVmlld3MiOlt7ImJ1ZmZlciI6MCwiYnl0ZUxlbmd0aCI6NTIsImJ5dGVTdHJpZGUiOjE2fSx7ImJ1ZmZlciI6MCwiYnl0ZUxlbmd0aCI6MzYsImJ5dGVPZmZzZXQiOjUyfSx7ImJ1ZmZlciI6MCwiYnl0ZUxlbmd0aCI6NiwiYnl0ZU9mZnNldCI6MTQ4fSx7ImJ1ZmZlciI6MCwiYnl0ZUxlbmd0aCI6MzYsImJ5dGVPZmZzZXQiOjg4fSx7ImJ1ZmZlciI6MCwiYnl0ZUxlbmd0aCI6MjQsImJ5dGVPZmZzZXQiOjEyNH0seyJidWZmZXIiOjAsImJ5dGVMZW5ndGgiOjYsImJ5dGVPZmZzZXQiOjE1NH0seyJidWZmZXIiOjAsImJ5dGVMZW5ndGgiOjE4LCJieXRlT2Zmc2V0IjoxNjB9XSwiYnVmZmVycyI6W3siYnl0ZUxlbmd0aCI6MTgwfV0sImltYWdlcyI6W3siYnVmZmVyVmlldyI6NiwibWltZVR5cGUiOiJpbWFnZS9wbmcifV0sIm1hdGVyaWFscyI6W3sicGJyTWV0YWxsaWNSb3VnaG5lc3MiOnsiYmFzZUNvbG9yRmFjdG9yIjpbMC44LDAuMiwwLjEsMS4wXSwibWV0YWxsaWNGYWN0b3IiOjAuMjUsInJvdWdobmVzc0ZhY3RvciI6MC43NX19LHsicGJyTWV0YWxsaWNSb3VnaG5lc3MiOnsiYmFzZUNvbG9yVGV4dHVyZSI6eyJpbmRleCI6MH19fV0sIm1lc2hlcyI6W3sicHJpbWl0aXZlcyI6W3siYXR0cmlidXRlcyI6eyJOT1JNQUwiOjEsIlBPU0lUSU9OIjowfSwiaW5kaWNlcyI6MiwibWF0ZXJpYWwiOjB9XX0seyJwcmltaXRpdmVzIjpbeyJhdHRyaWJ1dGVzIjp7IlBPU0lUSU9OIjozLCJURVhDT09SRF8wIjo0fSwiaW5kaWNlcyI6NSwibWF0ZXJpYWwiOjF9XX1dLCJub2RlcyI6W3siY2hpbGRyZW4iOlsyXSwic2NhbGUiOlsyLjAsMi4wLDIuMF0sInRyYW5zbGF0aW9uIjpbMS4wLDAuMCwwLjBdfSx7Im1lc2giOjF9LHsibWVzaCI6MCwicm90YXRpb24iOlswLjAsMC4wLDAuNzA3MTA2NzgxMTg2NTQ3NiwwLjcwNzEwNjc4MTE4NjU0NzZdfV0sInNjZW5lIjowLCJzY2VuZXMiOlt7Im5vZGVzIjpbMCwxXX1dLCJ0ZXh0dXJlcyI6W3sic291cmNlIjowfV19tAAAAEJJTgDu7u7uAACAPwAAAAAAAAAAqrvM3QAAAAAAAIA/AAAAAKq7zN0AAAAAAAAAAAAAAACqu8zdAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAPwAAAD8AAAAAAAAAvwAAAD8AAAAAAAAAAAAAAL8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAD8AAIA/AAABAAIAAAABAAIAiVBORy1nb2xkZW4tYnl0ZXMhAAA=",
+  "meta": {
+    "consumed_by": [
+      "crates/oriera-asset/tests/cross_language_gltf.rs",
+      "examples/05-gltf-model/engine/gltf.test.mjs"
+    ],
+    "conventions": {
+      "normals": "inverse-transpose of world upper-3×3, renormalized",
+      "note": "JS mirror computes in f64; indices/material stall exact; transformed positions/normals tolerate f32-vs-f64 drift",
+      "walk": "scene graph DFS, world = parent_world · node_local(T·R·S)"
+    },
+    "generated_by": "oriera-asset tests/cross_language_gltf.rs (ORIERA_GLTF_BLESS=1)",
+    "name": "gltf_golden",
+    "tolerances": {
+      "transformed_abs": 0.0001
+    }
+  }
+}
