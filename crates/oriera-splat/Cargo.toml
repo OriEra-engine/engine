@@ -27,6 +27,8 @@ splat-wgpu = ["dep:oriera-render", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
 
 [dev-dependencies]
 criterion.workspace = true
+# 双端共读金样的 JSON 编解码(test-only,不影响默认构建依赖面)
+serde_json.workspace = true
 
 [[bench]]
 name = "splat"
