@@ -83,8 +83,17 @@
   (不支持的后端 `supports_tools()=false` 诚实上报、默认降级纯文本);
   L9 工具桥 EngineTools 需 json feature(浏览器内核在 JS 侧实现同一循环);
 - `platforms/web` 为 9 行壳,无 wasm 产物;
-- GLB 解码取 POSITION/NORMAL/三角索引 + 材质基础色 baseColorFactor(深校验;
-  顶点兰伯特光照已闭环,像素级验证),纹理贴图/蒙皮/KHR 扩展未解码;
+- GLB:`decode_glb_mesh`(冻结:首 mesh 首 primitive)之外,#152 第二刀落地
+  `decode_glb_scene`(2026-11-10)——全 mesh×primitive、节点图 TRS/matrix 世界变换、
+  材质摊位(baseColorFactor/metallic/roughness + baseColorTexture 原始字节;
+  PNG 解码走 oriera-asset feature `texture`,png crate 门控默认关)、accessor
+  byteOffset 与交错布局支持(真实文件常态;冻结路径维持拒绝)。显式拒绝:skins、
+  Draco、specularGlossiness(替换 baseColor 模型)、JPEG/外部图片 URI、节点环。
+  L5 `render_scene_views` 逐 primitive 纹理×兰伯特渲染(fp32 不适用——本路径 unorm8
+  目标,单层材质无叠加,不涉泼溅的累积混色),CC0 WaterBottle 实测出图
+  (docs/media/gltf-scene-waterbottle.png,4.7ms 解码/40ms 渲染)。
+  仍未解码:蒙皮动画、IBL/PBR 完整着色、mipmap;Duck 官方样例为 SCEA 共享源许可,
+  按「许可先行」红线不入库(参考 KhronosGroup/glTF-Sample-Models 2.0/Duck);
   生成→落地→解码→GPU 出图全链已闭环(示例 `glb_headless --from-l8`,3 项集成测试)。
 - `oriera-splat`(L5,PLAN-splat v2 M0,契约 `oriera.render.splat.v1` 与 L4 `oriera.asset.splat_ply.v1`
   均标 unstable)是**实验性 CPU 参考内核**:只有 EWA 投影(相机进入 splat 内部会失真,射线类方法未实现),

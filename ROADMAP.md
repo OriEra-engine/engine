@@ -20,7 +20,7 @@
 ### 2027 H1（v0.2 – v0.4）
 - [ ] L2 调度器：帧预算切片 + 无锁队列
 - [ ] L3 完整 ECS：WorldObject、Scene、Signal 总线
-- [ ] L5 Render Graph：清屏 → 渲染网格 → 加载 glTF（相机矩阵 + 深度缓冲已随 #152 首刀落地，2026-11-10）
+- [ ] L5 Render Graph：清屏 → 渲染网格 → 加载 glTF（相机+深度随 #152 首刀、glTF 场景加载+纹理渲染随第二刀落地，2026-11-10；demo 切 three 留后续）
 - [x] L6 rapier3d 具身后端：multibody 关节臂 + 确定性采集（PLAN-embodied-sim，2026-10-29落地；Jolt 评估结论：无 reduced-coordinate articulation，不做，见 growth/PLAN-embodied-sim.md）
 - [ ] WebGPU Baseline 全绿（Chrome/Firefox/Safari/visionOS）
 

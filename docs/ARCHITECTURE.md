@@ -118,7 +118,12 @@ y-up/-z-forward，**WebGPU NDC z∈[0,1]**，列向量行主序，WGSL 上传时
 + `gpu::HeadlessRenderer::render_mesh_view`：世界坐标网格经 MVP uniform 渲染，
 `Depth32Float` 深度测试（Less+write）——**近面遮蔽远面与绘制顺序无关**（GPU 实测）。
 相机模块是纯数学，不受 feature 门控；这是原生 glTF（本 issue 后续刀次）与 splat GPU
-路径（PLAN-splat M1）的共享底座。注意：windows-gnu（MinGW）工具链下 wgpu DX12/Vulkan
+路径（PLAN-splat M1）的共享底座。
+2026-11 落地 **#152 第二刀：原生 glTF 场景加载与纹理渲染**——L4 `decode_glb_scene`
+（全 mesh×primitive + 节点图 TRS/matrix + 材质摊位含 PNG 纹理字节，真实文件的
+accessor byteOffset/交错布局支持；Duck 为 SCEA 许可不入库，验收用 CC0 WaterBottle）
++ L5 `render_scene_views`（同 pass 逐 primitive 绘制，纹理管线 sRGB 采样 × 兰伯特，
+深度测试与首刀共享）。demo 05 切 three 移除留第三刀（走 M2 的 JS 镜像+金样路线）。注意：windows-gnu（MinGW）工具链下 wgpu DX12/Vulkan
 适配器枚举实测崩溃，默认后端被 cfg 钳制为 GL（`WGPU_BACKEND` 环境变量可覆盖）；
 MSVC 工具链不受此限。
 
