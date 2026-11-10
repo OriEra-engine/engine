@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OriEra Demo 13 — 生成式画廊 Generative Gallery</title>
+<link rel="icon" href="data:,">
+<title>OriEra Demo 13 — 生成式画廊 Generative Gallery(原生渲染)</title>
 <style>
 :root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#0a0e14;color:#e9f0f4}
 *{box-sizing:border-box}body{margin:0;overflow:hidden}a{color:#92e4ce}
@@ -50,7 +51,7 @@ footer{position:fixed;left:16px;bottom:14px;z-index:20;font-size:11px;color:#7f8
 
 <section class="panel" id="left">
   <h1>ORIERA · 生成式画廊</h1>
-  <div class="sub">L8 GenAiSystem · L4 命名热替换 · L5 槽位消费 —— demo 13</div>
+  <div class="sub">L8 GenAiSystem · L4 命名热替换 · L5 槽位消费 —— demo 13(原生渲染,零依赖)</div>
   <label for="theme">世界主题（一句话）</label>
   <input id="theme" maxlength="40" value="雨夜霓虹的东京小巷">
   <button class="primary" id="retheme">重新装帧这个世界</button>
@@ -90,7 +91,8 @@ footer{position:fixed;left:16px;bottom:14px;z-index:20;font-size:11px;color:#7f8
 <button class="gear" id="gear" title="生成设置">⚙</button>
 <footer>
   应用零模型代码：提示词形状、HTTP、校验、降级都在引擎侧（engine/genai.js ↔ crates/oriera-genai 一一对照）。<br>
-  离线 = 确定性程序化贴图（ADR 0003 判据 3：降级也是表达）；配 Key = CogView 文生图 / Tripo 文生 3D 热替换。
+  离线 = 确定性程序化贴图（ADR 0003 判据 3：降级也是表达）；配 Key = CogView 文生图 / Tripo 文生 3D 热替换。<br>
+  渲染 = 裸 WebGL2 零依赖(#152 第三刀路线)；GLB 道具解码走 engine/gltf.js(与 oriera-asset::glb 金样对拍)。
 </footer>
 <div id="toast"></div>
 
@@ -100,90 +102,339 @@ window.__e = [];
 window.addEventListener("error", e => window.__e.push(`${e.message} @${(e.filename || "?").split("/").pop()}:${e.lineno}`));
 window.addEventListener("unhandledrejection", e => window.__e.push(`rejection: ${e.reason}`));
 </script>
-<script type="importmap">
-{ "imports": { "three": "./vendor/three.module.js" } }
-</script>
 <script type="module">
-import * as THREE from "three";
-import { OrbitControls } from "./vendor/OrbitControls.js";
-import { GLTFLoader } from "./vendor/GLTFLoader.js";
+import { decodeGlbScene } from "./engine/gltf.js";
 import {
   GEN_PROVIDER_PRESETS, ART_SLOTS, GenerationKind,
   createGenerationProvider, loadGenaiConfig, saveGenaiConfig,
   GenAiSystem, ArtDirectorSystem, AssetStore, SlotBindings, applyPending, Scheduler,
 } from "./engine/genai.js";
 
-/* ---------- L5 场景：一间小画廊（穹顶 + 地面 + 三面墙 + 展台） ---------- */
 const stage = document.getElementById("stage");
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setSize(innerWidth, innerHeight);
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-stage.appendChild(renderer.domElement);
+const canvasEl = document.createElement("canvas");
+canvasEl.style.width = "100%"; canvasEl.style.height = "100%";
+stage.appendChild(canvasEl);
+const gl = canvasEl.getContext("webgl2", { antialias: true });
+if (!gl) {
+  document.getElementById("loading")?.remove();
+  throw new Error("这个浏览器不支持 WebGL2,请用较新的 Chrome / Edge / Firefox。");
+}
 
-const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x0a0e14, 0.016);
-const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, .1, 120);
-camera.position.set(0, 3.4, 10.5);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 2.2, 0);
-controls.enableDamping = true; controls.maxDistance = 26; controls.minDistance = 4;
-controls.maxPolarAngle = Math.PI * .52;
+// ---------- 着色器:双方向光兰伯特 × 纹理 + 指数雾(unlit 供天穹) ----------
+const OBJ_VS = `#version 300 es
+layout(location=0) in vec3 pos;
+layout(location=1) in vec3 normal;
+layout(location=2) in vec2 uv;
+uniform mat4 vp;
+out vec3 vN; out vec2 vUv; out vec3 vW;
+void main() { vN = normal; vUv = uv; vW = pos; gl_Position = vp * vec4(pos, 1.0); }`;
+const OBJ_FS = `#version 300 es
+precision highp float;
+in vec3 vN; in vec2 vUv; in vec3 vW;
+uniform vec3 camPos; uniform vec3 fogColor; uniform float fogDensity;
+uniform vec3 keyDir; uniform vec3 keyColor;
+uniform vec3 rimDir; uniform vec3 rimColor;
+uniform vec3 hemiSky; uniform vec3 hemiGround;
+uniform vec3 flatColor; uniform float useTex; uniform float unlit;
+uniform sampler2D tex;
+out vec4 frag;
+void main() {
+  vec4 texc = texture(tex, vUv);
+  vec3 albedo = mix(flatColor, flatColor * texc.rgb, useTex);
+  float alpha = mix(1.0, texc.a, useTex);
+  if (alpha < 0.003) discard;
+  vec3 rgb = albedo;
+  if (unlit < 0.5) {
+    vec3 n = normalize(vN);
+    vec3 v = normalize(camPos - vW);
+    vec3 kd = normalize(keyDir);
+    vec3 rd = normalize(rimDir);
+    float kdN = max(dot(n, kd), 0.0);
+    float rdN = max(dot(n, rd), 0.0) * 0.5;
+    vec3 hemi = mix(hemiGround, hemiSky, n.y * 0.5 + 0.5);
+    rgb = albedo * hemi + albedo * keyColor * kdN + albedo * rimColor * rdN;
+  }
+  float dist = distance(camPos, vW);
+  float fog = 1.0 - exp(-fogDensity * fogDensity * dist * dist);
+  rgb = mix(rgb, fogColor, clamp(fog, 0.0, 1.0) * (1.0 - unlit * 0.65));
+  frag = vec4(rgb, alpha);
+}`;
 
-const FLAT = { sky: 0x141b26, ground: 0x1b222e, wall: 0x232c3a, poster: 0x2b3546, prop: 0x5a6b7d };
+function program(vsSrc, fsSrc) {
+  const make = (type, src) => {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      throw new Error(gl.getShaderInfoLog(sh) || "shader compile failed");
+    }
+    return sh;
+  };
+  const p = gl.createProgram();
+  gl.attachShader(p, make(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, make(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(p) || "program link failed");
+  }
+  return p;
+}
+const objProg = program(OBJ_VS, OBJ_FS);
+const U = {};
+for (const name of ["vp", "camPos", "fogColor", "fogDensity", "keyDir", "keyColor",
+                    "rimDir", "rimColor", "hemiSky", "hemiGround",
+                    "flatColor", "useTex", "unlit", "tex"]) {
+  U[name] = gl.getUniformLocation(objProg, name);
+}
 
-const skyMat = new THREE.MeshBasicMaterial({ color: FLAT.sky, side: THREE.BackSide });
-scene.add(new THREE.Mesh(new THREE.SphereGeometry(38, 32, 16), skyMat));
+// ---------- 几何构建(全部世界坐标烘死;场景静态) ----------
+function makeVao(pos, nor, uv, idx) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const vbuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbuf);
+  const n = pos.length;
+  const data = new Float32Array(n * 8);
+  for (let i = 0; i < n; i++) {
+    data.set(pos[i], i * 8);
+    data.set(nor ? nor[i] : [0, 0, 1], i * 8 + 3);
+    data.set(uv ? uv[i] : [0, 0], i * 8 + 6);
+  }
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+  gl.enableVertexAttribArray(2);
+  gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+  const ibuf = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibuf);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(idx), gl.STATIC_DRAW);
+  return { vao, count: idx.length };
+}
 
-const groundMat = new THREE.MeshStandardMaterial({ color: FLAT.ground, roughness: .92 });
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(26, 26), groundMat);
-ground.rotation.x = -Math.PI / 2; scene.add(ground);
+function quad(w, h, nx, ny, nz) {
+  const hw = w / 2, hh = h / 2;
+  const pos = [[-hw, -hh, 0], [hw, -hh, 0], [hw, hh, 0], [-hw, hh, 0]];
+  const n = [nx, ny, nz];
+  // 让法线朝指定方向:绕 Y 轴旋转在调用方处理(这里给标准 XY 平面)
+  return { pos, nor: pos.map(() => n), uv: [[0, 0], [1, 0], [1, 1], [0, 1]], idx: [0, 1, 2, 0, 2, 3] };
+}
+function rotY(g, ang) {
+  const c = Math.cos(ang), si = Math.sin(ang);
+  const rot = (p) => [p[0] * c + p[2] * si, p[1], -p[0] * si + p[2] * c];
+  return {
+    pos: g.pos.map(rot),
+    nor: g.nor.map(rot),
+    uv: g.uv,
+    idx: g.idx,
+  };
+}
+function translate(g, tx, ty, tz) {
+  return {
+    pos: g.pos.map((p) => [p[0] + tx, p[1] + ty, p[2] + tz]),
+    nor: g.nor,
+    uv: g.uv,
+    idx: g.idx,
+  };
+}
+function sphereDome(r, wSeg, hSeg) {
+  const pos = [], nor = [], uv = [], idx = [];
+  for (let y = 0; y <= hSeg; y++) {
+    const vy = y / hSeg, phi = vy * Math.PI;
+    for (let x = 0; x <= wSeg; x++) {
+      const ux = x / wSeg, th = ux * Math.PI * 2;
+      const p = [r * Math.sin(phi) * Math.cos(th), r * Math.cos(phi), r * Math.sin(phi) * Math.sin(th)];
+      pos.push(p);
+      nor.push([-p[0] / r, -p[1] / r, -p[2] / r]); // 内向(BackSide)
+      uv.push([ux, vy]);
+    }
+  }
+  for (let y = 0; y < hSeg; y++) {
+    for (let x = 0; x < wSeg; x++) {
+      const a = y * (wSeg + 1) + x, b = a + wSeg + 1;
+      idx.push(a, b, a + 1, b, b + 1, a + 1);
+    }
+  }
+  return { pos, nor, uv, idx };
+}
+function cylinder(rBot, rTop, h, seg) {
+  const pos = [], nor = [], uv = [], idx = [];
+  for (let i = 0; i <= seg; i++) {
+    const th = (i / seg) * Math.PI * 2, c = Math.cos(th), s = Math.sin(th);
+    pos.push([rBot * c, 0, rBot * s]); nor.push([c, 0, s]); uv.push([i / seg, 0]);
+    pos.push([rTop * c, h, rTop * s]); nor.push([c, 0, s]); uv.push([i / seg, 1]);
+  }
+  for (let i = 0; i < seg; i++) {
+    const a = i * 2;
+    idx.push(a, a + 1, a + 2, a + 2, a + 1, a + 3);
+  }
+  return { pos, nor, uv, idx };
+}
+function torusKnot(p = 2, q = 3, tubSeg = 96, radSeg = 14, radius = 0.55, tube = 0.18) {
+  // 参数化中心线 + 管扫掠;法线由管截面圆给出
+  const pos = [], nor = [], uv = [], idx = [];
+  const center = (u) => {
+    const cu = Math.cos(u * p), su = Math.sin(u * p);
+    const rq = 1.0 + 0.5 * su;
+    return [rq * Math.cos(u * q), rq * Math.sin(u * q), 0.5 * su * 1.0].map((v) => v * radius * 1.6);
+  };
+  const frames = [];
+  for (let i = 0; i <= tubSeg; i++) {
+    const u = (i / tubSeg) * Math.PI * 2 * p;
+    const P = center(u / p * p);
+    const P2 = center(u / p * p + 0.01);
+    const tangent = [P2[0] - P[0], P2[1] - P[1], P2[2] - P[2]];
+    const tl = Math.hypot(...tangent) || 1;
+    const T = tangent.map((v) => v / tl);
+    let N = [T[1], -T[0], 0];
+    const nl = Math.hypot(...N) || 1;
+    N = N.map((v) => v / nl);
+    const B = [
+      T[1] * N[2] - T[2] * N[1],
+      T[2] * N[0] - T[0] * N[2],
+      T[0] * N[1] - T[1] * N[0],
+    ];
+    frames.push({ P, N, B });
+    for (let j = 0; j <= radSeg; j++) {
+      const v = (j / radSeg) * Math.PI * 2;
+      const cx = -tube * Math.cos(v), cy = tube * Math.sin(v);
+      pos.push([
+        P[0] + N[0] * cx + B[0] * cy,
+        P[1] + N[1] * cx + B[1] * cy,
+        P[2] + N[2] * cx + B[2] * cy,
+      ]);
+      uv.push([i / tubSeg, j / radSeg]);
+    }
+  }
+  // 顶点法线:相邻管截面中心向量差近似
+  for (let i = 0; i <= tubSeg; i++) {
+    for (let j = 0; j <= radSeg; j++) {
+      const at = i * (radSeg + 1) + j;
+      const p0 = pos[at];
+      const p1 = pos[((i + 1) % (tubSeg + 1)) * (radSeg + 1) + j];
+      const dx = p1[0] - p0[0], dy = p1[1] - p0[1], dz = p1[2] - p0[2];
+      const l = Math.hypot(dx, dy, dz) || 1;
+      nor.push([-dx / l, -dy / l, -dz / l]);
+    }
+  }
+  for (let i = 0; i < tubSeg; i++) {
+    for (let j = 0; j < radSeg; j++) {
+      const a = i * (radSeg + 1) + j, b = (i + 1) * (radSeg + 1) + j;
+      idx.push(a, b, a + 1, b, b + 1, a + 1);
+    }
+  }
+  return { pos, nor, uv, idx };
+}
 
-const wallMat = new THREE.MeshStandardMaterial({ color: FLAT.wall, roughness: .95 });
-const WALLS = [ // position + 朝向（法线指向房间中心）
-  { pos: [-7, 4, 0], ry: Math.PI / 2 },
-  { pos: [7, 4, 0], ry: -Math.PI / 2 },
-  { pos: [0, 4, 7], ry: Math.PI },
+// ---------- 纹理:每槽位一个 GL 纹理,热替换 = texImage2D 换芯 ----------
+function makeTex() {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+async function uploadPixels(tex, bytes) {
+  const blob = new Blob([bytes], { type: "image/png" });
+  const bmp = await createImageBitmap(blob);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+}
+
+// ---------- 场景对象表(世界坐标烘死;纹理槽位对齐 genai SLOT_IDS) ----------
+const objects = []; // {vao,count,tex,flatColor,useTex,unlit}
+function addObject(geo, { tex = null, flat = [1, 1, 1], useTex = 0, unlit = 0 } = {}) {
+  const t = tex ?? makeTex();
+  const g = makeVao(geo.pos, geo.nor, geo.uv, geo.idx);
+  const rec = { ...g, tex: t, flat, useTex, unlit };
+  objects.push(rec);
+  return rec;
+}
+
+const D2R = Math.PI / 180;
+// 穹顶(BackSide → 内向法线+内向绕序;unlit)
+const dome = addObject(sphereDome(38, 32, 16), { flat: [0x14 / 255, 0x1b / 255, 0x26 / 255], unlit: 1 });
+// 地面(repeat 3 → uv ×3)
+const groundGeo = (() => {
+  const g = quad(26, 26, 0, 1, 0);
+  return { pos: g.pos.map((p) => [p[0], 0, p[2] + 0]).map((p) => p), nor: g.nor, uv: g.uv.map((u) => [u[0] * 3, u[1] * 3]), idx: g.idx };
+})();
+addObject(translate({ ...groundGeo, pos: groundGeo.pos.map((p) => [p[0], 0, p[2]]) }, 0, 0, 0),
+          { flat: [0x1b / 255, 0x22 / 255, 0x2e / 255], useTex: 1 });
+// 三墙 + 挂画 + 画框
+const WALLS = [
+  { pos: [-7, 4, 0], ry: 90 },
+  { pos: [7, 4, 0], ry: -90 },
+  { pos: [0, 4, 7], ry: 180 },
 ];
 for (const w of WALLS) {
-  const wall = new THREE.Mesh(new THREE.PlaneGeometry(14, 8), wallMat);
-  wall.position.set(...w.pos); wall.rotation.y = w.ry;
-  scene.add(wall);
+  addObject(translate(rotY(quad(14, 8, 0, 0, -1), w.ry * D2R), ...w.pos),
+            { flat: [0x23 / 255, 0x2c / 255, 0x3a / 255] });
 }
-const posterMats = [];
-const POSTERS = [ // 与三面墙一一对应的挂画位；n* 为帧板朝墙方向的偏移分量
-  { pos: [-6.6, 3.1, 0], ry: Math.PI / 2, nx: -1, nz: 0 },
-  { pos: [6.6, 3.1, 0], ry: -Math.PI / 2, nx: 1, nz: 0 },
-  { pos: [0, 3.1, 6.6], ry: 0, nx: 0, nz: 1 },
+const POSTERS = [
+  { pos: [-6.6, 3.1, 0], ry: 90, slot: "poster.1" },
+  { pos: [6.6, 3.1, 0], ry: -90, slot: "poster.2" },
+  { pos: [0, 3.1, 6.6], ry: 0, slot: "poster.3" },
 ];
-POSTERS.forEach(p => {
-  const pm = new THREE.MeshStandardMaterial({ color: FLAT.poster, roughness: .85 });
-  posterMats.push(pm);
-  const poster = new THREE.Mesh(new THREE.PlaneGeometry(2.3, 3.2), pm);
-  poster.position.set(...p.pos); poster.rotation.y = p.ry;
-  scene.add(poster);
-  const frame = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 3.5),
-    new THREE.MeshStandardMaterial({ color: 0x11161f, roughness: .6 }));
-  frame.position.set(p.pos[0] + p.nx * .015, 3.1, p.pos[2] + p.nz * .015);
-  frame.rotation.y = p.ry;
-  scene.add(frame);
+const posterRecs = [];
+POSTERS.forEach((p, i) => {
+  const frame = addObject(translate(rotY(quad(2.6, 3.5, 0, 0, -1), p.ry * D2R),
+                                    p.pos[0] - Math.sin(p.ry * D2R) * 0.015 * 0, p.pos[1], 0), // frame 微朝房间外偏移省略(同面 z-fight 规避:见下)
+                          { flat: [0x11 / 255, 0x16 / 255, 0x1f / 255] });
+  const poster = addObject(translate(rotY(quad(2.3, 3.2, 0, 0, -1), p.ry * D2R),
+                                     p.pos[0] + (p.ry === 90 ? 0.015 : p.ry === -90 ? -0.015 : 0),
+                                     p.pos[1],
+                                     p.pos[2] + (p.ry === 0 ? -0.015 : 0)),
+                           { flat: [0x2b / 255, 0x35 / 255, 0x46 / 255], useTex: 1 });
+  posterRecs.push(poster);
+  void frame;
 });
+// 展台 + 道具(TorusKnot 兜底;hero.prop GLB 热替换)
+addObject(translate(cylinder(0.85, 1.0, 1.1, 24), 0, 0.55, 0),
+          { flat: [0x2a / 255, 0x34 / 255, 0x44 / 255] });
+const propFallback = addObject(torusKnot(), { flat: [0x5a / 255, 0x6b / 255, 0x7d / 255] });
+let propParts = []; // GLB 热替换后的绘制单元
+let propVisible = true;
 
-const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(.85, 1, 1.1, 24),
-  new THREE.MeshStandardMaterial({ color: 0x2a3444, roughness: .5, metalness: .2 }));
-pedestal.position.y = .55; scene.add(pedestal);
-const heroGroup = new THREE.Group(); heroGroup.position.y = 1.6; scene.add(heroGroup);
-const propFallback = new THREE.Mesh(new THREE.TorusKnotGeometry(.55, .18, 96, 14),
-  new THREE.MeshStandardMaterial({ color: FLAT.prop, roughness: .35, metalness: .35 }));
-heroGroup.add(propFallback);
+// ---------- GLB 道具:解码 → 归一化缩放 → 重建绘制单元 ----------
+function rebuildPropFromScene(scene) {
+  // 归一化:全场景包围盒 → 缩放至 2.1、底部落在展台面(y≈1.1)
+  let min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (const pr of scene.primitives) {
+    for (const p of pr.positions) {
+      for (let k = 0; k < 3; k++) {
+        min[k] = Math.min(min[k], p[k]);
+        max[k] = Math.max(max[k], p[k]);
+      }
+    }
+  }
+  const size = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) || 1;
+  const scale = 2.1 / size;
+  const ctr = [(min[0] + max[0]) / 2, min[1], (min[2] + max[2]) / 2];
+  propParts = scene.primitives.map((pr) => {
+    const pos = pr.positions.map((p) => [
+      (p[0] - ctr[0]) * scale,
+      (p[1] - ctr[1]) * scale + 1.1,
+      (p[2] - ctr[2]) * scale,
+    ]);
+    const g = makeVao(pos, pr.normals, pr.uvs, pr.indices);
+    const tex = pr.baseColorTexture ? makeTex() : null;
+    return { ...g, tex, flat: [1, 1, 1], useTex: 1, unlit: 0,
+             baseTexBytes: pr.baseColorTexture, metallic: pr.metallic, roughness: pr.roughness };
+  });
+  // 异步上传各 primitive 的基色纹理
+  for (const part of propParts) {
+    if (part.baseTexBytes) {
+      uploadPixels(part.tex, part.baseTexBytes);
+    }
+  }
+}
 
-scene.add(new THREE.AmbientLight(0xbfd4e6, .55));
-const key = new THREE.DirectionalLight(0xfff3e0, 1.5); key.position.set(4, 9, 6); scene.add(key);
-const rim = new THREE.DirectionalLight(0x9fc4ff, .7); rim.position.set(-6, 5, -7); scene.add(rim);
-const spot = new THREE.SpotLight(0xffe9c9, 60, 12, .5, .5); spot.position.set(0, 8, 1.2);
-spot.target = heroGroup; scene.add(spot);
-
-/* ---------- 引擎装配（应用只选提供商、说主题） ---------- */
+// ---------- L8 引擎装配（应用只选提供商、说主题） ----------
 let provider = createGenerationProvider(loadGenaiConfig());
 const genai = new GenAiSystem(provider, { maxInFlight: 3 });
 const art = new ArtDirectorSystem(genai);
@@ -191,42 +442,50 @@ const store = new AssetStore();
 const scheduler = new Scheduler(); scheduler.add(genai);
 const world = { events: [] };
 
-/* ---------- L5 槽位绑定：资产落地 → 原位换芯（不重建场景） ---------- */
+// ---------- L5 槽位绑定：资产落地 → 原位换芯（GL 纹理直写） ----------
 const slots = new SlotBindings(store);
-const texLoader = new THREE.TextureLoader();
-const gltfLoader = new GLTFLoader();
-const applied = {}; // name -> {texture}
-const showTexture = { on: true }; // 表达对比开关
-
-function applyImageTo(mat, bytes, { srgb = true, repeat = null } = {}) {
-  const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
-  texLoader.load(url, t => {
-    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
-    if (repeat) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeat, repeat); }
-    if (applied[mat.uuid]) applied[mat.uuid].dispose?.();
-    applied[mat.uuid] = t;
-    mat.map = showTexture.on ? t : null;
-    mat.color.set(0xffffff); mat.needsUpdate = true;
-    URL.revokeObjectURL(url);
+const applied = {};
+const showTexture = { on: true };
+const FLAT = {
+  "sky.dome": [0x14 / 255, 0x1b / 255, 0x26 / 255],
+  "ground.albedo": [0x1b / 255, 0x22 / 255, 0x2e / 255],
+  "poster.1": [0x2b / 255, 0x35 / 255, 0x46 / 255],
+  "poster.2": [0x2b / 255, 0x35 / 255, 0x46 / 255],
+  "poster.3": [0x2b / 255, 0x35 / 255, 0x46 / 255],
+};
+const slotTex = {
+  "sky.dome": objects[0].tex,
+  "ground.albedo": objects[1].tex,
+  "poster.1": posterRecs[0].tex,
+  "poster.2": posterRecs[1].tex,
+  "poster.3": posterRecs[2].tex,
+};
+const slotObjs = {
+  "sky.dome": objects[0],
+  "ground.albedo": objects[1],
+  "poster.1": posterRecs[0],
+  "poster.2": posterRecs[1],
+  "poster.3": posterRecs[2],
+};
+slots.bind("sky.dome", async (a) => { await uploadPixels(slotTex["sky.dome"], a.payload); slotObjs["sky.dome"].useTex = showTexture.on ? 1 : 0; applied["sky.dome"] = true; });
+slots.bind("ground.albedo", async (a) => { await uploadPixels(slotTex["ground.albedo"], a.payload); slotObjs["ground.albedo"].useTex = showTexture.on ? 1 : 0; applied["ground.albedo"] = true; });
+for (let i = 0; i < 3; i++) {
+  const name = `poster.${i + 1}`;
+  slots.bind(name, async (a) => {
+    await uploadPixels(slotTex[name], a.payload);
+    slotObjs[name].useTex = showTexture.on ? 1 : 0;
+    applied[name] = true;
   });
 }
-slots.bind("sky.dome", a => applyImageTo(skyMat, a.payload));
-slots.bind("ground.albedo", a => applyImageTo(groundMat, a.payload, { repeat: 3 }));
-posterMats.forEach((pm, i) => slots.bind(`poster.${i + 1}`, a => applyImageTo(pm, a.payload)));
-slots.bind("hero.prop", a => {
+slots.bind("hero.prop", (a) => {
   if (a.format !== "glb") return;
-  gltfLoader.parse(a.payload.buffer.slice(a.payload.byteOffset, a.payload.byteOffset + a.payload.byteLength), "", gltf => {
-    heroGroup.clear();
-    const obj = gltf.scene;
-    const box = new THREE.Box3().setFromObject(obj);
-    const size = box.getSize(new THREE.Vector3()).length() || 1;
-    obj.scale.setScalar(2.1 / size);
-    obj.position.y = -(box.getCenter(new THREE.Vector3()).y * 2.1 / size) + .9;
-    heroGroup.add(obj);
-  }, () => { /* 解析失败：保持现役道具（降级不崩） */ });
+  try {
+    rebuildPropFromScene(decodeGlbScene(a.payload));
+    propVisible = showTexture.on;
+  } catch { /* 解析失败：保持现役道具（降级不崩） */ }
 });
 
-/* ---------- HUD：槽位状态 + 计量（读引擎事件/资源，不猜） ---------- */
+// ---------- HUD：槽位状态 + 计量（读引擎事件/资源，不猜） ----------
 const slotEls = {};
 const slotsBox = document.getElementById("slots");
 for (const s of ART_SLOTS) {
@@ -269,7 +528,7 @@ function renderMeter() {
     `提供商 <b>${provider.id}</b>${provider.ready ? "" : "（未配 Key）"}${provider.stats.images ? ` · 图 ${provider.stats.images}` : ""}${provider.stats.meshes ? ` · 模型 ${provider.stats.meshes}` : ""}`;
 }
 
-/* ---------- 应用交互：换主题 / 表达对比 / ⚙ ---------- */
+// ---------- 应用交互：换主题 / 表达对比 / ⚙ ----------
 function retheme() {
   const theme = document.getElementById("theme").value.trim() || "雨夜霓虹的东京小巷";
   const names = art.retheme(world, theme);
@@ -291,11 +550,12 @@ const toggleBtn = document.getElementById("toggle");
 let flat = false;
 toggleBtn.onclick = () => {
   flat = !flat; showTexture.on = !flat;
-  const setMap = (mat, color) => { mat.map = flat ? null : (applied[mat.uuid] || null); mat.color.set(flat ? color : 0xffffff); mat.needsUpdate = true; };
-  setMap(skyMat, FLAT.sky); setMap(groundMat, FLAT.ground);
-  posterMats.forEach(pm => setMap(pm, FLAT.poster));
-  heroGroup.children.forEach(c => c.visible = flat ? false : true);
-  if (flat) heroGroup.add(propFallback); else heroGroup.remove(propFallback);
+  for (const name of Object.keys(slotObjs)) {
+    slotObjs[name].useTex = showTexture.on ? 1 : 0;
+    slotObjs[name].flat = FLAT[name];
+  }
+  propVisible = !flat;
+  if (!flat) propVisible = propParts.length > 0;
   toggleBtn.textContent = flat ? "表达对比：查看「引擎后 · 生成」" : "表达对比：查看「引擎前 · 纯色」";
   toast(flat ? "纯色时代：生成能力接入前的世界" : "生成时代：L8 热替换后的世界");
 };
@@ -325,25 +585,151 @@ document.getElementById("g-save").onclick = () => {
   renderMeter();
 };
 
-/* ---------- 主循环：泵调度器 → 落地换芯 → 读事件 ---------- */
-const clock = new THREE.Clock();
-function animate() {
-  requestAnimationFrame(animate);
+// ---------- 相机:轨道(yaw/pitch/dist 朝向 target) ----------
+const orbit = { yaw: 0.0, pitch: 0.16, dist: 11, target: [0, 2.2, 0] };
+const pointers = new Map();
+let lastPinch = 0;
+canvasEl.addEventListener("pointerdown", (e) => { canvasEl.setPointerCapture(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY]); });
+canvasEl.addEventListener("pointermove", (e) => {
+  if (!pointers.has(e.pointerId)) return;
+  const prev = pointers.get(e.pointerId);
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pointers.size === 1) {
+    orbit.yaw -= (e.clientX - prev[0]) * 0.005;
+    orbit.pitch = Math.min(1.35, Math.max(-0.25, orbit.pitch + (e.clientY - prev[1]) * 0.005));
+  } else if (pointers.size === 2) {
+    const pts = [...pointers.values()];
+    const d = Math.hypot(pts[0][0] - pts[1][0], pts[0][1] - pts[1][1]);
+    if (lastPinch > 0) orbit.dist = Math.min(26, Math.max(4, orbit.dist * (lastPinch / d)));
+    lastPinch = d;
+  }
+});
+const dropP = (e) => { pointers.delete(e.pointerId); if (pointers.size < 2) lastPinch = 0; };
+canvasEl.addEventListener("pointerup", dropP);
+canvasEl.addEventListener("pointercancel", dropP);
+canvasEl.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  orbit.dist = Math.min(26, Math.max(4, orbit.dist * Math.exp(e.deltaY * 0.0012)));
+}, { passive: false });
+
+// ---------- 数学:透视 + lookAt(列向量;上传列主序) ----------
+function perspective(fovY, aspect, near, far) {
+  const f = 1 / Math.tan((fovY * Math.PI) / 360);
+  return [
+    [f / aspect, 0, 0, 0],
+    [0, f, 0, 0],
+    [0, 0, far / (near - far), near * far / (near - far)],
+    [0, 0, -1, 0],
+  ];
+}
+function lookAtMatrix(eye, target, up) {
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const norm = (v) => { const l = Math.hypot(v[0], v[1], v[2]); return [v[0] / l, v[1] / l, v[2] / l]; };
+  const z = norm(sub(eye, target));
+  let x = cross(up, z);
+  if (dot(x, x) < 1e-12) x = cross([0, 0, 1], z);
+  x = norm(x);
+  const y = cross(z, x);
+  return [
+    [x[0], x[1], x[2], -dot(x, eye)],
+    [y[0], y[1], y[2], -dot(y, eye)],
+    [z[0], z[1], z[2], -dot(z, eye)],
+    [0, 0, 0, 1],
+  ];
+}
+function mul4(a, b) {
+  const out = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+    out[r][c] = a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c] + a[r][3] * b[3][c];
+  }
+  return out;
+}
+function toUniform(m) {
+  const out = new Float32Array(16);
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) out[c * 4 + r] = m[r][c];
+  return out;
+}
+
+// ---------- 主循环:泵调度器 → 落地换芯 → 读事件 → 渲染 ----------
+function resize() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(innerWidth * dpr));
+  const h = Math.max(1, Math.round(innerHeight * dpr));
+  if (canvasEl.width !== w || canvasEl.height !== h) {
+    canvasEl.width = w; canvasEl.height = h;
+  }
+}
+addEventListener("resize", resize);
+
+const eyeNow = [0, 0, 0];
+function frame() {
+  requestAnimationFrame(frame);
+  resize();
+  gl.viewport(0, 0, canvasEl.width, canvasEl.height);
+  gl.clearColor(0x0a / 255, 0x0e / 255, 0x14 / 255, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   scheduler.tick(world);
   applyPending(store, world);
   drainEvents();
   renderMeter();
-  heroGroup.rotation.y += .0035;
-  controls.update();
-  renderer.render(scene, camera);
+
+  const eye = [
+    orbit.target[0] + orbit.dist * Math.sin(orbit.yaw) * Math.cos(orbit.pitch),
+    orbit.target[1] + orbit.dist * Math.sin(orbit.pitch),
+    orbit.target[2] + orbit.dist * Math.cos(orbit.yaw) * Math.cos(orbit.pitch),
+  ];
+  eyeNow[0] = eye[0]; eyeNow[1] = eye[1]; eyeNow[2] = eye[2];
+  const vp = mul4(perspective(55, canvasEl.width / canvasEl.height, 0.1, 120),
+                  lookAtMatrix(eye, orbit.target, [0, 1, 0]));
+  const vpU = toUniform(vp);
+
+  gl.useProgram(objProg);
+  gl.uniformMatrix4fv(U.vp, false, vpU);
+  gl.uniform3f(U.camPos, eye[0], eye[1], eye[2]);
+  gl.uniform3f(U.fogColor, 0x0a / 255, 0x0e / 255, 0x14 / 255);
+  gl.uniform1f(U.fogDensity, 0.016);
+  gl.uniform3fv(U.keyDir, [4, 9, 6]);
+  gl.uniform3f(U.keyColor, 1.5 * 0xff / 255, 1.5 * 0xf3 / 255, 1.5 * 0xe0 / 255);
+  gl.uniform3fv(U.rimDir, [-6, 5, -7]);
+  gl.uniform3f(U.rimColor, 0.7 * 0x9f / 255, 0.7 * 0xc4 / 255, 0.7 * 0xff / 255);
+  gl.uniform3f(U.hemiSky, 0.55 * 0xbf / 255, 0.55 * 0xd4 / 255, 0.55 * 0xe6 / 255);
+  gl.uniform3f(U.hemiGround, 0.55 * 0xbf / 255, 0.55 * 0xd4 / 255, 0.55 * 0xe6 / 255);
+  gl.uniform1i(U.tex, 0);
+  gl.activeTexture(gl.TEXTURE0);
+
+  gl.enable(gl.DEPTH_TEST);
+  // 正面剔除对齐 three.js FrontSide 惯例:相机在墙外侧时能看进房间
+  // (天穹顶点/法线/绕序均已内向构建,配 cull face FRONT)
+  gl.enable(gl.CULL_FACE);
+  for (const o of objects) {
+    if (o.unlit) { gl.cullFace(gl.FRONT); } else { gl.cullFace(gl.BACK); }
+    if (o === propFallback && !propVisible && propParts.length > 0) continue;
+    if (o === propFallback && flat) continue;
+    if (o !== propFallback && flat && o.useTex === 1) o.useTexLive = 0; else o.useTexLive = o.useTex;
+    gl.bindVertexArray(o.vao);
+    gl.bindTexture(gl.TEXTURE_2D, o.tex);
+    gl.uniform1f(U.useTex, o.useTexLive ?? o.useTex);
+    gl.uniform3fv(U.flatColor, o.flat);
+    gl.uniform1f(U.unlit, o.unlit);
+    gl.drawElements(gl.TRIANGLES, o.count, gl.UNSIGNED_INT, 0);
+  }
+  // GLB 道具 parts(替换 TorusKnot 兜底后绘制)
+  for (const part of propParts) {
+    gl.bindVertexArray(part.vao);
+    gl.bindTexture(gl.TEXTURE_2D, part.tex);
+    gl.uniform1f(U.useTex, part.tex ? 1 : 0);
+    gl.uniform3fv(U.flatColor, [1, 1, 1]);
+    gl.uniform1f(U.unlit, 0);
+    gl.drawElements(gl.TRIANGLES, part.count, gl.UNSIGNED_INT, 0);
+  }
 }
-animate();
-addEventListener("resize", () => {
-  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
+resize();
+requestAnimationFrame(frame);
+addEventListener("resize", () => { /* frame 内每帧 resize */ });
 setTimeout(retheme, 500); // 先看一眼「引擎前」，再让 L8 装帧世界
-window.__dbg = { skyMat, groundMat, posterMats, store, world }; // console 调试出口
+window.__dbg = { objects, store, world, propParts: () => propParts }; // console 调试出口
 </script>
 </body>
 </html>

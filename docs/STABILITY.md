@@ -98,6 +98,12 @@
   仍未解码:蒙皮动画、IBL、mipmap;Duck 官方样例为 SCEA 共享源许可,
   按「许可先行」红线不入库(参考 KhronosGroup/glTF-Sample-Models 2.0/Duck);
   生成→落地→解码→GPU 出图全链已闭环(示例 `glb_headless --from-l8`,3 项集成测试)。
+- demo 13 已**原生渲染**(2026-11-10,#152 第五刀):generate gallery 摘除 three.js
+  (vendor 1.5MB+utils 移除),裸 WebGL2 重写(穹顶/地面/三墙/挂画/展台/TorusKnot 道具 +
+  双方向光兰伯特×纹理 + 指数雾 + 背面剔除);L8 genai.js 镜像零改动,槽位契约
+  (sky.dome/ground.albedo/poster.1-3/hero.prop)不变,纹理热替换=GL 纹理直写,
+  GLB 道具经 engine/gltf.js(与 oriera-asset::glb 金样对拍)解码逐 primitive 绘制;
+  诚实边界:Tripo GLB 仅消费 baseColor 因子纹理,骨架动画道具不支持(等 #153)。
 - demo 05 已**原生渲染**(2026-11-10,#152 第三刀):JS 镜像 `engine/gltf.js` 与
   decode_glb_scene 公式同源、双端金样 `contracts/golden/gltf_golden.json` 对拍
   (变换顶点/法线容差 1e-4,索引/材质摊位精确),裸 WebGL2(sRGB 纹理×兰伯特+
