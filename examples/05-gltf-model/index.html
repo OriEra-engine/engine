@@ -54,20 +54,45 @@ layout(location=0) in vec3 pos;
 layout(location=1) in vec3 normal;
 layout(location=2) in vec2 uv;
 uniform mat4 mvp;
-out vec3 vNormal; out vec2 vUv;
-void main() { vNormal = normal; vUv = uv; gl_Position = mvp * vec4(pos, 1.0); }`;
+out vec3 vNormal; out vec2 vUv; out vec3 vWorld;
+void main() {
+  vNormal = normal; vUv = uv; vWorld = pos;
+  gl_Position = mvp * vec4(pos, 1.0); }`;
 const MESH_FS = `#version 300 es
 precision highp float;
-in vec3 vNormal; in vec2 vUv;
-uniform vec4 baseColor; uniform sampler2D baseTex; uniform vec3 lightDir;
+in vec3 vNormal; in vec2 vUv; in vec3 vWorld;
+uniform vec4 baseColor; uniform sampler2D baseTex;
+uniform vec3 lightDir; uniform vec3 camPos;
 out vec4 frag;
+// #152 第四刀对齐:Cook-Torrance PBR(与 SHADER_VIEW_PBR 公式同源)。
+// Duck 无 MR 纹理 → metallic=0(无 IBL 金属黑兜底),塑料观感即规范正确渲染。
 void main() {
-  vec3 n = normalize(vNormal);
-  float diffuse = max(dot(n, normalize(lightDir)), 0.0);
-  float shade = 0.4 + 0.6 * diffuse;                       // ambient 0.4 + lambert
   vec4 base = texture(baseTex, vUv) * baseColor;
   if (base.a < 0.003) discard;
-  frag = vec4(base.rgb * shade, base.a);
+  float metallic = 0.0;
+  float roughness = 0.55;
+  vec3 albedo = base.rgb;
+  vec3 n = normalize(vNormal);
+  vec3 v = normalize(camPos - vWorld);
+  vec3 l = normalize(lightDir);
+  vec3 h = normalize(v + l);
+  float ndl = clamp(dot(n, l), 0.0, 1.0);
+  float ndv = clamp(dot(n, v), 0.0, 1.0) + 1e-4;
+  float ndh = clamp(dot(n, h), 0.0, 1.0);
+  float vdh = clamp(dot(v, h), 0.0, 1.0);
+  float a2 = roughness * roughness;
+  float dd = ndh * ndh * (a2 - 1.0) + 1.0;
+  float dist = a2 / (3.14159265 * dd * dd);
+  float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+  float gv = ndv / (ndv * (1.0 - k) + k);
+  float gl = ndl / (ndl * (1.0 - k) + k);
+  vec3 f0 = mix(vec3(0.04), albedo, metallic);
+  vec3 fres = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
+  vec3 spec = dist * gv * gl * fres * ndl;
+  vec3 diff = (vec3(1.0) - fres) * albedo / 3.14159265 * ndl;
+  vec3 hemi = mix(vec3(0.10, 0.11, 0.13), vec3(0.22, 0.26, 0.32), n.y * 0.5 + 0.5);
+  vec3 rgb = diff + spec + albedo * hemi;
+  frag = vec4(rgb, base.a);
 }`;
 const LINE_VS = `#version 300 es
 layout(location=0) in vec3 pos;
@@ -103,6 +128,7 @@ const U = {
   meshMvp: gl.getUniformLocation(meshProg, "mvp"),
   meshBase: gl.getUniformLocation(meshProg, "baseColor"),
   meshLight: gl.getUniformLocation(meshProg, "lightDir"),
+  meshCam: gl.getUniformLocation(meshProg, "camPos"),
   lineMvp: gl.getUniformLocation(lineProg, "mvp"),
   lineColor: gl.getUniformLocation(lineProg, "color"),
 };
@@ -327,6 +353,12 @@ function frame() {
   gl.useProgram(meshProg);
   gl.uniformMatrix4fv(U.meshMvp, false, mvpF);
   gl.uniform3f(U.meshLight, ...LIGHT);
+  const eye = [
+    orbit.target[0] + orbit.dist * Math.sin(orbit.yaw) * Math.cos(orbit.pitch),
+    orbit.target[1] + orbit.dist * Math.sin(orbit.pitch),
+    orbit.target[2] + orbit.dist * Math.cos(orbit.yaw) * Math.cos(orbit.pitch),
+  ];
+  gl.uniform3f(U.meshCam, eye[0], eye[1], eye[2]);
   gl.enable(gl.DEPTH_TEST);
   for (const p of primitives) {
     gl.bindVertexArray(p.vao);
