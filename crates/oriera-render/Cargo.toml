@@ -27,7 +27,11 @@ render-wgpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 name = "glb_headless"
 required-features = ["render-wgpu"]
 
+[[example]]
+name = "gltf_scene"
+required-features = ["render-wgpu"]
+
 [dev-dependencies]
-# 仅供 glb_headless 示例:L4 解码 GLB、L8 生成占位资产(仅路径依赖,无环)
-oriera-asset.workspace = true
+# 仅供 glb_headless/gltf_scene 示例:L4 解码 GLB(texture=纹理解码)、L8 生成占位资产(仅路径依赖,无环)
+oriera-asset = { workspace = true, features = ["texture"] }
 oriera-genai.workspace = true

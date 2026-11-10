@@ -108,6 +108,34 @@ fn fs(in: VSOut) -> @location(0) vec4f {
 }
 "#;
 
+/// #152 第二刀:世界坐标顶点 + UV,基色 = sRGB 纹理采样 × 顶点色(兰伯特烘焙)。
+const SHADER_VIEW_TEX: &str = r#"
+struct VSOut {
+    @builtin(position) pos: vec4f,
+    @location(0) uv: vec2f,
+    @location(1) shade: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> mvp: mat4x4f;
+@group(1) @binding(0) var base_tex: texture_2d<f32>;
+@group(1) @binding(1) var base_samp: sampler;
+
+@vertex
+fn vs(@location(0) p: vec3f, @location(1) uv: vec2f, @location(2) shade: vec4f) -> VSOut {
+    var out: VSOut;
+    out.pos = mvp * vec4f(p, 1.0);
+    out.uv = uv;
+    out.shade = shade;
+    return out;
+}
+
+@fragment
+fn fs(in: VSOut) -> @location(0) vec4f {
+    let base = textureSample(base_tex, base_samp, in.uv);
+    return vec4f(base.rgb * in.shade.rgb, base.a * in.shade.a);
+}
+"#;
+
 /// 固定主光方向(世界感稳定的「左上前方」灯)。
 const LIGHT: [f32; 3] = [0.45, 0.55, 0.70];
 
@@ -180,7 +208,43 @@ pub struct HeadlessRenderer {
     pipeline: wgpu::RenderPipeline,
     /// #152 首刀:MVP uniform + 深度缓冲的世界坐标管线。
     pipeline_view: wgpu::RenderPipeline,
+    /// #152 第二刀:纹理采样管线共享的相机 bind group layout。
+    camera_bgl: wgpu::BindGroupLayout,
+    /// 纹理+采样器 bind group layout(group1)。
+    tex_bgl: wgpu::BindGroupLayout,
+    /// 纹理采样管线。
+    pipeline_view_tex: wgpu::RenderPipeline,
     adapter_info: String,
+}
+
+/// 已上传的 sRGB 纹理及其(与纹理管线配套的)bind group。
+pub struct GpuTexture {
+    bind_group: wgpu::BindGroup,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// 场景渲染的一个绘制单元(世界坐标;[`HeadlessRenderer::render_scene_views`])。
+pub struct ScenePart<'a> {
+    pub positions: &'a [[f32; 3]],
+    pub normals: Option<&'a [[f32; 3]]>,
+    pub uvs: Option<&'a [[f32; 2]]>,
+    pub indices: &'a [u32],
+    /// 兰伯特烘焙的基色(默认取 [1,1,1,1],由调用方决定)。
+    pub base_color: [f32; 4],
+    /// None = 走无纹理管线(纯基色×兰伯特)。
+    pub texture: Option<&'a GpuTexture>,
+}
+
+/// 行主序 Mat4 → WGSL 列主序上传布局(与 render_mesh_view 同一约定)。
+fn mvp_col_major(m: &[[f32; 4]; 4]) -> [f32; 16] {
+    let mut out = [0f32; 16];
+    for (r, row) in m.iter().enumerate() {
+        for (c, v) in row.iter().enumerate() {
+            out[c * 4 + r] = *v;
+        }
+    }
+    out
 }
 
 const CLEAR: wgpu::Color = wgpu::Color {
@@ -329,11 +393,113 @@ impl HeadlessRenderer {
                 cache: None,
             });
 
+            // #152 第二刀:纹理采样管线(pos+uv+shade;sRGB 纹理 × 顶点色)。
+            // 显式布局:group0 = 相机 MVP(group 内 binding0),group1 = 纹理+采样器。
+            let shader_view_tex = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("oriera-camera-textured"),
+                source: wgpu::ShaderSource::Wgsl(SHADER_VIEW_TEX.into()),
+            });
+            let camera_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("oriera-camera-bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(64),
+                    },
+                    count: None,
+                }],
+            });
+            let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("oriera-tex-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+            let tex_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("oriera-view-tex-layout"),
+                    bind_group_layouts: &[Some(&camera_bgl), Some(&tex_bgl)],
+                    immediate_size: 0,
+                });
+            let pipeline_view_tex =
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("oriera-view-textured-pipeline"),
+                    layout: Some(&tex_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader_view_tex,
+                        entry_point: Some("vs"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: 36, // pos3 + uv2 + shade4
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &[
+                                wgpu::VertexAttribute {
+                                    offset: 0,
+                                    shader_location: 0,
+                                    format: wgpu::VertexFormat::Float32x3,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 12,
+                                    shader_location: 1,
+                                    format: wgpu::VertexFormat::Float32x2,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 20,
+                                    shader_location: 2,
+                                    format: wgpu::VertexFormat::Float32x4,
+                                },
+                            ],
+                        })],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader_view_tex,
+                        entry_point: Some("fs"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Bgra8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::Less),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+
             Ok(HeadlessRenderer {
                 device,
                 queue,
                 pipeline,
                 pipeline_view,
+                camera_bgl,
+                tex_bgl,
+                pipeline_view_tex,
                 adapter_info: format!("{} ({})", info.name, info.backend),
             })
         })
@@ -341,6 +507,251 @@ impl HeadlessRenderer {
 
     pub fn adapter_info(&self) -> &str {
         &self.adapter_info
+    }
+
+    /// 上传 RGBA8 像素为 sRGB 纹理(baseColorTexture 的色彩空间),LINEAR/CLAMP,
+    /// 并生成与纹理管线配套的 bind group。调用方持有 [`GpuTexture`] 即持有资源。
+    pub fn upload_texture(
+        &self,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<GpuTexture, GpuError> {
+        if rgba.len() != (width as usize) * (height as usize) * 4 || width == 0 || height == 0 {
+            return Err(GpuError::Device("texture size/pixel mismatch".into()));
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("oriera-base-texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // baseColorTexture 按规范是 sRGB 编码——采样硬件负责线性化。
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("oriera-base-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("oriera-base-tex-bind"),
+            layout: &self.tex_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        Ok(GpuTexture {
+            bind_group,
+            width,
+            height,
+        })
+    }
+
+    /// #152 第二刀:整场景渲染——同一 pass 内逐 part 绘制(共享相机与深度)。
+    /// part 顺序即绘制顺序(深度测试保证遮挡正确,与顺序无关);带纹理的 part
+    /// 走纹理管线,其余走 [`HeadlessRenderer::render_mesh_view`] 同族管线。
+    /// 法线参与兰伯特烘焙(缺省按 (0,0,1) 朝镜头);UV 仅在带纹理时消费。
+    pub fn render_scene_views(
+        &self,
+        parts: &[ScenePart<'_>],
+        camera: &Camera,
+    ) -> Result<RenderedImage, GpuError> {
+        let (width, height) = (camera.width, camera.height);
+        if width == 0 || height == 0 || parts.is_empty() {
+            return Err(GpuError::Device("empty scene or zero-sized target".into()));
+        }
+        let mvp = camera.view_proj();
+        let uniform = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("camera-mvp"),
+                contents: bytemuck::cast_slice(&[mvp_col_major(&mvp)]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        // 相机 bind group ×2:纹理管线与非纹理管线的 layout 结构等价但对象不同。
+        let cam_bind_view = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera-bind-view"),
+            layout: &self.pipeline_view.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform,
+                    offset: 0,
+                    size: None,
+                }),
+            }],
+        });
+        let cam_bind_tex = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera-bind-tex"),
+            layout: &self.camera_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform,
+                    offset: 0,
+                    size: None,
+                }),
+            }],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gltf-scene-frame"),
+            });
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("oriera-scene-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            for part in parts {
+                if part.positions.is_empty() {
+                    continue;
+                }
+                let shade = vertex_colors(
+                    // 兰伯特只看法线;位置梯度对有材质的 part 无意义,传世界坐标即可
+                    part.positions,
+                    part.normals,
+                    Some(part.base_color),
+                );
+                let textured = part.texture.is_some() && part.uvs.is_some();
+                let mut verts: Vec<[f32; 9]> = Vec::with_capacity(part.positions.len());
+                for (i, p) in part.positions.iter().enumerate() {
+                    let uv = if textured {
+                        part.uvs
+                            .as_ref()
+                            .and_then(|u| u.get(i).copied())
+                            .unwrap_or([0.0, 0.0])
+                    } else {
+                        [0.0, 0.0]
+                    };
+                    let sh = shade[i];
+                    verts.push([p[0], p[1], p[2], uv[0], uv[1], sh[0], sh[1], sh[2], sh[3]]);
+                }
+                let vertex_buf =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("part-vertices"),
+                            contents: bytemuck::cast_slice(&verts),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                let index_buf = self
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("part-indices"),
+                        contents: bytemuck::cast_slice(part.indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    });
+                match part.texture {
+                    Some(tex) if textured => {
+                        pass.set_pipeline(&self.pipeline_view_tex);
+                        pass.set_bind_group(0, &cam_bind_tex, &[]);
+                        pass.set_bind_group(1, &tex.bind_group, &[]);
+                    }
+                    _ => {
+                        pass.set_pipeline(&self.pipeline_view);
+                        pass.set_bind_group(0, &cam_bind_view, &[]);
+                    }
+                }
+                pass.set_vertex_buffer(0, vertex_buf.slice(..));
+                match part.indices.split_first() {
+                    Some(_) => {
+                        pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..part.indices.len() as u32, 0, 0..1);
+                    }
+                    None => pass.draw(0..part.positions.len() as u32, 0..1),
+                }
+            }
+        }
+
+        self.readback_pixels(encoder, &texture, width, height)
     }
 
     /// 渲染一个网格并回读像素。顶点在 CPU 侧归一化到裁剪空间(保纵横比、居中、0.9 缩放)。
