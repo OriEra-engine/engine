@@ -112,8 +112,14 @@ v0.3 落地 **wgpu 最小无头闭环**（feature `render-wgpu`，按 GOVERNANCE
 「GLB 文件 → 真实 mesh → GPU 光栅化 → BMP 出图」全链路。
 v0.3 追加顶点材质光照：GLB 的 NORMAL + baseColorFactor 解码后 CPU 烘焙
 兰伯特顶点色（无材质走旧位置渐变，公式不变），`render_mesh_shaded` 承接。
-注意：windows-gnu（MinGW）工具链下 wgpu DX12/Vulkan 适配器枚举实测崩溃，
-默认后端被 cfg 钳制为 GL（`WGPU_BACKEND` 环境变量可覆盖）；MSVC 工具链不受此限。
+2026-11 落地 **#152 首刀：相机矩阵 + 深度缓冲**——`camera::Camera`（GL 式
+y-up/-z-forward，**WebGPU NDC z∈[0,1]**，列向量行主序，WGSL 上传时转置为列主序）
++ `gpu::HeadlessRenderer::render_mesh_view`：世界坐标网格经 MVP uniform 渲染，
+`Depth32Float` 深度测试（Less+write）——**近面遮蔽远面与绘制顺序无关**（GPU 实测）。
+相机模块是纯数学，不受 feature 门控；这是原生 glTF（本 issue 后续刀次）与 splat GPU
+路径（PLAN-splat M1）的共享底座。注意：windows-gnu（MinGW）工具链下 wgpu DX12/Vulkan
+适配器枚举实测崩溃，默认后端被 cfg 钳制为 GL（`WGPU_BACKEND` 环境变量可覆盖）；
+MSVC 工具链不受此限。
 
 2026-11 落地**高斯泼溅 CPU 参考内核**（独立 crate `oriera-splat`，PLAN-splat v2 M0，**实验性**，
 随下一个 minor 发布）：L4 `oriera_asset::ply::decode_splat_ply` 按属性名解码标准 3DGS PLY——字段存激活值，
@@ -405,7 +411,8 @@ assets/          logo、hero GIF 等品牌资产
 
 ## 10. 测试、CI 与性能
 
-- 全仓测试数以 CI 实测为准（2026-10-25 口径：workspace 238 + genai `providers` 59 + agent `json` 60 + subsys `rigid` 15 + infer `native-http` 97 + kernel node 35，含 v0.8 韧性批次、#98 golden fixture、#109/#110 评审批次与 #111-#114 生成供应商批次；分项含少量 doctest；此后 PLAN-splat M0 新增 41 项：asset `ply` 19 + splat 单元 21 + 金样 1），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
+- 全仓测试数以 CI 实测为准（2026-10-25 口径：workspace 238 + genai `providers` 59 + agent `json` 60 + subsys `rigid` 15 + infer `native-http` 97 + kernel node 35，含 v0.8 韧性批次、#98 golden fixture、#109/#110 评审批次与 #111-#114 生成供应商批次；分项含少量 doctest；此后 PLAN-splat M0 新增 41 项：asset `ply` 19 + splat 单元 21 + 金样 1；
+#152 首刀新增 camera 10 项（另有 2 项 GPU 实测 `#[ignore]`，本机跑绿）），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
 - 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 至 v0.12.0 共 14 份；
   `scripts/check_release_versions.py` 守版本号同步，发版前必跑）。
 - 基准怎么跑、当前参考数据见 [PERF.md](PERF.md)。

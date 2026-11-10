@@ -3,12 +3,16 @@
 //! 测评共识 P0「渲染层是空的」的第一刀:**真 GPU pass、真 mesh、真像素出图**。
 //! 设计边界(诚实清单):
 //! - 无头(headless)渲染到纹理,回读 BGRA 像素——不接窗口系统,不进帧调度;
-//! - 单管线、单顶点流(POSITION f32×3)、无深度缓冲、无光照(位置渐变着色自证三角形);
-//! - 输入网格在 CPU 侧归一化到裁剪空间,shader 不含矩阵运算;
+//! - 旧管线([`HeadlessRenderer::render_mesh`]/`render_mesh_shaded`):顶点在
+//!   CPU 侧归一化到裁剪空间,无深度缓冲,行为冻结(既有测试锁定);
+//! - #152 首刀新增 [`HeadlessRenderer::render_mesh_view`]:**MVP uniform
+//!   ([`crate::camera::Camera`],WebGPU NDC z∈[0,1])+ Depth32Float 深度缓冲
+//!   (Less+write,近面遮蔽远面与绘制顺序无关)**,世界坐标网格直接渲染;
 //! - 位置:windows/linux 原生验证;Web(wasm)是 wgpu 的既有能力,接入排在路线图。
 //!
 //! 用法见 `examples/glb_headless.rs`(GLB → 解码 → 渲染 → BMP)。
 
+use crate::camera::Camera;
 use std::fmt;
 use std::sync::mpsc;
 use wgpu::util::DeviceExt;
@@ -81,26 +85,38 @@ fn fs(in: VSOut) -> @location(0) vec4f {
 }
 "#;
 
-/// 烘焙顶点(裁剪坐标 + 颜色)。12+16=28 字节,对齐 4。
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct ShadedVertex {
-    pos: [f32; 3],
-    color: [f32; 4],
+/// #152 首刀:世界坐标顶点经 MVP uniform(camera.view_proj)投影。
+const SHADER_VIEW: &str = r#"
+struct VSOut {
+    @builtin(position) pos: vec4f,
+    @location(0) color: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> mvp: mat4x4f;
+
+@vertex
+fn vs(@location(0) p: vec3f, @location(1) c: vec4f) -> VSOut {
+    var out: VSOut;
+    out.pos = mvp * vec4f(p, 1.0);
+    out.color = c;
+    return out;
 }
+
+@fragment
+fn fs(in: VSOut) -> @location(0) vec4f {
+    return in.color;
+}
+"#;
 
 /// 固定主光方向(世界感稳定的「左上前方」灯)。
 const LIGHT: [f32; 3] = [0.45, 0.55, 0.70];
 
-/// CPU 烘焙每顶点颜色。
-/// - 无材质:复刻旧版位置渐变(同公式,兼容旧出图观感);
-/// - 有材质:baseColor × (0.35 环境 + 0.65 兰伯特),法线缺失时
-///   以 (0,0,1) 朝向镜头(等比缩放不改变法线方向)。
-fn bake_vertices(
+/// CPU 烘焙每顶点**颜色**(输入裁剪坐标;无材质渐变复刻旧公式)。
+fn vertex_colors(
     clip: &[[f32; 3]],
     normals: Option<&[[f32; 3]]>,
     base_color: Option<[f32; 4]>,
-) -> Vec<ShadedVertex> {
+) -> Vec<[f32; 4]> {
     let grad = |p: [f32; 3]| {
         [
             p[0] * 0.5 + 0.5,
@@ -110,18 +126,12 @@ fn bake_vertices(
         ]
     };
     match base_color {
-        None => clip
-            .iter()
-            .map(|p| ShadedVertex {
-                pos: *p,
-                color: grad(*p),
-            })
-            .collect(),
+        None => clip.iter().map(|p| grad(*p)).collect(),
         Some(base) => {
             let ln = (LIGHT[0] * LIGHT[0] + LIGHT[1] * LIGHT[1] + LIGHT[2] * LIGHT[2]).sqrt();
             clip.iter()
                 .enumerate()
-                .map(|(i, p)| {
+                .map(|(i, _)| {
                     let n = normals
                         .and_then(|ns| ns.get(i).copied())
                         .unwrap_or([0.0, 0.0, 1.0]);
@@ -132,14 +142,35 @@ fn bake_vertices(
                         0.0
                     };
                     let shade = 0.35 + 0.65 * diffuse;
-                    ShadedVertex {
-                        pos: *p,
-                        color: [base[0] * shade, base[1] * shade, base[2] * shade, base[3]],
-                    }
+                    [base[0] * shade, base[1] * shade, base[2] * shade, base[3]]
                 })
                 .collect()
         }
     }
+}
+
+/// 烘焙顶点(裁剪坐标 + 颜色)。12+16=28 字节,对齐 4。
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ShadedVertex {
+    pos: [f32; 3],
+    color: [f32; 4],
+}
+
+/// CPU 烘焙每顶点颜色。
+/// - 无材质:复刻旧版位置渐变(同公式,兼容旧出图观感);
+/// - 有材质:baseColor × (0.35 环境 + 0.65 兰伯特),法线缺失时
+///   以 (0,0,1) 朝向镜头(等比缩放不改变法线方向)。
+fn bake_vertices(
+    clip: &[[f32; 3]],
+    normals: Option<&[[f32; 3]]>,
+    base_color: Option<[f32; 4]>,
+) -> Vec<ShadedVertex> {
+    vertex_colors(clip, normals, base_color)
+        .into_iter()
+        .zip(clip.iter())
+        .map(|(color, p)| ShadedVertex { pos: *p, color })
+        .collect()
 }
 
 /// 无头渲染器:持有一套 device/queue/pipeline,可反复渲染网格。
@@ -147,6 +178,8 @@ pub struct HeadlessRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
+    /// #152 首刀:MVP uniform + 深度缓冲的世界坐标管线。
+    pipeline_view: wgpu::RenderPipeline,
     adapter_info: String,
 }
 
@@ -243,10 +276,64 @@ impl HeadlessRenderer {
                 cache: None,
             });
 
+            // #152 首刀:同顶点流,uniform MVP + 深度测试(Less + write)。
+            let shader_view = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("oriera-camera"),
+                source: wgpu::ShaderSource::Wgsl(SHADER_VIEW.into()),
+            });
+            let pipeline_view = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("oriera-view-pipeline"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &shader_view,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: 28,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                offset: 0,
+                                shader_location: 0,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 12,
+                                shader_location: 1,
+                                format: wgpu::VertexFormat::Float32x4,
+                            },
+                        ],
+                    })],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader_view,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Bgra8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    // wgpu 30:两字段是 Option,None = 默认行为;显式写出语义。
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
             Ok(HeadlessRenderer {
                 device,
                 queue,
                 pipeline,
+                pipeline_view,
                 adapter_info: format!("{} ({})", info.name, info.backend),
             })
         })
@@ -349,6 +436,18 @@ impl HeadlessRenderer {
             }
         }
 
+        self.readback_pixels(encoder, &texture, width, height)
+    }
+
+    /// 提交 encoder、把目标纹理拷进 256 对齐的 readback buffer、阻塞回读。
+    /// 去填充后返回紧密排列的 BGRA 行。
+    fn readback_pixels(
+        &self,
+        encoder: wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> Result<RenderedImage, GpuError> {
         // 回读:wgpu 要求 bytes_per_row 对齐 256,读出后去填充
         let stride = (width * 4) as usize;
         let padded = stride.div_ceil(256) * 256;
@@ -358,9 +457,10 @@ impl HeadlessRenderer {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
+        let mut encoder = encoder;
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -412,6 +512,150 @@ impl HeadlessRenderer {
             height,
             bgra,
         })
+    }
+
+    /// #152 首刀:用相机渲染**世界坐标**网格(MVP uniform + Depth32Float
+    /// 深度缓冲)。渲染目标尺寸取自相机的 `width`/`height`(纵横比一致)。
+    /// 颜色规则与 [`HeadlessRenderer::render_mesh_shaded`] 相同——无材质:
+    /// 旧版位置渐变(基于全网格归一化坐标);有材质:兰伯特(世界法线)。
+    /// 深度测试 Less + write:近面遮蔽远面,与绘制顺序无关。
+    pub fn render_mesh_view(
+        &self,
+        positions: &[[f32; 3]],
+        normals: Option<&[[f32; 3]]>,
+        base_color: Option<[f32; 4]>,
+        indices: &[u32],
+        camera: &Camera,
+    ) -> Result<RenderedImage, GpuError> {
+        if positions.is_empty() {
+            return Err(GpuError::Device("empty mesh".into()));
+        }
+        let (width, height) = (camera.width, camera.height);
+        let clip = normalize_to_clip(positions);
+        let colors = vertex_colors(&clip, normals, base_color);
+        let verts: Vec<ShadedVertex> = positions
+            .iter()
+            .zip(colors)
+            .map(|(p, color)| ShadedVertex { pos: *p, color })
+            .collect();
+
+        let mvp = camera.view_proj();
+        // WGSL 的 mat4x4f 是**列主序**:Mat4 行主序,上传时转置
+        // (column_major[c*4+r] = mvp[r][c])——不转置等于乘了逆矩阵,全部被裁掉。
+        let mut column_major = [0f32; 16];
+        for (r, row) in mvp.iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                column_major[c * 4 + r] = *v;
+            }
+        }
+        let uniform = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("camera-mvp"),
+                contents: bytemuck::cast_slice(&column_major),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera-bind"),
+            layout: &self.pipeline_view.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform,
+                    offset: 0,
+                    size: None,
+                }),
+            }],
+        });
+
+        let vertex_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("vertices"),
+                contents: bytemuck::cast_slice(&verts),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("oriera-view-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipeline_view);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.set_vertex_buffer(0, vertex_buf.slice(..));
+            match indices.split_first() {
+                Some(_) => {
+                    let index_buf =
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("indices"),
+                                contents: bytemuck::cast_slice(indices),
+                                usage: wgpu::BufferUsages::INDEX,
+                            });
+                    pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+                }
+                None => pass.draw(0..positions.len() as u32, 0..1),
+            }
+        }
+
+        self.readback_pixels(encoder, &texture, width, height)
     }
 }
 
@@ -488,8 +732,8 @@ mod tests {
                 0.3 + 0.5 * (p[2] * 0.5 + 0.5),
                 1.0,
             ];
-            for c in 0..4 {
-                assert!((v[i].color[c] - want[c]).abs() < 1e-6);
+            for (c, w) in want.iter().enumerate() {
+                assert!((v[i].color[c] - w).abs() < 1e-6);
             }
         }
     }
@@ -531,5 +775,99 @@ mod tests {
         assert_eq!(img.pixel(2, 2), bg, "corner stays background");
         let mid = img.pixel(32, 32); // 三角形重心附近
         assert_ne!(mid, bg, "triangle center must be rasterized: {mid:?}");
+    }
+
+    /// #152 首刀实测:世界坐标三角形落在投影计算的位置,颜色与
+    /// bake 公式一致(兰伯特,法线缺省按 (0,0,1) 朝镜头)。
+    #[test]
+    #[ignore = "requires a local GPU adapter (none in CI)"]
+    fn camera_path_lands_the_triangle_where_projected() {
+        let r = HeadlessRenderer::new().expect("adapter");
+        let cam = Camera::look_at(
+            [0.0; 3],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+            90.0,
+            64,
+            64,
+            0.1,
+            100.0,
+        );
+        let img = r
+            .render_mesh_view(
+                &[[-1.0, -1.0, -4.0], [1.0, -1.0, -4.0], [0.0, 1.0, -4.0]],
+                None,
+                Some([0.9, 0.2, 0.2, 1.0]),
+                &[0, 1, 2],
+                &cam,
+            )
+            .expect("render");
+        let bg = [33, 20, 13, 255];
+        assert_eq!(img.pixel(2, 2), bg, "corner stays background");
+        // 顶点 (0,-⅓,-4) 投影到 NDC (0, -1/12) → 像素 (32, 34/35);取 (32,32)
+        // 在三角形内部(底边 y_ndc=-0.25 → 像素 40,顶点 y_ndc=+0.25 → 像素 24)。
+        let mid = img.pixel(32, 32);
+        assert_ne!(mid, bg, "projected triangle must be rasterized: {mid:?}");
+        let ln = 0.45f32.hypot(0.55).hypot(0.70);
+        let shade = 0.35 + 0.65 * (0.70f32 / ln).max(0.0);
+        let want = |v: f32| (v * shade * 255.0).round() as i32;
+        // BGRA:B=base.b×shade,G=base.g×shade,R=base.r×shade(±2 容差吸收舍入)。
+        for (i, base) in [(0usize, 0.2f32), (1, 0.2), (2, 0.9)] {
+            assert!(
+                (mid[i] as i32 - want(base)).abs() <= 2,
+                "channel {i}: {mid:?} vs shade {shade:.4}"
+            );
+        }
+        assert_eq!(mid[3], 255);
+    }
+
+    /// #152 首刀实测(深度语义的核心证据):**近面先画、远面后画**——
+    /// 没有深度缓冲时后画的远面会覆盖近面;有了 Depth32Float(Less+write),
+    /// 近面必须胜出,与绘制顺序无关。
+    #[test]
+    #[ignore = "requires a local GPU adapter (none in CI)"]
+    fn depth_buffer_lets_the_nearer_surface_win() {
+        let r = HeadlessRenderer::new().expect("adapter");
+        let cam = Camera::look_at(
+            [0.0; 3],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+            60.0,
+            64,
+            64,
+            0.1,
+            100.0,
+        );
+        // 两块平行四边形:近面 z=-2 先画,远面 z=-5 后画(fov60 深度 2 处
+        // 视锥半宽 ≈1.155,半宽 1 的四边形完整在视锥内)。
+        let mut positions = vec![
+            [-1.0, -1.0, -2.0],
+            [1.0, -1.0, -2.0],
+            [1.0, 1.0, -2.0],
+            [-1.0, 1.0, -2.0],
+        ];
+        positions.extend([
+            [-1.0, -1.0, -5.0],
+            [1.0, -1.0, -5.0],
+            [1.0, 1.0, -5.0],
+            [-1.0, 1.0, -5.0],
+        ]);
+        let indices = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+        let img = r
+            .render_mesh_view(&positions, None, None, &indices, &cam)
+            .expect("render");
+        // 全网格归一化:包围盒 z∈[-5,-2],近面 z'=+0.9、远面 z'=-0.9,
+        // 渐变 B = 0.3+0.5×(z'×0.5+0.5) → 近面 ≈198、远面 ≈83。
+        // 无深度时后画的远面会把它压到 ≈83;有深度必须是近面的 ≈198。
+        let mid = img.pixel(32, 32);
+        assert!(
+            (170..=215).contains(&mid[0]),
+            "near quad (B≈198) must win via depth, got {mid:?} (far quad would be ≈83)"
+        );
+        // 中心像素是近面四角的插值(R/G 均 ≈127.5),进一步确认是近面而非背景。
+        assert!(
+            (110..=145).contains(&mid[1]) && (110..=145).contains(&mid[2]),
+            "center must interpolate the near quad corners: {mid:?}"
+        );
     }
 }

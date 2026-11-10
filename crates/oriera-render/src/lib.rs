@@ -14,6 +14,8 @@
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Position, World};
 
+pub mod camera;
+
 #[cfg(feature = "render-wgpu")]
 pub mod gpu;
 

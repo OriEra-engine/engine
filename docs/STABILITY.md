@@ -68,8 +68,15 @@
 
 以下能力**尚未达到上述承诺**,使用前须知:
 - L5 默认构建仍为计数占位;真 GPU 光栅化已通过 `render-wgpu` feature 无头闭环
-  (wgpu,本机 Intel GL 后端实测出图;windows-gnu 下 DX12/Vulkan 枚举崩溃故默认钳制 GL),
-  但 Pass 图/材质/纹理/相机矩阵尚未落地(`oriera-splat` 自带的泼溅专用相机不算,见下),且 Rust 引擎与浏览器 demo 之间仍无编译关系;
+  (wgpu,本机 Intel GL 后端实测出图;windows-gnu 下 DX12/Vulkan 枚举崩溃故默认钳制 GL;
+  本机**链接** wgpu 测试二进制须 msvc-local 工具链——`windows` crate 的 raw-dylib
+  导入库 GNU ld 链不了),Pass 图/材质系统/纹理/蒙皮尚未落地,且 Rust 引擎与浏览器
+  demo 之间仍无编译关系;
+  **相机矩阵与深度缓冲已随 #152 首刀落地**(2026-11-10):`oriera_render::camera::Camera`
+  (GL 式 y-up/-z-forward,WebGPU NDC z∈[0,1],10 项闭式单测)+
+  `HeadlessRenderer::render_mesh_view`(MVP uniform + Depth32Float 深度测试 Less+write;
+  本机 GPU 实测:投影落点逐像素吻合 + 近面先画/远面后画仍被近面遮蔽)。
+  旧 `render_mesh`/`render_mesh_shaded` 的 CPU 归一化路径行为冻结不变;
 - L7 同步 `complete()` 仍是默认路径(离线规则后端零成本);异步作业层 `InferJobs` +
   认知/导演 `with_async()` 已落地(提交-收割,帧不阻塞网络,真 LLM 接入的壳层应启用),
   工具调用(OpenAI/Anthropic 双方言 wire)与 SSE 真流式已随 native-http 落地
