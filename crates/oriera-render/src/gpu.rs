@@ -184,6 +184,44 @@ fn fs(in: VSOut) -> @location(0) vec4f {
     let rgb = diff + spec + ambient;
     return vec4f(rgb, alpha);
 }
+
+/// #153 M1:关节面板(group2 uniform,bind→世界)。MAX_JOINTS=256 与 Rust 侧
+/// 常量一致(256×64B=16KB,远低于默认 max_uniform_buffer_binding_size)。
+struct Joints {
+    mats: array<mat4x4f, 256>,
+};
+
+@group(2) @binding(0) var<uniform> joints: Joints;
+
+/// 蒙皮顶点:pos/norm 在 bind 空间(glTF 规范:蒙皮时节点变换被忽略),
+/// Σ w·jointMat·p 到世界;法线同一 mat4 的 (n,0)(仿射假设:关节动画
+/// 不引入非均匀剪裁,规范化后视觉正确——非均匀缩放需逆转置,后置)。
+/// 索引/权重由调用方 CPU 校验越界(WGSL 越界未定义,不赌运行时钳制)。
+@vertex
+fn vs_skinned(@location(0) p: vec3f, @location(1) n: vec3f, @location(2) uv: vec2f,
+      @location(3) color: vec4f, @location(4) mr: vec2f,
+      @location(5) joint_idx: vec4u, @location(6) weight: vec4f) -> VSOut {
+    var sp = vec3f(0.0);
+    var sn = vec3f(0.0);
+    for (var k = 0; k < 4; k = k + 1) {
+        let w = weight[k];
+        if (w > 0.0) {
+            let m = joints.mats[joint_idx[k]];
+            let mp = m * vec4f(p, 1.0);
+            let mn = m * vec4f(n, 0.0);
+            sp = sp + w * mp.xyz;
+            sn = sn + w * mn.xyz;
+        }
+    }
+    var out: VSOut;
+    out.pos = cam.mvp * vec4f(sp, 1.0);
+    out.world = sp;
+    out.normal = normalize(sn);
+    out.uv = uv;
+    out.color = color;
+    out.mr = mr;
+    return out;
+}
 "#;
 
 /// 场景渲染主光方向(#152 第四刀;与 LIGHT 同向,存 w 分量作强度)。
@@ -267,6 +305,10 @@ pub struct HeadlessRenderer {
     tex_bgl: wgpu::BindGroupLayout,
     /// #152 第四刀:PBR 管线。
     pipeline_view_pbr: wgpu::RenderPipeline,
+    /// #153 M1:蒙皮管线(同 PBR 片元,顶点加 joint/weight 属 + 关节面板 group2)。
+    pipeline_view_pbr_skinned: wgpu::RenderPipeline,
+    /// 关节面板 bind group layout(group0,16KB uniform 数组)。
+    joints_bgl: wgpu::BindGroupLayout,
     /// base 白模视图(无纹理 part 的 albedo=因子兜底)。
     dummy_base_view: wgpu::TextureView,
     /// MR 白模视图(无 MR part 的因子直通兜底)。
@@ -299,6 +341,43 @@ pub struct ScenePart<'a> {
     pub base_texture: Option<&'a GpuTexture>,
     /// MR 打包纹理 G=粗糙度 B=金属度(None = 白模兜底,因子直通)。
     pub mr_texture: Option<&'a GpuTexture>,
+}
+
+/// 蒙皮顶点(bind 空间 + joint/weight 属)。12+12+8+16+8+16+16=88 字节,对齐 4。
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SkinnedVertex {
+    pos: [f32; 3],
+    normal: [f32; 3],
+    uv: [f32; 2],
+    color: [f32; 4],
+    mr: [f32; 2],
+    joints: [u32; 4],
+    weight: [f32; 4],
+}
+
+/// 关节面板 uniform 容量上限(#153 M1;WGSL `array<mat4x4f, 256>` 同值)。
+/// 256 关节 × 64B = 16KB,低于 WebGPU 默认 max_uniform_buffer_binding_size。
+const MAX_JOINTS: usize = 256;
+
+/// 蒙皮场景渲染的一个绘制单元(bind 空间顶点 + 关节面板;[`HeadlessRenderer::
+/// render_skinned_views`])。字段语义同 [`ScenePart`],另加:
+/// - `joints`/`weight`:每顶点 JOINTS_0/WEIGHTS_0(与 positions 等长);
+/// - `palette`:关节面板(bind→世界),即 `oriera_asset::glb::joint_matrices_at`
+///   的单 skin 切片;元素数 ≤ [`MAX_JOINTS`],顶点索引越界面板在 CPU 侧显式拒绝。
+pub struct SkinnedPart<'a> {
+    pub positions: &'a [[f32; 3]],
+    pub normals: Option<&'a [[f32; 3]]>,
+    pub uvs: Option<&'a [[f32; 2]]>,
+    pub indices: &'a [u32],
+    pub base_color: [f32; 4],
+    pub metallic: f32,
+    pub roughness: f32,
+    pub base_texture: Option<&'a GpuTexture>,
+    pub mr_texture: Option<&'a GpuTexture>,
+    pub joints: &'a [[u32; 4]],
+    pub weights: &'a [[f32; 4]],
+    pub palette: &'a [[[f32; 4]; 4]],
 }
 
 /// 行主序 Mat4 → WGSL 列主序上传布局(与 render_mesh_view 同一约定)。
@@ -578,6 +657,100 @@ impl HeadlessRenderer {
                     cache: None,
                 });
 
+            // #153 M1:蒙皮管线——顶点加 JOINTS(usize32x4)/WEIGHTS(float32x4)
+            // 属(接在 PBR 五属之后),group2 关节面板 uniform;片元与 PBR 同源。
+            let joints_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("oriera-joints-bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new((MAX_JOINTS * 64) as u64),
+                    },
+                    count: None,
+                }],
+            });
+            let skinned_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("oriera-skinned-layout"),
+                    bind_group_layouts: &[Some(&camera_bgl), Some(&tex_bgl), Some(&joints_bgl)],
+                    immediate_size: 0,
+                });
+            let pipeline_view_pbr_skinned =
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("oriera-view-skinned-pipeline"),
+                    layout: Some(&skinned_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader_view_pbr,
+                        entry_point: Some("vs_skinned"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: 88, // pos3+normal3+uv2+color4+mr2+joints4+weight4
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &[
+                                wgpu::VertexAttribute {
+                                    offset: 0,
+                                    shader_location: 0,
+                                    format: wgpu::VertexFormat::Float32x3,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 12,
+                                    shader_location: 1,
+                                    format: wgpu::VertexFormat::Float32x3,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 24,
+                                    shader_location: 2,
+                                    format: wgpu::VertexFormat::Float32x2,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 32,
+                                    shader_location: 3,
+                                    format: wgpu::VertexFormat::Float32x4,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 48,
+                                    shader_location: 4,
+                                    format: wgpu::VertexFormat::Float32x2,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 56,
+                                    shader_location: 5,
+                                    format: wgpu::VertexFormat::Uint32x4,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 72,
+                                    shader_location: 6,
+                                    format: wgpu::VertexFormat::Float32x4,
+                                },
+                            ],
+                        })],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader_view_pbr,
+                        entry_point: Some("fs"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Bgra8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::Less),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+
             // PBR 白模兜底:base=纯白(albedo=因子),mr=白(G=B=1 → 因子直通)
             let mk_dummy = |px: [u8; 4]| {
                 let t = device.create_texture(&wgpu::TextureDescriptor {
@@ -630,6 +803,8 @@ impl HeadlessRenderer {
                 camera_bgl,
                 tex_bgl,
                 pipeline_view_pbr,
+                pipeline_view_pbr_skinned,
+                joints_bgl,
                 dummy_base_view,
                 dummy_mr_view,
                 scene_sampler,
@@ -885,6 +1060,262 @@ impl HeadlessRenderer {
                                 resource: wgpu::BindingResource::Sampler(&self.scene_sampler),
                             },
                         ],
+                    }),
+                    &[],
+                );
+                pass.set_vertex_buffer(0, vertex_buf.slice(..));
+                match part.indices.split_first() {
+                    Some(_) => {
+                        pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..part.indices.len() as u32, 0, 0..1);
+                    }
+                    None => pass.draw(0..part.positions.len() as u32, 0..1),
+                }
+            }
+        }
+
+        self.readback_pixels(encoder, &texture, width, height)
+    }
+
+    /// #153 M1:蒙皮场景渲染——bind 空间顶点 + 关节面板 uniform,逐 part 蒙皮
+    /// 变形后走与 [`HeadlessRenderer::render_scene_views`] 同源的 PBR 片元。
+    /// 数学契约:GPU `vs_skinned` 与 CPU `skin_vertices` 同公式(Σ w·M·p),
+    /// 互证测试锁定一致。模型矩阵通过预乘面板带入(Σw·(M·J·IBM)·p 恒等变形),
+    /// 故本函数签名保持「世界空间面板 + bind 空间顶点」。
+    pub fn render_skinned_views(
+        &self,
+        parts: &[SkinnedPart<'_>],
+        camera: &Camera,
+    ) -> Result<RenderedImage, GpuError> {
+        let (width, height) = (camera.width, camera.height);
+        if width == 0 || height == 0 || parts.is_empty() {
+            return Err(GpuError::Device("empty scene or zero-sized target".into()));
+        }
+        // CPU 侧校验:面板容量 + 顶点索引越界(WGSL 越界未定义,不赌运行时钳制)
+        for part in parts {
+            if part.palette.is_empty() || part.palette.len() > MAX_JOINTS {
+                return Err(GpuError::Device(format!(
+                    "palette size {} outside 1..={MAX_JOINTS}",
+                    part.palette.len()
+                )));
+            }
+            if part.joints.len() != part.positions.len()
+                || part.weights.len() != part.positions.len()
+            {
+                return Err(GpuError::Device(
+                    "joints/weights length must match positions".into(),
+                ));
+            }
+            let nj = part.palette.len() as u32;
+            if part
+                .joints
+                .iter()
+                .flat_map(|j| j.iter())
+                .any(|&idx| idx >= nj)
+            {
+                return Err(GpuError::Device(
+                    "vertex joint index out of palette bounds".into(),
+                ));
+            }
+        }
+        // 96B 场景 uniform(与 render_scene_views 同一布局)
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct SceneUniform {
+            mvp_col: [f32; 16],
+            cam_pos: [f32; 4],
+            light_dir: [f32; 4],
+        }
+        let uniform = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("skinned-camera"),
+                contents: bytemuck::cast_slice(&[SceneUniform {
+                    mvp_col: mvp_col_major(&camera.view_proj()),
+                    cam_pos: [
+                        camera.eye_pos()[0],
+                        camera.eye_pos()[1],
+                        camera.eye_pos()[2],
+                        0.0,
+                    ],
+                    light_dir: SCENE_LIGHT_DIR,
+                }]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let cam_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera-bind-skinned"),
+            layout: &self.camera_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform,
+                    offset: 0,
+                    size: None,
+                }),
+            }],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("skinned-frame"),
+            });
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("oriera-skinned-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            for part in parts {
+                if part.positions.is_empty() {
+                    continue;
+                }
+                // 蒙皮顶点:bind 空间 pos/norm + uv/因子 + JOINTS/WEIGHTS
+                let textured = part.base_texture.is_some() && part.uvs.is_some();
+                let mut verts: Vec<SkinnedVertex> = Vec::with_capacity(part.positions.len());
+                for (i, p) in part.positions.iter().enumerate() {
+                    let uv = if textured {
+                        part.uvs
+                            .and_then(|u| u.get(i).copied())
+                            .unwrap_or([0.0, 0.0])
+                    } else {
+                        [0.0, 0.0]
+                    };
+                    let n = part
+                        .normals
+                        .and_then(|n| n.get(i).copied())
+                        .unwrap_or([0.0, 0.0, 1.0]);
+                    verts.push(SkinnedVertex {
+                        pos: *p,
+                        normal: n,
+                        uv,
+                        color: part.base_color,
+                        mr: [part.metallic, part.roughness],
+                        joints: part.joints[i],
+                        weight: part.weights[i],
+                    });
+                }
+                let vertex_buf =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("skinned-vertices"),
+                            contents: bytemuck::cast_slice(&verts),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                let index_buf = self
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("skinned-indices"),
+                        contents: bytemuck::cast_slice(part.indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    });
+                // 关节面板 uniform:补零到 MAX_JOINTS(未用槽位不会被有效索引命中)
+                let mut palette = vec![0f32; MAX_JOINTS * 16];
+                for (j, m) in part.palette.iter().enumerate() {
+                    let col_major_flat = mvp_col_major(m);
+                    palette[j * 16..j * 16 + 16].copy_from_slice(&col_major_flat);
+                }
+                let palette_buf =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("skinned-palette"),
+                            contents: bytemuck::cast_slice(&palette),
+                            usage: wgpu::BufferUsages::UNIFORM,
+                        });
+                pass.set_pipeline(&self.pipeline_view_pbr_skinned);
+                pass.set_bind_group(0, &cam_bind, &[]);
+                let base_view = part
+                    .base_texture
+                    .map(|t| &t.view)
+                    .unwrap_or(&self.dummy_base_view);
+                let mr_view = part
+                    .mr_texture
+                    .map(|t| &t.view)
+                    .unwrap_or(&self.dummy_mr_view);
+                pass.set_bind_group(
+                    1,
+                    &self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("skinned-tex-bind"),
+                        layout: &self.tex_bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(base_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(mr_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Sampler(&self.scene_sampler),
+                            },
+                        ],
+                    }),
+                    &[],
+                );
+                pass.set_bind_group(
+                    2,
+                    &self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("skinned-palette-bind"),
+                        layout: &self.joints_bgl,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &palette_buf,
+                                offset: 0,
+                                size: None,
+                            }),
+                        }],
                     }),
                     &[],
                 );

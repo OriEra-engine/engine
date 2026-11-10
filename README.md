@@ -54,7 +54,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 
 **🌐 https://oriera-engine.github.io/engine/**
 
-16 个可玩 demo，浏览器直接打开：
+17 个可玩 demo，浏览器直接打开：
 
 | Demo | 展示 | 打开 |
 |---|---|---|
@@ -74,6 +74,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 | 14 Frame Hunter 帧猎 | 跑酷答题游戏：三车道跑酷 + 谬误之门 + Boss 战，BKT 知识追踪，全离线 2.3MB | [▶](https://oriera-engine.github.io/engine/frame-hunter/index.html) |
 | 15 Embodied Sim 具身仿真台 | **rapier3d 接触物理机械臂桌面抓放**：键鼠遥操作/脚本演示 + 六预设卡片墙换装；数据导出走 Studio 工作台或 CLI（独立打开时「导出」置灰） | [▶](https://oriera-engine.github.io/engine/examples/15-embodied-sim/index.html) |
 | 16 高斯展馆 Gaussian Hall | **实验性 3DGS 查看器**：标准 PLY 进、EWA 泼溅出，CC0 真扫描 + 程序化花瓣环，拖入 .ply 即换展品；JS 镜像与 Rust 共读金样对拍 | [▶](https://oriera-engine.github.io/engine/examples/16-gaussian-hall/index.html) |
+| 17 秘林咖啡馆 Myth Café | **经营小游戏**：Hyper3D 资产怪兽常客点单，裸 WebGL2 Cook-Torrance PBR + 蒙皮管线同源渲染，离线可玩（资产不入库，缺文件自动降级占位兽） | [▶](https://oriera-engine.github.io/engine/examples/17-myth-cafe/index.html) |
 
 ## 架构
 
