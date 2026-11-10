@@ -42,6 +42,11 @@ test("scene decode: primitive count, material stall, texture stall exact", () =>
       want.texture_len ?? null,
       `prim ${i} texture length`,
     );
+    assert.equal(
+      js.mrTexture ? js.mrTexture.bytes.length : null,
+      want.mr_texture_len ?? null,
+      `prim ${i} MR texture length`,
+    );
   }
 });
 

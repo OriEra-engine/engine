@@ -220,7 +220,7 @@ export function decodeGlbScene(bytes) {
         }
       }
       // 材质摊位(默认值同规范;扩展只拒替换型)
-      let baseColor = null, metallic = 1, roughness = 1, texture = null;
+      let baseColor = null, metallic = 1, roughness = 1, texture = null, mrTexture = null;
       if (typeof primitive.material === "number") {
         const mat = doc.materials?.[primitive.material];
         if (!mat) throw new GltfError(`材质 ${primitive.material} 缺失`);
@@ -233,6 +233,17 @@ export function decodeGlbScene(bytes) {
         }
         metallic = typeof pbr.metallicFactor === "number" ? pbr.metallicFactor : 1;
         roughness = typeof pbr.roughnessFactor === "number" ? pbr.roughnessFactor : 1;
+        const mrIdx = pbr.metallicRoughnessTexture?.index;
+        if (typeof mrIdx === "number") {
+          const mSrc = doc.textures?.[mrIdx]?.source;
+          const mImg = doc.images?.[mSrc];
+          if (mImg === undefined || mImg === null) throw new GltfError("MR 纹理引用的 image 缺失");
+          if (mImg.uri !== undefined) throw new GltfError("外部图片文件暂不支持(GLB 内嵌才行)");
+          if (mImg.mimeType !== "image/png") throw new GltfError("只支持 PNG 纹理");
+          const mView = doc.bufferViews?.[mImg.bufferView];
+          if (!mView) throw new GltfError("MR 纹理引用的 bufferView 缺失");
+          mrTexture = { mime: mImg.mimeType, bytes: bin.subarray(mView.byteOffset ?? 0, (mView.byteOffset ?? 0) + (mView.byteLength ?? 0)) };
+        }
         const texIdx = pbr.baseColorTexture?.index;
         if (typeof texIdx === "number") {
           const src = doc.textures?.[texIdx]?.source;
@@ -270,6 +281,7 @@ export function decodeGlbScene(bytes) {
         metallic,
         roughness,
         texture,
+        mrTexture,
       });
     }
   }

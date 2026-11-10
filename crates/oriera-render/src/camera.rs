@@ -141,6 +141,19 @@ impl Camera {
         mul(&self.projection, &self.view)
     }
 
+    /// 相机世界坐标(eye) = -Rᵀ·t(look_at 生成的平移反推)。
+    /// PBR 片元的视线方向 V 需要 camPos(#152 第四刀)。
+    pub fn eye_pos(&self) -> [f32; 3] {
+        let r = &self.view;
+        // 平移在视图矩阵第 4 列
+        let t = [self.view[0][3], self.view[1][3], self.view[2][3]];
+        [
+            -(r[0][0] * t[0] + r[1][0] * t[1] + r[2][0] * t[2]),
+            -(r[0][1] * t[0] + r[1][1] * t[1] + r[2][1] * t[2]),
+            -(r[0][2] * t[0] + r[1][2] * t[1] + r[2][2] * t[2]),
+        ]
+    }
+
     /// 世界点 → NDC `[x, y, z]`(z ∈ [0,1])。w ≤ 0(点在相机侧/位于镜头平面)
     /// 或结果非有限时返回 `None` —— 调用方据此剔除,GPU 侧裁剪是另一道闸。
     pub fn project(&self, p: [f32; 3]) -> Option<[f32; 3]> {
