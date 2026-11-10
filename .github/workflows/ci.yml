@@ -49,6 +49,8 @@ jobs:
         run: node --test examples/11-ai-cafe/engine/kernel.test.mjs
       - name: Splat JS mirror cross-language golden (node, no browser)
         run: node --test examples/16-gaussian-hall/engine/splat.test.mjs
+      - name: glTF JS mirror cross-language golden (node, no browser)
+        run: node --test examples/05-gltf-model/engine/gltf.test.mjs
 
   # 单 job 串行全 feature 腿时，一条卡死拖死全部（2026-10-26 实测：
   # Windows Test 步骤挂 79 分钟被取消）。拆 matrix 并行：各腿独立
