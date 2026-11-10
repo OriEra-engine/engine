@@ -849,6 +849,8 @@ pub fn decode_glb_scene(bytes: &[u8]) -> Result<GlbScene, GlbError> {
                         let image = images
                             .and_then(|is| is.get(source))
                             .ok_or(GlbError::Unsupported("texture references missing image"))?;
+                        // #153 M0:rig 路径纹理字节照实摊位(mime 如实记录;
+                        // PNG 解码由调用方按 mime 门控,JPEG 显式标记不支持)
                         let mime = image
                             .get("mimeType")
                             .and_then(Value::as_str)
@@ -908,9 +910,6 @@ pub fn decode_glb_scene(bytes: &[u8]) -> Result<GlbScene, GlbError> {
                             .and_then(Value::as_str)
                             .unwrap_or("unknown")
                             .to_string();
-                        if mime != "image/png" {
-                            return Err(GlbError::Unsupported("non-PNG metallicRoughnessTexture"));
-                        }
                         if image.get("uri").is_some() {
                             return Err(GlbError::Unsupported(
                                 "external image URI (GLB 内嵌 image 才可)",
@@ -1073,6 +1072,778 @@ fn normalize_to_rgba8(raw: &[u8], color_type: png::ColorType, width: u32, height
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 蒙皮与动画(#153 P0 M0):skins 摊位、JOINTS_0/WEIGHTS_0 顶属、animations
+// 采样(LINEAR/STEP)与关节面板(关节世界 × 逆绑定)。真文件常态
+// (accessor byteOffset/交错)经 locate_scene 天然支持。
+// ---------------------------------------------------------------------------
+
+/// 蒙皮:关节节点序(与 inverseBindMatrices 一一对应)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlbSkin {
+    pub joints: Vec<usize>,
+    pub inverse_bind_matrices: Vec<Mat4>,
+}
+
+/// 动画通道:驱动某节点某分量。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimPath {
+    Translation,
+    Rotation,
+    Scale,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlbAnimChannel {
+    pub node: usize,
+    pub path: AnimPath,
+    /// 关键帧时间(秒,升序)。
+    pub times: Vec<f32>,
+    /// 关键帧值:translation/scale 为 [x,y,z,0],rotation 为 xyzw 四元数。
+    pub values: Vec<[f32; 4]>,
+    /// true = 步进(相邻关键帧间保持前值);false = 线性插值。
+    pub step: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlbAnimation {
+    pub name: Option<String>,
+    pub channels: Vec<GlbAnimChannel>,
+    /// 动画时长(秒)= 末通道末关键帧时间(调用方循环/钳制自行决定)。
+    pub duration: f32,
+}
+
+/// 蒙皮 primitive:顶点在 **bind 空间**(glTF 规范:蒙皮时节点变换被忽略,
+/// 由关节面板驱动变形)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlbRigPrimitive {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Option<Vec<[f32; 3]>>,
+    pub uvs: Option<Vec<[f32; 2]>>,
+    pub indices: Vec<u32>,
+    /// JOINTS_0:每顶点 4 个关节下标(指向 [`GlbSkin::joints`])。
+    pub joints: Vec<[u16; 4]>,
+    /// WEIGHTS_0:每顶点 4 个权重(和为 1)。
+    pub weights: Vec<[f32; 4]>,
+    pub base_color: Option<[f32; 4]>,
+    pub base_color_texture: Option<GlbTextureBytes>,
+    pub metallic_roughness_texture: Option<GlbTextureBytes>,
+    pub skin: usize,
+}
+
+/// 解出的带动画骨架场景。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct GlbRig {
+    pub primitives: Vec<GlbRigPrimitive>,
+    pub skins: Vec<GlbSkin>,
+    pub animations: Vec<GlbAnimation>,
+    /// 场景根节点下标(运行时图遍历起点)。
+    pub roots: Vec<usize>,
+    /// 全部节点(静态本地 TRS 已合成;动画在采样时覆盖分量)。
+    pub nodes: Vec<GlbNodeRest>,
+}
+
+/// 节点静态本地变换(T/R/S 分量存储,动画按分量覆盖后重合成)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlbNodeRest {
+    pub children: Vec<usize>,
+    pub mesh: Option<usize>,
+    pub skin: Option<usize>,
+    pub translation: [f64; 3],
+    /// xyzw(w 在后,glTF 约定)。
+    pub rotation: [f64; 4],
+    pub scale: [f64; 3],
+}
+
+/// 采样动画通道在时间 `t` 的值(秒)。LINEAR:平移/缩放 lerp、旋转 slerp;
+/// STEP:保持前一关键帧。t 越界钳制到两端(循环由调用方按 duration 取模)。
+pub fn sample_channel(ch: &GlbAnimChannel, t: f32) -> [f32; 4] {
+    let times = &ch.times;
+    if times.is_empty() {
+        return [0.0; 4];
+    }
+    if t <= times[0] {
+        return ch.values[0];
+    }
+    if t >= *times.last().unwrap() {
+        return *ch.values.last().unwrap();
+    }
+    // 二分找区间 [k, k+1]
+    let mut k = 0usize;
+    while k + 1 < times.len() && times[k + 1] <= t {
+        k += 1;
+    }
+    let (t0, t1) = (times[k], times[k + 1]);
+    let (v0, v1) = (ch.values[k], ch.values[k + 1]);
+    if ch.step || t1 <= t0 {
+        return v0;
+    }
+    let a = (t - t0) / (t1 - t0);
+    if ch.path == AnimPath::Rotation {
+        // 四元数 slerp(xyzw);点积为负先翻短弧
+        let (x0, y0, z0, w0) = (v0[0], v0[1], v0[2], v0[3]);
+        let (mut x1, mut y1, mut z1, mut w1) = (v1[0], v1[1], v1[2], v1[3]);
+        let dot = x0 * x1 + y0 * y1 + z0 * z1 + w0 * w1;
+        if dot < 0.0 {
+            x1 = -x1;
+            y1 = -y1;
+            z1 = -z1;
+            w1 = -w1;
+        }
+        let theta = (x0 * x1 + y0 * y1 + z0 * z1 + w0 * w1)
+            .clamp(-1.0, 1.0)
+            .acos();
+        if theta < 1e-6 {
+            return v0;
+        }
+        let s0 = ((1.0 - a) * theta).sin() / theta.sin();
+        let s1 = (a * theta).sin() / theta.sin();
+        [
+            s0 * x0 + s1 * x1,
+            s0 * y0 + s1 * y1,
+            s0 * z0 + s1 * z1,
+            s0 * w0 + s1 * w1,
+        ]
+    } else {
+        [
+            v0[0] + (v1[0] - v0[0]) * a,
+            v0[1] + (v1[1] - v0[1]) * a,
+            v0[2] + (v1[2] - v0[2]) * a,
+            1.0,
+        ]
+    }
+}
+
+/// 四元数(xyzw)→ 3×3 旋转矩阵(f64 精度合成,输出 f32)。
+fn quat_xyzw_to_mat3_f64(q: [f64; 4]) -> [[f64; 3]; 3] {
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - w * z),
+            2.0 * (x * z + w * y),
+        ],
+        [
+            2.0 * (x * y + w * z),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - w * x),
+        ],
+        [
+            2.0 * (x * z - w * y),
+            2.0 * (y * z + w * x),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+}
+
+/// 采样时间 `t` 的关节面板(每 skin:关节世界矩阵 × inverseBind)。
+/// 动画未覆盖的分量回退节点静态 TRS;`anim_idx = None` 即静态姿势(rest)。
+pub fn joint_matrices_at(rig: &GlbRig, anim_idx: Option<usize>, t: f32) -> Vec<Vec<Mat4>> {
+    // 1) 通道采样:node → (T,R,S) 覆盖表
+    type TrsOverride = ([f64; 3], [f64; 4], [f64; 3]);
+    let mut override_trs: std::collections::HashMap<usize, TrsOverride> =
+        std::collections::HashMap::new();
+    if let Some(anim) = rig.animations.get(anim_idx.unwrap_or(usize::MAX)) {
+        for ch in &anim.channels {
+            let v = sample_channel(ch, t);
+            let entry = override_trs.entry(ch.node).or_insert_with(|| {
+                let rest = &rig.nodes[ch.node];
+                (rest.translation, rest.rotation, rest.scale)
+            });
+            match ch.path {
+                AnimPath::Translation => entry.0 = [v[0] as f64, v[1] as f64, v[2] as f64],
+                AnimPath::Rotation => {
+                    entry.1 = [v[0] as f64, v[1] as f64, v[2] as f64, v[3] as f64]
+                }
+                AnimPath::Scale => entry.2 = [v[0] as f64, v[1] as f64, v[2] as f64],
+            }
+        }
+    }
+
+    // 2) 图遍历(FIFO,环拒绝)合成世界矩阵
+    let mut world: Vec<Option<Mat4>> = vec![None; rig.nodes.len()];
+    let mut queue: std::collections::VecDeque<(usize, Mat4)> =
+        rig.roots.iter().map(|&i| (i, IDENTITY4)).collect();
+    while let Some((ni, parent)) = queue.pop_front() {
+        if world[ni].is_some() {
+            continue; // 共享节点只展开一次
+        }
+        let rest = &rig.nodes[ni];
+        let (tr, qr, sr) =
+            override_trs
+                .get(&ni)
+                .copied()
+                .unwrap_or((rest.translation, rest.rotation, rest.scale));
+        let rot = quat_xyzw_to_mat3_f64(qr);
+        let mut local = [[0.0; 4]; 4];
+        for r in 0..3 {
+            for c in 0..3 {
+                local[r][c] = (rot[r][c] * sr[c]) as f32;
+            }
+            local[r][3] = tr[r] as f32;
+        }
+        local[3][3] = 1.0;
+        let w = mul4(&parent, &local);
+        world[ni] = Some(w);
+        for &c in &rest.children {
+            queue.push_back((c, w));
+        }
+    }
+
+    // 3) 每 skin:关节面板 = 关节世界 × inverseBind
+    rig.skins
+        .iter()
+        .map(|skin| {
+            skin.joints
+                .iter()
+                .enumerate()
+                .map(|(i, &j)| {
+                    let w = world.get(j).copied().flatten().unwrap_or(IDENTITY4);
+                    mul4(&w, skin.inverse_bind_matrices.get(i).unwrap_or(&IDENTITY4))
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// CPU 蒙皮:按关节面板把 primitive 顶点从 bind 空间变换到世界坐标
+/// (供既有 render_mesh_view 出图;GPU 蒙皮管线随 M1 刀次)。
+pub fn skin_vertices(prim: &GlbRigPrimitive, palette: &[Mat4]) -> Vec<[f32; 3]> {
+    prim.positions
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let j = &prim.joints[i];
+            let w = &prim.weights[i];
+            let mut acc = [0.0f32; 3];
+            for k in 0..4 {
+                let weight = w[k];
+                if weight <= 0.0 {
+                    continue;
+                }
+                let m = palette.get(j[k] as usize).copied().unwrap_or(IDENTITY4);
+                for r in 0..3 {
+                    acc[r] += weight * m[r][0] * p[0]
+                        + weight * m[r][1] * p[1]
+                        + weight * m[r][2] * p[2]
+                        + weight * m[r][3];
+                }
+            }
+            acc
+        })
+        .collect()
+}
+
+/// 解码带蒙皮与动画的 GLB(与 [`decode_glb_scene`] 同支持面/拒绝面)。
+/// 蒙皮 primitive 顶点保持 **bind 空间**(节点变换不烘入——由关节面板驱动)。
+pub fn decode_glb_rig(bytes: &[u8]) -> Result<GlbRig, GlbError> {
+    let (doc, bin) = parse_glb_container(bytes)?;
+    let scene_idx = doc.get("scene").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let scene = doc
+        .pointer(&format!("/scenes/{scene_idx}"))
+        .ok_or(GlbError::MissingMesh)?;
+    let roots: Vec<usize> = scene
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_u64)
+                .map(|v| v as usize)
+                .collect()
+        })
+        .unwrap_or_default();
+    let nodes_json = doc.get("nodes").and_then(Value::as_array);
+    let nodes_json = nodes_json.ok_or(GlbError::MissingMesh)?;
+    let accessors = doc
+        .get("accessors")
+        .and_then(Value::as_array)
+        .ok_or(GlbError::MissingMesh)?;
+    let views = doc
+        .get("bufferViews")
+        .and_then(Value::as_array)
+        .ok_or(GlbError::MissingMesh)?;
+    let meshes = doc.get("meshes").and_then(Value::as_array);
+    let materials = doc.get("materials").and_then(Value::as_array);
+    let images = doc.get("images").and_then(Value::as_array);
+    let textures = doc.get("textures").and_then(Value::as_array);
+    let skins_json = doc.get("skins").and_then(Value::as_array);
+    let animations_json = doc.get("animations").and_then(Value::as_array);
+
+    // 节点静态本地 TRS(按分量存,动画按分量覆盖)
+    let mut nodes: Vec<GlbNodeRest> = Vec::with_capacity(nodes_json.len());
+    for node in nodes_json {
+        // matrix 形式(列主序 16 元)按规范分解为 T/R/S 存储
+        let (matrix_t, matrix_q, matrix_s) =
+            if let Some(arr) = node.get("matrix").and_then(Value::as_array) {
+                if arr.len() != 16 {
+                    return Err(GlbError::Unsupported("node matrix must have 16 elements"));
+                }
+                let m: Vec<f64> = arr.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect();
+                let at = |r: usize, c: usize| -> f64 { m[c * 4 + r] };
+                let t = [at(0, 3), at(1, 3), at(2, 3)];
+                let sx = (at(0, 0) * at(0, 0) + at(1, 0) * at(1, 0) + at(2, 0) * at(2, 0)).sqrt();
+                let sy = (at(0, 1) * at(0, 1) + at(1, 1) * at(1, 1) + at(2, 1) * at(2, 1)).sqrt();
+                let sz = (at(0, 2) * at(0, 2) + at(1, 2) * at(1, 2) + at(2, 2) * at(2, 2)).sqrt();
+                // 旋转 = 列向量归一 → 四元数(xyzw)
+                let rx = [at(0, 0) / sx, at(1, 0) / sx, at(2, 0) / sx];
+                let ry = [at(0, 1) / sy, at(1, 1) / sy, at(2, 1) / sy];
+                let rz = [at(0, 2) / sz, at(1, 2) / sz, at(2, 2) / sz];
+                let trace = rx[0] + ry[1] + rz[2];
+                let q = if trace > 0.0 {
+                    let s = (1.0 + trace).sqrt() * 2.0;
+                    [
+                        (ry[2] - rz[1]) / s,
+                        (rz[0] - rx[2]) / s,
+                        (rx[1] - ry[0]) / s,
+                        0.25 * s,
+                    ]
+                } else if rx[0] > ry[1] && rx[0] > rz[2] {
+                    let s = (1.0 + rx[0] - ry[1] - rz[2]).sqrt() * 2.0;
+                    [
+                        0.25 * s,
+                        (ry[0] + rx[1]) / s,
+                        (rz[0] + rx[2]) / s,
+                        (ry[2] - rz[1]) / s,
+                    ]
+                } else if ry[1] > rz[2] {
+                    let s = (1.0 + ry[1] - rx[0] - rz[2]).sqrt() * 2.0;
+                    [
+                        (ry[0] + rx[1]) / s,
+                        0.25 * s,
+                        (rz[1] + ry[2]) / s,
+                        (rz[0] - rx[2]) / s,
+                    ]
+                } else {
+                    let s = (1.0 + rz[2] - rx[0] - ry[1]).sqrt() * 2.0;
+                    [
+                        (rz[0] + rx[2]) / s,
+                        (rz[1] + ry[2]) / s,
+                        0.25 * s,
+                        (rx[1] - ry[0]) / s,
+                    ]
+                };
+                (t, q, [sx, sy, sz])
+            } else {
+                ([0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0; 3])
+            };
+        let t = node.get("translation").and_then(Value::as_array);
+        let r = node.get("rotation").and_then(Value::as_array);
+        let sc = node.get("scale").and_then(Value::as_array);
+        let get3 = |a: Option<&Vec<Value>>| {
+            a.map(|arr| {
+                [
+                    arr.first().and_then(Value::as_f64).unwrap_or(0.0),
+                    arr.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+                    arr.get(2).and_then(Value::as_f64).unwrap_or(1.0),
+                ]
+            })
+        };
+        let translation = get3(t).unwrap_or(matrix_t);
+        let scale = get3(sc).unwrap_or(matrix_s);
+        let rotation = match r {
+            Some(arr) if arr.len() == 4 => [
+                arr[0].as_f64().unwrap_or(0.0),
+                arr[1].as_f64().unwrap_or(0.0),
+                arr[2].as_f64().unwrap_or(0.0),
+                arr[3].as_f64().unwrap_or(1.0),
+            ],
+            _ => matrix_q, // 无 rotation 字段:用 matrix 分解出的四元数
+        };
+        nodes.push(GlbNodeRest {
+            children: node
+                .get("children")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_u64)
+                        .map(|v| v as usize)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            mesh: node.get("mesh").and_then(Value::as_u64).map(|v| v as usize),
+            skin: node.get("skin").and_then(Value::as_u64).map(|v| v as usize),
+            translation,
+            rotation,
+            scale,
+        });
+    }
+
+    // skins:joints + inverseBindMatrices
+    let mut skins = Vec::new();
+    if let Some(skin_list) = skins_json {
+        for skin in skin_list {
+            let joints: Vec<usize> = skin
+                .get("joints")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_u64)
+                        .map(|v| v as usize)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let ibm_idx = skin
+                .get("inverseBindMatrices")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let range = locate_scene(accessors, views, ibm_idx, COMPONENT_FLOAT, 4, 16, bin)?;
+            let mut mats: Vec<Mat4> = vec![IDENTITY4; range.count];
+            for (i, m) in mats.iter_mut().enumerate() {
+                let at = range.offset_of(i);
+                for (r, row) in m.iter_mut().enumerate() {
+                    for (c, cell) in row.iter_mut().enumerate() {
+                        let b = at + (r * 4 + c) * 4;
+                        *cell = f32::from_le_bytes([bin[b], bin[b + 1], bin[b + 2], bin[b + 3]]);
+                    }
+                }
+            }
+            skins.push(GlbSkin {
+                joints,
+                inverse_bind_matrices: mats,
+            });
+        }
+    }
+
+    // animations:channels × samplers(LINEAR/STEP)
+    let mut animations = Vec::new();
+    if let Some(anim_list) = animations_json {
+        for anim in anim_list {
+            let name = anim.get("name").and_then(Value::as_str).map(String::from);
+            let mut duration = 0.0f32;
+            let mut channels = Vec::new();
+            for ch in anim
+                .get("channels")
+                .and_then(|a| a.as_array())
+                .map_or(&[][..], |v| v)
+            {
+                let node = ch.pointer("/target/node").and_then(Value::as_u64).ok_or(
+                    GlbError::Unsupported("animation channel missing target.node"),
+                )? as usize;
+                let path = match ch.pointer("/target/path").and_then(Value::as_str) {
+                    Some("translation") => AnimPath::Translation,
+                    Some("rotation") => AnimPath::Rotation,
+                    Some("scale") => AnimPath::Scale,
+                    Some("weights") => {
+                        return Err(GlbError::Unsupported("morph target animation (weights)"))
+                    }
+                    _ => return Err(GlbError::Unsupported("unknown animation path")),
+                };
+                let sampler_idx = ch.get("sampler").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let sampler = anim
+                    .get("samplers")
+                    .and_then(Value::as_array)
+                    .and_then(|ss| ss.get(sampler_idx))
+                    .ok_or(GlbError::Unsupported("animation channel missing sampler"))?;
+                let interpolation = sampler
+                    .get("interpolation")
+                    .and_then(Value::as_str)
+                    .unwrap_or("LINEAR");
+                let step = match interpolation {
+                    "LINEAR" => false,
+                    "STEP" => true,
+                    _ => {
+                        return Err(GlbError::Unsupported(
+                            "CUBICSPLINE interpolation not supported",
+                        ))
+                    }
+                };
+                let input_idx = sampler.get("input").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let output_idx =
+                    sampler.get("output").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let times_f = read_f32_vecs(accessors, views, input_idx, 1, bin)?;
+                let times: Vec<f32> = times_f.iter().map(|v| v[0]).collect();
+                let mut values: Vec<[f32; 4]> = if path == AnimPath::Rotation {
+                    // 旋转 = VEC4(xyzw):独立 VEC4 读取(v[3] 才存在)
+                    let range =
+                        locate_scene(accessors, views, output_idx, COMPONENT_FLOAT, 4, 4, bin)?;
+                    let mut vals: Vec<[f32; 4]> = vec![[0.0; 4]; range.count];
+                    for (i, v) in vals.iter_mut().enumerate() {
+                        let at = range.offset_of(i);
+                        for (k, cell) in v.iter_mut().enumerate() {
+                            let b = at + k * 4;
+                            *cell =
+                                f32::from_le_bytes([bin[b], bin[b + 1], bin[b + 2], bin[b + 3]]);
+                        }
+                    }
+                    vals
+                } else {
+                    read_f32_vecs(accessors, views, output_idx, 3, bin)?
+                        .iter()
+                        .map(|v| [v[0], v[1], v[2], 0.0])
+                        .collect()
+                };
+                if times.len() != values.len() {
+                    eprintln!(
+                        "DBG count mismatch: times={} values={} path={:?}",
+                        times.len(),
+                        values.len(),
+                        path
+                    );
+                    return Err(GlbError::Unsupported("count mismatch")); // DEBUG
+                                                                         // DEBUG-COUNTS
+                }
+                if let Some(&last) = times.last() {
+                    duration = duration.max(last);
+                }
+                // 旋转值归一化(导出器常见非单位四元数)
+                if path == AnimPath::Rotation {
+                    for v in values.iter_mut() {
+                        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2] + v[3] * v[3]).sqrt();
+                        if l > f32::EPSILON {
+                            for c in v.iter_mut() {
+                                *c /= l;
+                            }
+                        }
+                    }
+                }
+                let _ = &mut values;
+                channels.push(GlbAnimChannel {
+                    node,
+                    path,
+                    times,
+                    values,
+                    step,
+                });
+            }
+            animations.push(GlbAnimation {
+                name,
+                channels,
+                duration,
+            });
+        }
+    }
+
+    // primitives:带 skin 的 mesh 走 bind 空间(不烘节点变换)
+    let meshes = meshes.ok_or(GlbError::MissingMesh)?;
+    let mut primitives: Vec<GlbRigPrimitive> = Vec::new();
+    let mut texture_cache: std::collections::HashMap<usize, GlbTextureBytes> =
+        std::collections::HashMap::new();
+    for (mi, mesh) in meshes.iter().enumerate() {
+        for primitive in mesh
+            .get("primitives")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+        {
+            if let Some(mode) = primitive.get("mode").and_then(Value::as_u64) {
+                if mode != 4 {
+                    return Err(GlbError::Unsupported("non-triangle primitive mode"));
+                }
+            }
+            let attrs = primitive.get("attributes").ok_or(GlbError::MissingMesh)?;
+            let attr = |name: &str| attrs.get(name).and_then(Value::as_u64).map(|v| v as usize);
+            let pos_idx = attr("POSITION").ok_or(GlbError::MissingMesh)?;
+            let positions = read_f32_vecs(accessors, views, pos_idx, 3, bin)?;
+            let normals = attr("NORMAL")
+                .map(|idx| read_f32_vecs(accessors, views, idx, 3, bin))
+                .transpose()?;
+            let uvs = attr("TEXCOORD_0")
+                .map(|idx| {
+                    read_f32_vecs(accessors, views, idx, 2, bin)
+                        .map(|rows| rows.iter().map(|v| [v[0], v[1]]).collect::<Vec<_>>())
+                })
+                .transpose()?;
+            // JOINTS_0:u8/u16 VEC4;WEIGHTS_0:FLOAT VEC4(normalized 显式拒)
+            let check_norm = |idx: usize| -> Result<(), GlbError> {
+                let acc = &accessors[idx];
+                if acc.get("normalized").and_then(Value::as_bool) == Some(true) {
+                    return Err(GlbError::Unsupported("normalized JOINTS/WEIGHTS accessors"));
+                }
+                Ok(())
+            };
+            let joints = match attr("JOINTS_0") {
+                Some(idx) => {
+                    check_norm(idx)?;
+                    let acc = &accessors[idx];
+                    let component = acc
+                        .get("componentType")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as u32;
+                    let (component, comp_bytes) = match component {
+                        5121 => (5121u32, 1usize),
+                        5123 => (5123u32, 2usize),
+                        _ => return Err(GlbError::BadComponent(component)),
+                    };
+                    let range = locate_scene(accessors, views, idx, component, comp_bytes, 4, bin)?;
+                    let mut rows: Vec<[u16; 4]> = vec![[0; 4]; range.count];
+                    for (i, row) in rows.iter_mut().enumerate() {
+                        let at = range.offset_of(i);
+                        for (k, cell) in row.iter_mut().enumerate() {
+                            let b = at + k * comp_bytes;
+                            *cell = if comp_bytes == 1 {
+                                u16::from(bin[b])
+                            } else {
+                                u16::from_le_bytes([bin[b], bin[b + 1]])
+                            };
+                        }
+                    }
+                    rows
+                }
+                None => return Err(GlbError::Unsupported("skinned primitive missing JOINTS_0")),
+            };
+            let weights = match attr("WEIGHTS_0") {
+                Some(idx) => {
+                    check_norm(idx)?;
+                    let range = locate_scene(accessors, views, idx, COMPONENT_FLOAT, 4, 4, bin)?;
+                    let mut rows: Vec<[f32; 4]> = vec![[0.0; 4]; range.count];
+                    for (i, row) in rows.iter_mut().enumerate() {
+                        let at = range.offset_of(i);
+                        for (k, cell) in row.iter_mut().enumerate() {
+                            let b = at + k * 4;
+                            *cell =
+                                f32::from_le_bytes([bin[b], bin[b + 1], bin[b + 2], bin[b + 3]]);
+                        }
+                    }
+                    rows
+                }
+                None => return Err(GlbError::Unsupported("skinned primitive missing WEIGHTS_0")),
+            };
+            if weights.len() != positions.len() || joints.len() != positions.len() {
+                return Err(GlbError::Unsupported(
+                    "JOINTS/WEIGHTS count mismatches POSITION",
+                ));
+            }
+            let indices = match primitive.get("indices").and_then(Value::as_u64) {
+                Some(idx) => read_indices_scene(accessors, views, idx as usize, bin)?,
+                None => Vec::new(),
+            };
+            if let Some(&bad) = indices.iter().find(|&&i| i as usize >= positions.len()) {
+                return Err(GlbError::IndexOutOfRange {
+                    index: bad,
+                    vertices: positions.len(),
+                });
+            }
+            // 材质摊位(因子 + baseColor/MR 纹理字节;缓存共享 image)
+            let mut base_color = None;
+            let mut base_color_texture = None;
+            let mut mr_texture_bytes = None;
+            if let Some(mi) = primitive.get("material").and_then(Value::as_u64) {
+                let mat =
+                    materials
+                        .and_then(|ms| ms.get(mi as usize))
+                        .ok_or(GlbError::Unsupported(
+                            "primitive references missing material",
+                        ))?;
+                if mat
+                    .get("extensions")
+                    .and_then(|e| e.get("KHR_materials_pbrSpecularGlossiness"))
+                    .is_some()
+                {
+                    return Err(GlbError::Unsupported(
+                        "KHR_materials_pbrSpecularGlossiness replaces the baseColor model",
+                    ));
+                }
+                if let Some(pbr) = mat.get("pbrMetallicRoughness") {
+                    if let Some(arr) = pbr.get("baseColorFactor").and_then(Value::as_array) {
+                        let f: Vec<f32> = arr
+                            .iter()
+                            .filter_map(Value::as_f64)
+                            .map(|x| x as f32)
+                            .collect();
+                        if f.len() == 4 {
+                            base_color = Some([f[0], f[1], f[2], f[3]]);
+                        }
+                    }
+                    let mut fetch_tex = |key: &str| -> Result<Option<GlbTextureBytes>, GlbError> {
+                        // 纹理键缺省 = 材质未引用该纹理 → None(可选语义)
+                        let tex_idx = match pbr
+                            .pointer(&format!("/{key}/index"))
+                            .and_then(Value::as_u64)
+                        {
+                            Some(v) => v as usize,
+                            None => return Ok(None),
+                        };
+                        let source = textures
+                            .and_then(|ts| ts.get(tex_idx))
+                            .and_then(|t| t.get("source"))
+                            .and_then(Value::as_u64)
+                            .ok_or(GlbError::Unsupported("texture references missing source"))?
+                            as usize;
+                        if let Some(cached) = texture_cache.get(&source) {
+                            return Ok(Some(cached.clone()));
+                        }
+                        let image = images
+                            .and_then(|is| is.get(source))
+                            .ok_or(GlbError::Unsupported("texture references missing image"))?;
+                        let mime = image
+                            .get("mimeType")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_string();
+                        if image.get("uri").is_some() {
+                            return Err(GlbError::Unsupported(
+                                "external image URI (GLB 内嵌 image 才可)",
+                            ));
+                        }
+                        let view_idx =
+                            image.get("bufferView").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let view = views.get(view_idx).ok_or(GlbError::Unsupported(
+                            "texture references missing bufferView",
+                        ))?;
+                        let voff =
+                            view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let vlen =
+                            view.get("byteLength").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let end = voff.checked_add(vlen).ok_or(GlbError::OutOfBounds {
+                            view: view_idx,
+                            need: usize::MAX,
+                            have: bin.len(),
+                        })?;
+                        if end > bin.len() {
+                            return Err(GlbError::OutOfBounds {
+                                view: view_idx,
+                                need: end,
+                                have: bin.len(),
+                            });
+                        }
+                        let tex = GlbTextureBytes {
+                            mime,
+                            bytes: bin[voff..end].to_vec(),
+                        };
+                        texture_cache.insert(source, tex.clone());
+                        Ok(Some(tex))
+                    };
+                    base_color_texture = fetch_tex("baseColorTexture")?;
+                    mr_texture_bytes = fetch_tex("metallicRoughnessTexture")?;
+                }
+            }
+            let skin = node_skin_for_mesh(nodes_json, mi).ok_or(GlbError::Unsupported(
+                "skinned mesh primitive without skin node",
+            ))?;
+            primitives.push(GlbRigPrimitive {
+                positions,
+                normals,
+                uvs,
+                indices,
+                joints,
+                weights,
+                base_color,
+                base_color_texture,
+                metallic_roughness_texture: mr_texture_bytes,
+                skin,
+            });
+        }
+    }
+
+    Ok(GlbRig {
+        primitives,
+        skins,
+        animations,
+        roots,
+        nodes,
+    })
+}
+
+/// 找到引用给定 mesh 的节点上的 skin 下标(glTF:skin 挂在节点,Mesh 不带)。
+fn node_skin_for_mesh(nodes: &[Value], mesh: usize) -> Option<usize> {
+    nodes
+        .iter()
+        .find(|n| n.get("mesh").and_then(Value::as_u64) == Some(mesh as u64))
+        .and_then(|n| n.get("skin"))
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+}
+
 // 测试:容器由测试自建(不依赖外部 fixture 文件),覆盖正常/截断/越界/交错/非三角。
 // ---------------------------------------------------------------------------
 
