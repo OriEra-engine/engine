@@ -55,26 +55,41 @@ fn run() -> Result<(), String> {
     let renderer = HeadlessRenderer::new().map_err(|e| e.to_string())?;
     println!("adapter: {}", renderer.adapter_info());
 
-    // 上传纹理(有 baseColorTexture 的 primitive 才需要)
-    let mut textures: Vec<Option<GpuTexture>> = Vec::with_capacity(scene.primitives.len());
+    // 上传纹理(baseColor 必消费;MR 打包纹理可选,缺省走白模兜底)
+    let mut base_textures: Vec<Option<GpuTexture>> = Vec::with_capacity(scene.primitives.len());
+    let mut mr_textures: Vec<Option<GpuTexture>> = Vec::with_capacity(scene.primitives.len());
     let mut textured = 0usize;
     for prim in &scene.primitives {
-        match &prim.base_color_texture {
+        let base = match &prim.base_color_texture {
             Some(tex_bytes) => {
-                let t = decode_png_texture(tex_bytes).map_err(|e| format!("纹理解码: {e}"))?;
-                textured += 1;
-                textures.push(Some(
+                let t = decode_png_texture(tex_bytes).map_err(|e| format!("基色纹理解码: {e}"))?;
+                Some(
                     renderer
                         .upload_texture(&t.rgba, t.width, t.height)
                         .map_err(|e| e.to_string())?,
-                ));
+                )
             }
-            None => textures.push(None),
+            None => None,
+        };
+        let mr = match &prim.metallic_roughness_texture {
+            Some(tex_bytes) => {
+                let t = decode_png_texture(tex_bytes).map_err(|e| format!("MR 纹理解码: {e}"))?;
+                Some(
+                    renderer
+                        .upload_texture(&t.rgba, t.width, t.height)
+                        .map_err(|e| e.to_string())?,
+                )
+            }
+            None => None,
+        };
+        if base.is_some() {
+            textured += 1;
         }
+        base_textures.push(base);
+        mr_textures.push(mr);
     }
     println!(
-        "{textured}/{}/{} primitives 带纹理",
-        textured,
+        "{textured}/{} primitives 带 baseColor 纹理",
         scene.primitives.len()
     );
 
@@ -82,14 +97,17 @@ fn run() -> Result<(), String> {
     let parts: Vec<ScenePart<'_>> = scene
         .primitives
         .iter()
-        .zip(&textures)
-        .map(|(p, tex)| ScenePart {
+        .enumerate()
+        .map(|(i, p)| ScenePart {
             positions: &p.positions,
             normals: p.normals.as_deref(),
             uvs: p.uvs.as_deref(),
             indices: &p.indices,
             base_color: p.base_color.unwrap_or([1.0, 1.0, 1.0, 1.0]),
-            texture: tex.as_ref(),
+            metallic: p.metallic,
+            roughness: p.roughness,
+            base_texture: base_textures[i].as_ref(),
+            mr_texture: mr_textures[i].as_ref(),
         })
         .collect();
 
@@ -146,9 +164,8 @@ fn run() -> Result<(), String> {
         .render_scene_views(&parts, &camera)
         .map_err(|e| e.to_string())?;
     println!(
-        "{width}x{height} | render {:.1} ms | fingerprint {:016x}",
-        t1.elapsed().as_secs_f64() * 1e3,
-        0 // RenderedImage 无指纹(泼溅图专属)
+        "{width}x{height} | render {:.1} ms",
+        t1.elapsed().as_secs_f64() * 1e3
     );
     write_bmp(&out, &image).map_err(|e| format!("{out}: {e}"))?;
     println!("wrote {out}");

@@ -374,6 +374,8 @@ pub struct GlbPrimitive {
     pub roughness: f32,
     /// baseColorTexture 原始字节(GLB 内嵌 PNG;无纹理则 None)。
     pub base_color_texture: Option<GlbTextureBytes>,
+    /// metallicRoughnessTexture 原始字节(G 通道=粗糙度,B=金属度;无则 None)。
+    pub metallic_roughness_texture: Option<GlbTextureBytes>,
     /// 实算包围盒(世界坐标)。
     pub min: [f32; 3],
     pub max: [f32; 3],
@@ -797,6 +799,7 @@ pub fn decode_glb_scene(bytes: &[u8]) -> Result<GlbScene, GlbError> {
             let mut metallic = 1.0;
             let mut roughness = 1.0;
             let mut base_color_texture = None;
+            let mut mr_texture_bytes = None;
             if let Some(mi) = primitive.get("material").and_then(Value::as_u64) {
                 let mat =
                     materials
@@ -887,6 +890,58 @@ pub fn decode_glb_scene(bytes: &[u8]) -> Result<GlbScene, GlbError> {
                             bytes: bin[voff..end].to_vec(),
                         });
                     }
+                    if let Some(tex) = pbr.get("metallicRoughnessTexture") {
+                        let tex_idx =
+                            tex.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let source = textures
+                            .and_then(|ts| ts.get(tex_idx))
+                            .and_then(|t| t.get("source"))
+                            .and_then(Value::as_u64)
+                            .ok_or(GlbError::Unsupported(
+                                "metallicRoughnessTexture references missing texture/source",
+                            ))? as usize;
+                        let image = images
+                            .and_then(|is| is.get(source))
+                            .ok_or(GlbError::Unsupported("MR texture references missing image"))?;
+                        let mime = image
+                            .get("mimeType")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_string();
+                        if mime != "image/png" {
+                            return Err(GlbError::Unsupported("non-PNG metallicRoughnessTexture"));
+                        }
+                        if image.get("uri").is_some() {
+                            return Err(GlbError::Unsupported(
+                                "external image URI (GLB 内嵌 image 才可)",
+                            ));
+                        }
+                        let view_idx =
+                            image.get("bufferView").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let view = views.get(view_idx).ok_or(GlbError::Unsupported(
+                            "MR texture references missing bufferView",
+                        ))?;
+                        let voff =
+                            view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let vlen =
+                            view.get("byteLength").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let end = voff.checked_add(vlen).ok_or(GlbError::OutOfBounds {
+                            view: view_idx,
+                            need: usize::MAX,
+                            have: bin.len(),
+                        })?;
+                        if end > bin.len() {
+                            return Err(GlbError::OutOfBounds {
+                                view: view_idx,
+                                need: end,
+                                have: bin.len(),
+                            });
+                        }
+                        mr_texture_bytes = Some(GlbTextureBytes {
+                            mime,
+                            bytes: bin[voff..end].to_vec(),
+                        });
+                    }
                 }
             }
             // 世界变换应用到顶点与法线(法线走逆转置,再归一化)
@@ -937,6 +992,7 @@ pub fn decode_glb_scene(bytes: &[u8]) -> Result<GlbScene, GlbError> {
                 metallic,
                 roughness,
                 base_color_texture,
+                metallic_roughness_texture: mr_texture_bytes,
                 min,
                 max,
             });

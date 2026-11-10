@@ -89,7 +89,8 @@ fn fixture_scene() -> (Value, Vec<u8>) {
         "materials": [
             {"pbrMetallicRoughness": {"baseColorFactor": [0.8, 0.2, 0.1, 1.0],
                                       "metallicFactor": 0.25, "roughnessFactor": 0.75}},
-            {"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}
+            {"pbrMetallicRoughness": {"baseColorTexture": {"index": 0},
+                                      "metallicRoughnessTexture": {"index": 0}}}
         ],
         "textures": [{"source": 0}],
         "images": [{"mimeType": "image/png", "bufferView": 6}],
@@ -177,6 +178,7 @@ fn cross_language_gltf_golden_matches_js_mirror_contract() {
                 "uvs": p.uvs,
                 "texture_mime": p.base_color_texture.as_ref().map(|t| t.mime.clone()),
                 "texture_len": p.base_color_texture.as_ref().map(|t| t.bytes.len()),
+                "mr_texture_len": p.metallic_roughness_texture.as_ref().map(|t| t.bytes.len()),
             })).collect::<Vec<_>>()
         }
     });

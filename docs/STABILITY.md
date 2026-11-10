@@ -92,7 +92,10 @@
   L5 `render_scene_views` 逐 primitive 纹理×兰伯特渲染(fp32 不适用——本路径 unorm8
   目标,单层材质无叠加,不涉泼溅的累积混色),CC0 WaterBottle 实测出图
   (docs/media/gltf-scene-waterbottle.png,4.7ms 解码/40ms 渲染)。
-  仍未解码:蒙皮动画、IBL/PBR 完整着色、mipmap;Duck 官方样例为 SCEA 共享源许可,
+  #152 第四刀落地 **PBR 最小着色**(2026-11-10):Cook-Torrance(GGX+Smith-Schlick+
+  Schlick 菲涅尔)+ 单方向光 + 半球环境替身;MR 打包纹理(G=粗糙 B=金属)消费,
+  无 MR 纹理时 metallic 视作 0(无 IBL 金属黑兜底);无 IBL/预积分环境/聚光/点光。
+  仍未解码:蒙皮动画、IBL、mipmap;Duck 官方样例为 SCEA 共享源许可,
   按「许可先行」红线不入库(参考 KhronosGroup/glTF-Sample-Models 2.0/Duck);
   生成→落地→解码→GPU 出图全链已闭环(示例 `glb_headless --from-l8`,3 项集成测试)。
 - demo 05 已**原生渲染**(2026-11-10,#152 第三刀):JS 镜像 `engine/gltf.js` 与
