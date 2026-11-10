@@ -20,6 +20,7 @@
 | 13 生成式画廊 | L8+L4 | oriera-genai | 文生图/文生 3D + 命名热替换 | `examples/13-genai-gallery/` |
 | 14 影游内核 | L9 | oriera-agent | 互动影游叙事原语的浏览器镜像（与 Rust 逐句对照） | `examples/14-film-game/` |
 | 15 具身仿真台 | L6+L9 | oriera-wasm | rapier3d 机械臂桌面抓放：六预设卡片墙换装 + 键鼠遥操作/脚本策略演示（浏览器与 Rust 同物理） | `examples/15-embodied-sim/` |
+| 16 高斯展馆 | L5 | oriera-splat | 实验性 3DGS 查看器：标准 PLY 进、EWA 泼溅出，裸 WebGL2；JS 镜像与 Rust 共读 `contracts/golden/splat_golden.json` 对拍 | `examples/16-gaussian-hall/` |
 
 ## 代码片段（库用户最小路径）
 

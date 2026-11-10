@@ -34,7 +34,7 @@
 
 **不重造物理引擎，不重造数据集格式**——把自己做成便宜、可复位、可回放的训练场（world as benchmark）。物理与数据出口对接开源标准：[Rapier](https://rapier.rs) 3D 接触物理 × [LeRobotDataset v2.1](https://huggingface.co/docs/lerobot) 训练数据导出 × [Gymnasium](https://gymnasium.farama.org) Python 桥。
 
-**这是同一个内核的两个档位**：世界引擎档（demo 01–14：AI NPC、生成式世界、影游）与训练场档（15 号具身仿真台，world as benchmark）跑在同一个 11 层内核上——八条产业赛道共用一套内核的叙事见 [docs/VERTICALS.md](docs/VERTICALS.md)。
+**这是同一个内核的两个档位**：世界引擎档（demo 01–14 + 16 号高斯展馆：AI NPC、生成式世界、影游、3DGS）与训练场档（15 号具身仿真台，world as benchmark）跑在同一个 11 层内核上——八条产业赛道共用一套内核的叙事见 [docs/VERTICALS.md](docs/VERTICALS.md)。
 
 **15 号具身仿真台（旗舰）**：一套物理，四个入口，导出轨按入口如实分流——
 
@@ -54,7 +54,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 
 **🌐 https://oriera-engine.github.io/engine/**
 
-15 个可玩 demo，浏览器直接打开：
+16 个可玩 demo，浏览器直接打开：
 
 | Demo | 展示 | 打开 |
 |---|---|---|
@@ -73,6 +73,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 | 13 Generative Gallery 生成式画廊 | 一句话主题 → L8 文生图/文生 3D → L4 热替换装帧小 3D 世界 | [▶](https://oriera-engine.github.io/engine/examples/13-genai-gallery/index.html) |
 | 14 Frame Hunter 帧猎 | 跑酷答题游戏：三车道跑酷 + 谬误之门 + Boss 战，BKT 知识追踪，全离线 2.3MB | [▶](https://oriera-engine.github.io/engine/frame-hunter/index.html) |
 | 15 Embodied Sim 具身仿真台 | **rapier3d 接触物理机械臂桌面抓放**：键鼠遥操作/脚本演示 + 六预设卡片墙换装；数据导出走 Studio 工作台或 CLI（独立打开时「导出」置灰） | [▶](https://oriera-engine.github.io/engine/examples/15-embodied-sim/index.html) |
+| 16 高斯展馆 Gaussian Hall | **实验性 3DGS 查看器**：标准 PLY 进、EWA 泼溅出，CC0 真扫描 + 程序化花瓣环，拖入 .ply 即换展品；JS 镜像与 Rust 共读金样对拍 | [▶](https://oriera-engine.github.io/engine/examples/16-gaussian-hall/index.html) |
 
 ## 架构
 

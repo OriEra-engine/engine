@@ -37,7 +37,7 @@ Architecturally it is an **11-layer stack** with five first-class platforms.
 
 ## Try it (zero install)
 
-**🌐 https://oriera-engine.github.io/engine/** — 15 playable demos in your browser.
+**🌐 https://oriera-engine.github.io/engine/** — 16 playable demos in your browser.
 
 New: [Memory Atlas](https://oriera-engine.github.io/engine/examples/12-memory-atlas/index.html) — record NPC memories, recall relevant episodes, and explore recency offline using the existing browser kernel. New: [Generative Gallery](https://oriera-engine.github.io/engine/examples/13-genai-gallery/index.html) — type a theme, the engine's L8 generates sky / ground / posters and hot-swaps them into a small 3D world (offline procedural fallback; bring a CogView/Tripo key for real generation). New: [Frame Hunter](https://oriera-engine.github.io/engine/frame-hunter/index.html) (demo 14) — a parkour quiz game with BKT knowledge tracking, fully offline. Flagship: [Embodied Sim](https://oriera-engine.github.io/engine/examples/15-embodied-sim/index.html) (demo 15) — a rapier3d articulated-arm tabletop bench in the browser (teleop / scripted demo / preset card wall); training-data export runs through the Studio workbench or the deterministic CLI, see [docs/EMBODIED-PIPELINES.md](docs/EMBODIED-PIPELINES.md) (Chinese; the full demo table lives in the [Chinese README](README.md)).
 

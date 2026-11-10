@@ -231,7 +231,7 @@ v2.1/v3.0 + npz 裸出口）× `run_manifest.json` 全出处。
 ### L11 — 应用与 UGC
 
 `platforms/pc` 是全量接线示范（平台预算、画质调速、逐系统耗时、资产热替换、TimeScale）。
-`examples/01–15` 是分层演示：每个 demo 只动它那一层，浏览器直接玩（见首页 index.html；
+`examples/01–16` 是分层演示：每个 demo 只动它那一层，浏览器直接玩（见首页 index.html；
 14 号 `frame-hunter/` 在仓库根目录同源发行）。
 
 ## 5. 一帧的数据流
@@ -404,7 +404,7 @@ CI 门禁分两步走——**静态部分已落地**（`scripts/check_manifests.
 ```
 crates/          L0–L9 各层实现（见上表，含 L8 oriera-genai 与 L5 实验性 oriera-splat）
 platforms/       五端入口：pc / web（ar_glasses、bci_reserved 规划中，目录未建）
-examples/        浏览器可玩的分层演示（01–15 + _template，见首页 index.html；
+examples/        浏览器可玩的分层演示（01–16 + _template，见首页 index.html；
                  15 号具身仿真台是旗舰，含 vendor/oriera 的 wasm 内核）
 frame-hunter/    14 号影游 demo（跑酷答题 + BKT 知识追踪，Pages 同步发行）
 specs/           具身实验身份库（官方金标 official/ + lab 覆盖层 + INDEX.json，
