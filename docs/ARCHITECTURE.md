@@ -123,7 +123,8 @@ y-up/-z-forward，**WebGPU NDC z∈[0,1]**，列向量行主序，WGSL 上传时
 （全 mesh×primitive + 节点图 TRS/matrix + 材质摊位含 PNG 纹理字节，真实文件的
 accessor byteOffset/交错布局支持；Duck 为 SCEA 许可不入库，验收用 CC0 WaterBottle）
 + L5 `render_scene_views`（同 pass 逐 primitive 绘制，纹理管线 sRGB 采样 × 兰伯特，
-深度测试与首刀共享）。demo 05 切 three 移除已在第三刀兑现（JS 镜像+金样路线，PR #194）。第四刀落地
+深度测试与首刀共享）。demo 05 切 three 移除已在第三刀兑现（JS 镜像+金样路线，PR #194；Duck 原生渲染
+截图因 SCEA 许可留工作目录 out/ 不入库）。第四刀落地
 **PBR 最小着色**：L4 MR 打包纹理摊位（G=粗糙 B=金属）+ L5 Cook-Torrance GGX
 （Smith-Schlick + Schlick 菲涅尔 + 半球环境替身，无 IBL——金属无环境探针时按
 albedo·环境 0.4 兜底避免纯黑）；无 MR 纹理时 metallic 视作 0（无 IBL 兜底）。
