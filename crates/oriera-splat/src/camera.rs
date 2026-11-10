@@ -75,6 +75,31 @@ impl SplatCamera {
     }
 }
 
+#[cfg(feature = "splat-wgpu")]
+impl SplatCamera {
+    /// 从 #152 共享底座的 GL 约定相机（[`oriera_render::camera::Camera`]：
+    /// y 向上、镜头看 -z）换算出泼溅路径的 OpenCV 约定相机（PLAN-splat M1）。
+    /// 同一 eye/target/fov/内参，只有表示不同——视图矩阵行 [x, y, z_back]
+    /// → [x, -y, -z_back]（y 向下、z 前向），平移 [t0, -t1, -t2]；**像素焦距**
+    /// 从投影矩阵反解：矩阵系数是 NDC 归一化的 f=1/tan(fov/2)，泼溅相机要
+    /// 像素量纲 fx = P[0][0]·width/2、fy = P[1][1]·height/2。
+    /// 换算结果用闭式单测钉死（`from_view_matches_gl_camera_axis_for_axis`）。
+    pub fn from_view(cam: &oriera_render::camera::Camera) -> Self {
+        let negate = |v: [f32; 3]| [-v[0], -v[1], -v[2]];
+        let row = |r: usize| [cam.view[r][0], cam.view[r][1], cam.view[r][2]];
+        Self {
+            rotation: [row(0), negate(row(1)), negate(row(2))],
+            translation: [cam.view[0][3], -cam.view[1][3], -cam.view[2][3]],
+            fx: cam.projection[0][0] * cam.width as f32 * 0.5,
+            fy: cam.projection[1][1] * cam.height as f32 * 0.5,
+            cx: cam.width as f32 * 0.5,
+            cy: cam.height as f32 * 0.5,
+            width: cam.width,
+            height: cam.height,
+        }
+    }
+}
+
 pub(crate) fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -142,5 +167,41 @@ mod tests {
         let cam = SplatCamera::look_at([0.0, 5.0, 0.0], [0.0; 3], [0.0, 1.0, 0.0], 45.0, 8, 8);
         assert!(cam.rotation.iter().flatten().all(|v| v.is_finite()));
         assert!(near(cam.to_camera([0.0; 3]), [0.0, 0.0, 5.0]));
+    }
+
+    #[cfg(feature = "splat-wgpu")]
+    #[test]
+    fn from_view_matches_gl_camera_axis_for_axis() {
+        use oriera_render::camera::{self, Camera};
+        let gl = Camera::look_at(
+            [0.0, 0.0, 5.0],
+            [0.0; 3],
+            [0.0, 1.0, 0.0],
+            60.0,
+            64,
+            48,
+            0.1,
+            100.0,
+        );
+        let cv = SplatCamera::from_view(&gl);
+        // 内参:像素焦距 = 矩阵系数 × 维度/2(NDC 归一化 → 像素量纲)
+        assert_eq!(cv.fx, gl.projection[0][0] * 32.0);
+        assert_eq!(cv.fy, gl.projection[1][1] * 24.0);
+        assert_eq!((cv.cx, cv.cy, cv.width, cv.height), (32.0, 24.0, 64, 48));
+        // 轴约定:GL x=右/ y=上 /z=后 ↔ OpenCV x=右 /y=下 /z=前
+        for p in [[0.0f32; 3], [0.3, -0.4, 5.0], [-1.0, 2.0, 4.0]] {
+            let g = camera::transform(&gl.view, p);
+            let c = cv.to_camera(p);
+            assert!((g[0] - c[0]).abs() < 1e-5, "x {p:?}: {g:?} vs {c:?}");
+            assert!((g[1] + c[1]).abs() < 1e-5, "y {p:?}: {g:?} vs {c:?}");
+            assert!((g[2] + c[2]).abs() < 1e-5, "z {p:?}: {g:?} vs {c:?}");
+        }
+        // 同一点在两种约定下落在同一像素
+        let p = [0.3f32, -0.4, 3.0];
+        let ndc = gl.project(p).unwrap();
+        let px_gl = gl.ndc_to_pixel([ndc[0], ndc[1]]);
+        let c = cv.to_camera(p);
+        let px_cv = [cv.fx * c[0] / c[2] + cv.cx, cv.fy * c[1] / c[2] + cv.cy];
+        assert!((px_gl[0] - px_cv[0]).abs() < 1e-3 && (px_gl[1] - px_cv[1]).abs() < 1e-3);
     }
 }

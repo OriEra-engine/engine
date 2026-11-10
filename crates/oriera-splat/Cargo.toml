@@ -13,6 +13,17 @@ path = "src/lib.rs"
 [dependencies]
 # L5 → L4 向下依赖:PLY 解码与 SplatCloud 归资产层(PLAN-splat v2 资产管线评审)
 oriera-asset.workspace = true
+# L5 同层依赖(先例 agent→embodied, ADR 0004):feature `splat-wgpu` 消费
+# #152 共享底座 oriera_render::camera::Camera;可选,默认构建零新增依赖面。
+oriera-render = { workspace = true, optional = true }
+wgpu = { version = "30", optional = true }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1", optional = true }
+
+[features]
+# PLAN-splat v2 M1:GPU 泼溅路径——确定性数学(project/depth_order)全部留在
+# CPU,GPU 只做实例化四边形展开 + 后到前 over 混合;消费 #152 相机底座。
+splat-wgpu = ["dep:oriera-render", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
 
 [dev-dependencies]
 criterion.workspace = true

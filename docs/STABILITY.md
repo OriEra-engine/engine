@@ -94,5 +94,11 @@
   排序 1 万/10 万/100 万 splat = 0.19/3.2/39 ms,投影 10 万 = 7.1 ms,解码 10 万 = 5.4 ms,
   5 千细长 splat 光栅 640×360 = 91 ms、1280×720 = 343 ms;CC0 真扫描样本(10,330 splat,SH 2 阶)
   960×540 出图 92 ms。观测触发:排序超过 2 ms/帧(约 6 万 splat)即提级 GPU radix(PLAN-splat M3)。
-  GPU 路径未实现(随 #152 相机+深度底座落地),CI 不编译任何 splat GPU 代码;
+  GPU 路径已落地(PLAN-splat M1,feature `splat-wgpu` 默认关,消费 #152 底座
+  `oriera_render::camera::Camera` 经 `SplatCamera::from_view` 换算):确定性数学
+  (投影/排序)仍在 CPU,GPU 只做实例化四边形展开 + 后到前 over 混合(fp32 目标——
+  unorm8/fp16 的每层混合舍入会在几十层叠加的热点像素累积超差,实测踩过);
+  与 CPU 参考按评审门槛互证(本机 GPU 实测:petal_ring 600 满足 99.9% 像素每通道
+  ≤2/255 且 RMS ≤1/255;倾斜 splat 交叉项 ≤2;单 splat 逐位一致)。CI 不编译任何
+  splat GPU 代码到默认腿(windows-check 腿 check+clippy);
   不读也不置 `NEURAL_RENDER_3DGS`(经典泼溅属 ADR 0002 的 passthrough 侧)。
