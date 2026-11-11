@@ -1492,7 +1492,10 @@ pub fn decode_glb_rig(bytes: &[u8]) -> Result<GlbRig, GlbError> {
                 let at = range.offset_of(i);
                 for (r, row) in m.iter_mut().enumerate() {
                     for (c, cell) in row.iter_mut().enumerate() {
-                        let b = at + (r * 4 + c) * 4;
+                        // glTF MAT4 按列主序存储:data[c*4+r] = 真矩阵 m[r][c]
+                        // (M0 曾按 data[r*4+c] 顺序读成转置——skin_golden 探针
+                        // 用「末行须为 [0,0,0,1]」逮住,真模型 CesiumMan 字节实锤)。
+                        let b = at + (c * 4 + r) * 4;
                         *cell = f32::from_le_bytes([bin[b], bin[b + 1], bin[b + 2], bin[b + 3]]);
                     }
                 }
@@ -1523,9 +1526,11 @@ pub fn decode_glb_rig(bytes: &[u8]) -> Result<GlbRig, GlbError> {
                     Some("translation") => AnimPath::Translation,
                     Some("rotation") => AnimPath::Rotation,
                     Some("scale") => AnimPath::Scale,
-                    Some("weights") => {
-                        return Err(GlbError::Unsupported("morph target animation (weights)"))
-                    }
+                    // morph weights 通道:附加型表面能力(表情驱动)——按
+                    // 「只拒替换型、附加型忽略」策略跳过该通道(duration 照计,
+                    // 骨骼动画不受影响),不整体拒绝(RobotExpressive 等带表情
+                    // 轨道的真模型可解码;morph targets 本体后置)。
+                    Some("weights") => continue,
                     _ => return Err(GlbError::Unsupported("unknown animation path")),
                 };
                 let sampler_idx = ch.get("sampler").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -1573,14 +1578,9 @@ pub fn decode_glb_rig(bytes: &[u8]) -> Result<GlbRig, GlbError> {
                         .collect()
                 };
                 if times.len() != values.len() {
-                    eprintln!(
-                        "DBG count mismatch: times={} values={} path={:?}",
-                        times.len(),
-                        values.len(),
-                        path
-                    );
-                    return Err(GlbError::Unsupported("count mismatch")); // DEBUG
-                                                                         // DEBUG-COUNTS
+                    return Err(GlbError::Unsupported(
+                        "animation sampler times/values count mismatch",
+                    ));
                 }
                 if let Some(&last) = times.last() {
                     duration = duration.max(last);
@@ -1596,7 +1596,6 @@ pub fn decode_glb_rig(bytes: &[u8]) -> Result<GlbRig, GlbError> {
                         }
                     }
                 }
-                let _ = &mut values;
                 channels.push(GlbAnimChannel {
                     node,
                     path,
