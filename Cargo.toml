@@ -49,6 +49,10 @@ oriera-genai = { path = "crates/oriera-genai", version = "0.12.0" }
 oriera-agent = { path = "crates/oriera-agent", version = "0.12.0" }
 oriera-embodied = { path = "crates/oriera-embodied", version = "0.12.0" }
 bitflags = "2.6"
+# L0 math vocabulary (#7): no_std-capable, wasm32 first-class, `serde`
+# on so a Transform can ride in a scene spec or a snapshot without a
+# per-layer conversion. Only re-exported — no project fork of the types.
+glam = { version = "0.34", features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"

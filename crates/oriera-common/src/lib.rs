@@ -1,6 +1,13 @@
 //! L0 Common — shared types used across all layers.
 //! No dependencies on other oriera crates.
 
+pub mod math;
+
+// The math vocabulary every layer above speaks (#7). Re-exported at the
+// crate root so call sites read `oriera_common::Vec3`, not
+// `oriera_common::math::Vec3`.
+pub use math::{Transform, Vec3};
+
 /// Nanoseconds since the UNIX epoch (wall clock).
 ///
 /// Used for logs and metrics. Frame timing and anything feeding the
