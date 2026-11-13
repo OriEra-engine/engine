@@ -16,3 +16,5 @@ serde.workspace=true
 
 [dev-dependencies]
 serde_json.workspace=true
+# #13: round-trip tests need a real directory that cleans itself up.
+tempfile = "3"
