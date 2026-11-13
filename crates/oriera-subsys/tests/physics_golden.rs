@@ -84,6 +84,13 @@ fn run_track() -> (Vec<u64>, [f32; 3], [f32; 4], Vec<f32>) {
 }
 
 fn parse_and_compare(golden: &str, fps: &[u64], px: &[f32; 3], pq: &[f32; 4], angles: &[f32]) {
+    // 平台标签：指纹逐位只在 bless 平台比对——rapier 同构建内逐位确定，
+    // 但 f32 积分的 libm/simd 末位差跨 OS 必然漂移（CI Ubuntu vs 本机
+    // Windows 首跑即实证）。跨平台只比姿态/关节角（容差 1e-3，物理收敛态）；
+    // 同构建位确定性由测试内的双跑断言另行锁定（splat 金样同款双层设计）。
+    let this_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let mut golden_platform: Option<String> = None;
+    let mut cross_platform = false;
     let mut got_fps = fps.iter();
     let mut got_floats = px.iter().chain(pq.iter()).chain(angles.iter());
     for line in golden
@@ -94,16 +101,21 @@ fn parse_and_compare(golden: &str, fps: &[u64], px: &[f32; 3], pq: &[f32; 4], an
             .split_once(' ')
             .unwrap_or_else(|| panic!("bad golden line: {line}"));
         match tag {
+            "platform" => golden_platform = Some(rest.to_string()),
             "fp" => {
                 let want: u64 = u64::from_str_radix(rest, 16)
                     .unwrap_or_else(|e| panic!("bad golden fingerprint {rest}: {e}"));
                 let got = got_fps
                     .next()
                     .unwrap_or_else(|| panic!("golden has more fingerprints than run produced"));
-                assert_eq!(
-                    *got, want,
-                    "sim fingerprint drift at checkpoint (物理轨迹逐位漂移——rapier 版本或积分语义变了，若有意请重锚)"
-                );
+                if golden_platform.as_deref() == Some(this_platform.as_str()) {
+                    assert_eq!(
+                        *got, want,
+                        "sim fingerprint drift at checkpoint (同平台逐位漂移——rapier 版本或积分语义变了，若有意请重锚)"
+                    );
+                } else {
+                    cross_platform = true;
+                }
             }
             "f" => {
                 let want: f32 = rest
@@ -113,7 +125,11 @@ fn parse_and_compare(golden: &str, fps: &[u64], px: &[f32; 3], pq: &[f32; 4], an
                     .next()
                     .unwrap_or_else(|| panic!("golden has more floats than run produced"));
                 let d = (want - got).abs();
-                assert!(d <= 1e-5, "float drift {want} vs {got} (Δ={d} > 1e-5)");
+                let tol = if cross_platform { 1e-3 } else { 1e-5 };
+                assert!(
+                    d <= tol,
+                    "float drift {want} vs {got} (Δ={d} > {tol}, cross_platform={cross_platform})"
+                );
             }
             other => panic!("unknown golden tag {other}"),
         }
@@ -152,8 +168,13 @@ fn physics_trajectory_is_deterministic_and_matches_golden() {
     if std::env::var_os("ORIERA_SUBSYS_BLESS").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut buf = String::from(
-            "# oriera-subsys 物理金样：预设 4 轴臂两阶段轨迹（指纹逐位 / 姿态 1e-5）\n",
+            "# oriera-subsys 物理金样：预设 4 轴臂两阶段轨迹（指纹逐位限 bless 平台 / 姿态 1e-5，跨平台 1e-3）\n",
         );
+        buf.push_str(&format!(
+            "platform {}-{}\n",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ));
         buf.push_str(&format!("# 检查点拍序: {:?}\n", CHECKPOINTS));
         for fp in &fps {
             buf.push_str(&format!("fp {fp:016x}\n"));
