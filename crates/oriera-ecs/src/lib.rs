@@ -38,6 +38,7 @@
 //! assert!(world.is_empty());
 //! ```
 
+#![doc = include_str!("../README.md")]
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, VecDeque};
 

@@ -5,6 +5,7 @@
 //! world is passed in by the L2 scheduler each frame — subsystems never
 //! reach into globals (book T3 §3.8.1).
 
+#![doc = include_str!("../README.md")]
 #[cfg(feature = "rigid")]
 pub mod rigid;
 #[cfg(feature = "rigid")]
