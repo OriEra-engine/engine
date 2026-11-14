@@ -50,7 +50,11 @@ oriera-agent = { path = "crates/oriera-agent", version = "0.12.0" }
 oriera-embodied = { path = "crates/oriera-embodied", version = "0.12.0" }
 bitflags = "2.6"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip：默认快速浮点解析对个别十进制串差 1 ulp（实锤样例
+# ms=0.19349999999999998 解析回 0.1935），三段分账 JSON（P0-5
+# bench_account，BENCH-CONTRACT 附 A）要求序列化→解析往返无损——
+# 精确解析开在 workspace 级，全部 serde_json 消费方统一获得。
+serde_json = { version = "1", features = ["float_roundtrip"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # L7 native HTTP adapter (feature `native-http`, #68): blocking client
