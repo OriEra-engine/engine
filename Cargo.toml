@@ -36,18 +36,18 @@ repository = "https://github.com/OriEra-engine/engine"
 # Add entries (glam, tokio, ...) when the layer that needs them lands.
 # Internal layer crates: path for workspace builds, version for `cargo publish`.
 [workspace.dependencies]
-oriera-common = { path = "crates/oriera-common", version = "0.12.0" }
-oriera-pal = { path = "crates/oriera-pal", version = "0.12.0" }
-oriera-core = { path = "crates/oriera-core", version = "0.12.0" }
-oriera-ecs = { path = "crates/oriera-ecs", version = "0.12.0" }
-oriera-asset = { path = "crates/oriera-asset", version = "0.12.0" }
-oriera-render = { path = "crates/oriera-render", version = "0.12.0" }
-oriera-splat = { path = "crates/oriera-splat", version = "0.12.0" }
-oriera-subsys = { path = "crates/oriera-subsys", version = "0.12.0" }
-oriera-infer = { path = "crates/oriera-infer", version = "0.12.0" }
-oriera-genai = { path = "crates/oriera-genai", version = "0.12.0" }
-oriera-agent = { path = "crates/oriera-agent", version = "0.12.0" }
-oriera-embodied = { path = "crates/oriera-embodied", version = "0.12.0" }
+oriera-common = { path = "crates/oriera-common", version = "0.13.0" }
+oriera-pal = { path = "crates/oriera-pal", version = "0.13.0" }
+oriera-core = { path = "crates/oriera-core", version = "0.13.0" }
+oriera-ecs = { path = "crates/oriera-ecs", version = "0.13.0" }
+oriera-asset = { path = "crates/oriera-asset", version = "0.13.0" }
+oriera-render = { path = "crates/oriera-render", version = "0.13.0" }
+oriera-splat = { path = "crates/oriera-splat", version = "0.13.0" }
+oriera-subsys = { path = "crates/oriera-subsys", version = "0.13.0" }
+oriera-infer = { path = "crates/oriera-infer", version = "0.13.0" }
+oriera-genai = { path = "crates/oriera-genai", version = "0.13.0" }
+oriera-agent = { path = "crates/oriera-agent", version = "0.13.0" }
+oriera-embodied = { path = "crates/oriera-embodied", version = "0.13.0" }
 bitflags = "2.6"
 serde = { version = "1.0.229", features = ["derive"] }
 # float_roundtrip：默认快速浮点解析对个别十进制串差 1 ulp（实锤样例
