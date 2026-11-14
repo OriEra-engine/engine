@@ -25,6 +25,7 @@
 //! # assert_eq!(infer.processed, 0); // executed on the next scheduler tick
 //! ```
 
+pub mod bench_account;
 pub mod cognition;
 pub mod embodied;
 pub mod genai;
@@ -66,6 +67,7 @@ pub use oriera_embodied::spec;
 #[cfg(feature = "urdf")]
 pub use oriera_embodied::urdf;
 
+pub use bench_account::{run_headless_loop, HeadlessRunAccount, SegmentAccount};
 pub use cognition::{
     CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WakeEvent, WorldStory,
 };

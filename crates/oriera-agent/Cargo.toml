@@ -91,6 +91,14 @@ path = "examples/cafe.rs"
 name = "studio_e2e"
 path = "examples/studio_e2e.rs"
 
+# P0-5 headless 验证回路 CLI（方案 A 最小竖切，G5/G6/G7-部分）：固定
+# 场景 → 固定步数物理 → 三段分账 JSON。json 必列：分账结构经
+# serde_json 序列化打印（同 tool_loop 的 required-features 惯例）。
+[[example]]
+name = "headless_loop"
+path = "examples/headless_loop.rs"
+required-features = ["json"]
+
 # #80: rapier2d comes from oriera-subsys' `rigid` feature — the
 # example only builds when that (and json, unused here but kept for
 # symmetry with the collection harness docs) is enabled.
