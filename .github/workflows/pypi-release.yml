@@ -1,0 +1,75 @@
+name: pypi-release
+
+# oriera-sim (PyO3/maturin) PyPI 发布腿：
+# 触发 = 推 v* 标签或手动。发布走 Trusted Publishing（OIDC 免 token）——
+# 需在 PyPI 注册 pending publisher：
+#   owner=OriEra-engine  repo=engine  workflow=pypi-release.yml  environment=pypi
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build wheel (maturin)
+        run: |
+          pip install maturin
+          maturin build --release --out dist
+      - name: Auditwheel repair (manylinux tag)
+        run: |
+          pip install auditwheel
+          auditwheel repair dist/*.whl --wheel-dir dist-many
+          rm dist/*.whl
+          mv dist-many/*.whl dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-linux
+          path: dist/*.whl
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build wheel (maturin)
+        run: |
+          pip install maturin
+          maturin build --release --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-windows
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: wheel-*
+          merge-multiple: true
+      - name: Collect wheels
+        run: mkdir -p dist && find artifacts -name "*.whl" -exec cp {} dist/ \;
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release
+        with:
+          packages-dir: dist/
