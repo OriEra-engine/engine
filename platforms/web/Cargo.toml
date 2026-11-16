@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "OriEra web platform crate (wasm cdylib entry): browser front-end glue of the engine"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
