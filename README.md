@@ -34,7 +34,7 @@
 
 **不重造物理引擎，不重造数据集格式**——把自己做成便宜、可复位、可回放的训练场（world as benchmark）。物理与数据出口对接开源标准：[Rapier](https://rapier.rs) 3D 接触物理 × [LeRobotDataset v2.1](https://huggingface.co/docs/lerobot) 训练数据导出 × [Gymnasium](https://gymnasium.farama.org) Python 桥。
 
-**这是同一个内核的两个档位**：世界引擎档（demo 01–14：AI NPC、生成式世界、影游）与训练场档（15 号具身仿真台，world as benchmark）跑在同一个 11 层内核上——八条产业赛道共用一套内核的叙事见 [docs/VERTICALS.md](docs/VERTICALS.md)。
+**这是同一个内核的两个档位**：世界引擎档（demo 01–14 + 16 号高斯展馆：AI NPC、生成式世界、影游、3DGS）与训练场档（15 号具身仿真台，world as benchmark）跑在同一个 11 层内核上——八条产业赛道共用一套内核的叙事见 [docs/VERTICALS.md](docs/VERTICALS.md)。
 
 **15 号具身仿真台（旗舰）**：一套物理，四个入口，导出轨按入口如实分流——
 
@@ -54,7 +54,7 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 
 **🌐 https://oriera-engine.github.io/engine/**
 
-15 个可玩 demo，浏览器直接打开：
+17 个可玩 demo，浏览器直接打开：
 
 | Demo | 展示 | 打开 |
 |---|---|---|
@@ -73,6 +73,8 @@ OriEra 不是又一个游戏引擎。我们要做的是：在 PC、手机、网�
 | 13 Generative Gallery 生成式画廊 | 一句话主题 → L8 文生图/文生 3D → L4 热替换装帧小 3D 世界 | [▶](https://oriera-engine.github.io/engine/examples/13-genai-gallery/index.html) |
 | 14 Frame Hunter 帧猎 | 跑酷答题游戏：三车道跑酷 + 谬误之门 + Boss 战，BKT 知识追踪，全离线 2.3MB | [▶](https://oriera-engine.github.io/engine/frame-hunter/index.html) |
 | 15 Embodied Sim 具身仿真台 | **rapier3d 接触物理机械臂桌面抓放**：键鼠遥操作/脚本演示 + 六预设卡片墙换装；数据导出走 Studio 工作台或 CLI（独立打开时「导出」置灰） | [▶](https://oriera-engine.github.io/engine/examples/15-embodied-sim/index.html) |
+| 16 高斯展馆 Gaussian Hall | **实验性 3DGS 查看器**：标准 PLY 进、EWA 泼溅出，CC0 真扫描 + 程序化花瓣环，拖入 .ply 即换展品；JS 镜像与 Rust 共读金样对拍 | [▶](https://oriera-engine.github.io/engine/examples/16-gaussian-hall/index.html) |
+| 17 秘林咖啡馆 Myth Café | **经营小游戏**：Hyper3D 资产怪兽常客点单，裸 WebGL2 Cook-Torrance PBR + 蒙皮管线同源渲染，离线可玩（资产不入库，缺文件自动降级占位兽） | [▶](https://oriera-engine.github.io/engine/examples/17-myth-cafe/index.html) |
 
 ## 架构
 
@@ -138,8 +140,8 @@ graph TB
 | 引擎主语言 | Rust（L1–L7、L9 实时层） |
 | Web 分发 | Wasm + WebGPU（wgpu 统一后端） |
 | 对象模型 | ECS（SoA 布局，TypedArray 参考实现已跑） |
-| 渲染 | wgpu / WebGPU，未来支持 3DGS 神经渲染 |
-| 物理 | Jolt（Rust），Web 参考实现已跑 |
+| 渲染 | wgpu / WebGPU；高斯泼溅 CPU 参考内核 `oriera-splat`（实验性：标准 3DGS PLY → EWA 泼溅，逐字节可复现），GPU 路径与 3DGS 神经渲染在路线图 |
+| 物理 | rapier2d / rapier3d（纯 Rust，`rigid`/`rigid3d` feature；Jolt 评估后不做），Web 参考实现已跑 |
 | Agent | LangGraph + MCP 协议（v1 规则解析，未来接 LLM） |
 | 契约 | Protobuf + JSON Schema 2020-12 |
 | 构建 | Cargo workspace（JS 侧编辑器/SDK 落地时再引入 pnpm） |

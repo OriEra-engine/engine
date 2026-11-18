@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <link rel="icon" href="data:," />
+  <title>高斯展馆 · OriEra 实验性 3DGS 查看器</title>
+  <meta name="description" content="OriEra 引擎实验性高斯泼溅查看器:标准 3DGS PLY 进、EWA 泼溅出,裸 WebGL2 零依赖离线可玩。" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #070b16; color: #e8eefc;
+      font: 14px/1.6 system-ui, "Microsoft YaHei", sans-serif; overflow: hidden; }
+    #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+    .panel { position: fixed; z-index: 5; background: rgba(11, 18, 34, 0.82);
+      border: 1px solid #1d2a45; border-radius: 12px; padding: 10px 14px; backdrop-filter: blur(4px); }
+    #head { top: 12px; left: 12px; max-width: min(520px, calc(100vw - 24px)); }
+    #head h1 { margin: 0; font-size: 16px; letter-spacing: 0.04em; }
+    #head h1 b { color: #3ee6ff; font-weight: 600; }
+    #head p { margin: 4px 0 0; font-size: 12px; color: #9db0d0; }
+    #scenes { bottom: 12px; left: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    #scenes button { background: #0b1222; color: #cfe0ff; border: 1px solid #2a3a5f; border-radius: 999px;
+      padding: 6px 14px; font: inherit; cursor: pointer; }
+    #scenes button.on { color: #3ee6ff; border-color: #17435a; }
+    #scenes button:hover { border-color: #3ee6ff; }
+    #stats { bottom: 12px; right: 12px; font-size: 12px; color: #9db0d0; text-align: right; }
+    #stats b { color: #ffc861; font-weight: 600; }
+    #drop { position: fixed; inset: 0; z-index: 9; display: none; align-items: center; justify-content: center;
+      background: rgba(7, 11, 22, 0.7); border: 2px dashed #3ee6ff; }
+    #drop.on { display: flex; }
+    #drop span { font-size: 18px; color: #3ee6ff; }
+    #overlay { position: fixed; inset: 0; z-index: 10; display: none; align-items: center; justify-content: center;
+      background: rgba(7, 11, 22, 0.9); text-align: center; padding: 24px; }
+    #overlay.on { display: flex; }
+    #overlay .msg { max-width: 420px; }
+    #overlay .msg h2 { color: #ff6b2b; font-size: 16px; margin: 0 0 8px; }
+    #overlay .msg p { color: #b9c7e2; margin: 0 0 12px; }
+    #overlay .msg button { background: #0b1222; color: #3ee6ff; border: 1px solid #17435a; border-radius: 999px;
+      padding: 6px 16px; font: inherit; cursor: pointer; }
+    footer { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 4;
+      font-size: 11px; color: #6f83a8; text-align: center; max-width: 90vw; }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div class="panel" id="head">
+    <h1>OriEra <b>高斯展馆</b></h1>
+    <p>实验性 3DGS 查看器:标准 PLY 进、EWA 泼溅出。单指拖动旋转,滚轮/双指缩放;也可以把 .ply 文件直接拖进窗口。</p>
+  </div>
+  <div class="panel" id="scenes">
+    <button data-scene="dragon" class="on">CC0 真扫描 · 龙</button>
+    <button data-scene="petal">程序化 · 霓虹花瓣环</button>
+    <button data-scene="drop">拖入 / 选择 .ply</button>
+    <input id="file" type="file" accept=".ply" hidden />
+  </div>
+  <div class="panel" id="stats">准备中…</div>
+  <div id="drop"><span>松手,把它放进展馆</span></div>
+  <div id="overlay"><div class="msg"><h2 id="ov-title">出错了</h2><p id="ov-text"></p><button id="ov-ok">回到默认场景</button></div></div>
+  <footer>引擎实验性 splat 镜像(公式与 oriera-splat 同源,金样对拍)· 本页完全离线 ·
+    真扫描 <a style="color:#6f83a8" href="https://github.com/sekiguchiaimi/spatialdragon-3dgs">spatialdragon-3dgs</a>(CC0-1.0,许可与来源见 vendor/THIRD-PARTY-NOTICES.md)</footer>
+
+  <script type="module">
+    import { decodeSplatPly, makeCamera, projectSplats, depthOrder, petalRing } from "./engine/splat.js";
+
+    const canvas = document.getElementById("stage");
+    const stats = document.getElementById("stats");
+    const overlay = document.getElementById("overlay");
+    const ovTitle = document.getElementById("ov-title");
+    const ovText = document.getElementById("ov-text");
+    const fileInput = document.getElementById("file");
+    const buttons = [...document.querySelectorAll("#scenes button[data-scene]")];
+
+    // ---------- 渲染器:裸 WebGL2(零依赖;fp32 混合目标,回退 RGBA8) ----------
+    const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
+    if (!gl) {
+      showOverlay("需要 WebGL2", "这个浏览器不支持 WebGL2。请用较新的 Chrome / Edge / Firefox(手机端请勿用微信内置浏览器打开,选「在浏览器打开」)。");
+      throw new Error("no webgl2");
+    }
+    const hasFloatBlend =
+      !!gl.getExtension("EXT_color_buffer_float") && !!gl.getExtension("EXT_float_blend");
+    const TARGET_FMT = hasFloatBlend ? gl.RGBA32F : gl.RGBA8;
+    const TARGET_TYPE = hasFloatBlend ? gl.FLOAT : gl.UNSIGNED_BYTE;
+
+    const VS = `#version 300 es
+layout(location=0) in vec2 corner;
+layout(location=1) in vec2 centerNdc;
+layout(location=2) in vec2 extentNdc;
+layout(location=3) in vec2 extentPx;
+layout(location=4) in vec3 conic;
+layout(location=5) in vec3 color;
+layout(location=6) in float opacity;
+out vec2 vLocal; out vec3 vConic; out vec3 vColor; out float vOpacity; out vec2 vExtentPx;
+void main() {
+  gl_Position = vec4(centerNdc + corner * extentNdc, 0.5, 1.0);
+  vLocal = corner; vConic = conic; vColor = color; vOpacity = opacity; vExtentPx = extentPx;
+}`;
+    // 与 Rust GPU 路径同一公式;local.y 取反对齐「NDC 上行 vs 像素下行」。
+    const FS = `#version 300 es
+precision highp float;
+in vec2 vLocal; in vec3 vConic; in vec3 vColor; in float vOpacity; in vec2 vExtentPx;
+out vec4 frag;
+void main() {
+  vec2 d = vec2(vLocal.x, -vLocal.y) * vExtentPx;
+  float power = -0.5 * (vConic.x * d.x * d.x + vConic.z * d.y * d.y) - vConic.y * d.x * d.y;
+  float a = min(0.99, vOpacity * exp(power));
+  if (a < 0.003921569) discard;
+  frag = vec4(vColor, a);
+}`;
+    const COPY_VS = `#version 300 es
+layout(location=0) in vec2 p;
+out vec2 uv;
+void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }`;
+    const COPY_FS = `#version 300 es
+precision highp float;
+in vec2 uv; out vec4 frag; uniform sampler2D tex;
+void main() { frag = texture(tex, uv); }`;
+
+    function program(vsSrc, fsSrc) {
+      const make = (type, src) => {
+        const s = gl.createShader(type);
+        gl.shaderSource(s, src);
+        gl.compileShader(s);
+        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+          throw new Error(gl.getShaderInfoLog(s) || "shader compile failed");
+        }
+        return s;
+      };
+      const p = gl.createProgram();
+      gl.attachShader(p, make(gl.VERTEX_SHADER, vsSrc));
+      gl.attachShader(p, make(gl.FRAGMENT_SHADER, fsSrc));
+      gl.linkProgram(p);
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(p) || "program link failed");
+      }
+      return p;
+    }
+    const splatProg = program(VS, FS);
+    const copyProg = program(COPY_VS, COPY_FS);
+    gl.useProgram(copyProg);
+    gl.uniform1i(gl.getUniformLocation(copyProg, "tex"), 0);
+
+    // 全屏三角形 + 四角形几何
+    const cornerVao = gl.createVertexArray();
+    gl.bindVertexArray(cornerVao);
+    const cornerBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, 1, 1, -1, 1]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    const idxBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array([0, 1, 2, 0, 2, 3]), gl.STATIC_DRAW);
+    const instanceBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, instanceBuf); // 先绑再配指针:VAO 捕获的是绑定时所在缓冲
+    for (let loc = 1; loc <= 6; loc++) {
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribDivisor(loc, 1);
+    }
+    const STRIDE = 13 * 4; // 13 floats,与 Rust GPU 路径同布局
+    const off = [0, 8, 16, 24, 36, 48];
+    const fmt = [gl.FLOAT_VEC2, gl.FLOAT_VEC2, gl.FLOAT_VEC2, gl.FLOAT_VEC3, gl.FLOAT_VEC3, gl.FLOAT];
+    for (let k = 0; k < 6; k++) {
+      gl.vertexAttribPointer(k + 1, k === 3 || k === 4 ? 3 : k === 5 ? 1 : 2, gl.FLOAT, false, STRIDE, off[k]);
+    }
+    const fullVao = gl.createVertexArray();
+    gl.bindVertexArray(fullVao);
+    const fullBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, fullBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+    let fbo = null, fboTex = null, fboW = 0, fboH = 0;
+    function ensureTarget(w, h) {
+      if (fboTex && fboW === w && fboH === h) return;
+      gl.deleteTexture(fboTex); gl.deleteFramebuffer(fbo);
+      fboTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, fboTex);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, TARGET_FMT, w, h);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTex, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      fboW = w; fboH = h;
+    }
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.max(1, Math.round(canvas.clientWidth * dpr));
+      const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w; canvas.height = h;
+      }
+      ensureTarget(canvas.width, canvas.height);
+    }
+    window.addEventListener("resize", resize);
+
+    // ---------- 场景状态与轨道相机 ----------
+    const BG = [0.027, 0.043, 0.086]; // Q∞ #070b16
+    let cloud = null;
+    let orbit = { yaw: 0.6, pitch: 0.35, dist: 1.2, center: [0, 0, 0], radius: 0.4, auto: true };
+    let dirty = true;
+    let visibleCount = 0, totalCount = 0;
+
+    function setSceneMeta(radius, center) {
+      orbit.radius = radius;
+      orbit.center = center;
+      orbit.dist = radius * 3.2;
+      orbit.auto = true;
+      dirty = true;
+    }
+    function setCloud(c, label) {
+      cloud = c;
+      totalCount = c.count;
+      // 中心取逐轴中位数、半径取 80 分位距离(与 examples/splat_cpu.rs 同式)
+      const axis = (k) => {
+        const v = Array.from(c.positions.filter((_, idx) => idx % 3 === k)).sort((a, b) => a - b);
+        return v[v.length >> 1] ?? 0;
+      };
+      const center = [axis(0), axis(1), axis(2)];
+      let dists = [];
+      for (let i = 0; i < c.count; i += Math.max(1, Math.floor(c.count / 2000))) {
+        const dx = c.positions[3 * i] - center[0], dy = c.positions[3 * i + 1] - center[1], dz = c.positions[3 * i + 2] - center[2];
+        dists.push(Math.hypot(dx, dy, dz));
+      }
+      dists.sort((a, b) => a - b);
+      setSceneMeta(Math.max(dists[Math.floor(dists.length * 0.8)] || 1, 1e-3), center);
+      markScene(label);
+      dirty = true;
+    }
+
+    // ---------- 场景装载 ----------
+    async function loadDragon() {
+      const res = await fetch("assets/spatial_dragon.ply");
+      if (!res.ok) throw new Error(`真扫描文件没取到(HTTP ${res.status})`);
+      const buf = await res.arrayBuffer();
+      setCloud(decodeSplatPly(new Uint8Array(buf)), "dragon");
+    }
+    function loadPetal() {
+      setCloud(petalRing(4000, 2026), "petal");
+    }
+    async function loadSrc(src) {
+      const res = await fetch(src);
+      if (!res.ok) throw new Error(`没取到 ${src}(HTTP ${res.status})`);
+      setCloud(decodeSplatPly(new Uint8Array(await res.arrayBuffer())), "src");
+    }
+    function showOverlay(title, text) {
+      ovTitle.textContent = title;
+      ovText.textContent = text;
+      overlay.classList.add("on");
+    }
+    document.getElementById("ov-ok").addEventListener("click", () => {
+      overlay.classList.remove("on");
+      activate(loadDragon, "dragon");
+    });
+    function activate(loader, key) {
+      overlay.classList.remove("on");
+      stats.textContent = "装载中…";
+      Promise.resolve()
+        .then(loader)
+        .catch((e) => {
+          showOverlay("这个文件打不开", `${e.message}。只支持标准 3DGS 的 PLY(binary 小端);压缩版/SPZ 请先用导出工具转成标准 PLY。`);
+          markScene(currentScene);
+          stats.textContent = "装载失败";
+        });
+      if (key) markScene(key);
+    }
+    function markScene(key) {
+      currentScene = key;
+      for (const b of buttons) b.classList.toggle("on", b.dataset.scene === key);
+    }
+    let currentScene = "dragon";
+
+    buttons.forEach((b) => b.addEventListener("click", () => {
+      const key = b.dataset.scene;
+      if (key === "dragon") activate(loadDragon, "dragon");
+      else if (key === "petal") activate(loadPetal, "petal");
+      else fileInput.click();
+    }));
+    fileInput.addEventListener("change", () => {
+      const f = fileInput.files[0];
+      if (f) readFile(f);
+      fileInput.value = "";
+    });
+    function readFile(f) {
+      overlay.classList.remove("on");
+      stats.textContent = `读取 ${f.name}…`;
+      f.arrayBuffer()
+        .then((buf) => { setCloud(decodeSplatPly(new Uint8Array(buf)), null); stats.textContent = f.name; })
+        .catch((e) => showOverlay("这个文件打不开", `${e.message}`));
+    }
+    window.addEventListener("dragover", (e) => { e.preventDefault(); document.getElementById("drop").classList.add("on"); });
+    window.addEventListener("dragleave", () => document.getElementById("drop").classList.remove("on"));
+    window.addEventListener("drop", (e) => {
+      e.preventDefault();
+      document.getElementById("drop").classList.remove("on");
+      const f = e.dataTransfer.files[0];
+      if (f) readFile(f);
+    });
+    const params = new URLSearchParams(location.search);
+    if (params.get("src")) {
+      const src = params.get("src");
+      activate(() => loadSrc(src), null);
+    } else {
+      activate(loadDragon, "dragon");
+    }
+
+    // ---------- 交互:单指旋转 / 双指缩放 / 滚轮 ----------
+    const pointers = new Map();
+    let lastPinch = 0;
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      pointers.set(e.pointerId, [e.clientX, e.clientY]);
+      orbit.auto = false;
+    });
+    canvas.addEventListener("pointermove", (e) => {
+      if (!pointers.has(e.pointerId)) return;
+      const prev = pointers.get(e.pointerId);
+      pointers.set(e.pointerId, [e.clientX, e.clientY]);
+      if (pointers.size === 1) {
+        orbit.yaw -= (e.clientX - prev[0]) * 0.005;
+        orbit.pitch = Math.min(1.45, Math.max(-1.45, orbit.pitch + (e.clientY - prev[1]) * 0.005));
+        dirty = true;
+      } else if (pointers.size === 2) {
+        const pts = [...pointers.values()];
+        const d = Math.hypot(pts[0][0] - pts[1][0], pts[0][1] - pts[1][1]);
+        if (lastPinch > 0) {
+          orbit.dist = clampDist(orbit.dist * (lastPinch / d));
+          dirty = true;
+        }
+        lastPinch = d;
+      }
+    });
+    const dropPointer = (e) => {
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) lastPinch = 0;
+    };
+    canvas.addEventListener("pointerup", dropPointer);
+    canvas.addEventListener("pointercancel", dropPointer);
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      orbit.auto = false;
+      orbit.dist = clampDist(orbit.dist * Math.exp(e.deltaY * 0.0012));
+      dirty = true;
+    }, { passive: false });
+    const clampDist = (d) => Math.min(orbit.radius * 12, Math.max(orbit.radius * 0.25, d));
+
+    // ---------- 每帧:投影+排序(仅相机变化时)→ 实例化绘制 → 拷屏 ----------
+    function projectAndUpload(camera) {
+      const projected = projectSplats(cloud, camera);
+      const order = depthOrder(projected);
+      const w = camera.width, h = camera.height;
+      const inst = new Float32Array(order.length * 13);
+      let o = 0;
+      for (let k = order.length - 1; k >= 0; k--) { // 后到前
+        const p = projected[order[k]];
+        inst[o++] = p.mean[0] / w * 2 - 1;
+        inst[o++] = 1 - p.mean[1] / h * 2;
+        inst[o++] = p.extent[0] * 2 / w;
+        inst[o++] = p.extent[1] * 2 / h;
+        inst[o++] = p.extent[0]; inst[o++] = p.extent[1];
+        inst[o++] = p.conic[0]; inst[o++] = p.conic[1]; inst[o++] = p.conic[2];
+        inst[o++] = p.color[0]; inst[o++] = p.color[1]; inst[o++] = p.color[2];
+        inst[o++] = p.opacity;
+      }
+      gl.bindVertexArray(cornerVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, instanceBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, inst, gl.DYNAMIC_DRAW);
+      return order.length;
+    }
+
+    let lastT = performance.now(), fpsAcc = 0, fpsN = 0, fps = 0;
+    function frame(now) {
+      requestAnimationFrame(frame);
+      resize();
+      const dt = (now - lastT) / 1000;
+      lastT = now;
+      if (dt > 0 && dt < 1) {
+        fpsAcc += 1 / dt; fpsN++;
+        if (fpsN >= 30) { fps = fpsAcc / fpsN; fpsAcc = 0; fpsN = 0; }
+      }
+      if (orbit.auto) { orbit.yaw += dt * 0.15; dirty = true; }
+      if (!cloud) return;
+      const eye = [
+        orbit.center[0] + orbit.dist * Math.sin(orbit.yaw) * Math.cos(orbit.pitch),
+        orbit.center[1] + orbit.dist * Math.sin(orbit.pitch),
+        orbit.center[2] + orbit.dist * Math.cos(orbit.yaw) * Math.cos(orbit.pitch),
+      ];
+      const camera = makeCamera(eye, orbit.center, [0, 1, 0], 45, canvas.width, canvas.height);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.clearColor(BG[0], BG[1], BG[2], 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.enable(gl.BLEND);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(splatProg);
+      gl.bindVertexArray(cornerVao);
+      if (dirty) {
+        visibleCount = projectAndUpload(camera);
+        dirty = false;
+      } else {
+        gl.bindBuffer(gl.ARRAY_BUFFER, instanceBuf);
+      }
+      gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_INT, 0, totalCount ? visibleCount : 0);
+      gl.disable(gl.BLEND);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.useProgram(copyProg);
+      gl.bindVertexArray(fullVao);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, fboTex);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      stats.innerHTML =
+        `<b>${visibleCount}</b> / ${totalCount} splats · <b>${fps.toFixed(0)}</b> fps · ` +
+        (hasFloatBlend ? "fp32 混合" : "8-bit 回退") + " · 拖入 .ply 可换自己的展品";
+    }
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

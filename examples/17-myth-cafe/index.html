@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="icon" href="data:," />
+<title>OriEra Demo 17 — 秘林咖啡馆 · 兽人班次</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:#060a10; color:#e6e8ee; overflow:hidden; height:100vh;
+         font-family:-apple-system,"SF Mono",Menlo,monospace; }
+  #stage { position:fixed; inset:0; }
+  canvas { display:block; touch-action:none; }
+  #hud { position:fixed; top:10px; left:12px; font-size:12px; color:#8a90a6; line-height:1.8;
+         pointer-events:none; }
+  #hud b { color:#6ee7ff; }
+  #hud .coin { color:#ffd166; }
+  #hearts { color:#ff7a8a; letter-spacing:2px; }
+  #topright { position:fixed; top:10px; right:14px; font-size:11px; color:#555b6e;
+              text-align:right; line-height:1.7; pointer-events:none; }
+  /* 订单气泡(投影到屏幕) */
+  .bubble { position:fixed; transform:translate(-50%,-100%); pointer-events:none;
+            background:rgba(14,18,26,.92); border:1px solid #3a4a66; border-radius:12px;
+            padding:8px 12px 7px; text-align:center; z-index:5; }
+  .bubble .drink { font-size:24px; line-height:1.1; }
+  .bubble .bar { width:64px; height:4px; background:#1a2030; border-radius:2px; margin-top:5px; }
+  .bubble .bar i { display:block; height:100%; border-radius:2px; background:#a8ff6b; }
+  .bubble .nm { font-size:9.5px; color:#8a90a6; margin-top:3px; }
+  /* 出餐按钮 */
+  #serve { position:fixed; left:50%; transform:translateX(-50%); bottom:14px; display:flex;
+           gap:10px; }
+  .drinkbtn { background:rgba(13,17,24,.92); border:1px solid #33405a; color:#e6e8ee;
+              border-radius:12px; padding:10px 18px; font:inherit; cursor:pointer; text-align:center; }
+  .drinkbtn:hover { border-color:#6ee7ff; }
+  .drinkbtn .ic { font-size:22px; }
+  .drinkbtn .lb { font-size:11px; color:#8a90a6; margin-top:3px; }
+  /* 开始/结束遮罩 */
+  .overlay { position:fixed; inset:0; background:rgba(4,7,12,.86); display:flex;
+             align-items:center; justify-content:center; z-index:20; }
+  .panel { background:#0b0f16; border:1px solid #2a3344; border-radius:14px; padding:26px 34px;
+           max-width:520px; text-align:center; }
+  .panel h1 { font-size:18px; color:#6ee7ff; margin-bottom:10px; }
+  .panel p { font-size:12px; color:#8a90a6; line-height:1.9; margin-bottom:14px; }
+  .panel button { background:#ffd166; color:#060a10; border:0; padding:10px 26px; border-radius:10px;
+                  font:inherit; font-weight:700; font-size:14px; cursor:pointer; }
+  #loading { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); font-size:13px;
+             color:#8a90a6; z-index:10; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="hud">秘林咖啡馆 · 兽人班次<br/>
+  <span class="coin">◉</span> <b id="score">0</b> &nbsp; <span id="hearts">♥♥♥</span><br/>
+  <span id="served">0</span> 位客人满意
+</div>
+<div id="topright">拖动旋转视角 · 滚轮缩放<br/>Hyper3D 资产 · 引擎原生渲染</div>
+<div id="serve"></div>
+<div id="loading">秘林开张中…(加载兽人伙伴)</div>
+
+<div class="overlay" id="start-bg"><div class="panel">
+  <h1>秘林咖啡馆 · 兽人班次</h1>
+  <p>你是石魔老板「磐叔」，深夜秘林里的怪兽常客会坐到树桩位点单。<br/>
+  看准客人头顶的<b style="color:#ffd166">饮品气泡</b>，点下方对应出品键出餐。<br/>
+  上错不扣分但浪费时间；客人等急了会气跑——三颗心用完就打烊。<br/>
+  <span style="color:#555b6e">拖动旋转视角 · 滚轮缩放</span></p>
+  <button id="btn-start">开门营业</button>
+</div></div>
+
+<div class="overlay" id="over-bg" style="display:none"><div class="panel">
+  <h1>打烊了!</h1>
+  <p>本班次满意客人 <b id="ov-served" style="color:#a8ff6b">0</b> 位 ·
+     收入 <b id="ov-score" style="color:#ffd166">0</b> ◉</p>
+  <button id="btn-restart">再开一班</button>
+</div></div>
+
+<script type="module">
+// =====================================================================
+// #153 M1 交付载体:examples/17 秘林咖啡馆——裸 WebGL2 + Cook-Torrance PBR
+// (与 crates/oriera-render SHADER_VIEW_PBR 公式同源,MR 贴图消费同口径),
+// 角色资产 = Hyper3D Rodin 自有资产包(24 件 500k 面 QC 全过,静态网格)。
+// 渲染层踩坑全部 bake:行主序 lookAt/perspective、uniform 列主序转置、
+// 背面剔除、逐 draw 重置全部 uniform。
+// =====================================================================
+import { decodeGlbScene } from "./engine/gltf.js";
+
+const $ = (id) => document.getElementById(id);
+const canvas = document.createElement("canvas");
+$("stage").appendChild(canvas);
+const gl = canvas.getContext("webgl2", { antialias: true });
+if (!gl) { $("loading").textContent = "这个浏览器不支持 WebGL2。"; throw new Error("no webgl2"); }
+
+/* ---------- 着色器:Cook-Torrance GGX(与 SHADER_VIEW_PBR 同源)+ MR 贴图 + 自发光 ---------- */
+const VS = `#version 300 es
+layout(location=0) in vec3 pos;
+layout(location=1) in vec3 normal;
+layout(location=2) in vec2 uv;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+out vec3 vN; out vec3 vW; out vec2 vUv;
+void main() {
+  vec4 wp = uModel * vec4(pos, 1.0);
+  vW = wp.xyz;
+  vN = mat3(uModel) * normal;
+  vUv = uv;
+  gl_Position = uMVP * wp;
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec3 vN; in vec3 vW; in vec2 vUv;
+uniform vec3 uBaseColor;
+uniform vec3 uCamPos;
+uniform vec3 uLightDir;      // xyz=方向(指向光源), w 不用,强度走 uLightPower
+uniform float uLightPower;
+uniform float uMetallic;
+uniform float uRoughness;
+uniform float uEmissive;
+uniform bool uUseTex;
+uniform bool uHasMR;
+uniform sampler2D uTex;
+uniform sampler2D uMrTex;
+out vec4 frag;
+void main() {
+  vec3 albedo = uBaseColor;
+  float alpha = 1.0;
+  float metallic = clamp(uMetallic, 0.0, 1.0);
+  float roughness = clamp(uRoughness, 0.05, 1.0);
+  if (uUseTex) {
+    vec4 t = texture(uTex, vUv);
+    albedo *= t.rgb;
+    alpha = t.a;
+  }
+  if (alpha < 0.003) discard;
+  if (uEmissive > 0.0) { frag = vec4(albedo * uEmissive, 1.0); return; }
+  if (uHasMR) {
+    vec3 mrs = texture(uMrTex, vUv).rgb;   // GL=粗糙度 B=金属度(#152 第四刀口径)
+    metallic = clamp(metallic * mrs.b, 0.0, 1.0);
+    roughness = clamp(roughness * mrs.g, 0.05, 1.0);
+  }
+  vec3 n = normalize(vN);
+  vec3 v = normalize(uCamPos - vW);
+  vec3 l = normalize(uLightDir);
+  vec3 h = normalize(v + l);
+  float ndl = clamp(dot(n, l), 0.0, 1.0);
+  float ndv = clamp(dot(n, v), 0.0, 1.0) + 1e-4;
+  float ndh = clamp(dot(n, h), 0.0, 1.0);
+  float vdh = clamp(dot(v, h), 0.0, 1.0);
+  float a2 = roughness * roughness;
+  float dd = ndh * ndh * (a2 - 1.0) + 1.0;
+  float dist = a2 / (3.14159265 * dd * dd);
+  float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+  float gv = ndv / (ndv * (1.0 - k) + k);
+  float gl = ndl / (ndl * (1.0 - k) + k);
+  vec3 f0 = mix(vec3(0.04), albedo, metallic);
+  vec3 fres = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
+  float pw = uLightPower;
+  vec3 spec = dist * gv * gl * fres * ndl * pw;
+  vec3 diff = (vec3(1.0) - fres) * (1.0 - metallic) * albedo * ndl * pw;
+  vec3 hemi = mix(vec3(0.16, 0.19, 0.23), vec3(0.30, 0.36, 0.42), n.y * 0.5 + 0.5);
+  vec3 ambient = albedo * (1.0 - metallic) * hemi + albedo * metallic * hemi * 0.4;
+  frag = vec4(diff + spec + ambient, alpha);
+}`;
+function program(vsSrc, fsSrc) {
+  const make = (type, src) => {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error("shader: " + gl.getShaderInfoLog(sh));
+    return sh;
+  };
+  const p = gl.createProgram();
+  gl.attachShader(p, make(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, make(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error("link: " + gl.getProgramInfoLog(p));
+  return p;
+}
+const prog = program(VS, FS);
+const U = {};
+for (const n of ["uMVP","uModel","uBaseColor","uCamPos","uLightDir","uLightPower","uMetallic","uRoughness","uEmissive","uUseTex","uHasMR"]) {
+  U[n] = gl.getUniformLocation(prog, n);
+}
+U.uTex = gl.getUniformLocation(prog, "uTex");
+U.uMrTex = gl.getUniformLocation(prog, "uMrTex");
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE); // CCW 正面(与 three FrontSide 同款)
+
+/* ---------- 数学(demo 05 同款,截图验证过的实现,嵌套行数组) ---------- */
+function perspective(fovYDeg, aspect, near, far) {
+  const f = 1 / Math.tan((fovYDeg * Math.PI) / 360);
+  return [
+    [f / aspect, 0, 0, 0],
+    [0, f, 0, 0],
+    [0, 0, far / (near - far), near * far / (near - far)],
+    [0, 0, -1, 0],
+  ];
+}
+function lookAt(eye, target, up) {
+  const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+  const dot = (a, b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+  const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  const norm = (v) => { const l = Math.hypot(...v); return [v[0]/l, v[1]/l, v[2]/l]; };
+  const z = norm(sub(eye, target));
+  let x = cross(up, z);
+  if (dot(x, x) < 1e-12) x = cross([0, 0, 1], z);
+  x = norm(x);
+  const y = cross(z, x);
+  return [
+    [x[0], x[1], x[2], -dot(x, eye)],
+    [y[0], y[1], y[2], -dot(y, eye)],
+    [z[0], z[1], z[2], -dot(z, eye)],
+    [0, 0, 0, 1],
+  ];
+}
+function mul4(a, b) {
+  const out = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+    out[r][c] = a[r][0]*b[0][c] + a[r][1]*b[1][c] + a[r][2]*b[2][c] + a[r][3]*b[3][c];
+  }
+  return out;
+}
+function toColMajor(m) {
+  const out = new Float32Array(16);
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) out[c * 4 + r] = m[r][c];
+  return out;
+}
+function transformP(m, p) {
+  const v = [p[0], p[1], p[2], 1];
+  const out = [0, 0, 0, 0];
+  for (let r = 0; r < 4; r++) out[r] = m[r][0]*v[0] + m[r][1]*v[1] + m[r][2]*v[2] + m[r][3]*v[3];
+  return out;
+}
+function transMat(x, y, z) { return [[1,0,0,x],[0,1,0,y],[0,0,1,z],[0,0,0,1]]; }
+function rotYMat(a) {
+  const c = Math.cos(a), s = Math.sin(a);
+  return [[c,0,-s,0],[0,1,0,0],[s,0,c,0],[0,0,0,1]];
+}
+function scaleMat(s) { return [[s,0,0,0],[0,s,0,0],[0,0,s,0],[0,0,0,1]]; }
+
+/* ---------- 几何:pos3+normal3+uv2(步长 32B) ---------- */
+const FLOATS = 8;
+function interleave(positions, normals, uvs) {
+  const n = positions.length;
+  const out = new Float32Array(n * FLOATS);
+  for (let i = 0; i < n; i++) {
+    out.set(positions[i], i * FLOATS);
+    out.set(normals[i], i * FLOATS + 3);
+    if (uvs && uvs[i]) out.set(uvs[i], i * FLOATS + 6);
+  }
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, out, gl.STATIC_DRAW);
+  return { vbo, count: n };
+}
+function setAttribs() {
+  const stride = FLOATS * 4;
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 12);
+  gl.enableVertexAttribArray(2);
+  gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 24);
+}
+function boxGeo(w, h, d) {
+  const x = w/2, y = h/2, z = d/2;
+  const faces = [
+    { n: [0,0,1],  q: [[-x,-y,z],[x,-y,z],[x,y,z],[-x,y,z]] },
+    { n: [0,0,-1], q: [[x,-y,-z],[-x,-y,-z],[-x,y,-z],[x,y,-z]] },
+    { n: [1,0,0],  q: [[x,-y,z],[x,-y,-z],[x,y,-z],[x,y,z]] },
+    { n: [-1,0,0], q: [[-x,-y,-z],[-x,-y,z],[-x,y,z],[-x,y,-z]] },
+    { n: [0,1,0],  q: [[-x,y,z],[x,y,z],[x,y,-z],[-x,y,-z]] },
+    { n: [0,-1,0], q: [[-x,-y,-z],[x,-y,-z],[x,-y,z],[-x,-y,z]] },
+  ];
+  const P = [], N = [];
+  for (const f of faces) {
+    const [a,b,c,d2] = f.q;
+    for (const v of [a,b,c, a,c,d2]) { P.push(v); N.push(f.n); }
+  }
+  return interleave(P, N, null);
+}
+function cylinderGeo(r, h, seg = 16) {
+  const P = [], N = [];
+  const y0 = -h/2, y1 = h/2;
+  for (let i = 0; i < seg; i++) {
+    const a0 = (i/seg) * Math.PI*2, a1 = ((i+1)/seg) * Math.PI*2;
+    const c0 = [Math.cos(a0)*r, y0, Math.sin(a0)*r], c1 = [Math.cos(a1)*r, y0, Math.sin(a1)*r];
+    const t0 = [Math.cos(a0)*r, y1, Math.sin(a0)*r], t1 = [Math.cos(a1)*r, y1, Math.sin(a1)*r];
+    const n0 = [Math.cos(a0), 0, Math.sin(a0)], n1 = [Math.cos(a1), 0, Math.sin(a1)];
+    P.push(c0,t1,c1, c0,t0,t1); N.push(n0,n1,n1, n0,n1,n0);
+    P.push([0,y1,0], t1, c1, [0,y0,0], c0, c1);
+    N.push([0,1,0],[0,1,0],[0,1,0], [0,-1,0],[0,-1,0],[0,-1,0]);
+  }
+  return interleave(P, N, null);
+}
+function sphereGeo(r, seg = 12) {
+  const P = [], N = [];
+  for (let i = 0; i < seg; i++) for (let j = 0; j < seg; j++) {
+    const a0 = i/seg*Math.PI, a1 = (i+1)/seg*Math.PI;
+    const b0 = j/seg*Math.PI*2, b1 = (j+1)/seg*Math.PI*2;
+    const pt = (a,b) => [Math.sin(a)*Math.cos(b)*r, Math.cos(a)*r, Math.sin(a)*Math.sin(b)*r];
+    const nOf = (a,b) => [Math.sin(a)*Math.cos(b), Math.cos(a), Math.sin(a)*Math.sin(b)];
+    for (const [a,b] of [[a0,b0],[a1,b0],[a1,b1],[a0,b0],[a1,b1],[a0,b1]]) { P.push(pt(a,b)); N.push(nOf(a,b)); }
+  }
+  return interleave(P, N, null);
+}
+function discGeo(r, seg = 20) { // 贴地圆盘(影/光池),法线朝上
+  const P = [], N = [];
+  for (let i = 0; i < seg; i++) {
+    const a0 = i/seg*Math.PI*2, a1 = (i+1)/seg*Math.PI*2;
+    P.push([0,0,0], [Math.cos(a0)*r,0,Math.sin(a0)*r], [Math.cos(a1)*r,0,Math.sin(a1)*r]);
+    N.push([0,1,0],[0,1,0],[0,1,0]);
+  }
+  return interleave(P, N, null);
+}
+
+/* ---------- 场景:秘林咖啡馆(夜) ---------- */
+const SCENE = []; // { geo, x,y,z, ry, color, emissive, metallic, roughness, blend }
+function put(geo, x, y, z, color, opt = {}) {
+  SCENE.push({ geo, x, y, z, ry: opt.ry || 0, color, emissive: opt.emissive || 0,
+               metallic: opt.metallic ?? 0.0, roughness: opt.roughness ?? 0.85,
+               blend: opt.blend || false, scale: opt.scale || 1 });
+  return SCENE[SCENE.length - 1];
+}
+const bark = [0.20, 0.15, 0.11], wood = [0.38, 0.27, 0.17], wood2 = [0.50, 0.38, 0.24];
+const stone = [0.42, 0.42, 0.44], cream = [0.90, 0.86, 0.76];
+// 地面(苔藓木混合的深色地台)
+put(boxGeo(16, 0.3, 12), 0, -0.15, 0, [0.34, 0.28, 0.20], { roughness: 0.95 });
+// 吧台 + 台面 + 咖啡机
+put(boxGeo(6.4, 1.0, 1.1), 0, 0.5, -2.8, wood, { roughness: 0.7 });
+put(boxGeo(6.7, 0.12, 1.35), 0, 1.06, -2.8, wood2, { roughness: 0.5 });
+put(boxGeo(1.4, 0.85, 0.7), -1.7, 1.55, -2.9, stone, { roughness: 0.35, metallic: 0.6 });
+// 三张树桩客座
+const STUMPS = [-2.3, 0, 2.3].map((x, i) => {
+  put(cylinderGeo(0.52, 0.5, 18), x, 0.25, 0.9 + (i % 2) * 0.35, wood2, { roughness: 0.8 });
+  return { x, z: 0.9 + (i % 2) * 0.35 };
+});
+// 环绕巨树(背景幕)
+for (const [tx, tz, s] of [[-6.5,-5.5,1.6],[6.5,-5.5,1.7],[-7.5,-1,1.5],[7.5,-1,1.6],[-5.5,4.5,1.4],[5.5,4.5,1.4]]) {
+  put(cylinderGeo(0.42*s, 7.5, 12), tx, 3.75, tz, bark, { roughness: 0.95 });
+}
+// 发光蘑菇(秘林氛围:青色发光)
+for (const [mx, mz, mr] of [[-4.6,-3.6,0.5],[4.7,-3.2,0.42],[-5.2,2.2,0.34],[5.4,2.6,0.3],[0,-5.4,0.46]]) {
+  put(cylinderGeo(mr*0.36, mr*1.1, 10), mx, mr*0.55, mz, cream, { roughness: 0.7 });
+  put(sphereGeo(mr*0.85, 14), mx, mr*1.15, mz, [0.16, 0.62, 0.48], { emissive: 1.5, roughness: 0.4 });
+}
+// 吊灯(暖光)
+for (const lx of [-2.2, 0, 2.2]) {
+  put(cylinderGeo(0.02, 1.5, 6), lx, 3.4, 0.2, bark);
+  put(sphereGeo(0.13, 10), lx, 2.6, 0.2, [1.0, 0.72, 0.36], { emissive: 2.4 });
+}
+// 月亮(远夜空)
+put(sphereGeo(1.1, 16), -6, 4.5, -10, [0.92, 0.94, 0.85], { emissive: 1.1 });
+// 萤火虫(漂移小光点,帧循环更新 y/x)
+const FIREFLIES = [];
+for (let i = 0; i < 10; i++) {
+  FIREFLIES.push({ geo: sphereGeo(0.03 + Math.random()*0.02, 6),
+    seed: Math.random() * 100, color: [0.65, 0.95, 0.55] });
+}
+// 影盘(角色脚下,半透明深色,blend 绘制)
+const shadowGeo = discGeo(0.62, 24);
+
+/* ---------- 相机(拖动旋转 + 滚轮缩放) ---------- */
+const camCtl = { yaw: 0.0, pitch: 0.32, dist: 9.6, target: [0, 1.0, 0] };
+window.__cam = camCtl;
+const pointers = new Map();
+let lastPinch = 0;
+canvas.addEventListener("pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY]); });
+canvas.addEventListener("pointermove", (e) => {
+  if (!pointers.has(e.pointerId)) return;
+  const prev = pointers.get(e.pointerId);
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pointers.size === 1) {
+    camCtl.yaw -= (e.clientX - prev[0]) * 0.006;
+    camCtl.pitch = Math.min(1.35, Math.max(0.10, camCtl.pitch + (e.clientY - prev[1]) * 0.004));
+  } else if (pointers.size === 2) {
+    const pts = [...pointers.values()];
+    const d = Math.hypot(pts[0][0]-pts[1][0], pts[0][1]-pts[1][1]);
+    if (lastPinch) camCtl.dist = Math.min(16, Math.max(4.5, camCtl.dist * lastPinch / d));
+    lastPinch = d;
+  }
+});
+const drop = (e) => { pointers.delete(e.pointerId); if (pointers.size < 2) lastPinch = 0; };
+canvas.addEventListener("pointerup", drop);
+canvas.addEventListener("pointercancel", drop);
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  camCtl.dist = Math.min(16, Math.max(4.5, camCtl.dist * Math.pow(1.0015, e.deltaY)));
+}, { passive: false });
+function cameraMats() {
+  const eye = [
+    camCtl.target[0] + camCtl.dist * Math.sin(camCtl.yaw) * Math.cos(camCtl.pitch),
+    camCtl.target[1] + camCtl.dist * Math.sin(camCtl.pitch),
+    camCtl.target[2] + camCtl.dist * Math.cos(camCtl.yaw) * Math.cos(camCtl.pitch),
+  ];
+  const view = lookAt(eye, camCtl.target, [0, 1, 0]);
+  const vp = mul4(perspective(46, canvas.width / canvas.height, 0.1, 150), view);
+  return { eye, vp };
+}
+function resize() {
+  const dpr = Math.min(devicePixelRatio, 2);
+  canvas.width = Math.floor(innerWidth * dpr);
+  canvas.height = Math.floor(innerHeight * dpr);
+  canvas.style.width = innerWidth + "px";
+  canvas.style.height = innerHeight + "px";
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+addEventListener("resize", resize);
+resize();
+
+/* ---------- 角色资产:Hyper3D Rodin 包(24 件 QC 全过;静模 PBR) ---------- */
+const CAST = [
+  { key: "barista", file: "./assets/barista_golem.glb", name: "磐叔", staff: true,
+    color: [0.55, 0.52, 0.50], scale: 1.0 },
+  { key: "phoenix", file: "./assets/cust_phoenix.glb", name: "焰羽", color: [0.85, 0.55, 0.30], scale: 0.9 },
+  { key: "treant",  file: "./assets/cust_treant.glb",  name: "菌菇仔", color: [0.45, 0.62, 0.38], scale: 0.82 },
+  { key: "griffon", file: "./assets/cust_griffon.glb", name: "枭鹫", color: [0.60, 0.55, 0.42], scale: 0.95 },
+  { key: "wolf",    file: "./assets/cust_wolf.glb",    name: "霜狼", color: [0.62, 0.72, 0.85], scale: 0.9 },
+];
+async function loadCast(entry) {
+  try {
+    const res = await fetch(entry.file);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const buf = await res.arrayBuffer();
+    const scene = decodeGlbScene(new Uint8Array(buf));
+    const prim = scene.primitives[0];
+    // bbox → 归一:底面贴地,目标身高 ~1.7*scale
+    // 50 万级顶点不能用 Math.min(...spread)(爆调用栈,石魔加载失败踩过)
+    let yMin = Infinity, yMax = -Infinity, xMin = Infinity, zMin = Infinity, zMax = -Infinity;
+    for (const v of prim.positions) {
+      if (v[1] < yMin) yMin = v[1];
+      if (v[1] > yMax) yMax = v[1];
+      if (v[0] < xMin) xMin = v[0];
+      if (v[2] < zMin) zMin = v[2];
+      if (v[2] > zMax) zMax = v[2];
+    }
+    const h = yMax - yMin || 1;
+    const target = 1.7 * entry.scale;
+    const s = target / h;
+    // 纹理上传(baseColor sRGB + MR)
+    const mkTex = (bytes, srgb) => {
+      const t = gl.createTexture();
+      return createImageBitmap(new Blob([bytes]))
+        .then((bmp) => {
+          gl.bindTexture(gl.TEXTURE_2D, t);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          return t;
+        });
+    };
+    const baseTex = prim.texture ? await mkTex(prim.texture.bytes) : null;
+    const mrTex = prim.mrTexture ? await mkTex(prim.mrTexture.bytes) : null;
+    // 交错 VBO(带 UV)
+    const n = prim.positions.length;
+    const data = new Float32Array(n * FLOATS);
+    for (let i = 0; i < n; i++) {
+      data.set(prim.positions[i], i * FLOATS);
+      data.set(prim.normals?.[i] || [0, 1, 0], i * FLOATS + 3);
+      data.set(prim.uvs?.[i] || [0, 0], i * FLOATS + 6);
+    }
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    const indices = prim.indices.length ? prim.indices : null;
+    return {
+      key: entry.key, name: entry.name, staff: !!entry.staff, color: entry.color,
+      vbo, count: n, indices,
+      baseTex, mrTex,
+      metallic: prim.metallic ?? 0.5, roughness: prim.roughness ?? 0.8,
+      yOff: -yMin * s, scale: s,
+      xCenter: xMin * s, // 模型局部 x 居中补偿(锚点平移时抵消)
+      zHalf: (zMax - zMin) / 2 * s,
+    };
+  } catch (err) {
+    console.warn("loadCast fallback:", entry.file, err);
+    // 降级:程序化占位兽(圆球+配色)——仓库无 GLB 也能营业
+    const fb = sphereGeo(0.55, 10);
+    return {
+      key: entry.key, name: entry.name, staff: !!entry.staff, color: entry.color,
+      fallback: true, vbo: fb.vbo, count: fb.count, indices: null,
+      baseTex: null, mrTex: null, metallic: 0.1, roughness: 0.7,
+      yOff: 0.55, scale: 1.0, xCenter: 0, zHalf: 0.4,
+    };
+  }
+}
+const castPromises = CAST.map(loadCast);
+
+/* ---------- 游戏状态 ---------- */
+const DRINKS = [
+  { key: "berry", ic: "🧋", lb: "莓果昔", color: "#ff5a76" },
+  { key: "latte", ic: "☕", lb: "松露拿铁", color: "#d9b38c" },
+  { key: "glow",  ic: "🍵", lb: "萤光茶", color: "#5affc3" },
+];
+const game = {
+  state: "menu",          // menu | playing | over
+  score: 0, hearts: 3, served: 0,
+  spawnTimer: 2.5, spawnEvery: 7.0,
+  customers: [],          // { cast, stump, x, z, facing, phase, t, patience, patienceMax, drink, bubblesEl }
+  time: 0,
+};
+const barista = { x: 0, z: -3.55, facing: Math.PI, cast: null, bobPhase: Math.random() * 6 };
+window.__game = game; // 调试出口
+window.__spawn = spawnCustomer;   // 调试:手动生成顾客
+window.__serve = serveDrink;      // 调试:手动出餐
+
+/* ---------- DOM:出餐键/气泡/结束 ---------- */
+const serveEl = $("serve");
+for (const d of DRINKS) {
+  const b = document.createElement("button");
+  b.className = "drinkbtn";
+  b.innerHTML = `<div class="ic">${d.ic}</div><div class="lb">${d.lb}</div>`;
+  b.onclick = () => serveDrink(d.key);
+  serveEl.appendChild(b);
+}
+function heartStr() { return "♥".repeat(game.hearts) + "♡".repeat(3 - game.hearts); }
+function renderHUD() {
+  $("score").textContent = game.score;
+  $("hearts").textContent = heartStr();
+  $("served").textContent = game.served;
+}
+function serveDrink(drinkKey) {
+  if (game.state !== "playing") return;
+  // 找等最久且点这款的客人
+  const waiters = game.customers
+    .filter((c) => c.phase === "ordering" && c.drink.key === drinkKey)
+    .sort((a, b) => b.t - a.t);
+  if (!waiters.length) return;
+  const c = waiters[0];
+  c.phase = "happy";
+  c.t = 0;
+  game.score += 10 + Math.ceil(c.patience * 2);
+  game.served += 1;
+  game.spawnEvery = Math.max(3.2, game.spawnEvery - 0.25);
+  renderHUD();
+}
+function customerLeave(c, angry) {
+  c.phase = angry ? "angry" : "leaving";
+  c.t = 0;
+  if (angry) {
+    game.hearts -= 1;
+    renderHUD();
+    if (game.hearts <= 0) endGame();
+  }
+}
+function spawnCustomer() {
+  const free = STUMPS.filter((st) => !game.customers.some((c) => c.stump === st && c.phase !== "leaving" && c.phase !== "angry"));
+  if (!free.length) return;
+  const stump = free[Math.floor(Math.random() * free.length)];
+  const pool = CAST.filter((c) => !c.staff);
+  const castKey = pool[Math.floor(Math.random() * pool.length)].key;
+  const fromLeft = Math.random() < 0.5;
+  const patienceMax = Math.max(11, 22 - game.served * 0.35);
+  const el = document.createElement("div");
+  el.className = "bubble";
+  el.style.display = "none";
+  document.body.appendChild(el);
+  game.customers.push({
+    castKey, stump, fromLeft,
+    x: fromLeft ? -8.5 : 8.5, z: 0.9 + (stump === STUMPS[0] ? 0 : stump === STUMPS[2] ? 0.35 : 0),
+    facing: 0, phase: "walkIn", t: 0,
+    patience: patienceMax, patienceMax,
+    drink: DRINKS[Math.floor(Math.random() * DRINKS.length)],
+    bobPhase: Math.random() * 6, el,
+  });
+}
+function endGame() {
+  game.state = "over";
+  $("ov-served").textContent = game.served;
+  $("ov-score").textContent = game.score;
+  $("over-bg").style.display = "flex";
+  for (const c of game.customers) c.el.style.display = "none";
+}
+$("btn-start").onclick = () => { $("start-bg").style.display = "none"; game.state = "playing"; };
+$("btn-restart").onclick = () => {
+  for (const c of game.customers) c.el.remove();
+  game.customers = [];
+  game.score = 0; game.hearts = 3; game.served = 0;
+  game.spawnEvery = 7.0; game.spawnTimer = 2.0;
+  renderHUD();
+  $("over-bg").style.display = "none";
+  game.state = "playing";
+};
+
+/* ---------- 帧循环 ---------- */
+function drawSceneEntry(s) {
+  const model = mul4(transMat(s.x, s.y, s.z), s.ry ? rotYMat(s.ry) : [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]);
+  gl.uniformMatrix4fv(U.uModel, false, toColMajor(s.scale && s.scale !== 1 ? mul4(model, scaleMat(s.scale)) : model));
+  gl.uniform3fv(U.uBaseColor, s.color);
+  gl.uniform1f(U.uEmissive, s.emissive);
+  gl.uniform1f(U.uMetallic, s.metallic);
+  gl.uniform1f(U.uRoughness, s.roughness);
+  gl.uniform1i(U.uUseTex, 0);
+  gl.uniform1i(U.uHasMR, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, s.geo.vbo);
+  setAttribs();
+  gl.drawArrays(gl.TRIANGLES, 0, s.geo.count);
+}
+function drawCharacter(ch, x, yBase, z, facing, bobY, cast, extraScale = 1) {
+  // ch: cast 资源;bobY: 跳动附加高度
+  const s = cast.scale * extraScale;
+  const model = mul4(
+    transMat(x, yBase + bobY + cast.yOff, z),
+    mul4(rotYMat(facing), scaleMat(s)),
+  );
+  gl.uniformMatrix4fv(U.uModel, false, toColMajor(model));
+  gl.uniform1f(U.uEmissive, cast.staff ? 0.28 : 0); // 店员微自发光,夜色里可读
+  // 无 IBL 环境:金属度钳 0.15(引擎「无 IBL 金属黑」兜底教训,MR 粗糙度仍生效)
+  gl.uniform1f(U.uMetallic, Math.min(cast.metallic, 0.15));
+  gl.uniform1f(U.uRoughness, cast.roughness);
+  gl.uniform1i(U.uUseTex, cast.baseTex ? 1 : 0);
+  gl.uniform1i(U.uHasMR, cast.mrTex ? 1 : 0);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, cast.baseTex || null);
+  gl.uniform1i(U.uTex, 0);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, cast.mrTex || null);
+  gl.uniform1i(U.uMrTex, 1);
+  if (cast.fallback) {
+    // 程序化占位兽:纯色球
+    gl.uniform1i(U.uUseTex, 0);
+    gl.uniform3fv(U.uBaseColor, cast.color);
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, cast.vbo);
+  setAttribs();
+  if (cast.indices) {
+    const ibo = cast.ibo || (cast.ibo = (() => {
+      const b = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(cast.indices), gl.STATIC_DRAW);
+      return b;
+    })());
+    gl.drawElements(gl.TRIANGLES, cast.indices.length, gl.UNSIGNED_INT, 0);
+  } else {
+    gl.drawArrays(gl.TRIANGLES, 0, cast.count);
+  }
+}
+function drawShadow(x, z, size) {
+  // 贴地深色影盘(夜色下直接用暗盘,不引混合路径)
+  gl.uniformMatrix4fv(U.uModel, false, toColMajor(mul4(transMat(x, 0.016, z), scaleMat(size))));
+  gl.uniform3fv(U.uBaseColor, [0.085, 0.09, 0.10]);
+  gl.uniform1f(U.uEmissive, 0);
+  gl.uniform1f(U.uMetallic, 0);
+  gl.uniform1f(U.uRoughness, 1);
+  gl.uniform1i(U.uUseTex, 0);
+  gl.uniform1i(U.uHasMR, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, shadowGeo.vbo);
+  setAttribs();
+  gl.drawArrays(gl.TRIANGLES, 0, shadowGeo.count);
+}
+let lastT = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min((now - lastT) / 1000, 0.1);
+  lastT = now;
+  if (game.state === "playing") game.time += dt;
+  const { eye, vp } = cameraMats();
+
+  gl.clearColor(0.016, 0.031, 0.055, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(prog);
+  gl.uniformMatrix4fv(U.uMVP, false, toColMajor(vp));
+  gl.uniform3fv(U.uCamPos, eye);
+  gl.uniform3f(U.uLightDir, 0.35, 0.6, 0.72);
+  gl.uniform1f(U.uLightPower, 1.15);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.uniform1i(U.uTex, 0);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.uniform1i(U.uMrTex, 1);
+
+  // 静态场景
+  for (const s of SCENE) drawSceneEntry(s);
+  // 萤火虫(漂浮小光点)
+  for (const f of FIREFLIES) {
+    const t = game.time + f.seed;
+    const fx = Math.sin(t * 0.35 + f.seed) * 5.5;
+    const fy = 1.6 + Math.sin(t * 0.8 + f.seed * 2) * 0.7;
+    const fz = Math.cos(t * 0.28 + f.seed) * 3.2;
+    gl.uniformMatrix4fv(U.uModel, false, toColMajor(transMat(fx, fy, fz)));
+    gl.uniform3fv(U.uBaseColor, f.color);
+    gl.uniform1f(U.uEmissive, 2.2);
+    gl.bindBuffer(gl.ARRAY_BUFFER, f.geo.vbo);
+    setAttribs();
+    gl.drawArrays(gl.TRIANGLES, 0, f.geo.count);
+  }
+
+  // 磐叔(吧台后,待机呼吸)
+  const baristaCast = castByKey("barista");
+  if (baristaCast && baristaCast.ready) {
+    const bob = Math.sin(game.time * 1.2 + barista.bobPhase) * 0.02;
+    drawShadow(barista.x, barista.z, 0.8);
+    drawCharacter(baristaCast, barista.x, 0, barista.z, barista.facing, bob, baristaCast);
+  }
+
+  // 顾客生成 + 状态机
+  if (game.state === "playing") {
+    game.spawnTimer -= dt;
+    if (game.spawnTimer <= 0) {
+      spawnCustomer();
+      game.spawnTimer = game.spawnEvery;
+    }
+  }
+  for (const c of game.customers) {
+    const cast = castByKey(c.castKey);
+    if (!cast || !cast.ready) continue;
+    c.t += dt;
+    let bob = Math.sin(game.time * 1.4 + c.bobPhase) * 0.02;
+    if (c.phase === "walkIn") {
+      const tx = c.stump.x, speed = 1.5;
+      const dir = Math.sign(tx - c.x) || 1;
+      c.x += dir * speed * dt;
+      c.facing = dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+      bob = Math.abs(Math.sin(game.time * 7 + c.bobPhase)) * 0.09; // 走路小跳
+      if ((dir > 0 && c.x >= tx) || (dir < 0 && c.x <= tx)) {
+        c.x = tx; c.phase = "ordering"; c.t = 0; c.facing = Math.PI; // 面向镜头
+      }
+    } else if (c.phase === "ordering") {
+      c.patience -= dt;
+      bob = Math.sin(game.time * 1.6 + c.bobPhase) * 0.025;
+      if (c.patience <= 0) { customerLeave(c, true); c.el.style.display = "none"; }
+    } else if (c.phase === "happy") {
+      bob = Math.abs(Math.sin(c.t * 9)) * 0.22 * Math.max(0, 1 - c.t / 1.6);
+      if (c.t > 1.6) { c.phase = "leaving"; c.t = 0; c.el.style.display = "none"; }
+    } else if (c.phase === "angry") {
+      bob = Math.sin(c.t * 26) * 0.03; // 气得发抖
+      if (c.t > 1.2) { c.phase = "leaving"; c.t = 0; }
+    } else if (c.phase === "leaving") {
+      const dir = c.fromLeft ? -1 : 1;
+      c.x += dir * 1.8 * dt;
+      c.facing = dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+      bob = Math.abs(Math.sin(game.time * 8 + c.bobPhase)) * 0.08;
+      if (Math.abs(c.x) > 8.4) c.dead = true;
+    }
+    drawShadow(c.x, c.z, 0.7);
+    drawCharacter(cast, c.x, c.stump ? (c.phase !== "walkIn" && c.phase !== "leaving" && c.phase !== "angry" ? 0.5 : 0) : 0, c.z, c.facing, bob, cast);
+    // 订单气泡(投影到屏幕)
+    if (c.phase === "ordering") {
+      const head = [c.x, 2.15, c.z];
+      const clip = transformP(vp, head);
+      const w = clip[3] || 1e-6;
+      if (clip[3] > 0) {
+        const px = (clip[0]/w*0.5+0.5) * innerWidth;
+        const py = (1 - (clip[1]/w*0.5+0.5)) * innerHeight;
+        c.el.style.display = "block";
+        c.el.style.left = px + "px";
+        c.el.style.top = py + "px";
+        const pct = Math.max(0, c.patience / c.patienceMax);
+        c.el.innerHTML = `<div class="drink">${c.drink.ic}</div>` +
+          `<div class="bar"><i style="width:${(pct*100).toFixed(0)}%;background:${pct > 0.4 ? "#a8ff6b" : "#ff7a8a"}"></i></div>` +
+          `<div class="nm">${castByKey(c.castKey)?.name || ""}</div>`;
+      } else c.el.style.display = "none";
+    } else c.el.style.display = "none";
+  }
+  game.customers = game.customers.filter((c) => !c.dead);
+}
+requestAnimationFrame(frame);
+
+const castMap = {};
+castPromises.forEach(async (p, i) => {
+  const res = await p;
+  res.ready = true;
+  castMap[CAST[i].key] = res;
+  const left = CAST.filter((c) => !(castMap[c.key] && castMap[c.key].ready)).length;
+  $("loading").textContent = left ? `秘林开张中…还有 ${left} 位伙伴在路上` : "";
+  if (!left) setTimeout(() => { $("loading").style.display = "none"; }, 600);
+});
+function castByKey(key) { return castMap[key]; }
+window.__cast = castMap;
+renderHUD();
+</script>
+</body>
+</html>

@@ -8,6 +8,7 @@ members = [
     "crates/oriera-ecs",     # L3
     "crates/oriera-asset",   # L4
     "crates/oriera-render",  # L5
+    "crates/oriera-splat",   # L5 Gaussian splatting CPU reference (PLAN-splat v2 M0)
     "crates/oriera-subsys",  # L6
     "crates/oriera-infer",   # L7
     "crates/oriera-genai",   # L8 (ADR 0003)
@@ -23,7 +24,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 # MSRV：整数 is_multiple_of 稳定于 1.87（genai 轮询/记忆分词在用）
 rust-version = "1.87"
@@ -35,20 +36,29 @@ repository = "https://github.com/OriEra-engine/engine"
 # Add entries (glam, tokio, ...) when the layer that needs them lands.
 # Internal layer crates: path for workspace builds, version for `cargo publish`.
 [workspace.dependencies]
-oriera-common = { path = "crates/oriera-common", version = "0.12.0" }
-oriera-pal = { path = "crates/oriera-pal", version = "0.12.0" }
-oriera-core = { path = "crates/oriera-core", version = "0.12.0" }
-oriera-ecs = { path = "crates/oriera-ecs", version = "0.12.0" }
-oriera-asset = { path = "crates/oriera-asset", version = "0.12.0" }
-oriera-render = { path = "crates/oriera-render", version = "0.12.0" }
-oriera-subsys = { path = "crates/oriera-subsys", version = "0.12.0" }
-oriera-infer = { path = "crates/oriera-infer", version = "0.12.0" }
-oriera-genai = { path = "crates/oriera-genai", version = "0.12.0" }
-oriera-agent = { path = "crates/oriera-agent", version = "0.12.0" }
-oriera-embodied = { path = "crates/oriera-embodied", version = "0.12.0" }
+oriera-common = { path = "crates/oriera-common", version = "0.13.0" }
+oriera-pal = { path = "crates/oriera-pal", version = "0.13.0" }
+oriera-core = { path = "crates/oriera-core", version = "0.13.0" }
+oriera-ecs = { path = "crates/oriera-ecs", version = "0.13.0" }
+oriera-asset = { path = "crates/oriera-asset", version = "0.13.0" }
+oriera-render = { path = "crates/oriera-render", version = "0.13.0" }
+oriera-splat = { path = "crates/oriera-splat", version = "0.13.0" }
+oriera-subsys = { path = "crates/oriera-subsys", version = "0.13.0" }
+oriera-infer = { path = "crates/oriera-infer", version = "0.13.0" }
+oriera-genai = { path = "crates/oriera-genai", version = "0.13.0" }
+oriera-agent = { path = "crates/oriera-agent", version = "0.13.0" }
+oriera-embodied = { path = "crates/oriera-embodied", version = "0.13.0" }
 bitflags = "2.6"
+# L0 math vocabulary (#7): no_std-capable, wasm32 first-class, `serde`
+# on so a Transform can ride in a scene spec or a snapshot without a
+# per-layer conversion. Only re-exported — no project fork of the types.
+glam = { version = "0.34", features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip：默认快速浮点解析对个别十进制串差 1 ulp（实锤样例
+# ms=0.19349999999999998 解析回 0.1935），三段分账 JSON（P0-5
+# bench_account，BENCH-CONTRACT 附 A）要求序列化→解析往返无损——
+# 精确解析开在 workspace 级，全部 serde_json 消费方统一获得。
+serde_json = { version = "1", features = ["float_roundtrip"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # L7 native HTTP adapter (feature `native-http`, #68): blocking client

@@ -47,6 +47,16 @@ jobs:
         run: node --test examples/06-agent-physics/intent.test.mjs
       - name: Browser kernel v2 tests (node, no browser)
         run: node --test examples/11-ai-cafe/engine/kernel.test.mjs
+      - name: Splat JS mirror cross-language golden (node, no browser)
+        run: node --test examples/16-gaussian-hall/engine/splat.test.mjs
+      - name: glTF JS mirror cross-language golden (node, no browser)
+        run: node --test examples/05-gltf-model/engine/gltf.test.mjs
+      - name: gallery GLB mirror cross-language golden (node, no browser)
+        run: node --test examples/13-genai-gallery/engine/gltf.test.mjs
+      - name: café skin mirror cross-language golden (node, no browser)
+        run: node --test examples/11-ai-cafe/engine/skin.test.mjs
+      - name: myth café GLB mirror cross-language golden (node, no browser)
+        run: node --test examples/17-myth-cafe/engine/gltf.test.mjs
 
   # 单 job 串行全 feature 腿时，一条卡死拖死全部（2026-10-26 实测：
   # Windows Test 步骤挂 79 分钟被取消）。拆 matrix 并行：各腿独立
@@ -153,6 +163,14 @@ jobs:
         run: cargo check -p oriera-agent --features rigid3d,cam,spec,urdf,json
       - name: Clippy (-p oriera-agent, same features)
         run: cargo clippy -p oriera-agent --features rigid3d,cam,spec,urdf,json -- -D warnings
+      - name: Check (-p oriera-render, render-wgpu — #152 camera+depth base)
+        run: cargo check -p oriera-render --features render-wgpu
+      - name: Clippy (-p oriera-render, render-wgpu)
+        run: cargo clippy -p oriera-render --features render-wgpu --all-targets -- -D warnings
+      - name: Check (-p oriera-splat, splat-wgpu — PLAN-splat M1 GPU path)
+        run: cargo check -p oriera-splat --features splat-wgpu
+      - name: Clippy (-p oriera-splat, splat-wgpu)
+        run: cargo clippy -p oriera-splat --features splat-wgpu --all-targets -- -D warnings
 
   # studio_e2e（离线验收 example）独占一腿：panic 即红（#106），且
   # 避免与其他 feature 腿抢同一个 cargo 锁。

@@ -30,9 +30,8 @@ fn main() {
             );
             let task = provider.request_generation(&req).expect("mock serves 3d");
             let asset = loop {
-                match provider.poll_task(&task).unwrap() {
-                    oriera_genai::TaskStatus::Succeeded(a) => break a,
-                    _ => {}
+                if let oriera_genai::TaskStatus::Succeeded(a) = provider.poll_task(&task).unwrap() {
+                    break a;
                 }
             };
             oriera_genai::validate_asset(&asset, &oriera_genai::ValidationLimits::default())

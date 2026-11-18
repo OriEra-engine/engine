@@ -40,6 +40,7 @@ OriEra 不是又一个游戏引擎。它是一个 **AI 原生、虚实融合、�
 | L3 | 对象模型：ECS、资源单例 | `crates/oriera-ecs` | ✅ 可用 | `Spawn` `Query` `Publish`(规划) `Serialize`(规划) |
 | L4 | 资产管线：句柄注册表 | `crates/oriera-asset` | ✅ 骨架 | `ResolveAsset`(哈希即身份，规划) `Prefetch` `Evict` |
 | L5 | 渲染内核：Pass 图、帧提交 | `crates/oriera-render` | ✅ 骨架+GPU 闭环* | `BuildFrameGraph` `AddPass` `SetQuality` `render_mesh`* |
+| L5 | 高斯泼溅：EWA 投影、确定性前到背序、CPU 参考光栅 | `crates/oriera-splat` | ✅ 骨架（实验性，PLAN-splat v2 M0） | `decode_splat_ply`（L4 解码） `project` `depth_order` `rasterize` `SplatImage::fingerprint` |
 | L6 | 子系统服务：物理/动画/音频/UI/网络同步 | `crates/oriera-subsys` | ✅ 物理（粒子 + `rigid`/`rigid3d` 刚体） | `StepPhysics` `MultibodySystem`(rigid3d multibody 关节臂) `HoldingCriterion`(TipRadius/Contact) `fingerprint`/`fingerprint_v2` `SampleAnimation`(规划) `SyncState`(规划) |
 | L7 | AI 推理运行时：命令执行、端云路由 | `crates/oriera-infer` | ✅ 可用 | `SubmitInference` `ReportInferenceMetrics` |
 | L8 | 生成式 AI：文生图 + 文生 3D + 文生视频 | `crates/oriera-genai` | ✅ 表达链路已通（RFC 0001 + demo 13，2028 做深） | `RequestGeneration` `ValidateAsset` |
@@ -58,6 +59,8 @@ agent(L9) → infer(L7) → subsys(L6)（具身 API 经兼容层 re-export，ADR
                         infer(L7) → ecs(L3)
 wasm(L9 壳) → embodied(L9)（ADR 0004：不再穿透 agent 拖认知层）
 render(L5) → ecs(L3) → core(L2)
+splat(L5) → asset(L4)（PLY 解码归资产层；零第三方依赖，不依赖 render/ecs）
+splat(L5, `splat-wgpu` feature) → render(L5)（仅消费相机；同层依赖先例 agent→embodied，ADR 0004）
 pal(L1)：只被平台壳（platforms/*）引用，不被上层 crate 直接依赖
 ```
 
@@ -101,7 +104,8 @@ v0.2 落地 `insert_named` / `get_named` / `unload`：命名资产热替换，�
 
 Pass 图（BuildFrameGraph/AddPass）为目标形态，当前 PC 端为统计式渲染系统。
 v0.2 落地 `Quality` + `observe_frame` 迟滞调速器：AI 一重就掉帧时自动降 draw batching（1/4/16），
-有余力再缓慢升档——上层以为画质是恒定的。能力位图已含 3DGS 神经渲染位（未来混合几何）。
+有余力再缓慢升档——上层以为画质是恒定的。能力位图已含 3DGS 神经渲染位（未来混合几何）。经典 EWA 泼溅（`oriera-splat`，见下）是确定性传统光栅化，
+**不读**此位——该位留给未来的神经精修 Pass（ADR 0002 的 passthrough 语义）。
 
 v0.3 落地 **wgpu 最小无头闭环**（feature `render-wgpu`，按 GOVERNANCE 默认关）：
 `gpu::HeadlessRenderer` 走 真 GPU pass（WGSL 顶点渐变着色）→ 索引绘制 → 像素回读，
@@ -109,8 +113,43 @@ v0.3 落地 **wgpu 最小无头闭环**（feature `render-wgpu`，按 GOVERNANCE
 「GLB 文件 → 真实 mesh → GPU 光栅化 → BMP 出图」全链路。
 v0.3 追加顶点材质光照：GLB 的 NORMAL + baseColorFactor 解码后 CPU 烘焙
 兰伯特顶点色（无材质走旧位置渐变，公式不变），`render_mesh_shaded` 承接。
-注意：windows-gnu（MinGW）工具链下 wgpu DX12/Vulkan 适配器枚举实测崩溃，
-默认后端被 cfg 钳制为 GL（`WGPU_BACKEND` 环境变量可覆盖）；MSVC 工具链不受此限。
+2026-11 落地 **#152 首刀：相机矩阵 + 深度缓冲**——`camera::Camera`（GL 式
+y-up/-z-forward，**WebGPU NDC z∈[0,1]**，列向量行主序，WGSL 上传时转置为列主序）
++ `gpu::HeadlessRenderer::render_mesh_view`：世界坐标网格经 MVP uniform 渲染，
+`Depth32Float` 深度测试（Less+write）——**近面遮蔽远面与绘制顺序无关**（GPU 实测）。
+相机模块是纯数学，不受 feature 门控；这是原生 glTF（本 issue 后续刀次）与 splat GPU
+路径（PLAN-splat M1）的共享底座。
+2026-11 落地 **#152 第二刀：原生 glTF 场景加载与纹理渲染**——L4 `decode_glb_scene`
+（全 mesh×primitive + 节点图 TRS/matrix + 材质摊位含 PNG 纹理字节，真实文件的
+accessor byteOffset/交错布局支持；Duck 为 SCEA 许可不入库，验收用 CC0 WaterBottle）
++ L5 `render_scene_views`（同 pass 逐 primitive 绘制，纹理管线 sRGB 采样 × 兰伯特，
+深度测试与首刀共享）。demo 05 切 three 移除已在第三刀兑现（JS 镜像+金样路线，PR #194；Duck 原生渲染
+截图因 SCEA 许可留工作目录 out/ 不入库）。第四刀落地
+**PBR 最小着色**：L4 MR 打包纹理摊位（G=粗糙 B=金属）+ L5 Cook-Torrance GGX
+（Smith-Schlick + Schlick 菲涅尔 + 半球环境替身，无 IBL——金属无环境探针时按
+albedo·环境 0.4 兜底避免纯黑）；无 MR 纹理时 metallic 视作 0（无 IBL 兜底）。
+CC0 WaterBottle 实测：MR 分区（亮瓶身 vs 哑光握把）与镜面高光正确
+（docs/media/gltf-pbr-waterbottle.png）。注意：windows-gnu（MinGW）工具链下 wgpu DX12/Vulkan
+适配器枚举实测崩溃，默认后端被 cfg 钳制为 GL（`WGPU_BACKEND` 环境变量可覆盖）；
+MSVC 工具链不受此限。
+
+2026-11 落地**高斯泼溅 CPU 参考内核**（独立 crate `oriera-splat`，PLAN-splat v2 M0，**实验性**，
+随下一个 minor 发布）：L4 `oriera_asset::ply::decode_splat_ply` 按属性名解码标准 3DGS PLY——字段存激活值，
+语义对齐 Khronos 已批准的 KHR_gaussian_splatting（线性尺度、线性不透明度、xyzw 单位四元数），
+先验长度后分配，压缩 PLY 等不支持的布局一律显式报错 → `project`（EWA 局部仿射投影，剔除即 compaction，
+包围框取 3σ 椭圆的轴对齐外接矩形）→ `depth_order`（深度位型与下标打包成 u64 键，任何排序算法都得到同一全序）
+→ `rasterize`（前到背透射率累积，受 `RasterBudget` 约束，超限返回 `OverBudget`，绝不静默降级）。
+同一输入逐字节同输出，`SplatImage::fingerprint` 与 `World::state_hash` 同种子，可进回放审计。
+真扫描实测出图见 [docs/media/splat-cpu-dragon.png](media/splat-cpu-dragon.png)（CC0-1.0 样本
+spatialdragon-3dgs，10,330 splat，SH 2 阶，属性顺序非 INRIA 布局；960×540 出图 92 ms）。
+2026-11 落地 **GPU 路径**（PLAN-splat M1，feature `splat-wgpu` 默认关）：确定性数学
+（投影/排序）仍在 CPU，GPU 只做实例化四边形展开 + 后到前 over 混合（**fp32 目标**，
+unorm8/fp16 的逐层混合舍入会在热点像素累积超差——实测踩过）；相机消费 #152 首刀的
+`camera::Camera`（`SplatCamera::from_view` 换算，闭式单测钉死），同层依赖先例
+agent→embodied（ADR 0004）。与 CPU 参考按评审门槛互证：99.9% 像素每通道 ≤2/255 且
+RMS ≤1/255、倾斜 splat 交叉项 ≤2、单 splat 逐位一致（本机 Intel GL 实测）。
+数学出处为 Kerbl et al. 2023 与 Zwicker et al. 2001；排序键打包借鉴 World Labs Spark/Radix（MIT）公开文档，
+实现为原创。CPU 路径非实时（实测见 [STABILITY.md](STABILITY.md) §三）。
 
 ### L6 · oriera-subsys — 子系统服务
 
@@ -203,7 +242,7 @@ v2.1/v3.0 + npz 裸出口）× `run_manifest.json` 全出处。
 ### L11 — 应用与 UGC
 
 `platforms/pc` 是全量接线示范（平台预算、画质调速、逐系统耗时、资产热替换、TimeScale）。
-`examples/01–15` 是分层演示：每个 demo 只动它那一层，浏览器直接玩（见首页 index.html；
+`examples/01–16` 是分层演示：每个 demo 只动它那一层，浏览器直接玩（见首页 index.html；
 14 号 `frame-hunter/` 在仓库根目录同源发行）。
 
 ## 5. 一帧的数据流
@@ -374,9 +413,9 @@ CI 门禁分两步走——**静态部分已落地**（`scripts/check_manifests.
 ## 9. 目录地图
 
 ```
-crates/          L0–L9 各层实现（见上表，含 L8 oriera-genai）
+crates/          L0–L9 各层实现（见上表，含 L8 oriera-genai 与 L5 实验性 oriera-splat）
 platforms/       五端入口：pc / web（ar_glasses、bci_reserved 规划中，目录未建）
-examples/        浏览器可玩的分层演示（01–15 + _template，见首页 index.html；
+examples/        浏览器可玩的分层演示（01–16 + _template，见首页 index.html；
                  15 号具身仿真台是旗舰，含 vendor/oriera 的 wasm 内核）
 frame-hunter/    14 号影游 demo（跑酷答题 + BKT 知识追踪，Pages 同步发行）
 specs/           具身实验身份库（官方金标 official/ + lab 覆盖层 + INDEX.json，
@@ -389,7 +428,8 @@ assets/          logo、hero GIF 等品牌资产
 
 ## 10. 测试、CI 与性能
 
-- 全仓测试数以 CI 实测为准（2026-10-25 口径：workspace 238 + genai `providers` 59 + agent `json` 60 + subsys `rigid` 15 + infer `native-http` 97 + kernel node 35，含 v0.8 韧性批次、#98 golden fixture、#109/#110 评审批次与 #111-#114 生成供应商批次；分项含少量 doctest），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
+- 全仓测试数以 CI 实测为准（2026-10-25 口径：workspace 238 + genai `providers` 59 + agent `json` 60 + subsys `rigid` 15 + infer `native-http` 97 + kernel node 35，含 v0.8 韧性批次、#98 golden fixture、#109/#110 评审批次与 #111-#114 生成供应商批次；分项含少量 doctest；此后 PLAN-splat M0 新增 41 项：asset `ply` 19 + splat 单元 21 + 金样 1；
+#152 首刀新增 camera 10 项（另有 2 项 GPU 实测 `#[ignore]`，本机跑绿）），CI 在 Linux 上跑 fmt / build / test / clippy（`-D warnings`）。
 - 每个版本在 `docs/release-notes/` 落一份双语说明（v0.1.0 至 v0.12.0 共 14 份；
   `scripts/check_release_versions.py` 守版本号同步，发版前必跑）。
 - 基准怎么跑、当前参考数据见 [PERF.md](PERF.md)。

@@ -13,7 +13,7 @@
 | T5 | L2 核心系统层 | `crates/oriera-core`（调度器；内存/回放见 ROADMAP） | [02-ecs-spawn](../examples/02-ecs-spawn/index.html) |
 | T6 | L3 对象模型 ECS | `crates/oriera-ecs` | [08-ecs-visualizer](../examples/08-ecs-visualizer/index.html) |
 | T7 | L4 资产管线 | `crates/oriera-asset`（生成式管线属 L8） | [05-gltf-model](../examples/05-gltf-model/index.html) |
-| T8 | L5 渲染内核 | `crates/oriera-render` | [07-webgpu-particles](../examples/07-webgpu-particles/index.html) |
+| T8 | L5 渲染内核 | `crates/oriera-render`、`crates/oriera-splat`（高斯泼溅 CPU 参考，实验性） | [07-webgpu-particles](../examples/07-webgpu-particles/index.html) |
 | T9 | L6 子系统服务 | `crates/oriera-subsys`（物理） | [03-physics](../examples/03-physics/index.html) |
 | T10 | L7 推理运行时 | `crates/oriera-infer` | [09-full-arch](../examples/09-full-arch/index.html) |
 | T11 | L8 生成式 AI | 📋 ROADMAP 2028 | — |

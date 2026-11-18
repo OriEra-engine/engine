@@ -1,0 +1,369 @@
+{
+  "expect": {
+    "comments": [
+      "comment oriera cross-language golden fixture",
+      "obj_info depth_separation=0.5"
+    ],
+    "count": 8,
+    "opacities": [
+      0.2689414322376251,
+      0.32082128524780273,
+      0.3775406777858734,
+      0.43782350420951843,
+      0.5,
+      0.562176525592804,
+      0.622459352016449,
+      0.6791787147521973
+    ],
+    "positions_bits": [
+      [
+        0,
+        1039516303,
+        3227936358
+      ],
+      [
+        1041781209,
+        3181624950,
+        3225839206
+      ],
+      [
+        3172794660,
+        3160178743,
+        3223742054
+      ],
+      [
+        3188601988,
+        1036548348,
+        3221644902
+      ],
+      [
+        1033357992,
+        3186594780,
+        3217870029
+      ],
+      [
+        1039485845,
+        1030589904,
+        3213675725
+      ],
+      [
+        3184984163,
+        1025677861,
+        3206125978
+      ],
+      [
+        3183338568,
+        3185778025,
+        3184315597
+      ]
+    ],
+    "project": {
+      "conics": [
+        [
+          0.00016870626132003963,
+          -0.0,
+          0.00006315677455859259
+        ],
+        [
+          0.00034863254404626787,
+          0.00007612493209308013,
+          0.00020444089022930712
+        ],
+        [
+          0.0012646421091631055,
+          -0.0008234646520577371,
+          0.0012171558337286115
+        ],
+        [
+          0.001969266915693879,
+          0.0007248229230754077,
+          0.003505897242575884
+        ],
+        [
+          0.0012268299469724298,
+          -0.00004292797530069947,
+          0.0027226281818002462
+        ],
+        [
+          0.007588880602270365,
+          0.002653964329510927,
+          0.0030039935372769833
+        ],
+        [
+          0.009057469666004181,
+          -0.0032995911315083504,
+          0.008498065173625946
+        ],
+        [
+          0.006746082101017237,
+          -0.0012492367532104254,
+          0.003678546752780676
+        ]
+      ],
+      "depth_order": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "extents": [
+        [
+          231.0,
+          378.0
+        ],
+        [
+          168.0,
+          219.0
+        ],
+        [
+          113.0,
+          115.0
+        ],
+        [
+          71.0,
+          53.0
+        ],
+        [
+          86.0,
+          58.0
+        ],
+        [
+          42.0,
+          66.0
+        ],
+        [
+          35.0,
+          36.0
+        ],
+        [
+          38.0,
+          52.0
+        ]
+      ],
+      "means": [
+        [
+          32.0,
+          11.529236793518066
+        ],
+        [
+          25.129545211791992,
+          27.6928768157959
+        ],
+        [
+          33.13814163208008,
+          24.399608612060547
+        ],
+        [
+          35.03832244873047,
+          21.858375549316406
+        ],
+        [
+          30.71625518798828,
+          26.026174545288086
+        ],
+        [
+          30.28314781188965,
+          23.168664932250977
+        ],
+        [
+          33.28352737426758,
+          23.514644622802734
+        ],
+        [
+          32.98828887939453,
+          25.18201446533203
+        ]
+      ],
+      "surviving": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    "rotations": [
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.19866932928562164,
+        0.9800665974617004
+      ],
+      [
+        0.0,
+        0.0,
+        0.3894183337688446,
+        0.9210609793663025
+      ],
+      [
+        0.0,
+        0.0,
+        0.5646424889564514,
+        0.8253356218338013
+      ],
+      [
+        0.0,
+        0.0,
+        0.7173560857772827,
+        0.6967067122459412
+      ],
+      [
+        0.0,
+        0.0,
+        0.8414710164070129,
+        0.5403023362159729
+      ],
+      [
+        0.0,
+        0.0,
+        0.9320390820503235,
+        0.3623577654361725
+      ],
+      [
+        0.0,
+        0.0,
+        0.9854497313499451,
+        0.1699671447277069
+      ]
+    ],
+    "scales": [
+      [
+        0.740818202495575,
+        1.1051709651947021,
+        1.6487212181091309
+      ],
+      [
+        1.1051709651947021,
+        1.6487212181091309,
+        0.740818202495575
+      ],
+      [
+        1.6487212181091309,
+        0.740818202495575,
+        1.1051709651947021
+      ],
+      [
+        0.740818202495575,
+        1.1051709651947021,
+        1.6487212181091309
+      ],
+      [
+        1.1051709651947021,
+        1.6487212181091309,
+        0.740818202495575
+      ],
+      [
+        1.6487212181091309,
+        0.740818202495575,
+        1.1051709651947021
+      ],
+      [
+        0.740818202495575,
+        1.1051709651947021,
+        1.6487212181091309
+      ],
+      [
+        1.1051709651947021,
+        1.6487212181091309,
+        0.740818202495575
+      ]
+    ],
+    "sh_dc_bits": [
+      [
+        1025758986,
+        1017370378,
+        1022739087
+      ],
+      [
+        1027906470,
+        1019517862,
+        1022739087
+      ],
+      [
+        1030053954,
+        1021665346,
+        1022739087
+      ],
+      [
+        1032000111,
+        1023611503,
+        1022739087
+      ],
+      [
+        1033073852,
+        1024685244,
+        1022739087
+      ],
+      [
+        1034147594,
+        1025758986,
+        1022739087
+      ],
+      [
+        1035221336,
+        1026832728,
+        1022739087
+      ],
+      [
+        1036295078,
+        1027906470,
+        1022739087
+      ]
+    ],
+    "sh_degree": 1
+  },
+  "meta": {
+    "camera": {
+      "eye": [
+        0.0,
+        0.0,
+        -4.0
+      ],
+      "fov_y_deg": 60.0,
+      "height": 48,
+      "target": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "width": 64
+    },
+    "consumed_by": [
+      "crates/oriera-splat/tests/cross_language.rs",
+      "examples/16-gaussian-hall/engine/splat.test.mjs"
+    ],
+    "conventions": {
+      "fields": "SplatCloud stores KHR-activated values (linear scale/opacity, xyzw unit quaternion)",
+      "note": "JS mirror computes in f64; raw passthrough fields must match bit-exactly, exp/sigmoid allow 1 ulp, projection accumulates f32-vs-f64 drift — hence the tolerance domains below",
+      "order": "front-to-back; ties broken by original index",
+      "ply": "standard 3DGS binary_little_endian, mapped by property name"
+    },
+    "generated_by": "oriera-splat tests/cross_language.rs (ORIERA_SPLAT_BLESS=1)",
+    "name": "splat_golden",
+    "tolerances": {
+      "activated_abs": 1e-6,
+      "conics_abs": 0.005,
+      "extents_abs": 1.0,
+      "means_abs": 0.005
+    }
+  },
+  "ply_base64": "cGx5CmZvcm1hdCBiaW5hcnlfbGl0dGxlX2VuZGlhbiAxLjAKY29tbWVudCBvcmllcmEgY3Jvc3MtbGFuZ3VhZ2UgZ29sZGVuIGZpeHR1cmUKb2JqX2luZm8gZGVwdGhfc2VwYXJhdGlvbj0wLjUKZWxlbWVudCB2ZXJ0ZXggOApwcm9wZXJ0eSBmbG9hdCB4CnByb3BlcnR5IGZsb2F0IHkKcHJvcGVydHkgZmxvYXQgegpwcm9wZXJ0eSBmbG9hdCBueApwcm9wZXJ0eSBmbG9hdCBueQpwcm9wZXJ0eSBmbG9hdCBuegpwcm9wZXJ0eSBmbG9hdCBmX2RjXzAKcHJvcGVydHkgZmxvYXQgZl9kY18xCnByb3BlcnR5IGZsb2F0IGZfZGNfMgpwcm9wZXJ0eSBmbG9hdCBmX3Jlc3RfMApwcm9wZXJ0eSBmbG9hdCBmX3Jlc3RfMQpwcm9wZXJ0eSBmbG9hdCBmX3Jlc3RfMgpwcm9wZXJ0eSBmbG9hdCBmX3Jlc3RfMwpwcm9wZXJ0eSBmbG9hdCBmX3Jlc3RfNApwcm9wZXJ0eSBmbG9hdCBmX3Jlc3RfNQpwcm9wZXJ0eSBmbG9hdCBmX3Jlc3RfNgpwcm9wZXJ0eSBmbG9hdCBmX3Jlc3RfNwpwcm9wZXJ0eSBmbG9hdCBmX3Jlc3RfOApwcm9wZXJ0eSBmbG9hdCBvcGFjaXR5CnByb3BlcnR5IGZsb2F0IHNjYWxlXzAKcHJvcGVydHkgZmxvYXQgc2NhbGVfMQpwcm9wZXJ0eSBmbG9hdCBzY2FsZV8yCnByb3BlcnR5IGZsb2F0IHJvdF8wCnByb3BlcnR5IGZsb2F0IHJvdF8xCnByb3BlcnR5IGZsb2F0IHJvdF8yCnByb3BlcnR5IGZsb2F0IHJvdF8zCmVuZF9oZWFkZXIKAAAAAI/C9T1mZmbAAAAAAAAAAAAAAIA/CtcjPQrXozyPwvU8AAAAwAAAwL8AAIC/AAAAvwAAAAAAAAA/AACAPwAAwD8AAABAAACAv5qZmb7NzMw9AAAAPwAAgD8AAAAAAAAAAAAAAADZURg+dr6jvWZmRsAAAAAAAAAAAAAAgD+mm0Q9ppvEPI/C9TwAAADAAADAvwAAgL8AAAC/AAAAAAAAAD8AAIA/AADAPwAAAEAAAEC/zczMPQAAAD+amZm+peV6PwAAAAAAAAAA+W9LPiQBHb03gFy8ZmYmwAAAAAAAAAAAAACAP0JgZT1CYOU8j8L1PAAAAMAAAMC/AACAvwAAAL8AAAAAAAAAPwAAgD8AAMA/AAAAQAAAAL8AAAA/mpmZvs3MzD2nyms/AAAAAAAAAADXYcc+hDQOvvx4yD1mZgbAAAAAAAAAAAAAAIA/bxKDPW8SAz2PwvU8AAAAwAAAwL8AAIC/AAAAvwAAAAAAAAA/AACAPwAAwD8AAABAAACAvpqZmb7NzMw9AAAAPzJJUz8AAAAAAAAAAGmMED+oypc93JPvvc3MzL8AAAAAAAAAAAAAgD+8dJM9vHQTPY/C9TwAAADAAADAvwAAgL8AAAC/AAAAAAAAAD8AAIA/AADAPwAAAEAAAAAAzczMPQAAAD+amZm+X1syPwAAAAAAAAAApqQ3P5VL9T3QjW09zcyMvwAAAAAAAAAAAACAPwrXoz0K1yM9j8L1PAAAAMAAAMC/AACAvwAAAL8AAAAAAAAAPwAAgD8AAMA/AAAAQAAAgD4AAAA/mpmZvs3MzD1AUQo/AAAAAAAAAACkalc/YwDXvSWaIj2amRm/AAAAAAAAAAAAAIA/WDm0PVg5ND2PwvU8AAAAwAAAwL8AAIC/AAAAvwAAAAAAAAA/AACAPwAAwD8AAABAAAAAP5qZmb7NzMw9AAAAP/WGuT4AAAAAAAAAAB2abj9I5L29aR3jvc3MzL0AAAAAAAAAAAAAgD+mm8Q9pptEPY/C9TwAAADAAADAvwAAgL8AAAC/AAAAAAAAAD8AAIA/AADAPwAAAEAAAEA/zczMPQAAAD+amZm+3gsuPgAAAAAAAAAAb0Z8Pw=="
+}

@@ -35,3 +35,4 @@ build/
 patch*.py
 # Generated wasm-pack packages
 platforms/web/pkg/
+examples/17-myth-cafe/assets/*.glb

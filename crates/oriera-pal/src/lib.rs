@@ -19,6 +19,7 @@
 //!   * BCI reserved  (EEG/LSL, v1 only a trait — see `platforms/bci_reserved`)
 
 pub mod capability;
+pub mod fs_storage;
 pub mod gfx;
 pub mod input;
 pub mod net;
@@ -26,6 +27,7 @@ pub mod storage;
 pub mod xr;
 
 pub use capability::{BrowserCapabilities, Capabilities, PlatformFamily, PlatformProfile};
+pub use fs_storage::FileStorage;
 pub use gfx::{GfxBackend, GfxBackendKind, NullGfxBackend, SubmitResult};
 pub use input::{
     EyeGazeEvent, HandPoseEvent, InputBody, InputSource, KeyEvent, NullInputSource, PointerEvent,

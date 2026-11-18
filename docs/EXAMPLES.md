@@ -9,7 +9,7 @@
 | 02 ECS Spawn | L3 | oriera-ecs | 20 万粒子 SoA ECS——数据驱动架构上限 | `examples/02-ecs-spawn/` |
 | 03 Physics Sandbox | L6 | oriera-subsys | 重力+碰撞+鼠标拖拽——实时物理沙盒 | `examples/03-physics/` |
 | 04 Agent Chat | L9→L3 | oriera-agent | 自然语言控制粒子世界（规则后端离线可跑） | `examples/04-agent-chat/` |
-| 05 glTF Model | L4+L5 | oriera-asset | Three.js 加载带动画 3D 角色 | `examples/05-gltf-model/` |
+| 05 glTF 模型 | L4+L5 | oriera-asset | 原生 glTF 渲染:JS 镜像与 decode_glb_scene 金样对拍,裸 WebGL2(sRGB 纹理×兰伯特),零依赖 | `examples/05-gltf-model/` |
 | 06 Agent Physics | L9×L6 | oriera-agent | 自然语言指挥物理世界（「生成 20 个」「关掉重力」） | `examples/06-agent-physics/` |
 | 07 WebGPU Particles | L5 | oriera-render | GPU 计算百万粒子流场 | `examples/07-webgpu-particles/` |
 | 08 ECS Visualizer | L3 | oriera-ecs | 实体-组件-系统数据流可视化 | `examples/08-ecs-visualizer/` |
@@ -17,9 +17,10 @@
 | 10 言灵世界 | L9 | oriera-agent | 文字驱动世界生成与演化（所说即所见） | `examples/10-word-spirit/` |
 | 11 隅角咖啡馆 | L7-L11 旗舰 | oriera-agent+genai | 3D AI NPC：记忆/聊天/导演（配 key 后大模型驱动） | `examples/11-ai-cafe/` |
 | 12 记忆图谱 | L9 | oriera-agent | MemoryStore 检索式记忆可视化（写入/衰减/召回） | `examples/12-memory-atlas/` |
-| 13 生成式画廊 | L8+L4 | oriera-genai | 文生图/文生 3D + 命名热替换 | `examples/13-genai-gallery/` |
+| 13 生成式画廊 | L8+L4 | oriera-genai | 文生图/文生 3D + 命名热替换（原生 WebGL2 渲染，零依赖；GLB 道具解码金样对拍） | `examples/13-genai-gallery/` |
 | 14 影游内核 | L9 | oriera-agent | 互动影游叙事原语的浏览器镜像（与 Rust 逐句对照） | `examples/14-film-game/` |
 | 15 具身仿真台 | L6+L9 | oriera-wasm | rapier3d 机械臂桌面抓放：六预设卡片墙换装 + 键鼠遥操作/脚本策略演示（浏览器与 Rust 同物理） | `examples/15-embodied-sim/` |
+| 16 高斯展馆 | L5 | oriera-splat | 实验性 3DGS 查看器：标准 PLY 进、EWA 泼溅出，裸 WebGL2；JS 镜像与 Rust 共读 `contracts/golden/splat_golden.json` 对拍 | `examples/16-gaussian-hall/` |
 
 ## 代码片段（库用户最小路径）
 

@@ -1,0 +1,5 @@
+# oriera-agent AI 行为金样：GoalSystem 三目标剧本 60 拍（完成/受挫/记忆记账）
+t=20 done g_coins
+t=30 done g_reach
+t=31 frustrated g_hard
+final completed=2 frustrated=1 memory=1

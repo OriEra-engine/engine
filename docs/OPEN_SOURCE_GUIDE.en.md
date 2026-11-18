@@ -10,7 +10,7 @@
 | Entry point | Address | Use it for |
 |---|---|---|
 | Code repository | https://github.com/OriEra-engine/engine | star / fork / open PRs |
-| Live demos | https://oriera-engine.github.io/engine/ | 11 playable demos in your browser, zero install |
+| Live demos | https://oriera-engine.github.io/engine/ | 16 playable demos in your browser, zero install |
 | Discussions | https://github.com/OriEra-engine/engine/discussions | questions, chat, RFCs (English or 中文) |
 | Official demo video | `docs/media/oriera-official-demo.mp4` (in-repo, 54s) | both AI-native paradigms in one minute |
 | Architecture doc | [ARCHITECTURE.md](ARCHITECTURE.md) (Chinese; EN translation welcome) | 11 layers, dependency rules, per-frame dataflow |
