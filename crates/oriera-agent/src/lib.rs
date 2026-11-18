@@ -25,6 +25,8 @@
 //! # assert_eq!(infer.processed, 0); // executed on the next scheduler tick
 //! ```
 
+#![doc = include_str!("../README.md")]
+
 pub mod bench_account;
 pub mod cognition;
 pub mod embodied;

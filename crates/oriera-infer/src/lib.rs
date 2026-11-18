@@ -12,6 +12,7 @@
 //! Natural-language parsing does NOT live here — that is the L9 agent's
 //! job (`oriera-agent`). This layer only executes what it is given.
 
+#![doc = include_str!("../README.md")]
 pub mod health;
 #[cfg(feature = "native-http")]
 pub mod http;

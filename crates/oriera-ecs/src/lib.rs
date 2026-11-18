@@ -38,6 +38,8 @@
 //! assert!(world.is_empty());
 //! ```
 
+#![doc = include_str!("../README.md")]
+
 mod snapshot;
 
 pub use snapshot::SnapshotError;

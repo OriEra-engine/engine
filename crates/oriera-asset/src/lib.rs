@@ -12,6 +12,7 @@
 //! mesh) and [`ply`] (3DGS Gaussian splats, consumed by L5
 //! `oriera-splat`).
 
+#![doc = include_str!("../README.md")]
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 

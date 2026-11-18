@@ -11,6 +11,7 @@
 //! `render-wgpu` feature(默认关)提供第一个真 GPU 闭环:无头渲染管线与
 //! mesh 回读(见 [`gpu`]),与计数占位并存,互不替代。
 
+#![doc = include_str!("../README.md")]
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Position, World};
 
