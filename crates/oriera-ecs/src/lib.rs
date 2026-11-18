@@ -38,6 +38,10 @@
 //! assert!(world.is_empty());
 //! ```
 
+mod snapshot;
+
+pub use snapshot::SnapshotError;
+
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, VecDeque};
 
