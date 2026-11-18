@@ -49,6 +49,10 @@ oriera-genai = { path = "crates/oriera-genai", version = "0.13.0" }
 oriera-agent = { path = "crates/oriera-agent", version = "0.13.0" }
 oriera-embodied = { path = "crates/oriera-embodied", version = "0.13.0" }
 bitflags = "2.6"
+# L0 math vocabulary (#7): no_std-capable, wasm32 first-class, `serde`
+# on so a Transform can ride in a scene spec or a snapshot without a
+# per-layer conversion. Only re-exported — no project fork of the types.
+glam = { version = "0.34", features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # float_roundtrip：默认快速浮点解析对个别十进制串差 1 ulp（实锤样例
 # ms=0.19349999999999998 解析回 0.1935），三段分账 JSON（P0-5
