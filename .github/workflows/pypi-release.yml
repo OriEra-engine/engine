@@ -27,7 +27,7 @@ jobs:
           maturin build --release --out dist
       - name: Auditwheel repair (manylinux tag)
         run: |
-          pip install auditwheel
+          pip install auditwheel patchelf
           auditwheel repair dist/*.whl --wheel-dir dist-many
           rm dist/*.whl
           mv dist-many/*.whl dist/
