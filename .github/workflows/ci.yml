@@ -343,7 +343,11 @@ jobs:
         with:
           key: embodied-slow
       - name: Slow tests (-p oriera-subsys, rigid3d+cam, --ignored)
-        run: cargo test -p oriera-subsys --features rigid3d,cam -- --ignored
+        # golden_constants_match_pre_m0a_snapshot 是锚定机专属快照对账（#[ignore]
+        # 注明仅 windows-gnu 锚定机能过；跨编译器 f32 差 1 ulp 属设计内差异），
+        # 夜间 Linux 腿跳过——锚定机手动对账命令见 rigid3d.rs:2633 文档（不以删测试收场）。
+        # 约定：新增锚定机专属测试（ignore reason 以 host-anchored 开头）时在此补 --skip。
+        run: cargo test -p oriera-subsys --features rigid3d,cam -- --ignored --skip golden_constants_match_pre_m0a_snapshot
       - name: Slow tests (-p oriera-embodied, rigid3d+spec+urdf, --ignored)
         run: cargo test -p oriera-embodied --features rigid3d,spec,urdf -- --ignored
 
