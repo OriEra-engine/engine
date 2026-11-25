@@ -78,6 +78,7 @@ impl GenAiLimits {
         Self {
             max_bytes: ValidationLimits {
                 max_bytes: self.max_bytes,
+                ..Default::default()
             }
             .effective()
             .max_bytes,
@@ -270,6 +271,7 @@ impl System<World> for GenAiSystem {
         let limits = self.limits.effective();
         let validation = ValidationLimits {
             max_bytes: limits.max_bytes,
+            ..Default::default()
         };
 
         // Compute-budget dial (v0.4): allocator pressure shrinks the
