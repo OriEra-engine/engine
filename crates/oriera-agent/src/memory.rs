@@ -22,6 +22,19 @@ pub struct Episode {
     pub importance: u8,
 }
 
+/// Which tier of an opt-in two-tier store an episode sits in. The default
+/// [`LocalMemoryBackend`] has no tiers; this enum only describes the layout
+/// a [`LayeredMemoryBackend`](crate::memory::LayeredMemoryBackend) maintains
+/// internally — `Episode` itself does not carry a layer tag yet (that field
+/// is a step-two additive contract change).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryLayer {
+    /// Recent episodes in the short-term FIFO buffer.
+    ShortTerm,
+    /// Episodes promoted by the consolidation policy into the long-term store.
+    LongTerm,
+}
+
 /// Retrieval scoring coefficients — the ONE formula both tiers blend
 /// around, lifted out of the retrieval code so it can be configured,
 /// ablated and audited instead of living as magic numbers inside
@@ -78,6 +91,54 @@ impl MemoryScoring {
             semantic_weight: f(self.semantic_weight, d.semantic_weight),
             min_score: f(self.min_score, d.min_score),
         }
+    }
+}
+
+/// Short→long promotion policy for the opt-in two-tier backend. Pure config,
+/// same discipline as [`MemoryScoring`]: out-of-range values sanitize to
+/// defaults instead of poisoning a store's consolidation.
+///
+/// First cut promotes on importance alone; the age gate is a reserved knob
+/// (reuse-count / hit-frequency signals land with the step-two episode
+/// fields, not here).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConsolidationPolicy {
+    /// Episodes with `importance >= promote_importance` are eligible for
+    /// promotion to the long-term tier.
+    pub promote_importance: u8,
+    /// Maximum episode age (turns behind the newest turn in that agent's
+    /// short buffer) still eligible for promotion; `0` disables the age gate.
+    pub max_promote_age: u64,
+}
+
+impl Default for ConsolidationPolicy {
+    fn default() -> Self {
+        Self {
+            promote_importance: 4,
+            max_promote_age: 0,
+        }
+    }
+}
+
+impl ConsolidationPolicy {
+    /// Clamp importance into the valid 1..=5 salience range; the age gate
+    /// stays as configured (0 = disabled).
+    pub fn sanitized(self) -> Self {
+        Self {
+            promote_importance: self.promote_importance.clamp(1, 5),
+            max_promote_age: self.max_promote_age,
+        }
+    }
+
+    /// Does this episode earn promotion to the long-term tier?
+    fn promotes(&self, e: &Episode, now: u64) -> bool {
+        if e.importance < self.promote_importance {
+            return false;
+        }
+        if self.max_promote_age == 0 {
+            return true;
+        }
+        now.saturating_sub(e.turn) <= self.max_promote_age
     }
 }
 
@@ -511,6 +572,167 @@ impl MemoryBackend for LocalMemoryBackend {
 
     fn is_empty(&self) -> bool {
         self.memories.values().all(|v| v.is_empty())
+    }
+
+    fn clone_backend(&self) -> Box<dyn MemoryBackend> {
+        Box::new(self.clone())
+    }
+}
+
+/// Opt-in two-tier backend: a short-term FIFO buffer plus a long-term store.
+///
+/// The default [`LocalMemoryBackend`] stays a single flat Vec and its v1
+/// golden path (write order, scoring, JSON round-trip) never drifts. This
+/// backend is wired explicitly through [`MemoryStore::with_backend`]; nothing
+/// in cognition / goal auto-selects it. Promotion short→long runs through
+/// [`ConsolidationPolicy`] on the [`MemoryBackend::consolidate`] hook.
+///
+/// Step-one depth limits (honest boundaries, not hidden gaps):
+/// * episodes live in one tier at a time — a promoted entry leaves the short
+///   buffer, so retrieval never sees a duplicate;
+/// * both tiers prune FIFO; importance-aware eviction of the long tier lands
+///   with the step-two scoring/retention work;
+/// * `episodes()` returns `None`: the two tiers are separate vectors, so a
+///   single contiguous slice cannot be borrowed; JSON export skips this
+///   backend rather than fabricating a merged order.
+#[derive(Debug, Clone)]
+pub struct LayeredMemoryBackend {
+    short: HashMap<String, Vec<Episode>>,
+    long: HashMap<String, Vec<Episode>>,
+    /// First-record order, so `agents()` can borrow without allocating.
+    names: Vec<String>,
+    policy: ConsolidationPolicy,
+    short_capacity: usize,
+    long_capacity: usize,
+}
+
+impl Default for LayeredMemoryBackend {
+    fn default() -> Self {
+        Self::new(ConsolidationPolicy::default(), 60, 120)
+    }
+}
+
+impl LayeredMemoryBackend {
+    /// `short_capacity` / `long_capacity` are per-agent FIFO windows; values
+    /// below 1 are raised to 1.
+    pub fn new(policy: ConsolidationPolicy, short_capacity: usize, long_capacity: usize) -> Self {
+        Self {
+            short: HashMap::new(),
+            long: HashMap::new(),
+            names: Vec::new(),
+            policy: policy.sanitized(),
+            short_capacity: short_capacity.max(1),
+            long_capacity: long_capacity.max(1),
+        }
+    }
+
+    /// All episodes for `agent` across both tiers, long tier first then short.
+    fn merged(&self, agent: &str) -> Vec<&Episode> {
+        let mut out: Vec<&Episode> = Vec::new();
+        if let Some(long) = self.long.get(agent) {
+            out.extend(long.iter());
+        }
+        if let Some(short) = self.short.get(agent) {
+            out.extend(short.iter());
+        }
+        out
+    }
+}
+
+impl MemoryBackend for LayeredMemoryBackend {
+    fn record(&mut self, agent: &str, episode: Episode) {
+        if !self.names.iter().any(|n| n == agent) {
+            self.names.push(agent.to_string());
+        }
+        self.short
+            .entry(agent.to_string())
+            .or_default()
+            .push(episode);
+    }
+
+    fn prune(&mut self, agent: &str, _capacity: usize) {
+        // The layered backend owns its own two windows; the facade's single
+        // `capacity` is ignored here (it still governs the default flat backend).
+        if let Some(v) = self.short.get_mut(agent) {
+            let len = v.len();
+            if len > self.short_capacity {
+                v.drain(0..len - self.short_capacity);
+            }
+        }
+        if let Some(v) = self.long.get_mut(agent) {
+            let len = v.len();
+            if len > self.long_capacity {
+                v.drain(0..len - self.long_capacity);
+            }
+        }
+    }
+
+    fn consolidate(&mut self) {
+        for agent in self.names.clone() {
+            let Some(short_v) = self.short.get_mut(&agent) else {
+                continue;
+            };
+            let now = short_v.last().map(|e| e.turn).unwrap_or(0);
+            let mut promoted: Vec<Episode> = Vec::new();
+            let mut kept: Vec<Episode> = Vec::new();
+            for e in short_v.drain(..) {
+                if self.policy.promotes(&e, now) {
+                    promoted.push(e);
+                } else {
+                    kept.push(e);
+                }
+            }
+            *short_v = kept;
+            if !promoted.is_empty() {
+                let long_v = self.long.entry(agent.clone()).or_default();
+                long_v.extend(promoted);
+                let len = long_v.len();
+                if len > self.long_capacity {
+                    long_v.drain(0..len - self.long_capacity);
+                }
+            }
+        }
+    }
+
+    fn retrieve(&self, req: &RetrievalRequest<'_>) -> Vec<ScoredEpisode> {
+        let merged = self.merged(req.agent);
+        let q = bigrams(&format!("{}{}", req.query, req.about));
+        let mut scored: Vec<(f32, RecallTrace, &Episode)> = merged
+            .into_iter()
+            .map(|e| {
+                let text = bigrams(&format!("{}{}", e.text, e.about));
+                let hits = q.iter().filter(|g| text.contains(*g)).count();
+                let trace = score_of(e, hits, req.now, req.about, 0.0, req.scoring);
+                (trace.total, trace, e)
+            })
+            .filter(|(s, _, _)| *s > req.scoring.min_score)
+            .collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        scored
+            .into_iter()
+            .take(req.k)
+            .map(|(_, trace, e)| ScoredEpisode {
+                episode: e.clone(),
+                trace,
+            })
+            .collect()
+    }
+
+    fn episodes(&self, _agent: &str) -> Option<&[Episode]> {
+        None
+    }
+
+    fn agents(&self) -> &[String] {
+        &self.names
+    }
+
+    fn len_total(&self) -> usize {
+        self.short.values().map(|v| v.len()).sum::<usize>()
+            + self.long.values().map(|v| v.len()).sum::<usize>()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.short.values().all(|v| v.is_empty()) && self.long.values().all(|v| v.is_empty())
     }
 
     fn clone_backend(&self) -> Box<dyn MemoryBackend> {
@@ -1325,6 +1547,134 @@ mod tests {
         m.record("z", ep(1, "w", "先来", 1));
         m.record("a", ep(2, "w", "后到", 1));
         assert_eq!(m.agents().collect::<Vec<_>>(), vec!["z", "a"]);
+    }
+
+    // ---- L9 step one: opt-in two-tier backend ----
+
+    #[test]
+    fn consolidation_policy_clamps_importance_to_salience_range() {
+        let high = ConsolidationPolicy {
+            promote_importance: 99,
+            max_promote_age: 0,
+        }
+        .sanitized();
+        assert_eq!(high.promote_importance, 5);
+        let low = ConsolidationPolicy {
+            promote_importance: 0,
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(low.promote_importance, 1);
+    }
+
+    #[test]
+    fn layered_backend_promotes_high_importance_into_long_tier() {
+        let mut backend = LayeredMemoryBackend::default();
+        backend.record("a", ep(1, "world", "低重要事件", 2));
+        backend.record("a", ep(2, "world", "高重要事件", 5));
+        backend.consolidate();
+
+        let long: Vec<&str> = backend
+            .long
+            .get("a")
+            .unwrap()
+            .iter()
+            .map(|e| e.text.as_str())
+            .collect();
+        let short: Vec<&str> = backend
+            .short
+            .get("a")
+            .unwrap()
+            .iter()
+            .map(|e| e.text.as_str())
+            .collect();
+        assert!(long.iter().any(|t| t.contains("高重要")));
+        assert!(short.iter().any(|t| t.contains("低重要")));
+        assert!(!short.iter().any(|t| t.contains("高重要")));
+        assert_eq!(
+            backend.len_total(),
+            2,
+            "promoted entry moves, never duplicates"
+        );
+    }
+
+    #[test]
+    fn age_gate_keeps_stale_high_importance_in_short_tier() {
+        let policy = ConsolidationPolicy {
+            promote_importance: 4,
+            max_promote_age: 2,
+        };
+        let mut backend = LayeredMemoryBackend::new(policy, 60, 120);
+        backend.record("a", ep(1, "world", "老条目", 5));
+        backend.record("a", ep(5, "world", "新条目", 5));
+        backend.consolidate();
+
+        let long: Vec<&str> = backend
+            .long
+            .get("a")
+            .unwrap()
+            .iter()
+            .map(|e| e.text.as_str())
+            .collect();
+        let short: Vec<&str> = backend
+            .short
+            .get("a")
+            .unwrap()
+            .iter()
+            .map(|e| e.text.as_str())
+            .collect();
+        assert!(long.iter().any(|t| t.contains("新条目")));
+        assert!(short.iter().any(|t| t.contains("老条目")));
+    }
+
+    #[test]
+    fn layered_retrieve_searches_both_tiers_without_duplicates() {
+        let mut backend = LayeredMemoryBackend::default();
+        backend.record("a", ep(1, "老周", "老周记得口味", 5)); // promoted
+        backend.record("a", ep(2, "world", "下雨爵士", 1)); // stays short
+        backend.consolidate();
+
+        let store = MemoryStore::with_backend(60, MemoryScoring::default(), Box::new(backend));
+        let hits = store.retrieve("a", "老周", "口味", 10, 5);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].text.contains("老周"));
+    }
+
+    #[test]
+    fn layered_backend_prunes_each_tier_to_its_own_window() {
+        let mut backend = LayeredMemoryBackend::new(ConsolidationPolicy::default(), 10, 5);
+        for i in 0..10 {
+            backend.record("a", ep(i, "world", &format!("e{i}"), 1));
+        }
+        backend.prune("a", 10);
+        backend.consolidate(); // importance 1: nothing promotes
+        assert_eq!(backend.short.get("a").unwrap().len(), 10);
+        assert!(backend.long.get("a").is_none_or(Vec::is_empty));
+
+        // Long tier window keeps its own newest five.
+        for i in 0..8 {
+            backend.record("a", ep(i, "world", &format!("h{i}"), 5));
+        }
+        backend.prune("a", 10);
+        backend.consolidate();
+        assert_eq!(backend.long.get("a").unwrap().len(), 5);
+    }
+
+    #[test]
+    fn layered_backend_does_not_export_a_merged_slice() {
+        let mut backend = LayeredMemoryBackend::default();
+        backend.record("a", ep(1, "world", "x", 3));
+        assert!(backend.episodes("a").is_none());
+    }
+
+    #[test]
+    fn layered_backend_clone_is_an_independent_snapshot() {
+        let mut backend = LayeredMemoryBackend::default();
+        backend.record("a", ep(1, "world", "首条", 4));
+        let mut rollback = backend.clone();
+        rollback.record("a", ep(2, "world", "回滚条目", 4));
+        assert_eq!(rollback.len_total(), 2);
+        assert_eq!(backend.len_total(), 1, "clone must not share the tiers");
     }
 
     // ---- 召回台账：观察记录，不是世界状态 ----
