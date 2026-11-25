@@ -54,6 +54,8 @@ pub enum GlbError {
         index: u32,
         vertices: usize,
     },
+    /// 顶点坐标含 NaN / Inf(包围盒与物理步进到不了这种值,解码期拒绝)。
+    NonFinitePosition,
 }
 
 impl fmt::Display for GlbError {
@@ -74,6 +76,7 @@ impl fmt::Display for GlbError {
             GlbError::IndexOutOfRange { index, vertices } => {
                 write!(f, "index {index} out of range for {vertices} vertices")
             }
+            GlbError::NonFinitePosition => write!(f, "position coordinate is NaN or infinite"),
         }
     }
 }
@@ -132,9 +135,27 @@ fn parse_glb_container(bytes: &[u8]) -> Result<(Value, &[u8]), GlbError> {
 pub fn decode_glb_mesh(bytes: &[u8]) -> Result<GlbMesh, GlbError> {
     let (doc, bin) = parse_glb_container(bytes)?;
 
-    let primitive = doc
-        .pointer("/meshes/0/primitives/0")
+    // 冻结路径只认单 mesh / 单 primitive；其余几何不静默忽略，显式拒绝
+    // （fail closed，与索引越界同一纪律）。多 primitive 走 scene 解码路径。
+    let meshes = doc
+        .get("meshes")
+        .and_then(Value::as_array)
         .ok_or(GlbError::MissingMesh)?;
+    if meshes.len() > 1 {
+        return Err(GlbError::Unsupported(
+            "multi-mesh glb not supported by frozen mesh path",
+        ));
+    }
+    let primitives = meshes[0]
+        .get("primitives")
+        .and_then(Value::as_array)
+        .ok_or(GlbError::MissingMesh)?;
+    if primitives.len() > 1 {
+        return Err(GlbError::Unsupported(
+            "multi-primitive mesh not supported by frozen mesh path",
+        ));
+    }
+    let primitive = &primitives[0];
     if let Some(mode) = primitive.get("mode").and_then(Value::as_u64) {
         if mode != 4 {
             return Err(GlbError::Unsupported("non-triangle primitive mode"));
@@ -154,6 +175,10 @@ pub fn decode_glb_mesh(bytes: &[u8]) -> Result<GlbMesh, GlbError> {
     let positions = read_positions(accessors, buffer_views, position_acc_idx, bin)?;
     if positions.is_empty() {
         return Err(GlbError::MissingMesh);
+    }
+    // NaN / Inf 坐标会污染包围盒与物理步进,解码期拒绝,不留给渲染端。
+    if positions.iter().flatten().any(|p| !p.is_finite()) {
+        return Err(GlbError::NonFinitePosition);
     }
 
     // 法线可选:声明了就必须与 POSITION 等长(坏文件直接拒绝)。
@@ -199,6 +224,17 @@ pub fn decode_glb_mesh(bytes: &[u8]) -> Result<GlbMesh, GlbError> {
             index: bad,
             vertices: positions.len(),
         });
+    }
+    // 三角拓扑:索引网格按索引数每 3 个一面,非索引网格按顶点数每 3 个一面;
+    // 余数非 0 是坏文件,解码期拒绝。
+    if indices.is_empty() {
+        if positions.len() % 3 != 0 {
+            return Err(GlbError::Unsupported(
+                "non-indexed vertex count not a multiple of 3",
+            ));
+        }
+    } else if indices.len() % 3 != 0 {
+        return Err(GlbError::Unsupported("index count not a multiple of 3"));
     }
 
     // 包围盒由数据实算;accessor 声明的 min/max 只作旁证,不作事实。
@@ -2095,6 +2131,84 @@ mod tests {
         let bin = triangle_bin();
         let mut doc = triangle_doc(36, 12);
         doc["meshes"][0]["primitives"][0]["mode"] = serde_json::json!(1); // LINES
+        let glb = build_glb(&doc, &bin);
+        assert!(matches!(
+            decode_glb_mesh(&glb),
+            Err(GlbError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn multi_mesh_is_rejected_by_frozen_path() {
+        let bin = triangle_bin();
+        let mut doc = triangle_doc(36, 12);
+        let second = doc["meshes"][0].clone();
+        doc["meshes"].as_array_mut().unwrap().push(second);
+        let glb = build_glb(&doc, &bin);
+        assert!(matches!(
+            decode_glb_mesh(&glb),
+            Err(GlbError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn multi_primitive_is_rejected_by_frozen_path() {
+        let bin = triangle_bin();
+        let mut doc = triangle_doc(36, 12);
+        let p = doc["meshes"][0]["primitives"][0].clone();
+        doc["meshes"][0]["primitives"]
+            .as_array_mut()
+            .unwrap()
+            .push(p);
+        let glb = build_glb(&doc, &bin);
+        assert!(matches!(
+            decode_glb_mesh(&glb),
+            Err(GlbError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn nan_and_infinite_positions_are_rejected() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut bin = triangle_bin();
+            bin[0..4].copy_from_slice(&bad.to_le_bytes());
+            let glb = build_glb(&triangle_doc(36, 12), &bin);
+            assert_eq!(decode_glb_mesh(&glb), Err(GlbError::NonFinitePosition));
+        }
+    }
+
+    #[test]
+    fn index_count_not_multiple_of_3_is_rejected() {
+        let mut bin = triangle_bin();
+        bin.extend_from_slice(&0u32.to_le_bytes()); // 4 indices, not a multiple of 3
+        let mut doc = triangle_doc(36, 16);
+        doc["accessors"][1]["count"] = serde_json::json!(4);
+        let glb = build_glb(&doc, &bin);
+        assert!(matches!(
+            decode_glb_mesh(&glb),
+            Err(GlbError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn vertex_count_not_multiple_of_3_is_rejected() {
+        let mut bin = Vec::new();
+        for p in [
+            [-1.0f32, -0.5, 0.0],
+            [1.0, -0.5, 0.0],
+            [0.0, 0.8, 0.0],
+            [0.0, 0.0, 0.0],
+        ] {
+            for c in p {
+                bin.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        let mut doc = triangle_doc(48, 0);
+        doc["accessors"][0]["count"] = serde_json::json!(4);
+        doc["meshes"][0]["primitives"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("indices");
         let glb = build_glb(&doc, &bin);
         assert!(matches!(
             decode_glb_mesh(&glb),

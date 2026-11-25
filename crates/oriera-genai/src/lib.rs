@@ -514,43 +514,94 @@ pub const DEFAULT_MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 /// philosophy as L6 `TimeScale`).
 pub const HARD_MAX_ASSET_BYTES: u64 = 1024 * 1024 * 1024;
 
+/// Default vertex ceiling for a generated mesh (loose v0.1 guard against
+/// runaway topology; tune against real vendor samples later).
+pub const DEFAULT_MAX_VERTICES: u32 = 50_000;
+/// Default triangle ceiling for a generated mesh.
+pub const DEFAULT_MAX_TRIANGLES: u32 = 100_000;
+/// Default mesh half-extent ceiling in metres (largest AABB half-axis).
+pub const DEFAULT_MAX_HALF_EXTENT: f32 = 2.0;
+
+/// Hard topology ceilings [`ValidationLimits::effective`] clamps to.
+pub const HARD_MAX_VERTICES: u32 = 1_000_000;
+pub const HARD_MAX_TRIANGLES: u32 = 1_000_000;
+/// Hard half-extent ceiling in metres.
+pub const HARD_MAX_HALF_EXTENT: f32 = 100.0;
+
 /// Client-side validation limits. One clamp entry point
 /// ([`ValidationLimits::effective`]) so every consumer sees the same
 /// policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ValidationLimits {
     pub max_bytes: u64,
+    /// Mesh-only: vertex count ceiling.
+    pub max_vertices: u32,
+    /// Mesh-only: triangle count ceiling.
+    pub max_triangles: u32,
+    /// Mesh-only: largest AABB half-axis, metres.
+    pub max_half_extent: f32,
 }
 
 impl Default for ValidationLimits {
     fn default() -> Self {
         Self {
             max_bytes: DEFAULT_MAX_ASSET_BYTES,
+            max_vertices: DEFAULT_MAX_VERTICES,
+            max_triangles: DEFAULT_MAX_TRIANGLES,
+            max_half_extent: DEFAULT_MAX_HALF_EXTENT,
         }
     }
 }
 
 impl ValidationLimits {
     /// The limits every validator must use: `max_bytes` clamped to
-    /// `[1, HARD_MAX_ASSET_BYTES]` (zero or absurd → default).
+    /// `[1, HARD_MAX_ASSET_BYTES]`; topology/extent clamped to their hard
+    /// ceilings (zero, negative or absurd → default).
     pub fn effective(self) -> Self {
-        if self.max_bytes == 0 || self.max_bytes > HARD_MAX_ASSET_BYTES {
-            Self::default()
+        let limits = Self::default();
+        let max_bytes = if self.max_bytes == 0 || self.max_bytes > HARD_MAX_ASSET_BYTES {
+            limits.max_bytes
         } else {
-            self
+            self.max_bytes
+        };
+        let max_vertices = if self.max_vertices == 0 || self.max_vertices > HARD_MAX_VERTICES {
+            limits.max_vertices
+        } else {
+            self.max_vertices
+        };
+        let max_triangles = if self.max_triangles == 0 || self.max_triangles > HARD_MAX_TRIANGLES {
+            limits.max_triangles
+        } else {
+            self.max_triangles
+        };
+        let max_half_extent = if self.max_half_extent.is_nan()
+            || self.max_half_extent <= 0.0
+            || self.max_half_extent > HARD_MAX_HALF_EXTENT
+        {
+            limits.max_half_extent
+        } else {
+            self.max_half_extent
+        };
+        Self {
+            max_bytes,
+            max_vertices,
+            max_triangles,
+            max_half_extent,
         }
     }
 }
 
 /// Validate a generated asset before it may approach the asset store:
 /// size ceiling plus format magic (GLB header/chunk consistency, USDZ
-/// zip prefix, MP4/WebM/PNG/JPEG signatures).
+/// zip prefix, MP4/WebM/PNG/JPEG signatures). GLB additionally runs the
+/// L4 mesh decoder deep check (topology, index bounds, finite positions)
+/// and the mesh topology/extent ceilings.
 ///
-/// Depth promise (ADR 0003): in the skeleton stage this checks magic +
-/// size + container self-consistency. Deep checks — mesh legality, zip
-/// nesting depth (decompression-bomb guard) — land with the v0.2 asset
-/// decoder, because a decoder that never runs cannot be lied to by
-/// bytes it never reads.
+/// Depth promise (ADR 0003): the validator only checks depth the decoder
+/// actually implements. USDZ zip nesting depth (decompression-bomb
+/// guard) and rig/skin checks land when those decoders are wired to the
+/// gate; a decoder that never runs cannot be lied to by bytes it never
+/// reads.
 pub fn validate_asset(asset: &GeneratedAsset, limits: &ValidationLimits) -> Result<(), GenAiError> {
     let limits = limits.effective();
     let bytes = &asset.payload;
@@ -561,32 +612,80 @@ pub fn validate_asset(asset: &GeneratedAsset, limits: &ValidationLimits) -> Resu
             limits.max_bytes
         )));
     }
-    let ok = match asset.format {
-        AssetFormat::Glb => glb_header_is_sane(bytes),
-        AssetFormat::Usdz => bytes.starts_with(b"PK"),
-        AssetFormat::Audio => {
+    match asset.format {
+        AssetFormat::Glb => validate_glb_mesh(bytes, &limits),
+        AssetFormat::Usdz => magic_or_err(bytes.starts_with(b"PK"), asset.format.id()),
+        AssetFormat::Audio => magic_or_err(
             bytes.starts_with(b"ID3") // MP3 with tag
                 || (bytes.len() >= 3 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0) // MPEG frame
-                || bytes.starts_with(b"RIFF") // WAV
-        }
-        AssetFormat::Video => {
+                || bytes.starts_with(b"RIFF"), // WAV
+            asset.format.id(),
+        ),
+        AssetFormat::Video => magic_or_err(
             bytes.len() >= 8
                 && (&bytes[4..8] == b"ftyp"            // MP4
-                    || bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])) // WebM EBML
-        }
-        AssetFormat::Image => {
+                    || bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])), // WebM EBML
+            asset.format.id(),
+        ),
+        AssetFormat::Image => magic_or_err(
             bytes.starts_with(&[0x89, b'P', b'N', b'G']) // PNG
-                || bytes.starts_with(&[0xFF, 0xD8, 0xFF]) // JPEG
-        }
-    };
+                || bytes.starts_with(&[0xFF, 0xD8, 0xFF]), // JPEG
+            asset.format.id(),
+        ),
+    }
+}
+
+fn magic_or_err(ok: bool, format: &str) -> Result<(), GenAiError> {
     if ok {
         Ok(())
     } else {
         Err(GenAiError::Validation(format!(
-            "payload does not match the {} format signature",
-            asset.format.id()
+            "payload does not match the {format} format signature"
         )))
     }
+}
+
+/// GLB deep gate: container sanity → L4 decoder legality → topology/extent
+/// ceilings. Decoder errors fold into [`GenAiError::Validation`]; the gate
+/// does not inspect bytes the decoder does not read.
+fn validate_glb_mesh(bytes: &[u8], limits: &ValidationLimits) -> Result<(), GenAiError> {
+    if !glb_header_is_sane(bytes) {
+        return magic_or_err(false, AssetFormat::Glb.id());
+    }
+    let mesh = oriera_asset::glb::decode_glb_mesh(bytes)
+        .map_err(|e| GenAiError::Validation(format!("glb mesh: {e}")))?;
+
+    let vertices = mesh.positions.len() as u32;
+    if vertices > limits.max_vertices {
+        return Err(GenAiError::Validation(format!(
+            "{vertices} vertices exceeds the {} vertex ceiling",
+            limits.max_vertices
+        )));
+    }
+    let triangles = (if mesh.indices.is_empty() {
+        mesh.positions.len() / 3
+    } else {
+        mesh.indices.len() / 3
+    }) as u32;
+    if triangles > limits.max_triangles {
+        return Err(GenAiError::Validation(format!(
+            "{triangles} triangles exceeds the {} triangle ceiling",
+            limits.max_triangles
+        )));
+    }
+    let half_extent = mesh
+        .min
+        .iter()
+        .zip(mesh.max.iter())
+        .map(|(lo, hi)| (hi - lo).abs() / 2.0)
+        .fold(0.0f32, f32::max);
+    if half_extent > limits.max_half_extent {
+        return Err(GenAiError::Validation(format!(
+            "mesh half-extent {half_extent:.3} m exceeds the {} m ceiling",
+            limits.max_half_extent
+        )));
+    }
+    Ok(())
 }
 
 /// GLB container sanity: magic `glTF`, version 2, declared total length
@@ -917,28 +1016,101 @@ mod tests {
         assert!(validate_asset(&usdz_bytes, &ValidationLimits::default()).is_ok());
     }
 
+    /// Assemble a header-consistent GLB from raw JSON + BIN, for gate-level
+    /// fixtures the shared [`tiny_glb`] does not cover.
+    fn glb_with_json(json: &str, bin: &[u8]) -> Vec<u8> {
+        let json_len = json.len().div_ceil(4) * 4;
+        let bin_len = bin.len();
+        let total = 12 + 8 + json_len + 8 + bin_len;
+        let mut out = Vec::with_capacity(total);
+        out.extend_from_slice(b"glTF");
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&(total as u32).to_le_bytes());
+        out.extend_from_slice(&(json_len as u32).to_le_bytes());
+        out.extend_from_slice(b"JSON");
+        out.extend_from_slice(json.as_bytes());
+        out.extend(std::iter::repeat_n(b' ', json_len - json.len()));
+        out.extend_from_slice(&(bin_len as u32).to_le_bytes());
+        out.extend_from_slice(b"BIN\x00");
+        out.extend_from_slice(bin);
+        out
+    }
+
+    #[test]
+    fn vertex_ceiling_rejects_oversized_mesh() {
+        let glb = asset(AssetFormat::Glb, tiny_glb());
+        let limits = ValidationLimits {
+            max_vertices: 2,
+            ..Default::default()
+        };
+        match validate_asset(&glb, &limits) {
+            Err(GenAiError::Validation(msg)) => assert!(msg.contains("vertices")),
+            other => panic!("expected Validation(vertices), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn half_extent_ceiling_rejects_oversized_mesh() {
+        let glb = asset(AssetFormat::Glb, tiny_glb());
+        // tiny_glb spans ±0.8 m on X; its half-extent is 0.8 m.
+        let limits = ValidationLimits {
+            max_half_extent: 0.5,
+            ..Default::default()
+        };
+        match validate_asset(&glb, &limits) {
+            Err(GenAiError::Validation(msg)) => assert!(msg.contains("half-extent")),
+            other => panic!("expected Validation(half-extent), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decoder_rejection_folds_into_validation() {
+        // Header-consistent container, but the scene exposes no mesh — the
+        // decoder refuses, and the gate surfaces that as a Validation error
+        // rather than a provider panic.
+        let doc = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[]}]}"#;
+        let glb = asset(AssetFormat::Glb, glb_with_json(doc, b""));
+        match validate_asset(&glb, &ValidationLimits::default()) {
+            Err(GenAiError::Validation(msg)) => assert!(msg.starts_with("glb mesh:")),
+            other => panic!("expected Validation(glb mesh), got {other:?}"),
+        }
+    }
+
     #[test]
     fn oversized_payload_is_rejected() {
         let glb = asset(AssetFormat::Glb, tiny_glb());
-        let tight = ValidationLimits { max_bytes: 8 };
+        let tight = ValidationLimits {
+            max_bytes: 8,
+            ..Default::default()
+        };
         assert!(validate_asset(&glb, &tight).is_err());
     }
 
     #[test]
     fn limits_clamp_through_one_entry_point() {
         assert_eq!(
-            ValidationLimits { max_bytes: 0 }.effective(),
-            ValidationLimits::default()
-        );
-        assert_eq!(
             ValidationLimits {
-                max_bytes: u64::MAX
+                max_bytes: 0,
+                ..Default::default()
             }
             .effective(),
             ValidationLimits::default()
         );
         assert_eq!(
-            ValidationLimits { max_bytes: 1024 }.effective().max_bytes,
+            ValidationLimits {
+                max_bytes: u64::MAX,
+                ..Default::default()
+            }
+            .effective(),
+            ValidationLimits::default()
+        );
+        assert_eq!(
+            ValidationLimits {
+                max_bytes: 1024,
+                ..Default::default()
+            }
+            .effective()
+            .max_bytes,
             1024
         );
     }
