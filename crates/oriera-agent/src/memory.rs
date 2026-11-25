@@ -740,6 +740,202 @@ impl MemoryBackend for LayeredMemoryBackend {
     }
 }
 
+/// Opt-in local inverted-index backend: gram → posting list prunes the
+/// candidate set, then every candidate is scored by the same [`score_of`]
+/// formula as the default backend.
+///
+/// Wiring discipline (same as [`LayeredMemoryBackend`]): injected only through
+/// [`MemoryStore::with_backend`]; cognition / goal call sites never select it.
+/// The default [`LocalMemoryBackend`] and its v1 golden path stay bit-identical.
+///
+/// Honest depth — this is NOT a lossless index in general scoring:
+/// an episode with zero query grams can still clear the gate on importance /
+/// recency / about-bonus and rank above a weak hit. The retrieve path scores
+/// the posting-union candidates, then compares the k-th retained score against
+/// a conservative upper bound for any non-candidate episode. If a non-hitter
+/// could displace the boundary entry, the request **falls back to a full
+/// scan** over every episode instead of silently dropping results.
+///
+/// Step-one limits:
+/// * index is rebuilt on FIFO prune (no tombstone bookkeeping yet);
+/// * `retrieve_embedded` uses the trait default: offline tier, no cosine blend;
+/// * postings hold episode positions, not cloned text; `episodes()` returns
+///   the contiguous slice, so JSON export matches the local backend layout.
+#[derive(Debug, Clone, Default)]
+pub struct InvertedMemoryBackend {
+    agents: HashMap<String, AgentInverted>,
+    /// First-record order, so `agents()` can borrow without allocating.
+    names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AgentInverted {
+    episodes: Vec<Episode>,
+    /// gram → positions into `episodes`; each posting list holds unique indices.
+    postings: HashMap<String, Vec<u32>>,
+}
+
+impl AgentInverted {
+    fn index_into(&mut self, idx: usize, episode: &Episode) {
+        for g in bigrams(&format!("{}{}", episode.text, episode.about)) {
+            self.postings.entry(g).or_default().push(idx as u32);
+        }
+    }
+
+    fn rebuild(&mut self) {
+        self.postings.clear();
+        for idx in 0..self.episodes.len() {
+            let grams = bigrams(&format!(
+                "{}{}",
+                self.episodes[idx].text, self.episodes[idx].about
+            ));
+            for g in grams {
+                self.postings.entry(g).or_default().push(idx as u32);
+            }
+        }
+    }
+}
+
+impl InvertedMemoryBackend {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Full-score path over every episode — identical ranking to
+    /// [`LocalMemoryBackend::retrieve`]; used both as the fallback and as the
+    /// reference the index path must match.
+    fn score_all(episodes: &[Episode], req: &RetrievalRequest<'_>) -> Vec<ScoredEpisode> {
+        let q = bigrams(&format!("{}{}", req.query, req.about));
+        let mut scored: Vec<(f32, RecallTrace, usize, &Episode)> = episodes
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let text = bigrams(&format!("{}{}", e.text, e.about));
+                let hits = q.iter().filter(|g| text.contains(*g)).count();
+                let trace = score_of(e, hits, req.now, req.about, 0.0, req.scoring);
+                (trace.total, trace, i, e)
+            })
+            .filter(|(s, _, _, _)| *s > req.scoring.min_score)
+            .collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
+        scored
+            .into_iter()
+            .take(req.k)
+            .map(|(_, trace, _, e)| ScoredEpisode {
+                episode: e.clone(),
+                trace,
+            })
+            .collect()
+    }
+}
+
+impl MemoryBackend for InvertedMemoryBackend {
+    fn record(&mut self, agent: &str, episode: Episode) {
+        if !self.agents.contains_key(agent) {
+            self.names.push(agent.to_string());
+        }
+        let entry = self.agents.entry(agent.to_string()).or_default();
+        let idx = entry.episodes.len();
+        entry.index_into(idx, &episode);
+        entry.episodes.push(episode);
+    }
+
+    fn prune(&mut self, agent: &str, capacity: usize) {
+        let Some(entry) = self.agents.get_mut(agent) else {
+            return;
+        };
+        let len = entry.episodes.len();
+        if len > capacity {
+            entry.episodes.drain(0..len - capacity);
+            entry.rebuild();
+        }
+    }
+
+    fn retrieve(&self, req: &RetrievalRequest<'_>) -> Vec<ScoredEpisode> {
+        let Some(entry) = self.agents.get(req.agent) else {
+            return Vec::new();
+        };
+        let q = bigrams(&format!("{}{}", req.query, req.about));
+
+        // Union of posting lists for the query grams. Empty query / empty
+        // postings means the index cannot prune anything useful → full scan.
+        let mut candidates: Vec<u32> = Vec::new();
+        if !q.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            for g in &q {
+                if let Some(post) = entry.postings.get(g) {
+                    for &idx in post {
+                        if seen.insert(idx) {
+                            candidates.push(idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        if q.is_empty() || candidates.is_empty() {
+            return Self::score_all(&entry.episodes, req);
+        }
+
+        let mut scored: Vec<(f32, RecallTrace, usize, &Episode)> = candidates
+            .iter()
+            .filter_map(|&i| entry.episodes.get(i as usize).map(|e| (i as usize, e)))
+            .map(|(idx, e)| {
+                let text = bigrams(&format!("{}{}", e.text, e.about));
+                let hits = q.iter().filter(|g| text.contains(*g)).count();
+                let trace = score_of(e, hits, req.now, req.about, 0.0, req.scoring);
+                (trace.total, trace, idx, e)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
+        scored.retain(|(s, _, _, _)| *s > req.scoring.min_score);
+
+        // Upper bound for a non-candidate episode (zero hits): max importance
+        // term + max recency term + full about bonus. If the k-th retained
+        // candidate cannot be beaten by that bound, pruning is lossless;
+        // otherwise fall back to the full scan rather than risk dropping a
+        // non-hitter that the default backend would have returned.
+        let ub = 5.0 * req.scoring.importance_weight
+            + req.scoring.recency_weight
+            + req.scoring.about_bonus;
+        let kth = scored.get(req.k.saturating_sub(1)).map(|t| t.0);
+        let lossless = scored.len() >= req.k && kth.is_some_and(|s| s >= ub);
+
+        if !lossless {
+            return Self::score_all(&entry.episodes, req);
+        }
+
+        scored
+            .into_iter()
+            .take(req.k)
+            .map(|(_, trace, _, e)| ScoredEpisode {
+                episode: e.clone(),
+                trace,
+            })
+            .collect()
+    }
+
+    fn episodes(&self, agent: &str) -> Option<&[Episode]> {
+        self.agents.get(agent).map(|e| e.episodes.as_slice())
+    }
+
+    fn agents(&self) -> &[String] {
+        &self.names
+    }
+
+    fn len_total(&self) -> usize {
+        self.agents.values().map(|e| e.episodes.len()).sum()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.agents.values().all(|e| e.episodes.is_empty())
+    }
+
+    fn clone_backend(&self) -> Box<dyn MemoryBackend> {
+        Box::new(self.clone())
+    }
+}
+
 /// Per-agent episodic memory facade with keyword-recency-importance
 /// retrieval. Storage and recall live behind a [`MemoryBackend`];
 /// the public API here is what cognition, goal and every existing caller
@@ -1675,6 +1871,223 @@ mod tests {
         rollback.record("a", ep(2, "world", "回滚条目", 4));
         assert_eq!(rollback.len_total(), 2);
         assert_eq!(backend.len_total(), 1, "clone must not share the tiers");
+    }
+
+    // ---- 022：opt-in 倒排索引后端，top-k 与本地后端逐条等价 ----
+
+    fn mirrored_stores(eps: &[Episode]) -> (MemoryStore, MemoryStore) {
+        // 容量放宽到 100：对照断言不依赖窗口裁剪，prune 一致性单列测试。
+        let mut local = MemoryStore::with_backend(
+            100,
+            MemoryScoring::default(),
+            Box::new(LocalMemoryBackend::default()),
+        );
+        let mut inv = MemoryStore::with_backend(
+            100,
+            MemoryScoring::default(),
+            Box::new(InvertedMemoryBackend::new()),
+        );
+        for e in eps {
+            local.record("a", e.clone());
+            inv.record("a", e.clone());
+        }
+        (local, inv)
+    }
+
+    fn assert_equivalent(eps: &[Episode], queries: &[(&str, &str, usize)]) {
+        let (local, inv) = mirrored_stores(eps);
+        for &(about, query, k) in queries {
+            let l = local.retrieve_traced("a", about, query, 10_000, k);
+            let i = inv.retrieve_traced("a", about, query, 10_000, k);
+            assert_eq!(
+                l, i,
+                "inverted backend must match local top-k (order included): about={about} query={query} k={k}"
+            );
+        }
+    }
+
+    fn zh_fixture() -> Vec<Episode> {
+        (0..12)
+            .map(|i| {
+                if i % 3 == 0 {
+                    ep(
+                        i,
+                        "ada",
+                        &format!("顾客{i}点了拿铁 机器人送单 咖啡馆 订单#{i}"),
+                        (i % 5 + 1) as u8,
+                    )
+                } else {
+                    ep(
+                        i,
+                        "bob",
+                        &format!("库存{i} 清点 货架{i} 补货 标签{i}"),
+                        (i % 5 + 1) as u8,
+                    )
+                }
+            })
+            .collect()
+    }
+
+    fn en_fixture() -> Vec<Episode> {
+        (0..12)
+            .map(|i| {
+                if i % 3 == 0 {
+                    ep(
+                        i,
+                        "npc",
+                        &format!("patron{i} at forge market harbor gate order {i}"),
+                        (i % 5 + 1) as u8,
+                    )
+                } else {
+                    ep(
+                        i,
+                        "stall",
+                        &format!("shelf{i} stock count restock label {i}"),
+                        (i % 5 + 1) as u8,
+                    )
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn inverted_matches_local_chinese_and_english() {
+        let zh_q = [
+            ("ada", "咖啡馆 机器人 拿铁", 5),
+            ("bob", "库存 货架 补货", 5),
+            ("a", "不存在的词 太空", 4),
+        ];
+        assert_equivalent(&zh_fixture(), &zh_q);
+        let en_q = [
+            ("npc", "forge market gate", 5),
+            ("stall", "shelf stock label", 5),
+            ("a", "zzz nowhere", 4),
+        ];
+        assert_equivalent(&en_fixture(), &en_q);
+    }
+
+    #[test]
+    fn inverted_matches_local_sparse_hits() {
+        // 1/10 稀疏命中：仅第 5 条与查询共享 gram。
+        let eps: Vec<Episode> = (0..20)
+            .map(|i| {
+                if i == 5 {
+                    ep(i, "ada", "咖啡馆 拿铁 顾客", 3)
+                } else {
+                    ep(i, "bob", &format!("库存{i} 货架{i} 标签{i}"), 2)
+                }
+            })
+            .collect();
+        assert_equivalent(&eps, &[("ada", "咖啡馆 拿铁", 8), ("bob", "库存", 10)]);
+    }
+
+    #[test]
+    fn inverted_matches_local_when_fewer_than_k() {
+        let eps = vec![
+            ep(1, "w", "第一条 月亮", 3),
+            ep(2, "w", "第二条 星星", 2),
+            ep(3, "w", "第三条 河流", 4),
+        ];
+        // 不足 k 条边界：返回全部，次序与本地一致。
+        assert_equivalent(&eps, &[("w", "月亮 星星 河流", 10), ("w", "无关词", 10)]);
+    }
+
+    #[test]
+    fn inverted_preserves_record_order_on_tied_scores() {
+        // 同 turn / importance / about、文本互不重叠 → 分数并列；
+        // tie-break 必须是记录次序，不能被 posting 并集次序打乱。
+        let eps = vec![
+            ep(1, "w", "alpha 月亮", 3),
+            ep(1, "w", "beta 星星", 3),
+            ep(1, "w", "gamma 河流", 3),
+        ];
+        assert_equivalent(&eps, &[("w", "天气", 5), ("w", "月亮", 2)]);
+    }
+
+    #[test]
+    fn inverted_falls_back_to_full_scan_when_non_hitter_could_displace() {
+        // 高重要性零命中条目可能压过弱命中条目——索引剪枝在这里
+        // 必须显式回退全量扫描，结果仍与本地后端逐条一致。
+        let eps = vec![
+            ep(1, "w", "完全不相关的库存与盘点记录", 5),
+            ep(2, "w", "咖啡馆 拿铁", 1),
+            ep(3, "w", "机器人 订单", 1),
+            ep(4, "w", "货架 标签 补货", 2),
+        ];
+        assert_equivalent(&eps, &[("w", "咖啡馆 拿铁 机器人", 3), ("w", "货架", 4)]);
+    }
+
+    #[test]
+    fn inverted_json_round_trip_matches_local() {
+        let eps = zh_fixture();
+        let (local, inv) = mirrored_stores(&eps);
+        #[cfg(feature = "json")]
+        {
+            assert_eq!(local.to_json(), inv.to_json(), "export bytes must match");
+            let restored = MemoryStore::from_json(&inv.to_json()).unwrap();
+            let again = restored.retrieve_traced("a", "ada", "咖啡馆 拿铁", 10_000, 5);
+            assert_eq!(
+                again,
+                local.retrieve_traced("a", "ada", "咖啡馆 拿铁", 10_000, 5)
+            );
+        }
+        // episodes() 切片内容一致；克隆彼此独立；离线降级退化为 retrieve。
+        assert_eq!(
+            inv.backend().episodes("a"),
+            local.backend().episodes("a"),
+            "episodes slice must match"
+        );
+        let mut rollback = inv.clone();
+        rollback.record("a", ep(99, "w", "回滚条目", 1));
+        assert_eq!(rollback.len_total(), eps.len() + 1);
+        assert_eq!(inv.len_total(), eps.len(), "clone must not share the index");
+
+        let emb = oriera_infer::HashEmbeddingProvider::new(64);
+        let degraded = inv.retrieve_embedded(&emb, "a", "ada", "咖啡馆", 10_000, 5);
+        let offline = inv.retrieve("a", "ada", "咖啡馆", 10_000, 5);
+        assert_eq!(
+            degraded, offline,
+            "no-vector backend degrades visibly to offline tier"
+        );
+    }
+
+    #[test]
+    fn inverted_keeps_index_consistent_after_prune() {
+        let eps: Vec<Episode> = (0..30)
+            .map(|i| ep(i, "w", &format!("条目{i} 咖啡馆 拿铁"), (i % 5 + 1) as u8))
+            .collect();
+        let mut local = MemoryStore::with_backend(
+            30,
+            MemoryScoring::default(),
+            Box::new(LocalMemoryBackend::default()),
+        );
+        let mut inv = MemoryStore::with_backend(
+            30,
+            MemoryScoring::default(),
+            Box::new(InvertedMemoryBackend::new()),
+        );
+        for e in &eps {
+            local.record("a", e.clone());
+            inv.record("a", e.clone());
+        }
+        // 第 31 条触发门面 prune（窗口 30）；索引随裁剪重建，等价性不破。
+        local.record("a", ep(30, "w", "窗口外的旧条目", 2));
+        inv.record("a", ep(30, "w", "窗口外的旧条目", 2));
+        let q = [("w", "咖啡馆 拿铁", 8), ("w", "条目 15", 8)];
+        assert_equivalent_after_prune(&local, &inv, &q);
+    }
+
+    fn assert_equivalent_after_prune(
+        local: &MemoryStore,
+        inv: &MemoryStore,
+        queries: &[(&str, &str, usize)],
+    ) {
+        for &(about, query, k) in queries {
+            assert_eq!(
+                local.retrieve_traced("a", about, query, 10_000, k),
+                inv.retrieve_traced("a", about, query, 10_000, k)
+            );
+        }
     }
 
     // ---- 召回台账：观察记录，不是世界状态 ----

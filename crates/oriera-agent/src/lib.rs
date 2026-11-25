@@ -74,9 +74,9 @@ pub use cognition::{
     CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WakeEvent, WorldStory,
 };
 pub use memory::{
-    ConsolidationPolicy, Episode, LayeredMemoryBackend, LocalMemoryBackend, MemoryBackend,
-    MemoryLayer, MemoryScoring, MemoryStore, RecallEvent, RecallHit, RecallLedger, RecallTrace,
-    RetrievalRequest, ScoredEpisode,
+    ConsolidationPolicy, Episode, InvertedMemoryBackend, LayeredMemoryBackend, LocalMemoryBackend,
+    MemoryBackend, MemoryLayer, MemoryScoring, MemoryStore, RecallEvent, RecallHit, RecallLedger,
+    RecallTrace, RetrievalRequest, ScoredEpisode,
 };
 pub use prefab::{spawn_prefab, spawn_prefab_at, PrefabEntity, PrefabSpec};
 

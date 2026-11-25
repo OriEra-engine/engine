@@ -15,3 +15,11 @@ oriera-common.workspace = true
 tracing.workspace = true
 
 web-time = "1.1"
+
+[dev-dependencies]
+# 帧循环固定开销微基准（性能矩阵场景 1：调度器地板价与系统数摊销）。
+criterion.workspace = true
+
+[[bench]]
+name = "frame"
+harness = false
