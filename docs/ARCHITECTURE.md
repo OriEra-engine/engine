@@ -178,6 +178,19 @@ Gravity/TimeScale/边界，垂直版二选一、回放中途不许换）：`rigi
 `TipRadius`（默认启发式）与 `Contact`（逐 tick 法向力判据，opt-in）。
 这是「层配置」旋钮的首个实装（[VERTICALS.md](VERTICALS.md) §0）。
 
+2026-11 落地**导航子系统**（feature `nav`，`nav::NavMesh` + `NavAgentSystem`）：
+凸多边形导航网格由共享边自动推导邻接，A* 走多边形图、漏斗算法拉直，返回
+"起点—拐点—终点"的可复现路线；`NavAgent` 是运动学移动器（自己写 `Position`，
+把真实位移折算成 `Velocity` 写回，**不与物理积分器同时驱动同一批实体**），
+节奏跟 `TimeScale` 走。这是 QY-Demo 缺口第二档里"NPC 自主穿城"的第一块，
+纯 CPU，不需要 GPU。
+
+同日落地**动画状态机**（feature `anim`，`anim::AnimController`）：关节 TRS 轨道的
+循环剪辑采样、Idle/Walk/Run 三态（速度阈值两侧各留迟滞带，带内不切）、切态交叉
+淡入，输出直接是 `update_skeleton` 要的 `[[f32;4];4]` 面板。混合走**矩阵按元素
+线性插值**（大角度旋转会缩水，属已知近似，文档写明）。导航管"往哪走"，动画管
+"走起来什么样"，两者无代码耦合。
+
 ### L7 · oriera-infer — 模型生命周期唯一入口
 
 **厂商零硬编码**的 `ModelProvider` trait + `ProviderConfig/ProviderKind/create_provider`：

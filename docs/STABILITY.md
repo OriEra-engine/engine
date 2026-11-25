@@ -91,6 +91,19 @@
   异步回读(`read_target_async` / `poll_read` / `wait_read`,RFC 0004 步 1b)最多 4 张在途,满了就
   阻塞到最旧的完成;已完成未取的像素同样最多留 4 张,再多丢最旧的,被丢的回执取的时候报错。
   **在软件光栅化上没有测出吞吐收益**,真卡未测;
+- L6 导航(feature `nav`,2026-11-25):`NavMesh` / `NavAgent` / `NavAgentSystem` 是新增公开面,
+  默认 feature 不编译。多边形**必须凸**且共享边整条重合,否则构建期直接报错
+  (`NavError`);2D 平面(`Position` 的 x/y,y 向下)、无高度与层间连接、无动态障碍与
+  群体避让;邻接检测 O(E²),几百个面片够用。`NavAgentSystem` 是**运动学**写
+  `Position` 的移动器,与物理积分器同时驱动同一批实体时两者会互相覆盖(谁后跑谁赢);
+  路线可复现由 A* 的 tie-break(同 f 取小下标)保证,`path_fingerprint` 给回执用。
+  `segment_walkable` 是按 0.25 单位步长采样的近似,不是解析几何证明;
+- L6 动画状态机(feature `anim`,2026-11-25):`AnimationClip` / `ClipBank` / `AnimController`
+  / `Keyframe` / `JointTrack` 是新增公开面,默认 feature 不编译。混合是**矩阵按元素
+  线性插值**而非 TRS/四元数空间混合,大角度旋转会缩水;不做 IK、根运动、脚部贴地;
+  状态只有 Idle/Walk/Run 三态且由速度标量驱动,没有事件轨道;剪辑必须自带关节完整
+  姿态,缺的关节按单位矩阵补而不做父级继承。相位是 `f32` 累加,长跑有积累误差——
+  回放对齐以帧号为准,不要以相位为准;
 - L7 同步 `complete()` 仍是默认路径(离线规则后端零成本);异步作业层 `InferJobs` +
   认知/导演 `with_async()` 已落地(提交-收割,帧不阻塞网络,真 LLM 接入的壳层应启用),
   工具调用(OpenAI/Anthropic 双方言 wire)与 SSE 真流式已随 native-http 落地
