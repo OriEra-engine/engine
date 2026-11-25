@@ -84,6 +84,12 @@ criterion.workspace = true
 name = "memory"
 harness = false
 
+# 整机帧成本：物理 + 记忆 + 推理 + 资产闸口同帧，量整机油耗与各段占比。
+# rigid3d 关闭时 physics 段退化为空转，其余三段照常。
+[[bench]]
+name = "world_frame"
+harness = false
+
 [[example]]
 name = "tool_loop"
 path = "examples/tool_loop.rs"
