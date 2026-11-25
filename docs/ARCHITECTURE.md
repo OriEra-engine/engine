@@ -173,6 +173,12 @@ Gravity/TimeScale/边界，垂直版二选一、回放中途不许换）：`rigi
 节奏跟 `TimeScale` 走。这是 QY-Demo 缺口第二档里"NPC 自主穿城"的第一块，
 纯 CPU，不需要 GPU。
 
+同日落地**动画状态机**（feature `anim`，`anim::AnimController`）：关节 TRS 轨道的
+循环剪辑采样、Idle/Walk/Run 三态（速度阈值两侧各留迟滞带，带内不切）、切态交叉
+淡入，输出直接是 `update_skeleton` 要的 `[[f32;4];4]` 面板。混合走**矩阵按元素
+线性插值**（大角度旋转会缩水，属已知近似，文档写明）。导航管"往哪走"，动画管
+"走起来什么样"，两者无代码耦合。
+
 ### L7 · oriera-infer — 模型生命周期唯一入口
 
 **厂商零硬编码**的 `ModelProvider` trait + `ProviderConfig/ProviderKind/create_provider`：

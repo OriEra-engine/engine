@@ -38,6 +38,14 @@ pub mod nav;
 #[cfg(feature = "nav")]
 pub use nav::{path_fingerprint, NavAgent, NavAgentSystem, NavError, NavMesh, NavPoly, Neighbor};
 
+#[cfg(feature = "anim")]
+pub mod anim;
+#[cfg(feature = "anim")]
+pub use anim::{
+    blend_matrices, trs_matrix, AnimController, AnimationClip, ClipBank, JointTrack, Keyframe,
+    Locomotion, IDENTITY,
+};
+
 #[cfg(feature = "cam")]
 pub mod camera;
 
