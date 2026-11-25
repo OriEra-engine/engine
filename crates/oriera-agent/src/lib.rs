@@ -73,7 +73,7 @@ pub use bench_account::{run_headless_loop, HeadlessRunAccount, SegmentAccount};
 pub use cognition::{
     CognitionSystem, DialogueLog, DirectorSystem, Mood, Persona, Turn, WakeEvent, WorldStory,
 };
-pub use memory::{Episode, MemoryStore};
+pub use memory::{Episode, MemoryScoring, MemoryStore, RecallTrace, ScoredEpisode};
 pub use prefab::{spawn_prefab, spawn_prefab_at, PrefabEntity, PrefabSpec};
 
 use oriera_infer::Command;

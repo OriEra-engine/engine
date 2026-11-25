@@ -21,6 +21,94 @@ pub struct Episode {
     pub importance: u8,
 }
 
+/// Retrieval scoring coefficients — the ONE formula both tiers blend
+/// around, lifted out of the retrieval code so it can be configured,
+/// ablated and audited instead of living as magic numbers inside
+/// `retrieve` (AI 原生评审 R3：结构—算法分离的病灶不在分层，而在
+/// 算法假设被写死在结构层里——写死的系数既不可消融也不可替换）。
+///
+/// `Default` reproduces the long-standing formula exactly
+/// (`hits×1.6 + importance×0.45 + recency×2.0 + about-bonus`, semantic
+/// term `2.0×cos().max(0)`, `> 0.8` gate), so every existing caller —
+/// including the wasm mirror in `examples/11-ai-cafe/engine/kernel.js`,
+/// which carries the same default — keeps bit-identical results.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MemoryScoring {
+    /// Weight of a keyword bigram/word hit.
+    pub keyword_weight: f32,
+    /// Weight of episode salience (1..=5 importance).
+    pub importance_weight: f32,
+    /// Weight of the recency term (`1/(1+age)`).
+    pub recency_weight: f32,
+    /// Flat bonus when `episode.about == query.about`.
+    pub about_bonus: f32,
+    /// Weight of the non-negative cosine term (embedded tier only;
+    /// the offline tier always feeds 0, keeping its historic score).
+    pub semantic_weight: f32,
+    /// Retrieval gate: scores at or below this are dropped.
+    pub min_score: f32,
+}
+
+impl Default for MemoryScoring {
+    fn default() -> Self {
+        Self {
+            keyword_weight: 1.6,
+            importance_weight: 0.45,
+            recency_weight: 2.0,
+            about_bonus: 1.2,
+            semantic_weight: 2.0,
+            min_score: 0.8,
+        }
+    }
+}
+
+impl MemoryScoring {
+    /// Non-finite coefficients fall back to their default (scoring
+    /// config is caller input, not physical truth — one NaN must not
+    /// poison a whole store's ranking).
+    pub fn sanitized(self) -> Self {
+        let d = Self::default();
+        let f = |v: f32, fallback: f32| if v.is_finite() { v } else { fallback };
+        Self {
+            keyword_weight: f(self.keyword_weight, d.keyword_weight),
+            importance_weight: f(self.importance_weight, d.importance_weight),
+            recency_weight: f(self.recency_weight, d.recency_weight),
+            about_bonus: f(self.about_bonus, d.about_bonus),
+            semantic_weight: f(self.semantic_weight, d.semantic_weight),
+            min_score: f(self.min_score, d.min_score),
+        }
+    }
+}
+
+/// Why one episode ranked where it did — the audit trail behind a
+/// retrieval decision. Every term is the exact value that fed `total`,
+/// so a report or ledger can re-derive the ranking without re-running
+/// the store (L1 台账的最小落点：episode + 分数 + 分项，近零成本)。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecallTrace {
+    /// Bigram/word hits between `query+about` and `text+about`.
+    pub keyword_hits: usize,
+    /// `hits × keyword_weight`.
+    pub keyword_term: f32,
+    /// `importance × importance_weight`.
+    pub importance_term: f32,
+    /// `1/(1+age) × recency_weight`.
+    pub recency_term: f32,
+    /// Flat `about_bonus` when the episode is about the queried entity.
+    pub about_bonus: f32,
+    /// `semantic_weight × cos().max(0)`; always 0 on the offline tier.
+    pub semantic_term: f32,
+    /// Sum of the terms above — the ranked score.
+    pub total: f32,
+}
+
+/// One ranked episode with its trace.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoredEpisode {
+    pub episode: Episode,
+    pub trace: RecallTrace,
+}
+
 /// Per-agent episodic memory with keyword-recency-importance retrieval.
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
@@ -28,6 +116,8 @@ pub struct MemoryStore {
     /// Sliding-window cap per agent; `Default` = 60 (the long-standing
     /// semantic, kept for every existing caller).
     capacity: usize,
+    /// Ranking coefficients; `Default` = the historic formula.
+    scoring: MemoryScoring,
 }
 
 impl Default for MemoryStore {
@@ -35,6 +125,7 @@ impl Default for MemoryStore {
         Self {
             memories: HashMap::new(),
             capacity: 60,
+            scoring: MemoryScoring::default(),
         }
     }
 }
@@ -52,6 +143,56 @@ impl MemoryStore {
         Self {
             capacity: capacity.max(1),
             ..Self::default()
+        }
+    }
+
+    /// Capacity + scoring in one shot (remote/graph backends configure
+    /// both at wiring time).
+    pub fn with_capacity_and_scoring(capacity: usize, scoring: MemoryScoring) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            scoring: scoring.sanitized(),
+            ..Self::default()
+        }
+    }
+
+    /// Swap the ranking coefficients at runtime — the ablation knob for
+    /// "which coefficient actually earns its place". Non-finite values
+    /// are sanitized to defaults.
+    pub fn set_scoring(&mut self, scoring: MemoryScoring) {
+        self.scoring = scoring.sanitized();
+    }
+
+    /// Current ranking coefficients.
+    pub fn scoring(&self) -> MemoryScoring {
+        self.scoring
+    }
+
+    /// Total + per-term breakdown for one episode; `semantic` is the
+    /// non-negative cosine (0 on the offline tier).
+    fn trace(
+        &self,
+        e: &Episode,
+        hits: usize,
+        now: u64,
+        about: &str,
+        semantic: f32,
+    ) -> RecallTrace {
+        let s = self.scoring;
+        let recency = 1.0 / (1.0 + (now.saturating_sub(e.turn)) as f32);
+        let about_bonus = if e.about == about { s.about_bonus } else { 0.0 };
+        let keyword_term = hits as f32 * s.keyword_weight;
+        let importance_term = e.importance as f32 * s.importance_weight;
+        let recency_term = recency * s.recency_weight;
+        let semantic_term = s.semantic_weight * semantic.max(0.0);
+        RecallTrace {
+            keyword_hits: hits,
+            keyword_term,
+            importance_term,
+            recency_term,
+            about_bonus,
+            semantic_term,
+            total: keyword_term + importance_term + recency_term + about_bonus + semantic_term,
         }
     }
 
@@ -76,28 +217,53 @@ impl MemoryStore {
         now: u64,
         k: usize,
     ) -> Vec<Episode> {
+        self.retrieve_traced(agent, about, query, now, k)
+            .into_iter()
+            .map(|s| s.episode)
+            .collect()
+    }
+
+    /// Offline tier with the full scoring breakdown — same ranking as
+    /// [`MemoryStore::retrieve`], but每一条命中都带回分项，供台账与
+    /// 审计使用（评测报告要能复算名次，而不是只信任一个总数）。
+    pub fn retrieve_traced(
+        &self,
+        agent: &str,
+        about: &str,
+        query: &str,
+        now: u64,
+        k: usize,
+    ) -> Vec<ScoredEpisode> {
         let Some(v) = self.memories.get(agent) else {
             return Vec::new();
         };
         let q = bigrams(&format!("{query}{about}"));
-        let mut scored: Vec<(f32, &Episode)> = v
+        let mut scored: Vec<(f32, RecallTrace, &Episode)> = v
             .iter()
             .map(|e| {
                 let text = bigrams(&format!("{}{}", e.text, e.about));
                 let hits = q.iter().filter(|g| text.contains(*g)).count();
-                (offline_score(e, hits, now, about), e)
+                let trace = self.trace(e, hits, now, about, 0.0);
+                (trace.total, trace, e)
             })
-            .filter(|(s, _)| *s > 0.8)
+            .filter(|(s, _, _)| *s > self.scoring.min_score)
             .collect();
         scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-        scored.into_iter().take(k).map(|(_, e)| e.clone()).collect()
+        scored
+            .into_iter()
+            .take(k)
+            .map(|(_, trace, e)| ScoredEpisode {
+                episode: e.clone(),
+                trace,
+            })
+            .collect()
     }
 
     /// Semantic tier of the two-tier retrieval (#101 step two): the
     /// same ranking as [`MemoryStore::retrieve`] plus a cosine term
     /// from `embedder` (one BATCH call for query + episodes — a remote
     /// embedder costs one wire round-trip, not one per episode). Blend:
-    /// `offline + 2.0 × (cos+1)/2`, same `> 0.8` filter. Embedder
+    /// `offline + semantic_weight × cos().max(0)`, same gate. Embedder
     /// failure degrades VISIBLY to the offline tier (same contract as
     /// `retrieve`) — never empty results from a broken seat.
     pub fn retrieve_embedded(
@@ -109,6 +275,23 @@ impl MemoryStore {
         now: u64,
         k: usize,
     ) -> Vec<Episode> {
+        self.retrieve_embedded_traced(embedder, agent, about, query, now, k)
+            .into_iter()
+            .map(|s| s.episode)
+            .collect()
+    }
+
+    /// Embedded tier with the full scoring breakdown (semantic_term is
+    /// the cosine contribution; 0 everywhere on the degraded path).
+    pub fn retrieve_embedded_traced(
+        &self,
+        embedder: &dyn oriera_infer::EmbeddingProvider,
+        agent: &str,
+        about: &str,
+        query: &str,
+        now: u64,
+        k: usize,
+    ) -> Vec<ScoredEpisode> {
         let Some(v) = self.memories.get(agent) else {
             return Vec::new();
         };
@@ -117,26 +300,33 @@ impl MemoryStore {
         inputs.extend(v.iter().map(|e| format!("{}{}", e.text, e.about)));
         let vecs = match embedder.embed(&inputs) {
             Ok(vs) if vs.len() == inputs.len() => vs,
-            _ => return self.retrieve(agent, about, query, now, k),
+            _ => return self.retrieve_traced(agent, about, query, now, k),
         };
         let (q, rows) = vecs.split_first().expect("query vector present");
         let q_bigrams = bigrams(&format!("{query}{about}"));
-        let mut scored: Vec<(f32, &Episode)> = v
+        let mut scored: Vec<(f32, RecallTrace, &Episode)> = v
             .iter()
             .zip(rows)
             .map(|(e, emb)| {
                 let text = bigrams(&format!("{}{}", e.text, e.about));
                 let hits = q_bigrams.iter().filter(|g| text.contains(*g)).count();
-                let offline = offline_score(e, hits, now, about);
                 // 语义项无 +1 基线（AI 原生三轮评审 P1）：曾用 2×(cos+1)/2
                 // 使无关文本也白得 ~1.0 分，0.8 过滤被整体中和、陈旧条目
                 // 全放行——负/零相关不得白得分。
-                (offline + 2.0 * cosine(q, emb).max(0.0), e)
+                let trace = self.trace(e, hits, now, about, cosine(q, emb));
+                (trace.total, trace, e)
             })
-            .filter(|(s, _)| *s > 0.8)
+            .filter(|(s, _, _)| *s > self.scoring.min_score)
             .collect();
         scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-        scored.into_iter().take(k).map(|(_, e)| e.clone()).collect()
+        scored
+            .into_iter()
+            .take(k)
+            .map(|(_, trace, e)| ScoredEpisode {
+                episode: e.clone(),
+                trace,
+            })
+            .collect()
     }
 
     /// Total episodes across agents (metrics).
@@ -245,23 +435,6 @@ impl MemoryStore {
         }
         Ok(store)
     }
-}
-
-/// CJK bigrams + latin words — the cheap deterministic tokenizer the
-/// wasm kernel mirrors (`zhBigrams`).
-///
-/// #101a 双端对齐（评审 R3 QA P1）：kernel 的词表是 **Set（去重）** 且
-/// latin 走 `[a-z]{3,}` **整词**——Rust 原实现不去重（重复 gram 虚增
-/// hits）且把 latin 拆成字符对（整词检索失效）。本函数与 kernel
-/// zhBigrams 逐语义对齐：CJK 连续段成二元组、latin 连续字母 ≥3 成
-/// 整词、全表去重保首现序。
-/// Shared offline ranking term (hits already counted by the caller):
-/// `hits×1.6 + importance×0.45 + recency×2 + about-bonus` — the ONE
-/// formula both retrieval tiers blend around.
-fn offline_score(e: &Episode, hits: usize, now: u64, about: &str) -> f32 {
-    let recency = 1.0 / (1.0 + (now.saturating_sub(e.turn)) as f32);
-    let about_bonus = if e.about == about { 1.2 } else { 0.0 };
-    hits as f32 * 1.6 + e.importance as f32 * 0.45 + recency * 2.0 + about_bonus
 }
 
 /// Cosine similarity; mismatched lengths or zero vectors score 0 (an
@@ -511,6 +684,126 @@ mod tests {
         let offline = m.retrieve("a", "w", "咖啡凉了", 10, 5);
         let degraded = m.retrieve_embedded(&Down, "a", "w", "咖啡凉了", 10, 5);
         assert_eq!(offline, degraded);
+    }
+
+    // ---- 记忆打分可配置：结构—算法分离的技术落点 ----
+    //
+    // 病灶：系数写死在 `retrieve` 里，既不可消融也不可替换。系数搬进
+    // `MemoryScoring` 之后，下面三条测试就是这套搬动的验收：
+    // 默认逐位等于历史公式 / 分项可复算总分 / 单变量置零是消融而非重写。
+
+    #[test]
+    fn scoring_default_reproduces_the_historic_formula() {
+        let s = MemoryScoring::default();
+        assert_eq!(s.keyword_weight, 1.6);
+        assert_eq!(s.importance_weight, 0.45);
+        assert_eq!(s.recency_weight, 2.0);
+        assert_eq!(s.about_bonus, 1.2);
+        assert_eq!(s.semantic_weight, 2.0);
+        assert_eq!(s.min_score, 0.8);
+        // Default store carries it — no caller has to know the numbers.
+        assert_eq!(MemoryStore::new().scoring(), s);
+        assert_eq!(MemoryStore::with_capacity(200).scoring(), s);
+    }
+
+    #[test]
+    fn traced_terms_reconstruct_the_ranked_score() {
+        let mut m = MemoryStore::new();
+        m.record("a", ep(1, "老周", "老周记得每个人的口味", 3));
+        m.record("a", ep(2, "world", "雨季来了", 2));
+        let scored = m.retrieve_traced("a", "老周", "口味", 10, 5);
+        assert!(!scored.is_empty());
+        for s in &scored {
+            let t = s.trace;
+            let sum = t.keyword_term
+                + t.importance_term
+                + t.recency_term
+                + t.about_bonus
+                + t.semantic_term;
+            assert!(
+                (sum - t.total).abs() < 1e-5,
+                "分项必须复算出总分（审计要能复算名次）"
+            );
+            assert_eq!(t.semantic_term, 0.0, "offline tier carries no cosine");
+            assert!(t.total > MemoryScoring::default().min_score);
+        }
+        // Plain tier = traced tier minus the trace (no drift between them).
+        let plain = m.retrieve("a", "老周", "口味", 10, 5);
+        let traced: Vec<Episode> = scored.into_iter().map(|s| s.episode).collect();
+        assert_eq!(plain, traced);
+    }
+
+    #[test]
+    fn zeroing_one_coefficient_is_an_ablation_not_a_rewrite() {
+        let mut m = MemoryStore::new();
+        // Old but lexically dense, vs recent but lexically empty.
+        m.record("a", ep(1, "world", "咖啡 咖啡豆 咖啡机", 1));
+        m.record("a", ep(9, "world", "今天下雨了", 1));
+
+        let baseline = m.retrieve("a", "world", "咖啡", 10, 5);
+        assert!(baseline[0].text.contains("咖啡"), "keyword term dominates");
+
+        // Single-coefficient ablation: turn the lexical term off.
+        m.set_scoring(MemoryScoring {
+            keyword_weight: 0.0,
+            ..MemoryScoring::default()
+        });
+        let ablated = m.retrieve("a", "world", "咖啡", 10, 5);
+        assert!(
+            ablated[0].text.contains("下雨"),
+            "keyword off → recency decides (系数确实在起作用)"
+        );
+        let t = m.retrieve_traced("a", "world", "咖啡", 10, 5);
+        assert!(
+            t.iter().all(|s| s.trace.keyword_term == 0.0),
+            "置零后关键词项必须恒等于 0，不能残留隐性权重"
+        );
+
+        // Restoring the default restores the historic ranking exactly.
+        m.set_scoring(MemoryScoring::default());
+        assert_eq!(m.retrieve("a", "world", "咖啡", 10, 5), baseline);
+    }
+
+    #[test]
+    fn non_finite_and_custom_gates_are_sanitized_not_poisoning() {
+        let dirty = MemoryScoring {
+            keyword_weight: f32::NAN,
+            min_score: f32::INFINITY,
+            ..MemoryScoring::default()
+        };
+        let clean = dirty.sanitized();
+        assert_eq!(clean.keyword_weight, 1.6);
+        assert_eq!(clean.min_score, 0.8);
+
+        // A raised gate is honored (empty result, not a panic).
+        let mut m = MemoryStore::new();
+        m.record("a", ep(1, "world", "咖啡凉了", 1));
+        m.set_scoring(MemoryScoring {
+            min_score: 100.0,
+            ..MemoryScoring::default()
+        });
+        assert!(m.retrieve("a", "world", "咖啡", 1, 5).is_empty());
+    }
+
+    /// 语义项置零 = 严格退回离线档（同一排序、同一集合）——这是把
+    /// `semantic_weight` 作为可消融旋钮的直接证据。
+    #[test]
+    fn zero_semantic_weight_equals_the_offline_tier() {
+        let mut m = MemoryStore::new();
+        m.record("a", ep(1, "world", "咖啡豆是埃塞的果酸", 3));
+        m.record("a", ep(2, "world", "外面下大雨了", 3));
+        m.set_scoring(MemoryScoring {
+            semantic_weight: 0.0,
+            ..MemoryScoring::default()
+        });
+        let emb = oriera_infer::HashEmbeddingProvider::new(64);
+        for q in ["咖啡", "下雨"] {
+            assert_eq!(
+                m.retrieve_embedded(&emb, "a", "world", q, 10, 2),
+                m.retrieve("a", "world", q, 10, 2),
+                "semantic off must be byte-identical to the offline tier"
+            );
+        }
     }
 }
 
