@@ -44,7 +44,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use oriera_render::camera::Camera;
-use oriera_render::gpu::{DrawList, HeadlessRenderer, RenderedImage, ScenePart};
+use oriera_render::gpu::{DrawList, HeadlessRenderer, ReadTicket, RenderedImage, ScenePart};
 
 const FRAME_BUDGET_US: f64 = 16_667.0;
 /// 两档分辨率的宽高比相同（约 16:9），网格按它铺满。
@@ -63,13 +63,16 @@ enum Axis {
     Persist,
     /// 持久路径，只提交不回读。
     PersistSubmit,
+    /// 提交 + 异步回读,两帧在途流水。
+    PersistAsync,
 }
 
-const AXES: [(&str, Axis, &[usize]); 4] = [
+const AXES: [(&str, Axis, &[usize]); 5] = [
     ("draw", Axis::Draw, &[1, 64, 512, 2048]),
     ("fill", Axis::Fill, &[4, 16, 64]),
     ("persist", Axis::Persist, &[1, 64, 512, 2048]),
     ("psubmit", Axis::PersistSubmit, &[1, 64, 512, 2048]),
+    ("pasync", Axis::PersistAsync, &[1, 64, 512, 2048]),
 ];
 
 struct Mesh {
@@ -243,6 +246,33 @@ fn persist_us(
     t.elapsed().as_secs_f64() * 1e6
 }
 
+/// 异步回读的流水帧(吞吐口径,不是单帧延迟):两帧在途——第 i 帧提交并登记
+/// 回读后,先去取两帧之前那张回执,再提交下一帧。8 帧一批,返回均摊到每帧的 µs。
+/// GPU 在画第 N 帧时 CPU 已经在提交第 N+1 帧,这是同步回读做不到的。
+fn pipelined_us(
+    r: &HeadlessRenderer,
+    list: &DrawList<'_>,
+    cam: &Camera,
+    target: &oriera_render::gpu::RenderTarget,
+) -> f64 {
+    const DEPTH: usize = 2;
+    const FRAMES: usize = 8;
+    let mut slots: Vec<Option<ReadTicket>> = (0..DEPTH).map(|_| None).collect();
+    let t = std::time::Instant::now();
+    for i in 0..FRAMES + DEPTH {
+        if i >= DEPTH {
+            let ticket = slots[i % DEPTH].take().expect("a ticket must be in flight");
+            black_box(r.wait_read(ticket).expect("wait_read").bgra);
+        }
+        if i < FRAMES {
+            r.render_draw_list(list, cam, target)
+                .expect("persist render must succeed");
+            slots[i % DEPTH] = Some(r.read_target_async(target).expect("async readback"));
+        }
+    }
+    t.elapsed().as_secs_f64() * 1e6 / FRAMES as f64
+}
+
 /// 持久路径的场景：单位方块只上传一次，位置与大小走模型矩阵。
 /// 布局与 `scene(n, true, ..)` 逐格相同，所以覆盖率可比。注意 z **不缩放**——
 /// 快照路径只缩放 x、y（方块深度保持 ±1），这里必须一致，否则正面离镜头更近、
@@ -332,16 +362,18 @@ fn measure(
                 .collect());
             (m, coverage(r, meshes, n, spread, cam))
         }
-        Axis::Persist | Axis::PersistSubmit => {
+        Axis::Persist | Axis::PersistSubmit | Axis::PersistAsync => {
             let target = r.create_target(cam.width, cam.height).expect("target");
-            let readback = matches!(axis, Axis::Persist);
             with_persist(r, n, |list| {
+                let one = || match axis {
+                    Axis::Persist => persist_us(r, list, cam, &target, true),
+                    Axis::PersistSubmit => persist_us(r, list, cam, &target, false),
+                    _ => pipelined_us(r, list, cam, &target),
+                };
                 for _ in 0..5 {
-                    persist_us(r, list, cam, &target, readback);
+                    one();
                 }
-                let m = med((0..25)
-                    .map(|_| persist_us(r, list, cam, &target, readback))
-                    .collect());
+                let m = med((0..25).map(|_| one()).collect());
                 r.render_draw_list(list, cam, &target)
                     .expect("persist render must succeed");
                 (
@@ -406,13 +438,20 @@ fn bench_gpu_frame(c: &mut Criterion) {
                             b.iter(|| black_box(frame_us(&renderer, &mut meshes, n, spread, &cam)))
                         });
                     }
-                    Axis::Persist | Axis::PersistSubmit => {
+                    Axis::Persist | Axis::PersistSubmit | Axis::PersistAsync => {
                         let target = renderer.create_target(w, h).expect("target");
-                        let readback = matches!(axis, Axis::Persist);
                         with_persist(&renderer, n, |list| {
                             g.bench_with_input(id, &n, |b, _| {
                                 b.iter(|| {
-                                    black_box(persist_us(&renderer, list, &cam, &target, readback))
+                                    black_box(match axis {
+                                        Axis::Persist => {
+                                            persist_us(&renderer, list, &cam, &target, true)
+                                        }
+                                        Axis::PersistSubmit => {
+                                            persist_us(&renderer, list, &cam, &target, false)
+                                        }
+                                        _ => pipelined_us(&renderer, list, &cam, &target),
+                                    })
                                 })
                             });
                         });
@@ -466,7 +505,10 @@ fn breakdown(r: &HeadlessRenderer) {
     }
     println!(
         "\npersist = render_draw_list + 显式回读，与 draw 同口径（都等到 GPU 出像素）；\n\
-         psubmit = 只提交不回读，GPU 侧尚未完成，不含光栅化时间。"
+         psubmit = 只提交不回读，GPU 侧尚未完成，不含光栅化时间；\n\
+         pasync  = 提交 + 异步回读，两帧在途流水、8 帧均摊。与 persist 同为\n\
+                   “产出一帧带像素的画面要多久”，差值就是流水的吞吐差；代价是结果晚\n\
+                   两帧到手。"
     );
     // 设备类型取自适配器信息；软件光栅化的读数不能当 GPU 帧时间对外引用。
     if adapter_label().contains("/ Cpu /") {

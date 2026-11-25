@@ -22,8 +22,9 @@ use super::{
     mvp_col_major, Camera, GpuError, GpuTexture, HeadlessRenderer, RenderedImage, CLEAR,
     SCENE_LIGHT_DIR,
 };
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use wgpu::util::DeviceExt;
 
 /// 实例缓冲的初始容量(实例数)。超出时调 `reserve_instances` 显式扩容。
@@ -155,6 +156,8 @@ pub(crate) struct PersistState {
     created_buffers: AtomicU32,
     created_bind_groups: AtomicU32,
     created_textures: AtomicU32,
+    /// 异步回读的簿记:在途、待取与空闲缓冲。
+    reads: Mutex<ReadState>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -406,6 +409,7 @@ impl PersistState {
             created_buffers: AtomicU32::new(0),
             created_bind_groups: AtomicU32::new(0),
             created_textures: AtomicU32::new(0),
+            reads: Mutex::new(ReadState::default()),
         }
     }
 }
@@ -789,5 +793,278 @@ impl HeadlessRenderer {
                 label: Some("oriera-persist-readback"),
             });
         self.readback_pixels(encoder, &target.color, target.width, target.height)
+    }
+}
+
+/// 异步回读(RFC 0004 步 1b):提交后不等 GPU,拿到回执再来取。
+///
+/// 同步的 `read_target` 每次都要停下来等像素,帧循环里 CPU 与 GPU 轮空:CPU
+/// 等 GPU 画完,GPU 再等 CPU 提交下一帧。这里把"要像素"拆成三步:
+///
+/// 1. `read_target_async`:把目标当前内容拷进回读缓冲并开始映射,立即返回
+///    [`ReadTicket`];
+/// 2. 中间随便做什么——提交后面几帧也行;
+/// 3. `poll_read`(不阻塞)或 `wait_read`(等到好)取像素。
+///
+/// 两条硬约束,都是为了不无限占内存:
+///
+/// - 同一时刻最多 [`MAX_READS_IN_FLIGHT`] 张回读在 GPU 侧在途。满了的话,
+///   `read_target_async` 会等到最旧的完成再往下走(背压),而不是悄悄排队。
+/// - 已完成但没人取走的像素同样最多留这么多张,再多丢最旧的。所以一张回执
+///   如果在之后又发起了 `MAX_READS_IN_FLIGHT` 次请求之前没被取走,它就作废了,
+///   取的时候报错,不会给错图。
+///
+/// 回读缓冲进池子复用,稳态下不新建;池子涨出来的那几次创建会出现在之后那帧的
+/// [`FrameStats::created_buffers`] 里(同步 `read_target` 是一次性的,照旧不计)。
+impl HeadlessRenderer {
+    /// 请求把渲染目标的当前内容读回来。本方法把拷贝命令排进队列后立即返回,
+    /// **不等待 GPU**。画面取的是提交时刻之前所有已提交帧画完后的结果。
+    pub fn read_target_async(&self, target: &RenderTarget) -> Result<ReadTicket, GpuError> {
+        // 回读缓冲要求每行 256 字节对齐。
+        let row = padded_row_bytes(target.width);
+        let data_bytes = row * u64::from(target.height);
+
+        // 腾在途名额:满了就等到至少一张完成。
+        {
+            let mut st = lock(&self.persist.reads);
+            while st.pending.len() >= MAX_READS_IN_FLIGHT {
+                self.harvest_reads(&mut st, true);
+            }
+            let seq = st.next_seq + 1;
+            st.next_seq = seq;
+        }
+
+        // 取一块够大的空闲缓冲;都没有才新建。
+        let buffer = {
+            let mut st = lock(&self.persist.reads);
+            match st.idle.iter().position(|&(_, cap)| cap >= data_bytes) {
+                Some(i) => st.idle.swap_remove(i).0,
+                None => {
+                    // 比现在需要的还小的缓冲以后也用不上,不留。
+                    st.idle.retain(|&(_, cap)| cap >= data_bytes);
+                    let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("oriera-persist-readback"),
+                        size: data_bytes,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    });
+                    self.count_new_buffer();
+                    buffer
+                }
+            }
+        };
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("oriera-persist-readback-async"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.color,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row as u32),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: target.width,
+                height: target.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        // 只提交不轮询:拷贝排在本帧绘制之后,由 GPU 按序执行。
+        self.queue.submit(Some(encoder.finish()));
+
+        let done = Arc::new(Mutex::new(None));
+        buffer.slice(..data_bytes).map_async(wgpu::MapMode::Read, {
+            let done = Arc::clone(&done);
+            move |result| *lock(&done) = Some(result)
+        });
+
+        let ticket = {
+            let mut st = lock(&self.persist.reads);
+            let ticket = ReadTicket { seq: st.next_seq };
+            st.pending.push_back(PendingRead {
+                seq: ticket.seq,
+                capacity: buffer.size(),
+                buffer,
+                width: target.width,
+                height: target.height,
+                row,
+                data_bytes,
+                done,
+            });
+            ticket
+        };
+        Ok(ticket)
+    }
+
+    /// 问一次"好了没",不阻塞。`Ok(None)` 是还没好;回执作废或从未签发过则报错。
+    pub fn poll_read(&self, ticket: ReadTicket) -> Result<Option<RenderedImage>, GpuError> {
+        let mut st = lock(&self.persist.reads);
+        self.harvest_reads(&mut st, false);
+        st.take(ticket.seq)
+    }
+
+    /// 等到这张回执就绪并取走像素。设备挂了或回执作废则报错。
+    pub fn wait_read(&self, ticket: ReadTicket) -> Result<RenderedImage, GpuError> {
+        let mut st = lock(&self.persist.reads);
+        loop {
+            self.harvest_reads(&mut st, true);
+            match st.take(ticket.seq) {
+                Ok(Some(img)) => return Ok(img),
+                Ok(None) => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// 还在 GPU 侧没完成的异步回读张数(不含已完成待取的)。
+    pub fn reads_in_flight(&self) -> usize {
+        lock(&self.persist.reads).pending.len()
+    }
+
+    /// 推进设备并把已完成的在途回读搬到待取队列。`wait=true` 时至少推进到
+    /// 有一张完成为止(没有在途的则立即返回);否则只问一次,绝不阻塞。
+    /// 持锁调用是安全的:映射回调只写各自的 `done` 标记,不碰这本簿记。
+    fn harvest_reads(&self, st: &mut ReadState, wait: bool) {
+        loop {
+            let _ = self.device.poll(if wait {
+                wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                }
+            } else {
+                wgpu::PollType::Poll
+            });
+            let before = st.pending.len();
+            let items = std::mem::take(&mut st.pending);
+            for item in items {
+                if item.is_done() {
+                    self.finish_read(st, item);
+                } else {
+                    st.pending.push_back(item);
+                }
+            }
+            if !wait || st.pending.len() < before || st.pending.is_empty() {
+                return;
+            }
+        }
+    }
+
+    /// 一张在途回读完成后:去填充拷出像素,缓冲还池,结果进待取队列。
+    fn finish_read(&self, st: &mut ReadState, item: PendingRead) {
+        let result = match &*lock(&item.done) {
+            Some(Ok(())) => {
+                let slice = item.buffer.slice(..item.data_bytes);
+                match slice.get_mapped_range() {
+                    Ok(data) => {
+                        let stride = (item.width as usize) * 4;
+                        let row = item.row as usize;
+                        let mut bgra = Vec::with_capacity(stride * item.height as usize);
+                        for y in 0..item.height as usize {
+                            let start = y * row;
+                            bgra.extend_from_slice(&data[start..start + stride]);
+                        }
+                        drop(data);
+                        item.buffer.unmap();
+                        Ok(RenderedImage {
+                            width: item.width,
+                            height: item.height,
+                            bgra,
+                        })
+                    }
+                    Err(e) => Err(GpuError::Map(format!("{e}"))),
+                }
+            }
+            Some(Err(e)) => Err(GpuError::Map(format!("{e}"))),
+            None => Err(GpuError::Map("readback finished without a result".into())),
+        };
+        // 映射失败或没拿到映射范围的缓冲不回收:状态不明,直接丢掉。
+        if result.is_ok() {
+            st.idle.push((item.buffer, item.capacity));
+        }
+        st.ready.push_back((item.seq, result));
+        while st.ready.len() > MAX_READS_IN_FLIGHT {
+            st.ready.pop_front();
+        }
+    }
+}
+
+/// 同一时刻最多在途的异步回读张数,也是待取像素的上限。
+pub const MAX_READS_IN_FLIGHT: usize = 4;
+
+/// 一次异步回读的回执。按签发顺序编号,只在本渲染器内有效。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadTicket {
+    seq: u64,
+}
+
+/// 回读缓冲每行的字节数(256 对齐)。
+fn padded_row_bytes(width: u32) -> u64 {
+    (u64::from(width) * 4).div_ceil(256) * 256
+}
+
+/// 还在 GPU 侧的一张回读。
+struct PendingRead {
+    seq: u64,
+    buffer: wgpu::Buffer,
+    /// 缓冲的完整容量,还池时按它登记。
+    capacity: u64,
+    width: u32,
+    height: u32,
+    /// 对齐后的行宽。
+    row: u64,
+    /// 实际用到的字节数。
+    data_bytes: u64,
+    /// 映射回调的结果;`None` 表示还没完成。
+    done: Arc<Mutex<Option<Result<(), wgpu::BufferAsyncError>>>>,
+}
+
+impl PendingRead {
+    fn is_done(&self) -> bool {
+        lock(&self.done).is_some()
+    }
+}
+
+/// 异步回读的簿记。
+#[derive(Default)]
+struct ReadState {
+    /// 最近一张回执的编号,从 1 起。
+    next_seq: u64,
+    /// 已提交、GPU 侧尚未完成的回读,按提交顺序。
+    pending: VecDeque<PendingRead>,
+    /// 已完成、尚未被取走的像素,按回执顺序。
+    ready: VecDeque<(u64, Result<RenderedImage, GpuError>)>,
+    /// 空闲回读缓冲(缓冲, 容量字节)。
+    idle: Vec<(wgpu::Buffer, u64)>,
+}
+
+impl ReadState {
+    /// 取走一张回执的结果。还没好返回 `Ok(None)`;不在途也不在待取队列里
+    /// (作废、已取走或从未签发)返回 `Err`。
+    fn take(&mut self, seq: u64) -> Result<Option<RenderedImage>, GpuError> {
+        if let Some(i) = self.ready.iter().position(|&(s, _)| s == seq) {
+            return self
+                .ready
+                .remove(i)
+                .expect("position just found")
+                .1
+                .map(Some);
+        }
+        if self.pending.iter().any(|p| p.seq == seq) {
+            return Ok(None);
+        }
+        Err(GpuError::Device(format!(
+            "read ticket {seq} is unknown, already taken or was dropped"
+        )))
     }
 }

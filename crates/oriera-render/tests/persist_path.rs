@@ -1,4 +1,4 @@
-//! 持久渲染路径(RFC 0004 步 1a)的行为测试:断言 A1–A5。
+//! 持久渲染路径(RFC 0004 步 1a / 1b)的行为测试:断言 A1–A5 与异步回读 B1–B5。
 //!
 //! 需要本机有可用的 wgpu 适配器,按仓库惯例默认忽略。本地运行:
 //!
@@ -11,7 +11,7 @@
 use oriera_render::camera::Camera;
 use oriera_render::gpu::{
     DrawList, FrameStats, GpuMaterial, GpuMesh, HeadlessRenderer, RenderTarget, RenderedImage,
-    ScenePart, DEFAULT_INSTANCE_CAPACITY,
+    ScenePart, DEFAULT_INSTANCE_CAPACITY, MAX_READS_IN_FLIGHT,
 };
 
 /// 画面清屏色的 BGRA 取整值(CLEAR = 0.05 / 0.08 / 0.13)。
@@ -570,4 +570,263 @@ fn resize_rebuilds_only_when_size_changes() {
     assert_eq!((img.width, img.height), (sw, sh));
     assert!(lit_pixels(&img) > 0);
     assert!(r.resize_target(&mut target, 0, sh).is_err());
+}
+
+// ─── 步 1b:异步回读 ───────────────────────────────────────────────────────────
+//
+// B1 逐帧与同步回读像素一致(含多帧在途,验证缓冲复用不会串帧)
+// B2 `poll_read` 不阻塞地问、重复取或作废的回执报错而不是给错图
+// B3 回读缓冲进池复用:稳态零新建,池子按在途深度增长
+// B4 在途超过上限时背压;没人取的旧结果按序作废,取到的仍是各自那一帧
+// B5 回执记着自己提交时的尺寸,目标改尺寸不影响在途的那张
+
+/// 第 k 帧:把方块摆在随 k 变化的位置上,保证相邻帧画面不同。
+fn moving_frame(
+    r: &HeadlessRenderer,
+    mesh: &GpuMesh,
+    mat: &GpuMaterial,
+    cam: &Camera,
+    target: &RenderTarget,
+    k: usize,
+) -> FrameStats {
+    let mut list = DrawList::new();
+    list.push(mesh, mat, translate(-24.0 + 8.0 * k as f32, 0.0, 0.0));
+    frame(r, &list, cam, target)
+}
+
+fn camera_at(w: u32, h: u32) -> Camera {
+    Camera::look_at(
+        [0.0, 0.0, 90.0],
+        [0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        60.0,
+        w,
+        h,
+        0.1,
+        500.0,
+    )
+}
+
+/// B1:同一串帧,异步取回的像素必须与"渲染后立刻同步回读"逐字节相同。
+/// 两种取法都测:提交后立刻等(深度 1),以及四帧都提交了再逐张取(深度 4,
+/// 走的是不同的回读缓冲)。参照帧之间必须互不相同,否则这个断言是空的。
+#[test]
+#[ignore = "requires a local GPU adapter (none in CI)"]
+fn async_readback_matches_sync_frame_by_frame() {
+    let r = renderer();
+    let cam = camera();
+    let target = r.create_target(W, H).expect("target");
+    let mesh = upload(&r, &cube(6.0));
+    let mat = material(&r, [0.8, 0.3, 0.2, 1.0]);
+    let frames = 12;
+
+    let reference: Vec<RenderedImage> = (0..frames)
+        .map(|k| {
+            moving_frame(&r, &mesh, &mat, &cam, &target, k);
+            r.read_target(&target).expect("sync readback")
+        })
+        .collect();
+    for pair in reference.windows(2) {
+        assert_ne!(pair[0].bgra, pair[1].bgra, "reference frames must differ");
+    }
+
+    // 深度 1:提交后立刻等。
+    for (k, want) in reference.iter().enumerate() {
+        moving_frame(&r, &mesh, &mat, &cam, &target, k);
+        let ticket = r.read_target_async(&target).expect("async readback");
+        let got = r.wait_read(ticket).expect("wait_read");
+        assert_eq!(got.bgra, want.bgra, "depth-1 frame {k}");
+    }
+    assert_eq!(r.reads_in_flight(), 0);
+
+    // 深度 4:一批四帧全部提交后再取。
+    for (batch, want) in reference.chunks(MAX_READS_IN_FLIGHT).enumerate() {
+        let mut tickets = Vec::new();
+        for (j, _) in want.iter().enumerate() {
+            let k = batch * MAX_READS_IN_FLIGHT + j;
+            moving_frame(&r, &mesh, &mat, &cam, &target, k);
+            tickets.push(r.read_target_async(&target).expect("async readback"));
+        }
+        for (j, ticket) in tickets.iter().enumerate() {
+            let got = r.wait_read(*ticket).expect("wait_read");
+            assert_eq!(got.bgra, want[j].bgra, "depth-4 batch {batch} frame {j}");
+        }
+    }
+}
+
+/// B2:`poll_read` 没好时返回 `Ok(None)`,好了给出与同步回读相同的像素;
+/// 一张回执只能取一次,再取报错——而不是把缓冲里后来的内容当成它。
+#[test]
+#[ignore = "requires a local GPU adapter (none in CI)"]
+fn poll_read_reports_pending_then_delivers_once() {
+    let r = renderer();
+    let cam = camera();
+    let target = r.create_target(W, H).expect("target");
+    let mesh = upload(&r, &cube(6.0));
+    let mat = material(&r, [0.8, 0.3, 0.2, 1.0]);
+
+    moving_frame(&r, &mesh, &mat, &cam, &target, 0);
+    let want = r.read_target(&target).expect("sync readback");
+    moving_frame(&r, &mesh, &mat, &cam, &target, 0);
+    let ticket = r.read_target_async(&target).expect("async readback");
+
+    let mut polls = 0usize;
+    let got = loop {
+        match r.poll_read(ticket).expect("ticket is in flight") {
+            Some(img) => break img,
+            None => {
+                polls += 1;
+                // 软件光栅化下一帧是毫秒级;真卡更快。上限只是防止测试挂死。
+                assert!(polls < 2_000_000, "poll_read never became ready");
+            }
+        }
+    };
+    assert_eq!(got.bgra, want.bgra);
+    assert!(got.width == W && got.height == H);
+    assert!(
+        r.poll_read(ticket).is_err(),
+        "a ticket must not deliver twice"
+    );
+    assert!(r.wait_read(ticket).is_err());
+}
+
+/// B3:回读缓冲是持久资源。一张一张取只需要 1 块缓冲;四帧在途时池子长到
+/// 4 块;之后无论取多少次都不再新建——由 `FrameStats::created_buffers` 自证。
+#[test]
+#[ignore = "requires a local GPU adapter (none in CI)"]
+fn async_readback_reuses_buffers_in_steady_state() {
+    let r = renderer();
+    let cam = camera();
+    let target = r.create_target(W, H).expect("target");
+    let mesh = upload(&r, &cube(6.0));
+    let mat = material(&r, [0.8, 0.3, 0.2, 1.0]);
+    // 创建发生在 `read_target_async` 里,所以会记在**下一帧**的统计上;
+    // 每轮末尾多渲一帧把最后一次创建也收进来。开始前先渲一帧:上传网格与
+    // 建材质那 3 块缓冲不是本测试要数的东西,不能混进第一帧。
+    let mut k = 0usize;
+    let tick = |r: &HeadlessRenderer, k: usize| -> FrameStats {
+        moving_frame(r, &mesh, &mat, &cam, &target, k)
+    };
+    tick(&r, k);
+    let mut created = 0u32;
+
+    for _ in 0..8 {
+        created += tick(&r, k).created_buffers;
+        k += 1;
+        let t = r.read_target_async(&target).expect("async readback");
+        r.wait_read(t).expect("wait_read");
+    }
+    created += tick(&r, k).created_buffers;
+    assert_eq!(
+        created, 1,
+        "collecting one at a time needs exactly one readback buffer"
+    );
+
+    created = 0;
+    for _ in 0..6 {
+        let mut tickets = Vec::new();
+        for _ in 0..MAX_READS_IN_FLIGHT {
+            created += tick(&r, k).created_buffers;
+            k += 1;
+            tickets.push(r.read_target_async(&target).expect("async readback"));
+        }
+        for t in tickets {
+            r.wait_read(t).expect("wait_read");
+        }
+    }
+    created += tick(&r, k).created_buffers;
+    assert_eq!(
+        created,
+        (MAX_READS_IN_FLIGHT - 1) as u32,
+        "pool grows from one buffer to the in-flight depth"
+    );
+    assert_eq!(r.reads_in_flight(), 0);
+}
+
+/// B4:不取结果、连续发起远超上限的回读。在途张数始终不超上限(满了就等);
+/// 取的时候,作废的一定是最旧的那些(前缀),没作废的像素仍与各自那一帧一致。
+#[test]
+#[ignore = "requires a local GPU adapter (none in CI)"]
+fn async_readback_applies_backpressure_and_drops_oldest() {
+    let r = renderer();
+    let cam = camera();
+    let target = r.create_target(W, H).expect("target");
+    let mesh = upload(&r, &cube(6.0));
+    let mat = material(&r, [0.8, 0.3, 0.2, 1.0]);
+    let total = 3 * MAX_READS_IN_FLIGHT;
+
+    let reference: Vec<RenderedImage> = (0..total)
+        .map(|k| {
+            moving_frame(&r, &mesh, &mat, &cam, &target, k);
+            r.read_target(&target).expect("sync readback")
+        })
+        .collect();
+
+    let mut tickets = Vec::new();
+    for k in 0..total {
+        moving_frame(&r, &mesh, &mat, &cam, &target, k);
+        tickets.push(r.read_target_async(&target).expect("async readback"));
+        assert!(
+            r.reads_in_flight() <= MAX_READS_IN_FLIGHT,
+            "more reads in flight than allowed at request {k}"
+        );
+    }
+
+    let mut seen_kept = false;
+    let (mut kept, mut dropped) = (0usize, 0usize);
+    for (k, ticket) in tickets.iter().enumerate() {
+        match r.wait_read(*ticket) {
+            Ok(img) => {
+                seen_kept = true;
+                assert_eq!(img.bgra, reference[k].bgra, "frame {k}");
+                kept += 1;
+            }
+            Err(_) => {
+                // 作废的只能是最旧的那一段:出现过保留的之后,不许再作废。
+                assert!(
+                    !seen_kept,
+                    "ticket {k} was dropped although an older one was kept"
+                );
+                dropped += 1;
+            }
+        }
+    }
+    // 在途加上待取最多各留一组,所以 12 张里至少作废 4 张、至少留下 1 张。
+    assert!(
+        dropped >= total - 2 * MAX_READS_IN_FLIGHT,
+        "dropped {dropped}"
+    );
+    assert!((1..=2 * MAX_READS_IN_FLIGHT).contains(&kept), "kept {kept}");
+    assert_eq!(r.reads_in_flight(), 0);
+}
+
+/// B5:回执记的是提交那一刻的尺寸。之后目标改了尺寸,在途的那张读出来仍是
+/// 旧尺寸、旧画面;新尺寸的回读正常。
+#[test]
+#[ignore = "requires a local GPU adapter (none in CI)"]
+fn async_readback_keeps_its_size_across_resize() {
+    let r = renderer();
+    let cam = camera();
+    let mut target = r.create_target(W, H).expect("target");
+    let mesh = upload(&r, &cube(6.0));
+    let mat = material(&r, [0.8, 0.3, 0.2, 1.0]);
+
+    moving_frame(&r, &mesh, &mat, &cam, &target, 0);
+    let want = r.read_target(&target).expect("sync readback");
+    moving_frame(&r, &mesh, &mat, &cam, &target, 0);
+    let ticket = r.read_target_async(&target).expect("async readback");
+
+    let (w2, h2) = (W + 96, H + 48);
+    r.resize_target(&mut target, w2, h2).expect("resize");
+    let got = r.wait_read(ticket).expect("wait_read");
+    assert_eq!((got.width, got.height), (W, H));
+    assert_eq!(got.bgra, want.bgra);
+
+    let cam2 = camera_at(w2, h2);
+    moving_frame(&r, &mesh, &mat, &cam2, &target, 1);
+    let got = r
+        .wait_read(r.read_target_async(&target).expect("async readback"))
+        .expect("wait_read");
+    assert_eq!((got.width, got.height), (w2, h2));
+    assert!(lit_pixels(&got) > 0);
 }
