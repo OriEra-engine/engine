@@ -18,6 +18,7 @@ pub mod health;
 pub mod http;
 pub mod jobs;
 pub mod provider;
+pub mod registry;
 pub mod router;
 
 pub use health::{BreakerState, FallbackProvider, ProviderHealth};
@@ -31,6 +32,7 @@ pub use provider::{
     ProviderPreset, ReasoningEffort, Role, RuleProvider, StreamedOutcome, ToolCall, ToolDef,
     ToolOutcome, PROVIDER_PRESETS,
 };
+pub use registry::ProviderRegistry;
 pub use router::{
     CapNeed, ChainCandidate, Exhausted, Privacy, ResolvedPick, RouteDecision, RouteLedger,
     ServiceTier, SlotBudget, SlotRoute, SlotRouter, ROUTE_LEDGER_CAP,
