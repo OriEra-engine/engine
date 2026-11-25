@@ -133,6 +133,12 @@ pub struct HeadlessRunAccount {
     /// 渲染验证段：本竖切占位 `null`——World→ScenePart 桥（G1）与
     /// 截图+断言判定另行。
     pub render: Option<SegmentAccount>,
+    /// 召回台账（可选证据段）：挂上 [`RecallLedger`] 后，报告里就带
+    /// 「这次跑为什么召回这几条」的逐条记录（query／系数／k／命中分项）。
+    /// `None` 时该键不出现在 JSON——老报告字节不变。
+    #[cfg(feature = "json")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall: Option<serde_json::Value>,
 }
 
 impl HeadlessRunAccount {
@@ -146,7 +152,15 @@ impl HeadlessRunAccount {
             build: SegmentAccount::placeholder(SEG_BUILD),
             sim: SegmentAccount::placeholder(SEG_SIM),
             render: None,
+            #[cfg(feature = "json")]
+            recall: None,
         }
+    }
+
+    /// 把一次跑的召回台账挂进报告（证据段，纯观察数据，不进任何指纹）。
+    #[cfg(feature = "json")]
+    pub fn attach_recall(&mut self, ledger: &crate::memory::RecallLedger) {
+        self.recall = Some(ledger.to_value());
     }
 }
 
@@ -335,5 +349,43 @@ mod tests {
             a.build.state_fingerprint, a.sim.state_fingerprint,
             "固定步仿真没有改变世界——反假执行哨兵（契约第 5 条精神）失效"
         );
+    }
+    /// 召回台账进报告：不挂时该键不出现（老报告字节不变），挂上则
+    /// 逐条证据可读、且往返不丢。
+    #[cfg(feature = "json")]
+    #[test]
+    fn recall_ledger_is_optional_evidence_in_the_account() {
+        let acc = HeadlessRunAccount::new();
+        let v = serde_json::to_value(&acc).unwrap();
+        assert!(
+            v.get("recall").is_none(),
+            "未挂台账时报告里不得出现 recall 键（保持字节稳定）"
+        );
+
+        let led = crate::memory::RecallLedger::new();
+        led.push(crate::memory::RecallEvent {
+            seq: 0,
+            turn: 7,
+            agent: "aria".into(),
+            about: "老周".into(),
+            query: "咖啡".into(),
+            k: 4,
+            returned: 0,
+            scoring: crate::memory::MemoryScoring::default(),
+            top: Vec::new(),
+        });
+
+        let mut acc = HeadlessRunAccount::new();
+        acc.attach_recall(&led);
+        let v = serde_json::to_value(&acc).unwrap();
+        assert_eq!(v["recall"]["version"], 1);
+        let evs = v["recall"]["events"].as_array().unwrap();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0]["seq"], 1, "push 发的号进报告");
+        assert_eq!(evs[0]["agent"], "aria");
+        assert_eq!(evs[0]["k"], 4);
+
+        let back: HeadlessRunAccount = serde_json::from_value(v).unwrap();
+        assert_eq!(back, acc, "带台账的报告仍往返无损");
     }
 }

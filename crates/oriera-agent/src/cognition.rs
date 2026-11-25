@@ -8,7 +8,7 @@
 //! in application code — the cognition system goes through the L7
 //! [`ModelProvider`] boundary.
 
-use crate::memory::{Episode, MemoryStore};
+use crate::memory::{Episode, MemoryStore, RecallEvent, RecallLedger};
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Entity, World};
 use oriera_infer::{ChatMessage, InferJobs, ModelProvider, UsageMeter};
@@ -478,10 +478,29 @@ impl<P: ModelProvider> CognitionSystem<P> {
             .map(|t| format!("{}：{}", t.speaker, t.text))
             .collect();
 
-        let mems = world
-            .resource::<MemoryStore>()
-            .map(|m| m.retrieve(&persona.name, &partner.name, &recent.join(""), turn, 4))
-            .unwrap_or_default();
+        // 召回 + 台账：检索结果与原先逐条一致（traced 档只是多带回分项），
+        // 台账缺省不注册 = 零开销；注册了也只是观察，不改世界状态。
+        let query_buf = recent.join("");
+        let (mems, recall_event) = match world.resource::<MemoryStore>() {
+            Some(m) => {
+                let scored = m.retrieve_traced(&persona.name, &partner.name, &query_buf, turn, 4);
+                let ev = RecallEvent::from_traced(
+                    turn,
+                    &persona.name,
+                    &partner.name,
+                    &query_buf,
+                    4,
+                    m.scoring(),
+                    &scored,
+                );
+                let eps = scored.into_iter().map(|s| s.episode).collect();
+                (eps, Some(ev))
+            }
+            None => (Vec::new(), None),
+        };
+        if let (Some(ledger), Some(ev)) = (world.resource::<RecallLedger>(), recall_event) {
+            ledger.push(ev);
+        }
         let mem_lines: Vec<String> = mems
             .iter()
             .map(|m| format!("- (第{}日) {}", m.day, m.text))
@@ -837,6 +856,7 @@ impl<P: ModelProvider> DirectorSystem<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::MemoryScoring;
     use oriera_common::{ComputeGrant, FrameIndex, Grants, Timestamp};
     use oriera_infer::RuleProvider;
     use std::sync::Arc;
@@ -1119,6 +1139,42 @@ mod tests {
             !log.turns.is_empty(),
             "single-NPC async must speak, never deadlock"
         );
+    }
+
+    /// 台账只观察：注册与不注册的两个世界，对话与记忆逐条相同。
+    /// 这条同时是"观察者不改世界"的回归钉（台账绝不进 state_hash）。
+    #[test]
+    fn recall_ledger_observes_without_changing_the_world() {
+        let mut without = cafe_world();
+        let mut with = cafe_world();
+        with.insert_resource(RecallLedger::new());
+
+        let mut c_with = CognitionSystem::new(Arc::new(RuleProvider::new()), 1);
+        let mut c_without = CognitionSystem::new(Arc::new(RuleProvider::new()), 1);
+        for _ in 0..10 {
+            c_with.run(&ctx(), &mut with);
+            c_without.run(&ctx(), &mut without);
+        }
+
+        // 世界语义逐条一致：对话、记忆条数都没被台账影响。
+        assert_eq!(
+            without.resource::<DialogueLog>().unwrap().turns,
+            with.resource::<DialogueLog>().unwrap().turns,
+            "ledger must not change a single turn"
+        );
+        assert_eq!(
+            without.resource::<MemoryStore>().unwrap().len_total(),
+            with.resource::<MemoryStore>().unwrap().len_total()
+        );
+        // 不注册 = 连资源都不存在（零成本）。
+        assert!(without.resource::<RecallLedger>().is_none());
+        // 注册了 = 如实记下召回决策。
+        let led = with.resource::<RecallLedger>().unwrap();
+        assert!(!led.is_empty(), "registered ledger must capture recalls");
+        let ev = led.events().pop().unwrap();
+        assert_eq!(ev.k, 4);
+        assert!(ev.seq >= 1);
+        assert_eq!(ev.scoring, MemoryScoring::default());
     }
 
     #[test]

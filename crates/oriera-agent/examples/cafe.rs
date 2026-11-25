@@ -8,7 +8,8 @@
 //! no application code changes.
 
 use oriera_agent::{
-    CognitionSystem, DialogueLog, DirectorSystem, Episode, MemoryStore, Mood, Persona, WorldStory,
+    CognitionSystem, DialogueLog, DirectorSystem, Episode, MemoryStore, Mood, Persona,
+    RecallLedger, WorldStory,
 };
 use oriera_core::Scheduler;
 use oriera_ecs::World;
@@ -19,6 +20,8 @@ fn main() {
     let mut world = World::new();
     world.insert_resource(DialogueLog::default());
     world.insert_resource(MemoryStore::new());
+    // 召回台账是纯观察资源：挂上就记，不挂零开销，不进 state_hash。
+    world.insert_resource(RecallLedger::new());
     world.insert_resource(WorldStory {
         day: 1,
         turn: 0,
@@ -120,6 +123,11 @@ fn main() {
     println!(
         "  长期记忆 {} 条（跨会话持久化由平台壳负责）",
         world.resource::<MemoryStore>().unwrap().len_total()
+    );
+    let led = world.resource::<RecallLedger>().unwrap();
+    println!(
+        "  召回台账 {} 条（cognition 侧每次检索落一条：query/系数/k/命中分项）",
+        led.len()
     );
     let mem = world.resource::<MemoryStore>().unwrap();
     for hit in mem.retrieve("老周", "Aria", "口味 浓缩", 40, 2) {
