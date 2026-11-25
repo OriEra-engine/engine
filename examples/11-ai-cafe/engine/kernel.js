@@ -18,11 +18,22 @@
 
 /* ---------- L9 · 长期记忆（与 Rust MemoryStore 同构） ---------- */
 export class MemoryStore {
-  /** capacity 可注入（v2）：默认 60 保持 v1 语义。Node 测试环境无
+  /** capacity 可注入（v2）：默认 60 保持 v1 语义。scoring 可注入（v2.2）：
+   * 系数默认与 Rust `MemoryScoring::default()` 逐项相同——双端同一公式、
+   * 同一默认，赛道可单独消融而不改结构代码。Node 测试环境无
    * localStorage 时静默降级为纯内存（kernel 可被 node --test 直测）。 */
-  constructor(persistKey = "aicafe.mem.v1", capacity = 60) {
+  constructor(persistKey = "aicafe.mem.v1", capacity = 60, scoring = {}) {
     this.persistKey = persistKey;
     this.capacity = capacity;
+    const d = { keywordWeight: 1.6, importanceWeight: 0.45, recencyWeight: 2.0, aboutBonus: 1.2, minScore: 0.8 };
+    const num = (v, f) => (typeof v === "number" && Number.isFinite(v) ? v : f);
+    this.scoring = {
+      keywordWeight: num(scoring.keywordWeight, d.keywordWeight),
+      importanceWeight: num(scoring.importanceWeight, d.importanceWeight),
+      recencyWeight: num(scoring.recencyWeight, d.recencyWeight),
+      aboutBonus: num(scoring.aboutBonus, d.aboutBonus),
+      minScore: num(scoring.minScore, d.minScore),
+    };
     this.mem = {};
     try {
       if (typeof localStorage !== "undefined") {
@@ -45,16 +56,17 @@ export class MemoryStore {
       for (const w of (s.toLowerCase().match(/[a-z]{3,}/g) || [])) out.add(w);
       return out;
     };
+    const sc = this.scoring;
     const q = bigrams(query + about);
     return (this.mem[agent] || [])
       .map(e => {
         const text = bigrams(e.text + e.about);
         let hits = 0; for (const g of q) if (text.has(g)) hits++;
         const recency = 1 / (1 + Math.max(0, now - e.turn)); // v2.1: 未来 turn 钳 0，防 Infinity 恒霸榜
-        const aboutBonus = e.about === about ? 1.2 : 0;
-        return { e, score: hits * 1.6 + e.imp * 0.45 + recency * 2 + aboutBonus };
+        const aboutBonus = e.about === about ? sc.aboutBonus : 0;
+        return { e, score: hits * sc.keywordWeight + e.imp * sc.importanceWeight + recency * sc.recencyWeight + aboutBonus };
       })
-      .filter(x => x.score > 0.8)
+      .filter(x => x.score > sc.minScore)
       .sort((a, b) => b.score - a.score).slice(0, k).map(x => x.e);
   }
   agents() { return Object.keys(this.mem); }
