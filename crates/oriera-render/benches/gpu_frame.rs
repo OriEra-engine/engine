@@ -44,7 +44,10 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use oriera_render::camera::Camera;
-use oriera_render::gpu::{DrawList, HeadlessRenderer, ReadTicket, RenderedImage, ScenePart};
+use oriera_render::gpu::{
+    DrawList, GpuMaterial, GpuSkeleton, GpuSkinnedMesh, HeadlessRenderer, ReadTicket, RenderTarget,
+    RenderedImage, ScenePart, SkinnedDrawList, SkinnedPart,
+};
 
 const FRAME_BUDGET_US: f64 = 16_667.0;
 /// 两档分辨率的宽高比相同（约 16:9），网格按它铺满。
@@ -65,14 +68,20 @@ enum Axis {
     PersistSubmit,
     /// 提交 + 异步回读,两帧在途流水。
     PersistAsync,
+    /// 快照路径的蒙皮(n 个部件,每部件各自建缓冲)。
+    SkinDraw,
+    /// 持久路径的蒙皮(n 个实例,各自一个骨架,面板每帧更新)。
+    Skin,
 }
 
-const AXES: [(&str, Axis, &[usize]); 5] = [
+const AXES: [(&str, Axis, &[usize]); 7] = [
     ("draw", Axis::Draw, &[1, 64, 512, 2048]),
     ("fill", Axis::Fill, &[4, 16, 64]),
     ("persist", Axis::Persist, &[1, 64, 512, 2048]),
     ("psubmit", Axis::PersistSubmit, &[1, 64, 512, 2048]),
     ("pasync", Axis::PersistAsync, &[1, 64, 512, 2048]),
+    ("skindraw", Axis::SkinDraw, &[1, 16, 64]),
+    ("skin", Axis::Skin, &[1, 16, 64]),
 ];
 
 struct Mesh {
@@ -362,6 +371,41 @@ fn measure(
                 .collect());
             (m, coverage(r, meshes, n, spread, cam))
         }
+        Axis::SkinDraw => {
+            let sb = SkinBench::new(n);
+            for _ in 0..5 {
+                sb.snapshot_us(r, n, cam);
+            }
+            let m = med((0..25).map(|_| sb.snapshot_us(r, n, cam)).collect());
+            (m, lit_ratio(&sb.snapshot_once(r, n, cam)))
+        }
+        Axis::Skin => {
+            let target = r.create_target(cam.width, cam.height).expect("target");
+            let sb = SkinBench::new(n);
+            let mesh = r
+                .upload_skinned_mesh(
+                    &sb.positions,
+                    Some(&sb.normals),
+                    None,
+                    &sb.joints,
+                    &sb.weights,
+                    &sb.indices,
+                )
+                .expect("upload_skinned_mesh");
+            let mat = r.create_material([0.6, 0.6, 0.62, 1.0], 0.0, 0.8, None, None);
+            let skeletons: Vec<GpuSkeleton> = (0..n).map(|_| r.create_skeleton()).collect();
+            let palettes = &sb.palettes;
+            for _ in 0..5 {
+                skinned_persist_us(r, &mesh, &mat, &skeletons, palettes, cam, &target);
+            }
+            let m = med((0..25)
+                .map(|_| skinned_persist_us(r, &mesh, &mat, &skeletons, palettes, cam, &target))
+                .collect());
+            let cov = lit_ratio(&skinned_persist_once(
+                r, &mesh, &mat, &skeletons, palettes, cam, &target,
+            ));
+            (m, cov)
+        }
         Axis::Persist | Axis::PersistSubmit | Axis::PersistAsync => {
             let target = r.create_target(cam.width, cam.height).expect("target");
             with_persist(r, n, |list| {
@@ -436,6 +480,38 @@ fn bench_gpu_frame(c: &mut Criterion) {
                         let spread = matches!(axis, Axis::Draw);
                         g.bench_with_input(id, &n, |b, _| {
                             b.iter(|| black_box(frame_us(&renderer, &mut meshes, n, spread, &cam)))
+                        });
+                    }
+                    Axis::SkinDraw => {
+                        let sb = SkinBench::new(n);
+                        g.bench_with_input(id, &n, |b, _| {
+                            b.iter(|| black_box(sb.snapshot_us(&renderer, n, &cam)))
+                        });
+                    }
+                    Axis::Skin => {
+                        let target = renderer.create_target(w, h).expect("target");
+                        let sb = SkinBench::new(n);
+                        let mesh = renderer
+                            .upload_skinned_mesh(
+                                &sb.positions,
+                                Some(&sb.normals),
+                                None,
+                                &sb.joints,
+                                &sb.weights,
+                                &sb.indices,
+                            )
+                            .expect("upload_skinned_mesh");
+                        let mat =
+                            renderer.create_material([0.6, 0.6, 0.62, 1.0], 0.0, 0.8, None, None);
+                        let skeletons: Vec<GpuSkeleton> =
+                            (0..n).map(|_| renderer.create_skeleton()).collect();
+                        let palettes = &sb.palettes;
+                        g.bench_with_input(id, &n, |b, _| {
+                            b.iter(|| {
+                                black_box(skinned_persist_us(
+                                    &renderer, &mesh, &mat, &skeletons, palettes, &cam, &target,
+                                ))
+                            })
                         });
                     }
                     Axis::Persist | Axis::PersistSubmit | Axis::PersistAsync => {
@@ -521,3 +597,121 @@ fn breakdown(r: &HeadlessRenderer) {
 
 criterion_group!(benches, bench_gpu_frame);
 criterion_main!(benches);
+
+// ─── 蒙皮两轴 ────────────────────────────────────────────────────────────────
+//
+// skindraw = 快照路径 `render_skinned_views`:每帧每个部件现建顶点/索引/关节
+//            缓冲并阻塞回读。QY-Demo 里那些人形现在走的就是这条。
+// skin     = 持久路径:网格上传一次、每个实例一个骨架、面板每帧更新。
+//
+// 两边都是"24 顶点方块全绑关节 0",面板按实例平移铺开,差异只在提交路径。
+
+/// 蒙皮基准的共享数据:一套顶点 + 每个实例一个单关节面板。
+struct SkinBench {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    indices: Vec<u32>,
+    joints: Vec<[u32; 4]>,
+    weights: Vec<[f32; 4]>,
+    /// 每个实例的面板(单关节,平移铺开)。
+    palettes: Vec<[[f32; 4]; 4]>,
+}
+
+impl SkinBench {
+    fn new(n: usize) -> Self {
+        let cube = unit_cube();
+        let side = (n as f32).sqrt().ceil().max(1.0);
+        let half_h = 90.0 * 30f32.to_radians().tan() * 0.95;
+        let cell = 2.0 * half_h * ASPECT / side;
+        let half = cell * 0.45;
+        let joints = vec![[0u32, 0, 0, 0]; cube.positions.len()];
+        let weights = vec![[1.0f32, 0.0, 0.0, 0.0]; cube.positions.len()];
+        let mut palettes = Vec::with_capacity(n);
+        for i in 0..n {
+            let dx = ((i as f32 % side) + 0.5 - side / 2.0) * cell;
+            let dy = ((i as f32 / side) + 0.5 - side / 2.0) * cell;
+            palettes.push([
+                [half, 0.0, 0.0, dx],
+                [0.0, half, 0.0, dy],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]);
+        }
+        Self {
+            positions: cube.positions,
+            normals: cube.normals,
+            indices: cube.indices,
+            joints,
+            weights,
+            palettes,
+        }
+    }
+
+    /// 快照蒙皮路径渲染一次。每个部件现拼 `SkinnedPart`,调用方看不到的
+    /// 缓冲在函数内建好又销毁——这就是这条路径的真实形态。
+    fn snapshot_once(&self, r: &HeadlessRenderer, n: usize, cam: &Camera) -> RenderedImage {
+        let parts: Vec<SkinnedPart<'_>> = (0..n)
+            .map(|i| SkinnedPart {
+                positions: &self.positions,
+                normals: Some(&self.normals),
+                uvs: None,
+                indices: &self.indices,
+                base_color: [0.6, 0.6, 0.62, 1.0],
+                metallic: 0.0,
+                roughness: 0.8,
+                base_texture: None,
+                mr_texture: None,
+                joints: &self.joints,
+                weights: &self.weights,
+                palette: &self.palettes[i..i + 1],
+            })
+            .collect();
+        r.render_skinned_views(&parts, cam)
+            .expect("snapshot skinned render must succeed")
+    }
+
+    fn snapshot_us(&self, r: &HeadlessRenderer, n: usize, cam: &Camera) -> f64 {
+        let t = std::time::Instant::now();
+        let img = self.snapshot_once(r, n, cam);
+        black_box(&img.bgra);
+        t.elapsed().as_secs_f64() * 1e6
+    }
+}
+
+/// 持久蒙皮路径渲染一次:面板每帧更新(与真实帧循环同形),提交后显式回读。
+fn skinned_persist_once(
+    r: &HeadlessRenderer,
+    mesh: &GpuSkinnedMesh,
+    mat: &GpuMaterial,
+    skeletons: &[GpuSkeleton],
+    palettes: &[[[f32; 4]; 4]],
+    cam: &Camera,
+    target: &RenderTarget,
+) -> RenderedImage {
+    let mut list = SkinnedDrawList::new();
+    for (i, skel) in skeletons.iter().enumerate() {
+        r.update_skeleton(skel, &palettes[i..i + 1])
+            .expect("update_skeleton must succeed");
+        list.push(mesh, mat, skel);
+    }
+    let stats = r
+        .render_frame(&DrawList::new(), &list, cam, target)
+        .expect("skinned persist render must succeed");
+    black_box(stats.skinned_draws);
+    r.read_target(target).expect("readback must succeed")
+}
+
+fn skinned_persist_us(
+    r: &HeadlessRenderer,
+    mesh: &GpuSkinnedMesh,
+    mat: &GpuMaterial,
+    skeletons: &[GpuSkeleton],
+    palettes: &[[[f32; 4]; 4]],
+    cam: &Camera,
+    target: &RenderTarget,
+) -> f64 {
+    let t = std::time::Instant::now();
+    let img = skinned_persist_once(r, mesh, mat, skeletons, palettes, cam, target);
+    black_box(&img.bgra);
+    t.elapsed().as_secs_f64() * 1e6
+}

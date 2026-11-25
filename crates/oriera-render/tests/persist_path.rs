@@ -1,4 +1,5 @@
-//! 持久渲染路径(RFC 0004 步 1a / 1b)的行为测试:断言 A1–A5 与异步回读 B1–B5。
+//! 持久渲染路径(RFC 0004 步 1a / 1b / 1c)的行为测试:断言 A1–A5、异步回读
+//! B1–B5、蒙皮 S1–S4。
 //!
 //! 需要本机有可用的 wgpu 适配器,按仓库惯例默认忽略。本地运行:
 //!
@@ -11,7 +12,8 @@
 use oriera_render::camera::Camera;
 use oriera_render::gpu::{
     DrawList, FrameStats, GpuMaterial, GpuMesh, HeadlessRenderer, RenderTarget, RenderedImage,
-    ScenePart, DEFAULT_INSTANCE_CAPACITY, MAX_READS_IN_FLIGHT,
+    ScenePart, SkinnedDrawList, SkinnedPart, DEFAULT_INSTANCE_CAPACITY, MAX_READS_IN_FLIGHT,
+    SKELETON_CAPACITY,
 };
 
 /// 画面清屏色的 BGRA 取整值(CLEAR = 0.05 / 0.08 / 0.13)。
@@ -829,4 +831,283 @@ fn async_readback_keeps_its_size_across_resize() {
         .expect("wait_read");
     assert_eq!((got.width, got.height), (w2, h2));
     assert!(lit_pixels(&got) > 0);
+}
+
+// ─── 步 1c:蒙皮网格 ───────────────────────────────────────────────────────────
+//
+// S1 与快照蒙皮路径逐像素等价(同一 bind 空间顶点、同一面板、同一材质)
+// S2 换面板真的让网格动起来(质心按面板平移)
+// S3 校验:面板长度、网格关节下标越界、长度不匹配都在 CPU 侧拒绝
+// S4 静态与蒙皮混在一帧:深度关系正确、绘制数正确、稳态零新建
+
+fn rigid_joints(n: usize) -> (Vec<[u32; 4]>, Vec<[f32; 4]>) {
+    (vec![[0, 0, 0, 0]; n], vec![[1.0, 0.0, 0.0, 0.0]; n])
+}
+
+/// S1:同一条蒙皮数据,持久路径与快照 `render_skinned_views` 逐像素一致。
+/// 这条把两条路径的语义焊在一起(面板 bind→世界、Σ w·M·p、法线走 (n,0));
+/// 任一处行列约定或权重处理不同都会立刻显形。
+#[test]
+#[ignore = "requires a local GPU adapter (none in CI)"]
+fn skinned_path_matches_snapshot_path() {
+    let r = renderer();
+    let cam = camera();
+    let (positions, normals, indices) = cube(6.0);
+    let (joints, weights) = rigid_joints(positions.len());
+    let mesh = r
+        .upload_skinned_mesh(
+            &positions,
+            Some(&normals),
+            None,
+            &joints,
+            &weights,
+            &indices,
+        )
+        .expect("upload_skinned_mesh");
+    let mat = material(&r, [0.75, 0.35, 0.25, 1.0]);
+    let palette = [translate(0.0, 3.0, 0.0)];
+
+    let skel = r.create_skeleton();
+    r.update_skeleton(&skel, &palette).expect("update_skeleton");
+    let target = r.create_target(W, H).expect("target");
+    let mut list = SkinnedDrawList::new();
+    list.push(&mesh, &mat, &skel);
+    let stats = r
+        .render_frame(&DrawList::new(), &list, &cam, &target)
+        .expect("render_frame");
+    assert_eq!(stats.skinned_draws, 1);
+    assert_eq!(stats.draw_calls, 1);
+    assert_eq!(stats.instances, 0);
+    let got = r.read_target(&target).expect("readback");
+
+    let want = r
+        .render_skinned_views(
+            &[SkinnedPart {
+                positions: &positions,
+                normals: Some(&normals),
+                uvs: None,
+                indices: &indices,
+                base_color: [0.75, 0.35, 0.25, 1.0],
+                metallic: 0.0,
+                roughness: 0.8,
+                base_texture: None,
+                mr_texture: None,
+                joints: &joints,
+                weights: &weights,
+                palette: &palette,
+            }],
+            &cam,
+        )
+        .expect("render_skinned_views");
+
+    let diff = got
+        .bgra
+        .iter()
+        .zip(want.bgra.iter())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(diff, 0, "skinned paths must agree pixel for pixel");
+}
+
+/// S2:换一个面板,网格就跟着动。质心按面板里的平移右移。
+#[test]
+#[ignore = "requires a local GPU adapter (none in CI)"]
+fn skeleton_update_moves_the_skin() {
+    let r = renderer();
+    let cam = camera();
+    let target = r.create_target(W, H).expect("target");
+    let (positions, normals, indices) = cube(6.0);
+    let (joints, weights) = rigid_joints(positions.len());
+    let mesh = r
+        .upload_skinned_mesh(
+            &positions,
+            Some(&normals),
+            None,
+            &joints,
+            &weights,
+            &indices,
+        )
+        .expect("upload_skinned_mesh");
+    let mat = material(&r, [0.75, 0.35, 0.25, 1.0]);
+    let skel = r.create_skeleton();
+    let mut list = SkinnedDrawList::new();
+    list.push(&mesh, &mat, &skel);
+
+    r.update_skeleton(&skel, &[translate(-12.0, 0.0, 0.0)])
+        .expect("update_skeleton");
+    r.render_frame(&DrawList::new(), &list, &cam, &target)
+        .expect("render_frame");
+    let left = centroid(&r.read_target(&target).expect("readback"));
+
+    r.update_skeleton(&skel, &[translate(12.0, 0.0, 0.0)])
+        .expect("update_skeleton");
+    r.render_frame(&DrawList::new(), &list, &cam, &target)
+        .expect("render_frame");
+    let right = centroid(&r.read_target(&target).expect("readback"));
+
+    assert_eq!(skel.joint_count(), 1);
+    assert!(
+        right.0 > left.0 + 20.0,
+        "palette translation must move the skin: {left:?} -> {right:?}"
+    );
+}
+
+/// S3:蒙皮的输入校验全部在 CPU 侧拒绝,不赌 GPU 行为。
+#[test]
+#[ignore = "requires a local GPU adapter (none in CI)"]
+fn skinned_input_is_validated() {
+    let r = renderer();
+    let cam = camera();
+    let target = r.create_target(W, H).expect("target");
+    let (positions, normals, indices) = cube(6.0);
+    let n = positions.len();
+
+    // 关节下标超出面板容量
+    let mut joints = rigid_joints(n).0;
+    joints[0] = [SKELETON_CAPACITY as u32, 0, 0, 0];
+    let weights = rigid_joints(n).1;
+    assert!(r
+        .upload_skinned_mesh(
+            &positions,
+            Some(&normals),
+            None,
+            &joints,
+            &weights,
+            &indices
+        )
+        .is_err());
+
+    // joints/weights 与顶点数不匹配
+    assert!(r
+        .upload_skinned_mesh(
+            &positions,
+            Some(&normals),
+            None,
+            &joints[..n - 1],
+            &weights,
+            &indices
+        )
+        .is_err());
+    // 索引越界
+    let mut bad_idx = indices.clone();
+    bad_idx[0] = n as u32;
+    let (j0, w0) = rigid_joints(n);
+    assert!(r
+        .upload_skinned_mesh(&positions, Some(&normals), None, &j0, &w0, &bad_idx)
+        .is_err());
+
+    // 面板为空 / 超容量
+    let skel = r.create_skeleton();
+    assert!(r.update_skeleton(&skel, &[]).is_err());
+    let big = vec![identity(); SKELETON_CAPACITY + 1];
+    assert!(r.update_skeleton(&skel, &big).is_err());
+
+    // 面板没覆盖到网格用到的关节:显式报错,而不是画出上一个实例留下的数据
+    let mut hi = joints.clone();
+    let (hj, hw) = rigid_joints(n);
+    let mut hi_joints = hj.clone();
+    hi_joints[0] = [5, 0, 0, 0];
+    hi[0] = [5, 0, 0, 0];
+    let mesh_hi = r
+        .upload_skinned_mesh(&positions, Some(&normals), None, &hi_joints, &hw, &indices)
+        .expect("joint index 5 is inside capacity");
+    let mat = material(&r, [0.75, 0.35, 0.25, 1.0]);
+    // 还没写面板:joint_count = 0 → 报错
+    let mut list = SkinnedDrawList::new();
+    list.push(&mesh_hi, &mat, &skel);
+    let err = r
+        .render_frame(&DrawList::new(), &list, &cam, &target)
+        .expect_err("palette must be written first");
+    assert!(
+        format!("{err}").contains("palette length"),
+        "unexpected error: {err}"
+    );
+    // 面板只有 1 个关节,网格用到第 5 号 → 报错
+    r.update_skeleton(&skel, &[identity()]).expect("one joint");
+    let err = r
+        .render_frame(&DrawList::new(), &list, &cam, &target)
+        .expect_err("palette must cover the mesh joints");
+    assert!(
+        format!("{err}").contains("exceeds skeleton palette length"),
+        "unexpected error: {err}"
+    );
+}
+
+/// S4:静态与蒙皮混在一帧。两条管线都写深度,先后不影响遮挡;绘制数与
+/// 稳态新建都能自证。面板每帧都在写,但不产生新建。
+#[test]
+#[ignore = "requires a local GPU adapter (none in CI)"]
+fn static_and_skinned_share_a_frame() {
+    let r = renderer();
+    let cam = camera();
+    let target = r.create_target(W, H).expect("target");
+    let (positions, normals, indices) = cube(1.0);
+    let (joints, weights) = rigid_joints(positions.len());
+    let mesh = r
+        .upload_skinned_mesh(
+            &positions,
+            Some(&normals),
+            None,
+            &joints,
+            &weights,
+            &indices,
+        )
+        .expect("upload_skinned_mesh");
+    let skel = r.create_skeleton();
+    let blue = material(&r, [0.2, 0.3, 0.9, 1.0]);
+    let static_mesh = upload(&r, &cube(1.0));
+    let red = material(&r, [0.9, 0.2, 0.2, 1.0]);
+
+    let big = 24.0;
+    let mut skinned = SkinnedDrawList::new();
+    skinned.push(&mesh, &blue, &skel);
+    let mut statics = DrawList::new();
+    statics.push(&static_mesh, &red, scale(big));
+
+    // 蒙皮在前
+    r.update_skeleton(
+        &skel,
+        &[scale(big), scale(big)].map(|m| {
+            let mut t = m;
+            t[2][3] = 20.0;
+            t
+        }),
+    )
+    .expect("palette");
+    let stats = r
+        .render_frame(&statics, &skinned, &cam, &target)
+        .expect("render_frame");
+    assert_eq!(stats.draw_calls, 2);
+    assert_eq!(stats.instances, 1);
+    assert_eq!(stats.skinned_draws, 1);
+    let img = r.read_target(&target).expect("readback");
+    assert!(is_blue(img.pixel(W / 2, H / 2)), "skinned must be in front");
+
+    // 静态在前:把蒙皮推到后面
+    let mut far = scale(big);
+    far[2][3] = -20.0;
+    let mut near = scale(big);
+    near[2][3] = 20.0;
+    r.update_skeleton(&skel, &[far]).expect("palette");
+    let mut statics_near = DrawList::new();
+    statics_near.push(&static_mesh, &red, near);
+    r.render_frame(&statics_near, &skinned, &cam, &target)
+        .expect("render_frame");
+    let img = r.read_target(&target).expect("readback");
+    assert!(is_red(img.pixel(W / 2, H / 2)), "static must be in front");
+
+    // 稳态:面板每帧换,依然零新建
+    let mut created = (0u32, 0u32, 0u32);
+    for k in 0..10 {
+        let mut m = scale(big);
+        m[2][3] = if k % 2 == 0 { 20.0 } else { -20.0 };
+        r.update_skeleton(&skel, &[m]).expect("palette");
+        let s = r
+            .render_frame(&statics, &skinned, &cam, &target)
+            .expect("render_frame");
+        created.0 += s.created_buffers;
+        created.1 += s.created_bind_groups;
+        created.2 += s.created_textures;
+    }
+    assert_eq!(created, (0, 0, 0), "steady frames must create nothing");
 }

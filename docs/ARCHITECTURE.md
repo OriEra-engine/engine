@@ -112,7 +112,11 @@ v0.2 落地 `Quality` + `observe_frame` 迟滞调速器：AI 一重就掉帧时�
 `RenderTarget` 持久；`render_draw_list` 提交后即返回，像素回读走显式的 `read_target`，
 另有不等 GPU 的异步版本（`read_target_async` / `poll_read` / `wait_read`，最多 4 张在途）。它与快照路径
 `render_scene_views` 并存，后者行为冻结不变；两条路径共用同一份 PBR 片元着色器源码（`pbr_fragment!`），
-等价测试锁定像素一致。帧成本基准 `benches/gpu_frame.rs` 分 draw / fill / persist / psubmit 四轴。
+等价测试锁定像素一致。同日落地 **步 1c 蒙皮网格持久路径**：`GpuSkinnedMesh` / `GpuSkeleton`（16KB 关节
+uniform，256 关节上限）/ `SkinnedDrawList`，`update_skeleton` 写面板、`render_frame(list, skinned_list, …)`
+一帧内先画静态再逐个蒙皮实例；蒙皮实例不带模型矩阵，模型变换由调用方预乘进面板（bind 空间语义）。
+它与静态实例共用同一个片元着色器，等价测试锁定两根骨骼姿势下的逐像素一致。帧成本基准
+`benches/gpu_frame.rs` 分 draw / fill / persist / psubmit / pasync / skindraw / skin 七轴。
 只保证不透明物件的正确性；窗口与交换链未做（RFC 0004 步 2，待单独评审）。
 
 v0.3 落地 **wgpu 最小无头闭环**（feature `render-wgpu`，按 GOVERNANCE 默认关）：

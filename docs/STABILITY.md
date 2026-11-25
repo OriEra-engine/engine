@@ -81,7 +81,12 @@
   `DrawList` / `RenderTarget` / `render_draw_list` / `read_target` 是新增公开面,默认 feature 不编译。
   **仅保证不透明物件正确**(管线无混合;实例按网格与材质排序,会打乱调用方的绘制顺序);
   模型矩阵只支持刚体变换与均匀缩放(法线按旋转部分变换,非均匀缩放不保证正确);
-  蒙皮网格仍走快照路径。与 `render_scene_views` 的像素等价由测试锁定(软件光栅化下逐像素
+  蒙皮网格有独立的持久路径(RFC 0004 步 1c,同日):`GpuSkinnedMesh` / `GpuSkeleton` /
+  `SkinnedDrawList` / `render_frame`,顶点在 bind 空间、面板为 bind→世界,**蒙皮实例不带模型矩阵**
+  (模型变换须由调用方预乘进面板),关节上限 256(单个 16KB uniform,超出时 `upload_skinned_mesh`
+  报错),权重按 4 关节写死、**无混合**(半透明蒙皮物件仍只能走快照路径);渲染前逐实例校验
+  `mesh.max_joint < skeleton.joint_count()`,未写面板或写少了都会报错而不是静默画错;
+  关节数据在 `update_skeleton` 里上传,同一骨架被多实例共用时全部实例同步改姿势。与 `render_scene_views` 的像素等价由测试锁定(软件光栅化下逐像素
   一致),**尚无真 GPU 读数**;实例缓冲超出容量时 `render_draw_list` 报错而不自动重建;
   异步回读(`read_target_async` / `poll_read` / `wait_read`,RFC 0004 步 1b)最多 4 张在途,满了就
   阻塞到最旧的完成;已完成未取的像素同样最多留 4 张,再多丢最旧的,被丢的回执取的时候报错。

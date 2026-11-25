@@ -161,8 +161,9 @@ fn fs(in: VSOut) -> @location(0) vec4f {
 pub mod persist;
 
 pub use persist::{
-    DrawList, FrameStats, GpuMaterial, GpuMesh, Instance, ReadTicket, RenderTarget,
-    DEFAULT_INSTANCE_CAPACITY, MAX_READS_IN_FLIGHT,
+    DrawList, FrameStats, GpuMaterial, GpuMesh, GpuSkeleton, GpuSkinnedMesh, Instance, ReadTicket,
+    RenderTarget, SkinnedDrawList, SkinnedInstance, DEFAULT_INSTANCE_CAPACITY, MAX_READS_IN_FLIGHT,
+    SKELETON_CAPACITY,
 };
 
 /// #152 第四刀:PBR 最小着色(Cook-Torrance GGX + Smith-Schlick 遮蔽 + Schlick

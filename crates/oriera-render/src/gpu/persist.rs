@@ -38,6 +38,10 @@ const CAMERA_UNIFORM_BYTES: u64 = 96;
 /// 材质 uniform:baseColor 因子 + 金属度/粗糙度。
 const MATERIAL_UNIFORM_BYTES: u64 = 32;
 
+/// 关节面板容量:与快照路径同一个常量(WGSL `array<mat4x4f, 256>` 同值)。
+/// 256 × 64B = 16KB,低于默认 max_uniform_buffer_binding_size。
+pub const SKELETON_CAPACITY: usize = super::MAX_JOINTS;
+
 /// 持久路径顶点:pos3 + normal3 + uv2。材质因子不再烘进顶点,
 /// 同一网格换材质共用同一份顶点数据。
 type Vertex = [f32; 8];
@@ -135,6 +139,8 @@ impl RenderTarget {
 pub struct FrameStats {
     pub draw_calls: u32,
     pub instances: u32,
+    /// 蒙皮绘制次数。蒙皮一次一个实例,不进实例缓冲。
+    pub skinned_draws: u32,
     pub created_buffers: u32,
     pub created_bind_groups: u32,
     pub created_textures: u32,
@@ -143,7 +149,10 @@ pub struct FrameStats {
 /// 渲染器内部状态。缓冲与绑定组在构造时建好,帧内只 `write_buffer`。
 pub(crate) struct PersistState {
     pipeline: wgpu::RenderPipeline,
+    pipeline_skinned: wgpu::RenderPipeline,
     material_bgl: wgpu::BindGroupLayout,
+    /// 关节面板绑定组布局(每个骨架各自建一个绑定组)。
+    joints_bgl: wgpu::BindGroupLayout,
     camera_buffer: wgpu::Buffer,
     camera_bind: wgpu::BindGroup,
     /// 实例缓冲与容量(实例数)。
@@ -233,6 +242,78 @@ fn vs_inst(@location(0) p: vec3f, @location(1) n: vec3f, @location(2) uv: vec2f,
 "#
     };
 }
+/// 蒙皮顶点:在静态顶点布局之后加 JOINTS(4×u32)与 WEIGHTS(4×f32);
+/// 关节面板(bind→世界,与快照路径 `vs_skinned` 同语义)从 group 2 读。
+macro_rules! persist_skinned_vertex {
+    () => {
+        r#"struct VSOut {
+    @builtin(position) pos: vec4f,
+    @location(0) normal: vec3f,
+    @location(1) uv: vec2f,
+    @location(2) color: vec4f,
+    @location(3) mr: vec2f,
+    @location(4) world: vec3f,
+};
+
+struct Material {
+    color: vec4f,
+    mr: vec4f,
+};
+
+struct Joints {
+    mats: array<mat4x4f, 256>,
+};
+
+@group(0) @binding(0) var<uniform> cam: Cam;
+@group(1) @binding(0) var base_tex: texture_2d<f32>;
+@group(1) @binding(1) var mr_tex: texture_2d<f32>;
+@group(1) @binding(2) var base_samp: sampler;
+@group(1) @binding(3) var<uniform> material: Material;
+@group(2) @binding(0) var<uniform> skin_joints: Joints;
+
+// 语义与快照路径 `vs_skinned` 一致:Σ w·M·p 到世界,法线走同一 mat4 的 (n,0)。
+// 索引越界由调用方在 CPU 侧拒绝(WGSL 越界未定义,不赌运行时钳制)。
+@vertex
+fn vs_skin(@location(0) p: vec3f, @location(1) n: vec3f, @location(2) uv: vec2f,
+      @location(3) joint_idx: vec4u, @location(4) weight: vec4f) -> VSOut {
+    var sp = vec3f(0.0);
+    var sn = vec3f(0.0);
+    for (var k = 0; k < 4; k = k + 1) {
+        let w = weight[k];
+        if (w > 0.0) {
+            let m = skin_joints.mats[joint_idx[k]];
+            let mp = m * vec4f(p, 1.0);
+            let mn = m * vec4f(n, 0.0);
+            sp = sp + w * mp.xyz;
+            sn = sn + w * mn.xyz;
+        }
+    }
+    var out: VSOut;
+    out.pos = cam.mvp * vec4f(sp, 1.0);
+    out.world = sp;
+    out.normal = normalize(sn);
+    out.uv = uv;
+    out.color = material.color;
+    out.mr = material.mr.xy;
+    return out;
+}
+"#
+    };
+}
+
+/// 蒙皮完整着色器:相机结构 + 蒙皮顶点 + 与两条路径共用的 PBR 片元。
+const SHADER_PERSIST_SKINNED: &str = concat!(
+    r#"
+struct Cam {
+    mvp: mat4x4f,
+    cam_pos: vec4f,
+    light_dir: vec4f,
+};
+"#,
+    persist_skinned_vertex!(),
+    pbr_fragment!(),
+);
+
 /// 完整着色器:相机结构 + 持久顶点 + 与快照路径共用的 PBR 片元。
 const SHADER_PERSIST: &str = concat!(
     r#"
@@ -372,6 +453,92 @@ impl PersistState {
             cache: None,
         });
 
+        let joints_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("oriera-persist-joints-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new((SKELETON_CAPACITY * 64) as u64),
+                },
+                count: None,
+            }],
+        });
+        let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("oriera-persist-skinned-layout"),
+            bind_group_layouts: &[Some(camera_bgl), Some(&material_bgl), Some(&joints_bgl)],
+            immediate_size: 0,
+        });
+        let skinned_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("oriera-persist-skinned"),
+            source: wgpu::ShaderSource::Wgsl(SHADER_PERSIST_SKINNED.into()),
+        });
+        // 蒙皮顶点:静态的 pos/normal/uv 之后接 JOINTS(4×u32)与 WEIGHTS(4×f32)。
+        let skinned_buffers = [Some(wgpu::VertexBufferLayout {
+            array_stride: 64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 12,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Uint32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        })];
+        let pipeline_skinned = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("oriera-persist-skinned-pipeline"),
+            layout: Some(&skinned_layout),
+            vertex: wgpu::VertexState {
+                module: &skinned_shader,
+                entry_point: Some("vs_skin"),
+                compilation_options: Default::default(),
+                buffers: &skinned_buffers,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &skinned_shader,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("oriera-persist-camera"),
             size: CAMERA_UNIFORM_BYTES,
@@ -399,7 +566,9 @@ impl PersistState {
 
         Self {
             pipeline,
+            pipeline_skinned,
             material_bgl,
+            joints_bgl,
             camera_buffer,
             camera_bind,
             instances: Mutex::new((instances, DEFAULT_INSTANCE_CAPACITY)),
@@ -640,15 +809,18 @@ impl HeadlessRenderer {
 }
 
 impl HeadlessRenderer {
-    /// 提交一帧:**提交后立即返回**,不等待 GPU,也不返回像素。空列表是合法
-    /// 的一帧——只清屏。相机尺寸必须与渲染目标一致,否则报错而不是画出一张
-    /// 被拉伸的图。
+    /// 提交一帧:静态物件 + 蒙皮物件,一次清屏,一个 pass。
+    /// **提交后立即返回**,不等待 GPU,也不返回像素。两个列表都空是合法的一帧
+    /// ——只清屏。相机尺寸必须与渲染目标一致,否则报错而不是画出一张被拉伸的图。
     ///
-    /// 实例按(网格 id,材质 id)稳定排序后归段,每段一次实例化绘制。排序会
-    /// 打乱调用方给的顺序,因此只保证不透明物件的正确性。
-    pub fn render_draw_list(
+    /// 静态实例按(网格 id,材质 id)稳定排序后归段,每段一次实例化绘制;排序会
+    /// 打乱调用方给的顺序,因此只保证不透明物件的正确性。蒙皮一次一个实例
+    /// (顶点布局不同,走另一条管线),按调用方给出的顺序逐个绘制——两条管线
+    /// 都写深度且不混合,所以先后不影响结果。
+    pub fn render_frame(
         &self,
         list: &DrawList<'_>,
+        skinned: &SkinnedDrawList<'_>,
         camera: &Camera,
         target: &RenderTarget,
     ) -> Result<FrameStats, GpuError> {
@@ -658,6 +830,18 @@ impl HeadlessRenderer {
             ));
         }
         let count = list.instances.len();
+
+        // 蒙皮校验:每个网格的最大关节下标必须落在骨架面板长度内。
+        // 面板是 16KB 定长 uniform,越界读到的会是上一个实例留下的数据。
+        for inst in &skinned.instances {
+            if inst.mesh.max_joint >= inst.skeleton.joint_count() {
+                return Err(GpuError::Device(format!(
+                    "skinned mesh joint index {} exceeds skeleton palette length {}; call update_skeleton",
+                    inst.mesh.max_joint,
+                    inst.skeleton.joint_count()
+                )));
+            }
+        }
 
         // 排序与实例矩阵写入复用的暂存区:帧内不做堆分配。
         let mut scratch = lock(&self.persist.scratch);
@@ -761,12 +945,26 @@ impl HeadlessRenderer {
                 draw_calls += 1;
                 start = end;
             }
+
+            // 蒙皮:一次一个实例,三种绑定组各自设。
+            if !skinned.instances.is_empty() {
+                pass.set_pipeline(&self.persist.pipeline_skinned);
+                for inst in &skinned.instances {
+                    pass.set_bind_group(1, &inst.material.bind, &[]);
+                    pass.set_bind_group(2, &inst.skeleton.bind, &[]);
+                    pass.set_vertex_buffer(0, inst.mesh.vertex.slice(..));
+                    pass.set_index_buffer(inst.mesh.index.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..inst.mesh.index_count, 0, 0..1);
+                    draw_calls += 1;
+                }
+            }
         }
         // 只提交,不轮询:GPU 与 CPU 可以流水起来。
         self.queue.submit(Some(encoder.finish()));
         drop(scratch);
         drop(instances);
 
+        let skinned_draws = skinned.instances.len() as u32;
         let now = Totals {
             buffers: self.persist.created_buffers.load(Ordering::Relaxed),
             bind_groups: self.persist.created_bind_groups.load(Ordering::Relaxed),
@@ -776,12 +974,23 @@ impl HeadlessRenderer {
         let stats = FrameStats {
             draw_calls,
             instances: count as u32,
+            skinned_draws,
             created_buffers: now.buffers - last.buffers,
             created_bind_groups: now.bind_groups - last.bind_groups,
             created_textures: now.textures - last.textures,
         };
         *last = now;
         Ok(stats)
+    }
+
+    /// 只画静态物件的帧,等价于 `render_frame(list, &SkinnedDrawList::new(), ..)`。
+    pub fn render_draw_list(
+        &self,
+        list: &DrawList<'_>,
+        camera: &Camera,
+        target: &RenderTarget,
+    ) -> Result<FrameStats, GpuError> {
+        self.render_frame(list, &SkinnedDrawList::new(), camera, target)
     }
 
     /// 把渲染目标读回成像素。这是**显式**动作,也是持久路径里唯一会阻塞
@@ -1066,5 +1275,241 @@ impl ReadState {
         Err(GpuError::Device(format!(
             "read ticket {seq} is unknown, already taken or was dropped"
         )))
+    }
+}
+
+/// 蒙皮顶点:静态三件套(pos/normal/uv)之后接 JOINTS(4×u32)与 WEIGHTS(4×f32)。
+/// 关节面板在每个实例上单独绑定,所以顶点缓冲里不带矩阵。
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SkinVertex {
+    pnu: [f32; 8],
+    joints: [u32; 4],
+    weights: [f32; 4],
+}
+
+/// 已上传的蒙皮网格:顶点(bind 空间)+ 索引。调用方持有该值即持有资源。
+#[derive(Debug)]
+pub struct GpuSkinnedMesh {
+    vertex: wgpu::Buffer,
+    index: wgpu::Buffer,
+    index_count: u32,
+    /// 这个网格里出现的最大关节下标。渲染时用它做 O(1) 校验:
+    /// 面板必须覆盖到它,否则着色器会读到上一个实例留下的数据。
+    max_joint: u32,
+}
+
+/// 一个骨架:关节面板 uniform(bind→世界)+ 绑定组,跨帧复用。
+///
+/// 面板内容用 [`HeadlessRenderer::update_skeleton`] 写。网格与骨架分开放,
+/// 同一骨架可以驱动多个网格,同一网格也能配不同骨架。
+#[derive(Debug)]
+pub struct GpuSkeleton {
+    /// 绑定组引用了它;`update_skeleton` 往里写。
+    uniform: wgpu::Buffer,
+    bind: wgpu::BindGroup,
+    /// 当前面板长度。渲染时校验网格的最大关节下标不超过它。
+    joints: AtomicU32,
+}
+
+impl GpuSkeleton {
+    /// 当前面板长度(上一次 `update_skeleton` 写入的关节数)。
+    pub fn joint_count(&self) -> u32 {
+        self.joints.load(Ordering::Relaxed)
+    }
+}
+
+/// 一个蒙皮绘制单元。语义与快照路径 [`crate::gpu::SkinnedPart`] 一致:
+/// 顶点在 bind 空间,面板是 bind→世界(模型矩阵由调用方预乘进面板),
+/// 因而没有单独的模型矩阵。
+pub struct SkinnedInstance<'a> {
+    pub mesh: &'a GpuSkinnedMesh,
+    pub material: &'a GpuMaterial,
+    pub skeleton: &'a GpuSkeleton,
+}
+
+/// 一帧要画的蒙皮物件。与 [`DrawList`] 分开:两者顶点布局不同,走不同管线。
+#[derive(Default)]
+pub struct SkinnedDrawList<'a> {
+    pub instances: Vec<SkinnedInstance<'a>>,
+}
+
+impl<'a> SkinnedDrawList<'a> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(
+        &mut self,
+        mesh: &'a GpuSkinnedMesh,
+        material: &'a GpuMaterial,
+        skeleton: &'a GpuSkeleton,
+    ) {
+        self.instances.push(SkinnedInstance {
+            mesh,
+            material,
+            skeleton,
+        });
+    }
+
+    pub fn len(&self) -> usize {
+        self.instances.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.instances.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.instances.clear();
+    }
+}
+
+impl HeadlessRenderer {
+    /// 上传蒙皮网格。校验与静态网格同一套,另加关节下标必须落在
+    /// [`SKELETON_CAPACITY`] 内(WGSL 越界未定义,不赌运行时钳制)。
+    pub fn upload_skinned_mesh(
+        &self,
+        positions: &[[f32; 3]],
+        normals: Option<&[[f32; 3]]>,
+        uvs: Option<&[[f32; 2]]>,
+        joints: &[[u32; 4]],
+        weights: &[[f32; 4]],
+        indices: &[u32],
+    ) -> Result<GpuSkinnedMesh, GpuError> {
+        if positions.is_empty() {
+            return Err(GpuError::Device("mesh has no vertices".into()));
+        }
+        if indices.is_empty() {
+            return Err(GpuError::Device("mesh has no indices".into()));
+        }
+        if normals.is_some_and(|n| n.len() != positions.len()) {
+            return Err(GpuError::Device(
+                "normals length differs from positions".into(),
+            ));
+        }
+        if uvs.is_some_and(|u| u.len() != positions.len()) {
+            return Err(GpuError::Device("uvs length differs from positions".into()));
+        }
+        if joints.len() != positions.len() || weights.len() != positions.len() {
+            return Err(GpuError::Device(
+                "joints/weights length must match positions".into(),
+            ));
+        }
+        if indices.iter().any(|&i| i as usize >= positions.len()) {
+            return Err(GpuError::Device("index out of range".into()));
+        }
+        let bad = joints
+            .iter()
+            .flat_map(|j| j.iter())
+            .find(|&&i| i as usize >= SKELETON_CAPACITY);
+        if let Some(&i) = bad {
+            return Err(GpuError::Device(format!(
+                "joint index {i} exceeds SKELETON_CAPACITY {SKELETON_CAPACITY}"
+            )));
+        }
+        let max_joint = joints
+            .iter()
+            .flat_map(|j| j.iter())
+            .copied()
+            .max()
+            .unwrap_or(0);
+        let mut verts: Vec<SkinVertex> = Vec::with_capacity(positions.len());
+        for (i, p) in positions.iter().enumerate() {
+            let n = normals
+                .and_then(|n| n.get(i).copied())
+                .unwrap_or([0.0, 0.0, 1.0]);
+            let uv = uvs.and_then(|u| u.get(i).copied()).unwrap_or([0.0, 0.0]);
+            verts.push(SkinVertex {
+                pnu: [p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1]],
+                joints: joints[i],
+                weights: weights[i],
+            });
+        }
+        let vertex = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("oriera-skin-vertices"),
+                contents: bytemuck::cast_slice(&verts),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        self.count_new_buffer();
+        let index = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("oriera-skin-indices"),
+                contents: bytemuck::cast_slice(indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        self.count_new_buffer();
+        Ok(GpuSkinnedMesh {
+            vertex,
+            index,
+            index_count: indices.len() as u32,
+            max_joint,
+        })
+    }
+
+    /// 建一个骨架:16KB 面板 uniform + 绑定组。建的时候面板是空的,
+    /// 必须先 `update_skeleton` 才能拿去画。
+    pub fn create_skeleton(&self) -> GpuSkeleton {
+        let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("oriera-skeleton"),
+            size: (SKELETON_CAPACITY * 64) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.count_new_buffer();
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("oriera-skeleton-bind"),
+            layout: &self.persist.joints_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform,
+                    offset: 0,
+                    size: None,
+                }),
+            }],
+        });
+        self.count_new_bind_group();
+        GpuSkeleton {
+            uniform,
+            bind,
+            joints: AtomicU32::new(0),
+        }
+    }
+
+    /// 写关节面板(bind→世界,行主序)。长度必须在 `1..=SKELETON_CAPACITY`;
+    /// 网格里出现的关节下标超过这个长度时,渲染会报错而不是画出错位的样子。
+    pub fn update_skeleton(
+        &self,
+        skeleton: &GpuSkeleton,
+        palette: &[[[f32; 4]; 4]],
+    ) -> Result<(), GpuError> {
+        if palette.is_empty() || palette.len() > SKELETON_CAPACITY {
+            return Err(GpuError::Device(format!(
+                "palette size {} outside 1..={SKELETON_CAPACITY}",
+                palette.len()
+            )));
+        }
+        // 行主序 → 按列上传,与静态实例矩阵同一约定。
+        let mut bytes = Vec::with_capacity(palette.len() * 64);
+        for m in palette {
+            let mut cols = [[0f32; 4]; 4];
+            for (r, row) in m.iter().enumerate() {
+                for (c, v) in row.iter().enumerate() {
+                    cols[c][r] = *v;
+                }
+            }
+            for c in &cols {
+                bytes.extend_from_slice(bytemuck::cast_slice(c));
+            }
+        }
+        self.queue.write_buffer(&skeleton.uniform, 0, &bytes);
+        skeleton
+            .joints
+            .store(palette.len() as u32, Ordering::Relaxed);
+        Ok(())
     }
 }
