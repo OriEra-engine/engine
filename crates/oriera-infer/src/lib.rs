@@ -18,6 +18,7 @@ pub mod health;
 pub mod http;
 pub mod jobs;
 pub mod provider;
+pub mod router;
 
 pub use health::{BreakerState, FallbackProvider, ProviderHealth};
 #[cfg(feature = "native-http")]
@@ -29,6 +30,10 @@ pub use provider::{
     HashEmbeddingProvider, InferError, ModelCaps, ModelPrice, ModelProvider, ProviderOptions,
     ProviderPreset, ReasoningEffort, Role, RuleProvider, StreamedOutcome, ToolCall, ToolDef,
     ToolOutcome, PROVIDER_PRESETS,
+};
+pub use router::{
+    CapNeed, ChainCandidate, Exhausted, Privacy, ResolvedPick, RouteDecision, RouteLedger,
+    ServiceTier, SlotBudget, SlotRoute, SlotRouter, ROUTE_LEDGER_CAP,
 };
 
 use oriera_core::{FrameCtx, System};
@@ -90,6 +95,96 @@ impl UsageMeter {
     pub fn record(&mut self, usage: TokenUsage) {
         self.total += usage;
         self.calls += 1;
+    }
+}
+
+/// Per-frame accumulated model wait time (µs), split by path and system.
+///
+/// Two meters split the job: this one is the **frame-level pressure**
+/// (how long the frame blocked on the model, fed to regulation); the
+/// [`RouteLedger`](crate::router::RouteLedger) is the **per-call audit**
+/// (which slot/provider served, with what fingerprint). Do not merge
+/// them — regulation needs a per-frame sum, audit needs per-call rows.
+///
+/// **Fold discipline:**
+/// - *Sync* calls block inside the system's `run`, so the scheduler's
+///   measured elapsed already contains this wait — folding it on top
+///   would double count. Sync waits are observability only.
+/// - *Async* jobs wait off-frame; their wait never reaches the wall-clock
+///   measurement. The shell drains [`drain_async`](Self::drain_async) and
+///   folds each system's ms into
+///   [`Scheduler::observe_extra_cost`](oriera_core::Scheduler::observe_extra_cost).
+///
+/// Entries are keyed by the spending system's registered name, so the
+/// folded pressure lands on the right allocator line. Async waits are
+/// drain-and-reset: one frame's wait is consumed once, then cleared.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InferWaitMeter {
+    /// Off-frame async wait per system, µs — eligible to fold into the
+    /// allocator.
+    async_waits: Vec<(String, u64)>,
+    /// In-frame sync wait per system, µs — observability only, already
+    /// inside the measured system elapsed.
+    sync_waits: Vec<(String, u64)>,
+}
+
+impl InferWaitMeter {
+    fn add(bucket: &mut Vec<(String, u64)>, system: &str, waited_us: u64) {
+        if waited_us == 0 {
+            return;
+        }
+        match bucket.iter_mut().find(|(n, _)| n == system) {
+            Some((_, v)) => *v = v.saturating_add(waited_us),
+            None => bucket.push((system.to_string(), waited_us)),
+        }
+    }
+
+    /// Record an in-frame sync call's wait (µs). Observability only — do
+    /// not fold back into the allocator (that would double count).
+    pub fn record_sync(&mut self, system: &str, waited_us: u64) {
+        Self::add(&mut self.sync_waits, system, waited_us);
+    }
+
+    /// Record an off-frame async job's wait (µs). Eligible to be folded
+    /// into the allocator by the shell.
+    pub fn record_async(&mut self, system: &str, waited_us: u64) {
+        Self::add(&mut self.async_waits, system, waited_us);
+    }
+
+    /// Take every system's accumulated async wait (µs) and clear the async
+    /// bucket. The shell converts to ms and calls `observe_extra_cost` per
+    /// system. Sync waits are deliberately not returned.
+    pub fn drain_async(&mut self) -> Vec<(String, u64)> {
+        std::mem::take(&mut self.async_waits)
+    }
+
+    /// Sync wait recorded for one system (µs), observability only.
+    pub fn sync_wait_us(&self, system: &str) -> u64 {
+        self.sync_waits
+            .iter()
+            .find(|(n, _)| n == system)
+            .map(|(_, v)| *v)
+            .unwrap_or(0)
+    }
+
+    /// Async wait recorded for one system (µs), before draining.
+    pub fn async_wait_us(&self, system: &str) -> u64 {
+        self.async_waits
+            .iter()
+            .find(|(n, _)| n == system)
+            .map(|(_, v)| *v)
+            .unwrap_or(0)
+    }
+
+    /// Total recorded wait (sync + async) in ms, for observability readouts.
+    pub fn wait_ms(&self) -> f32 {
+        let total: u64 = self
+            .sync_waits
+            .iter()
+            .chain(&self.async_waits)
+            .map(|(_, v)| *v)
+            .sum();
+        total as f32 / 1000.0
     }
 }
 
@@ -674,6 +769,45 @@ mod tests {
         meter.record(p.last_usage());
         assert_eq!(meter.calls, 2);
         assert!(meter.total.total() > 0);
+    }
+
+    // ---- v1-a/v1-b: InferWaitMeter ----
+
+    #[test]
+    fn wait_meter_split_sync_async_and_by_system() {
+        let mut meter = InferWaitMeter::default();
+        assert_eq!(meter.wait_ms(), 0.0);
+        meter.record_sync("l9-cognition", 5_000);
+        meter.record_sync("l9-cognition", 2_500);
+        meter.record_async("l9-director", 8_000);
+        assert_eq!(meter.sync_wait_us("l9-cognition"), 7_500);
+        assert_eq!(meter.async_wait_us("l9-director"), 8_000);
+        assert_eq!(meter.wait_ms(), 15.5);
+
+        // Drain returns only async, per system, and clears that bucket.
+        let drained = meter.drain_async();
+        assert_eq!(drained, vec![("l9-director".to_string(), 8_000)]);
+        assert_eq!(meter.async_wait_us("l9-director"), 0);
+        // Sync wait survives the async drain (observability bucket untouched).
+        assert_eq!(meter.sync_wait_us("l9-cognition"), 7_500);
+        assert!(meter.drain_async().is_empty());
+    }
+
+    #[test]
+    fn wait_meter_saturates_instead_of_wrapping() {
+        let mut meter = InferWaitMeter::default();
+        meter.record_async("l9-cognition", u64::MAX);
+        meter.record_async("l9-cognition", 1);
+        assert_eq!(meter.async_wait_us("l9-cognition"), u64::MAX);
+    }
+
+    #[test]
+    fn zero_wait_records_no_entry() {
+        let mut meter = InferWaitMeter::default();
+        meter.record_sync("l9-cognition", 0);
+        meter.record_async("l9-director", 0);
+        assert_eq!(meter.wait_ms(), 0.0);
+        assert!(meter.drain_async().is_empty());
     }
 
     // ---- v0.7 B5: CostMeter (PLAN-deepseek-upgrade) ----
