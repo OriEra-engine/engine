@@ -1,6 +1,6 @@
 # RFC 0003 — 任务槽位路由 + 服务等级分级：把"等模型的时间"接进帧预算
 
-- 状态 / Status: **v0 已落地 / Landed v0**；**v1-a 已落地**（2026-11-23：推理等待帧级计量，不选模型）；v1-b 异步折叠与选链熔断接线、v2 成本/隐私闸待评审
+- 状态 / Status: **v0 已落地 / Landed v0**；**v1-a 已落地**（同步等待帧级计量）；**v1-b-1 已落地**（异步等待计量与分桶）；b-2 选链/熔断/deadline、v2 成本/隐私闸待评审
 - 影响契约 / Contract: 新增 `oriera.infer.route.v1`（纯数据 schema）；`oriera.infer.provider.v1` **不动**
 - 性质 / Nature: 能力补全（路由分级 + 时延反馈 + 成本闸），非破坏
 - 关联 / See also: RFC 0002（注册表与槽位路由表：本 RFC 只补它没定的"分级与计量"）、`docs/BENCH-CONTRACT.md`（分段计时口径）、`docs/COMPUTE-BUDGET.md`
@@ -41,6 +41,23 @@ v0 **没做**（按 RFC 分期留给 v1/v2）：包 `FallbackProvider` 的选链
 v1-a **没做**：provider/选链/熔断接线、tier deadline 截断、异步 job 完成计时、`RouteDecision.waited_us` 回填路由台账、契约 schema 落 `contracts/`。
 
 验收：`oriera-infer` 73 passed（+2）、`oriera-agent` 95 passed（+2：helper 记账 + 导演同口径计时）、clippy `-D warnings` 零告警、fmt 干净、workspace 测试全过、JS 镜像 49 pass。补丁 `004-infer-wait-meter-v1a.patch`。
+
+---
+
+## v1-b-1 落地清单（2026-11-23：异步等待计量与分桶，仍不选模型）
+
+v1-b 拆两段：b-1 先把 off-frame 异步等待计量闭环（低风险）；b-2 选链/熔断/deadline 高风险段，rule 档双跑逐位一致后再接云链。
+
+| 提案 | 落地形态 |
+|---|---|
+| `JobDone.elapsed_us` | 作业从 submit 到完成的墙钟 µs，worker 内计时，成功/失败/panic 都记；这是 off-frame 等待，不进系统 `run` 实测墙钟 |
+| 仪表分桶 | `InferWaitMeter` 演进为按系统名分两桶：`sync_waits`（帧内同步等待，仅观测）/ `async_waits`（off-frame 异步等待，可折叠）。`record_sync` / `record_async` / `drain_async`（只取异步桶并清零）/ `sync_wait_us` / `async_wait_us` / `wait_ms` 合计观测 |
+| 收割入账 | 认知 harvest 与导演收割都把 `done.elapsed_us` 记入各自系统的 async 桶；同步路径仍记 sync 桶。双计防护由分桶保证：`drain_async` 不返回 sync 读数 |
+| 折叠接线（待装配） | 壳层帧循环在 tick 后 `drain_async()`，按系统名把 ms 经 `Scheduler::observe_extra_cost` 折进对应 allocator 段。引擎提供 API，装配期接线（与 B7 `regulator_hint_ms` 同款惯例）；当前仓库尚无开异步的 example 落点，实际折叠随异步装配点接入 |
+
+b-1 **没做**：选链/熔断接线、tier deadline 截断、`RouteDecision.waited_us` 回填路由台账、成本/隐私闸执行、契约 schema 落 `contracts/`。
+
+验收：`oriera-infer` 74 passed、`oriera-agent` 96 passed、clippy `-D warnings` 零告警、fmt 干净、workspace 573 passed / 0 failed、JS 镜像 49 pass。补丁 `005-async-wait-meter-b1.patch`。
 
 ---
 

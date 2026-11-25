@@ -24,6 +24,7 @@ use oriera_common::TokenUsage;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// One completed (or failed) inference job, drained by [`InferJobs::poll`].
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +36,11 @@ pub struct JobDone {
     /// Token usage measured by the worker right after the call
     /// (`TokenUsage::ZERO` when the backend does not meter).
     pub usage: TokenUsage,
+    /// Wall-clock from `submit` to completion, µs. This is the off-frame
+    /// async wait: it never entered the system's measured `run` elapsed,
+    /// so the L2 allocator only sees it if the caller folds it in
+    /// (v1-b). Success or failure both measure the full wait.
+    pub elapsed_us: u64,
 }
 
 /// Async wrapper around any [`ModelProvider`]: submit from the frame
@@ -98,6 +104,7 @@ impl<P: ModelProvider + 'static> InferJobs<P> {
         let provider = Arc::clone(&self.provider);
         let tx = self.tx.clone();
         let inflight = Arc::clone(&self.inflight);
+        let t0 = Instant::now();
         std::thread::spawn(move || {
             // provider.complete panic 不许永久占槽(L8 GenAiSystem 同款
             // 铁律:panic 的 job 不许永久占用提交预算)——接住并合成一条
@@ -110,6 +117,7 @@ impl<P: ModelProvider + 'static> InferJobs<P> {
                 // usage is per-call state, safe to read immediately after.
                 (result, provider.last_usage())
             }));
+            let elapsed_us = t0.elapsed().as_micros() as u64;
             let (result, usage) = match outcome {
                 Ok(pair) => pair,
                 Err(_) => (
@@ -119,7 +127,12 @@ impl<P: ModelProvider + 'static> InferJobs<P> {
                     TokenUsage::ZERO,
                 ),
             };
-            let _ = tx.send(JobDone { id, result, usage });
+            let _ = tx.send(JobDone {
+                id,
+                result,
+                usage,
+                elapsed_us,
+            });
             inflight.fetch_sub(1, Ordering::Release);
         });
         Ok(id)
@@ -208,6 +221,11 @@ mod tests {
         }
         let done = landed.expect("job lands within ~2s of simulated latency");
         assert_eq!(done.id, id);
+        assert!(
+            done.elapsed_us > 0,
+            "off-frame wait must be measured: {} µs",
+            done.elapsed_us
+        );
         assert!(done.result.unwrap().contains("埃塞"));
         assert_eq!(
             done.usage,

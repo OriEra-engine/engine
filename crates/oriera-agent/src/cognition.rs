@@ -205,6 +205,7 @@ impl<P: ModelProvider + 'static> CognitionSystem<P> {
             if done.usage.total() > 0 {
                 world.resource_or_default::<UsageMeter>().record(done.usage);
             }
+            meter_async_wait(world, self.name(), done.elapsed_us);
             let reply = done.result.unwrap_or_else(|_| "……".into());
             record_fingerprint(world, self.provider.as_ref(), &p.sys, &p.user, &reply);
             Self::land_reply(
@@ -384,7 +385,7 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
                 ChatMessage::user(user.clone()),
             ])
             .unwrap_or_else(|_| "……".into());
-        meter_wait(world, wait_t0.elapsed().as_micros() as u64);
+        meter_sync_wait(world, self.name(), wait_t0.elapsed().as_micros() as u64);
         meter_usage(world, &*self.provider);
         record_fingerprint(world, self.provider.as_ref(), &sys, &user, &reply);
         Self::land_reply(world, speaker_e, &persona, &partner, reply, turn, day);
@@ -648,15 +649,25 @@ fn meter_usage<P: ModelProvider>(world: &mut World, provider: &P) {
     }
 }
 
-/// Record one model call's wall-clock wait into the frame-level meter
-/// (v1-a). Zero wait adds nothing. On the sync path this wait is already
-/// inside the measured system elapsed, so the meter is read for
-/// observability; the async off-frame drain-and-fold lands in v1-b.
-fn meter_wait(world: &mut World, waited_us: u64) {
+/// Record an in-frame sync call's wait (µs). Observability only: this
+/// wait is already inside the measured system elapsed, so it must not be
+/// folded back into the allocator (double count).
+fn meter_sync_wait(world: &mut World, system: &str, waited_us: u64) {
     if waited_us > 0 {
         world
             .resource_or_default::<InferWaitMeter>()
-            .add_wait_us(waited_us);
+            .record_sync(system, waited_us);
+    }
+}
+
+/// Record an off-frame async job's wait (µs). This wait never entered the
+/// system's measured elapsed; the shell drains the async bucket and folds
+/// it into the allocator per system.
+fn meter_async_wait(world: &mut World, system: &str, waited_us: u64) {
+    if waited_us > 0 {
+        world
+            .resource_or_default::<InferWaitMeter>()
+            .record_async(system, waited_us);
     }
 }
 
@@ -745,6 +756,7 @@ impl<P: ModelProvider + 'static> System<World> for DirectorSystem<P> {
                 if done.usage.total() > 0 {
                     world.resource_or_default::<UsageMeter>().record(done.usage);
                 }
+                meter_async_wait(world, self.name(), done.elapsed_us);
                 let beat = done
                     .result
                     .ok()
@@ -781,7 +793,7 @@ impl<P: ModelProvider + 'static> System<World> for DirectorSystem<P> {
             .ok()
             .and_then(Self::shaped_beat)
             .unwrap_or_else(|| self.next_rule_beat());
-        meter_wait(world, wait_t0.elapsed().as_micros() as u64);
+        meter_sync_wait(world, self.name(), wait_t0.elapsed().as_micros() as u64);
         meter_usage(world, &*self.provider);
         self.land_beat(world, beat, turn, day);
     }
@@ -1106,23 +1118,29 @@ mod tests {
     }
 
     #[test]
-    fn wait_meter_records_call_wait_and_drains_per_frame() {
+    fn wait_meter_records_sync_and_async_wait_per_system() {
         let mut w = cafe_world();
-        meter_wait(&mut w, 5_000);
-        meter_wait(&mut w, 2_500);
+        meter_sync_wait(&mut w, "l9-cognition", 5_000);
+        meter_sync_wait(&mut w, "l9-cognition", 2_500);
+        meter_async_wait(&mut w, "l9-director", 8_000);
         let m = w
             .resource::<InferWaitMeter>()
             .expect("meter inserted by helper");
-        assert_eq!(m.waited_us, 7_500);
-        assert_eq!(m.wait_ms(), 7.5);
+        assert_eq!(m.sync_wait_us("l9-cognition"), 7_500);
+        assert_eq!(m.async_wait_us("l9-director"), 8_000);
+        assert_eq!(m.wait_ms(), 15.5);
+        // Only async drains; sync survives the drain for observability.
+        let drained = w.resource_mut::<InferWaitMeter>().unwrap().drain_async();
+        assert_eq!(drained, vec![("l9-director".to_string(), 8_000)]);
         assert_eq!(
-            w.resource_mut::<InferWaitMeter>().unwrap().drain_wait_us(),
+            w.resource::<InferWaitMeter>()
+                .unwrap()
+                .sync_wait_us("l9-cognition"),
             7_500
         );
-        assert_eq!(w.resource::<InferWaitMeter>().unwrap().waited_us, 0);
         // Zero wait inserts nothing — a rule-backend frame stays clean.
         let mut w2 = World::new();
-        meter_wait(&mut w2, 0);
+        meter_async_wait(&mut w2, "l9-cognition", 0);
         assert!(w2.resource::<InferWaitMeter>().is_none());
     }
 
@@ -1200,6 +1218,39 @@ mod tests {
         assert!(
             !log.turns.is_empty(),
             "single-NPC async must speak, never deadlock"
+        );
+    }
+
+    #[test]
+    fn async_harvest_records_off_frame_wait_into_async_bucket() {
+        // v1-b 回归钉：异步 job 的 off-frame 等待进 async 桶（可折叠），
+        // 不污染 sync 观测桶。
+        let mut w = cafe_world();
+        let mut cog = CognitionSystem::new(
+            Arc::new(SleepProvider {
+                inner: RuleProvider::new(),
+                delay: std::time::Duration::from_millis(2),
+            }),
+            1,
+        )
+        .with_max_pending(4)
+        .with_async();
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            cog.run(&ctx(), &mut w);
+        }
+        let m = w
+            .resource::<InferWaitMeter>()
+            .expect("an async job must have landed");
+        assert!(
+            m.async_wait_us(cog.name()) > 0,
+            "off-frame wait recorded in async bucket: {}",
+            m.async_wait_us(cog.name())
+        );
+        assert_eq!(
+            m.sync_wait_us(cog.name()),
+            0,
+            "async road must not touch sync bucket"
         );
     }
 
@@ -1291,9 +1342,9 @@ mod tests {
             .resource::<InferWaitMeter>()
             .expect("director sync call must record its wait");
         assert!(
-            m.waited_us > 0,
+            m.sync_wait_us(dir.name()) > 0,
             "director wait reached meter: {}",
-            m.waited_us
+            m.sync_wait_us(dir.name())
         );
     }
 
