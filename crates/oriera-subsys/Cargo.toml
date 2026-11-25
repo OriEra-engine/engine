@@ -31,6 +31,12 @@ serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 rapier3d = { workspace = true }
+# 物理步微基准（粒子积分梯度 / rigid3d 关节链步进）。
+criterion.workspace = true
+
+[[bench]]
+name = "physics"
+harness = false
 
 [features]
 default = []
