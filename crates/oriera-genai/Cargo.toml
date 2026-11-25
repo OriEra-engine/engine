@@ -27,6 +27,16 @@ serde_json = { workspace = true, optional = true }
 default = []
 providers = ["dep:serde_json", "dep:serde"]
 
+[dev-dependencies]
+# GLB 解码/闸口微基准在 bench 内逐字节构造 glTF 夹具（JSON chunk）。
+serde_json = { workspace = true }
+# L8 闸口耗时曲线基准（阈值 50k 顶点/100k 三角回调的依据）。
+criterion.workspace = true
+
+[[bench]]
+name = "glb_gate"
+harness = false
+
 [[example]]
 name = "rodin_demo"
 required-features = ["providers"]
