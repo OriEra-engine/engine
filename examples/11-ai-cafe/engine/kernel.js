@@ -25,13 +25,15 @@ export class MemoryStore {
   constructor(persistKey = "aicafe.mem.v1", capacity = 60, scoring = {}) {
     this.persistKey = persistKey;
     this.capacity = capacity;
-    const d = { keywordWeight: 1.6, importanceWeight: 0.45, recencyWeight: 2.0, aboutBonus: 1.2, minScore: 0.8 };
+    const d = { keywordWeight: 1.6, importanceWeight: 0.45, recencyWeight: 2.0, aboutBonus: 1.2, semanticWeight: 2.0, minScore: 0.8 };
     const num = (v, f) => (typeof v === "number" && Number.isFinite(v) ? v : f);
     this.scoring = {
       keywordWeight: num(scoring.keywordWeight, d.keywordWeight),
       importanceWeight: num(scoring.importanceWeight, d.importanceWeight),
       recencyWeight: num(scoring.recencyWeight, d.recencyWeight),
       aboutBonus: num(scoring.aboutBonus, d.aboutBonus),
+      // 语义项：JS 镜像暂无嵌入向量档，系数预留与 Rust 表对齐，离线档恒取 0。
+      semanticWeight: num(scoring.semanticWeight, d.semanticWeight),
       minScore: num(scoring.minScore, d.minScore),
     };
     this.mem = {};

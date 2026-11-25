@@ -777,6 +777,9 @@ impl MemoryStore {
     /// old store and carry on (self-healing philosophy). Episodes are
     /// re-`record`ed, so the 60-per-agent sliding window invariant
     /// applies to imports exactly as it does to live writes.
+    ///
+    /// 快照只携带条目：**不恢复** `scoring` 与 `capacity`——两者按设计
+    /// 不进 `version=1` 快照（保持字节稳定），装配期重新配置。
     pub fn from_json(s: &str) -> Result<Self, String> {
         use serde_json::Value;
         let v: Value =

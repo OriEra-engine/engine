@@ -18,6 +18,7 @@ pub mod health;
 pub mod http;
 pub mod jobs;
 pub mod provider;
+pub mod router;
 
 pub use health::{BreakerState, FallbackProvider, ProviderHealth};
 #[cfg(feature = "native-http")]
@@ -29,6 +30,10 @@ pub use provider::{
     HashEmbeddingProvider, InferError, ModelCaps, ModelPrice, ModelProvider, ProviderOptions,
     ProviderPreset, ReasoningEffort, Role, RuleProvider, StreamedOutcome, ToolCall, ToolDef,
     ToolOutcome, PROVIDER_PRESETS,
+};
+pub use router::{
+    CapNeed, Exhausted, Privacy, RouteDecision, RouteLedger, ServiceTier, SlotBudget, SlotRoute,
+    SlotRouter, ROUTE_LEDGER_CAP,
 };
 
 use oriera_core::{FrameCtx, System};
