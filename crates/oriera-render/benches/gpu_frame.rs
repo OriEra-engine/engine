@@ -429,13 +429,36 @@ fn measure(
     }
 }
 
-/// 与 `gpu.rs::new` 相同的实例构造与适配器选择，保证标注的就是被测的那个。
-fn adapter_label() -> String {
-    let backends = match std::env::var("WGPU_BACKEND").as_deref().map(str::trim) {
+/// 与 `gpu.rs::backends_from_env` 相同的后端取值表,保证标注的就是被测的那个。
+/// 两处必须同步:2026-11-25 在 Windows 真卡上 `WGPU_BACKEND=dx12` 因这里缺
+/// dx12 / metal / all 三个分支而回落到 PRIMARY,标出了一个并不是被测对象的
+/// 适配器(渲染器走 DX12,标签却写另一块卡的 Vulkan)。
+fn backends_from_env() -> wgpu::Backends {
+    match std::env::var("WGPU_BACKEND").as_deref().map(str::trim) {
         Ok("vulkan") => wgpu::Backends::VULKAN,
+        Ok("dx12") | Ok("dx12_native") => wgpu::Backends::DX12,
         Ok("gl") | Ok("opengl") => wgpu::Backends::GL,
-        _ => wgpu::Backends::PRIMARY,
-    };
+        Ok("metal") => wgpu::Backends::METAL,
+        Ok("all") => wgpu::Backends::all(),
+        _ => {
+            // 与 gpu.rs 的 DEFAULT_BACKENDS 同值:MinGW 下 DX12/Vulkan 适配器枚举会崩。
+            #[cfg(all(windows, target_env = "gnu"))]
+            {
+                wgpu::Backends::GL
+            }
+            #[cfg(not(all(windows, target_env = "gnu")))]
+            {
+                wgpu::Backends::PRIMARY
+            }
+        }
+    }
+}
+
+/// 适配器名称 / 设备类型 / 后端。设备类型取自独立的一次适配器查询,
+/// 所以 breakdown 同时打印被测渲染器自报的 [`HeadlessRenderer::adapter_info`],
+/// 两处不一致时读数不可信。
+fn adapter_label() -> String {
+    let backends = backends_from_env();
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
@@ -542,7 +565,9 @@ fn bench_gpu_frame(c: &mut Criterion) {
 /// 逐档打印：每帧 µs、占预算、相对上一档的边际 µs/单位、像素覆盖率。
 fn breakdown(r: &HeadlessRenderer) {
     println!("\n══════ GPU 帧成本（中位数，µs）══════");
-    println!("适配器：{}", adapter_label());
+    let label = adapter_label();
+    println!("适配器：{label}");
+    println!("被测渲染器自报：{}", r.adapter_info());
     println!("帧预算 60fps = {FRAME_BUDGET_US:.0} µs\n");
     println!(
         "{:<18} {:>6} {:>12} {:>8} {:>10} {:>9}",
@@ -587,7 +612,7 @@ fn breakdown(r: &HeadlessRenderer) {
                    两帧到手。"
     );
     // 设备类型取自适配器信息；软件光栅化的读数不能当 GPU 帧时间对外引用。
-    if adapter_label().contains("/ Cpu /") {
+    if label.contains("/ Cpu /") {
         println!(
             "\n注：本机适配器为软件光栅化（device_type=Cpu）。以上读数**不是 GPU 帧时间**，\n\
              只作同机回归；换真卡后需重跑。"
