@@ -13,6 +13,7 @@
 //! job (`oriera-agent`). This layer only executes what it is given.
 
 #![doc = include_str!("../README.md")]
+pub mod candidates;
 pub mod health;
 #[cfg(feature = "native-http")]
 pub mod http;
@@ -21,6 +22,7 @@ pub mod provider;
 pub mod registry;
 pub mod router;
 
+pub use candidates::{snapshot_candidates, HalfOpenPolicy};
 pub use health::{BreakerState, FallbackProvider, ProviderHealth};
 #[cfg(feature = "native-http")]
 pub use http::{HttpEmbeddingProvider, HttpProvider};
