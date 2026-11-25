@@ -1,6 +1,6 @@
 # RFC 0003 — 任务槽位路由 + 服务等级分级：把"等模型的时间"接进帧预算
 
-- 状态 / Status: **v0 已落地 / Landed v0**；**v1-a 已落地**（同步等待帧级计量）；**v1-b-1 已落地**（异步等待计量与分桶）；b-2 选链/熔断/deadline、v2 成本/隐私闸待评审
+- 状态 / Status: **v0 已落地 / Landed v0**；**v1-a 已落地**（同步等待帧级计量）；**v1-b-1 已落地**（异步等待计量与分桶）；**v1-b-2 决策层已落地**（纯函数选链 + 档位重试口径，未接调用路径）；b-2 包装层接线（注册表 / 包 FallbackProvider / deadline 截断）、v2 成本/隐私闸待评审
 - 影响契约 / Contract: 新增 `oriera.infer.route.v1`（纯数据 schema）；`oriera.infer.provider.v1` **不动**
 - 性质 / Nature: 能力补全（路由分级 + 时延反馈 + 成本闸），非破坏
 - 关联 / See also: RFC 0002（注册表与槽位路由表：本 RFC 只补它没定的"分级与计量"）、`docs/BENCH-CONTRACT.md`（分段计时口径）、`docs/COMPUTE-BUDGET.md`
@@ -58,6 +58,31 @@ v1-b 拆两段：b-1 先把 off-frame 异步等待计量闭环（低风险）；
 b-1 **没做**：选链/熔断接线、tier deadline 截断、`RouteDecision.waited_us` 回填路由台账、成本/隐私闸执行、契约 schema 落 `contracts/`。
 
 验收：`oriera-infer` 74 passed、`oriera-agent` 96 passed、clippy `-D warnings` 零告警、fmt 干净、workspace 573 passed / 0 failed、JS 镜像 49 pass。补丁 `005-async-wait-meter-b1.patch`。
+
+---
+
+## v1-b-2 决策层清单（2026-11-23：纯函数选链 + 档位重试口径，仍不接调用路径）
+
+b-2 是拍板标注的高风险跨层段。本轮只把**选链决策**落在 L7 纯函数层：不持 provider 实例、不跑熔断状态机、不改 L9 调用路径；包装层接线（注册表、包 `FallbackProvider`、deadline 截断）留评审后，rule 档双跑逐位一致是接云链的前置条件。
+
+| 提案 | 落地形态 |
+|---|---|
+| `ChainCandidate` | 装配期喂入的链上候选**只读快照**：`provider_id / caps / local / breaker_open`。路由器不持实例；`breaker_open` 只是"此刻跳过"的可见性标记，开合逻辑仍在 `health.rs` 一侧，由包装层从 `health_report()` 读入 |
+| `ResolvedPick` | 纯决策结果：`chain_index / provider_id / degraded_from`；首项可服务时 `degraded_from=None`，非首项记首项 id |
+| `SlotRouter::resolve` | 按 `chain` 顺序返回首个过闸项：熔断未开 + 隐私相符 + 能力满足。注册表缺该行 fail closed 跳过；未注册槽位 / 链上全不可用 → `None`（调用方兜底，rule 行应在链尾且永不 open）。纯函数，**不记台账、不发起调用**；选中后由包装层调 `observe` 落账 |
+| 隐私闸 | `Privacy::{Either,Local,Cloud}` 与行 `local` 标志匹配：`Local` 跳过云端行，`Cloud` 跳过本地行 |
+| 档位重试口径 | `ServiceTier::default_retries`：`Realtime` 0（deadline 内不重试，超时即降级）、`Balanced` 1、`Batch` 0（成本优先不重跑）。纯策略默认值，可被装配层按槽位预算覆盖；只给口径，不执行重试 |
+| 双跑一致性 | 同表同快照两次 `resolve` 逐位返回同一 `ResolvedPick`（测试钉死，与 `RouteLedger::matches` 同一套比对纪律） |
+
+b-2 本轮**没做**（留包装层 / 评审后）：
+
+- 装配期 preset id → provider 实例注册表；`resolve` 只选出 id，实例解析在包装层。
+- `SlotRouter` 包 `FallbackProvider`、真实熔断开合状态机接入（本轮只读 `breaker_open` 视图，不跑状态机）。
+- tier deadline 截断 / 超时取消：`complete` 现为同步阻塞、无 timeout 包装；重试的实际执行未接。
+- 认知 / 导演系统带 slot 概念、接 router 调用路径（跨 L7/L9，高风险，需评审 + rule 双跑 harness）。
+- `RouteDecision.waited_us` 回填台账、成本/隐私闸执行、契约 schema 落 `contracts/`。
+
+验收：`oriera-infer` 85 passed（+11）、`oriera-agent` 96 passed、clippy `-D warnings` 零告警、fmt 干净、workspace 584 passed / 0 failed、JS 镜像 124 pass / 0 fail。补丁 `006-router-resolve-decision-b2.patch`。
 
 ---
 

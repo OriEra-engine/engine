@@ -32,8 +32,8 @@ pub use provider::{
     ToolOutcome, PROVIDER_PRESETS,
 };
 pub use router::{
-    CapNeed, Exhausted, Privacy, RouteDecision, RouteLedger, ServiceTier, SlotBudget, SlotRoute,
-    SlotRouter, ROUTE_LEDGER_CAP,
+    CapNeed, ChainCandidate, Exhausted, Privacy, ResolvedPick, RouteDecision, RouteLedger,
+    ServiceTier, SlotBudget, SlotRoute, SlotRouter, ROUTE_LEDGER_CAP,
 };
 
 use oriera_core::{FrameCtx, System};
