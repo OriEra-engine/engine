@@ -77,6 +77,12 @@ urdf = ["rigid3d", "oriera-embodied/urdf"]
 oriera-render = { path = "../oriera-render" }
 # golden fixture tests (#98) read contracts/golden/*.json on every test leg
 serde_json = { workspace = true }
+# L9 记忆检索/写入微基准（性能矩阵：记忆分层窗口与两层合并打分成本）。
+criterion.workspace = true
+
+[[bench]]
+name = "memory"
+harness = false
 
 [[example]]
 name = "tool_loop"

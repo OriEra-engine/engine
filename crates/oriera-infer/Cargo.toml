@@ -32,3 +32,9 @@ native-http = ["dep:ureq", "dep:serde_json"]
 [dev-dependencies]
 # golden fixture test (#98) reads contracts/golden/presets.json on every test leg
 serde_json = { workspace = true }
+# 选链决策微基准（RFC 0003 #13 步 C 包装层接线前的决策开销基线）。
+criterion.workspace = true
+
+[[bench]]
+name = "router"
+harness = false
