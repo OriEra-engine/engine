@@ -16,10 +16,17 @@
 //! ```
 //! 中文夹具 240/1000/2000/5000/10000/20000 条报 p50/p95/p99，并在
 //! n=1000 档跑英文短词同构对照（同条目数、同命中比、同测量方法）。
+//!
+//! 022 倒排索引对照档：
+//! ```sh
+//! cargo bench -p oriera-agent --bench memory -- --nocapture indexbench
+//! ```
+//! 中文夹具 1000/5000/20000 条，倒排后端 vs 全量扫描，报 p50/p99 倍数。
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use oriera_agent::{
-    ConsolidationPolicy, Episode, LayeredMemoryBackend, MemoryScoring, MemoryStore,
+    ConsolidationPolicy, Episode, InvertedMemoryBackend, LayeredMemoryBackend, MemoryBackend,
+    MemoryScoring, MemoryStore,
 };
 use std::time::Instant;
 
@@ -92,6 +99,15 @@ fn en_store(n: usize) -> MemoryStore {
         store.record("npc", en_episode(i));
     }
     store
+}
+
+/// 与 `local_store(n)` 同条目同顺序的倒排索引后端（022 对照 bench 用）。
+fn inverted_store(n: usize) -> MemoryStore {
+    let mut backend = InvertedMemoryBackend::new();
+    for i in 0..n {
+        backend.record("ada", episode(i));
+    }
+    MemoryStore::with_backend(n.max(1), MemoryScoring::default(), Box::new(backend))
 }
 
 /// 样本分位数：`q ∈ [0,1]`，线性插值取最近秩（与既有 breakdown 同口径）。
@@ -178,6 +194,54 @@ fn bench_large_window(c: &mut Criterion) {
     println!("注：内部基线，未标定硬件与构建形态前不对外。\n");
 }
 
+/// 022 对照 bench：倒排索引后端 vs 全量扫描，中文夹具 1000/5000/20000，
+/// 报 p50/p99 与 p50 倍数。`-- --nocapture indexbench` 触发。
+fn bench_index(c: &mut Criterion) {
+    if !std::env::args().any(|a| a == "indexbench") {
+        let mut g = c.benchmark_group("indexbench_noop");
+        g.sample_size(10);
+        g.bench_function("noop", |b| b.iter(|| black_box(1u64)));
+        g.finish();
+        return;
+    }
+
+    const SAMPLES: usize = 60;
+    const WARMUP: usize = 10;
+    const K: usize = 10;
+
+    let measure = |store: &MemoryStore| -> [f64; 2] {
+        let mut v: Vec<f64> = Vec::with_capacity(SAMPLES + WARMUP);
+        for f in 0..WARMUP + SAMPLES {
+            let t = Instant::now();
+            black_box(store.retrieve(
+                black_box("ada"),
+                black_box("ada"),
+                black_box(TOPIC),
+                black_box(10_000 + f as u64),
+                black_box(K),
+            ));
+            v.push(t.elapsed().as_secs_f64() * 1e6);
+        }
+        v.drain(0..WARMUP);
+        [percentile(&mut v, 0.50), percentile(&mut v, 0.99)]
+    };
+
+    println!("\n────── 倒排索引 vs 全量扫描（中文夹具，k={K}）──────");
+    println!(
+        "{:>8} {:>14} {:>14} {:>14} {:>10}",
+        "n", "扫描 p50/p99", "索引 p50/p99", "p50 倍数", ""
+    );
+    for n in [1_000usize, 5_000, 20_000] {
+        let local = local_store(n);
+        let inv = inverted_store(n);
+        let [l50, l99] = measure(&local);
+        let [i50, i99] = measure(&inv);
+        let ratio = l50 / i50;
+        println!("{n:>8} {l50:>7.1}/{l99:<6.1} {i50:>7.1}/{i99:<6.1} {ratio:>10.2}×");
+    }
+    println!("注：目标 5000 条 p50 ≥5× 为推断目标，未达标如实记录；内部基线不对外。\n");
+}
+
 fn bench_retrieve(c: &mut Criterion) {
     let mut group = c.benchmark_group("memory_retrieve");
 
@@ -244,5 +308,11 @@ fn bench_record(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_retrieve, bench_record, bench_large_window);
+criterion_group!(
+    benches,
+    bench_retrieve,
+    bench_record,
+    bench_large_window,
+    bench_index
+);
 criterion_main!(benches);
