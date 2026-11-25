@@ -90,6 +90,11 @@ harness = false
 name = "world_frame"
 harness = false
 
+# 多环境并行缩放：N 个世界同步步进，量线程模型在哪一档开始咬人。
+[[bench]]
+name = "scenario_scale"
+harness = false
+
 [[example]]
 name = "tool_loop"
 path = "examples/tool_loop.rs"
