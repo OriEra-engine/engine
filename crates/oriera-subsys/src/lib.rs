@@ -33,6 +33,11 @@ pub use robot::{
     LinkSpec, RobotSpec, RobotSpecError, SelfCollision, GRIPPER_APPROACH_DEFAULT,
 };
 
+#[cfg(feature = "nav")]
+pub mod nav;
+#[cfg(feature = "nav")]
+pub use nav::{path_fingerprint, NavAgent, NavAgentSystem, NavError, NavMesh, NavPoly, Neighbor};
+
 #[cfg(feature = "cam")]
 pub mod camera;
 
