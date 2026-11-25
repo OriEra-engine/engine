@@ -17,12 +17,28 @@
 //!
 //! ## id 空间不闭合这件事
 //!
-//! 链上条目（[`SlotRoute::chain`](crate::router::SlotRoute)）用 preset id
-//! （`rule` / `zhipu` / `openai`），而 [`ModelProvider::id`](crate::provider::ModelProvider::id)
-//! 报的是**实例 id**（`rule` 行的实例叫 `rule-v1`）。两者不属于同一命名空间。
-//! 本模块按"先精确 preset id、再按 preset 的默认 model 名"两级查找闭合它：
-//! 后者命中 `rule-v1 → rule` 这类行，且不引入任何硬编码别名表。两级都不中
-//! 即 `unmatched`，绝不猜。
+//! 三个命名空间必须分清，混用会让整条链静默判死：
+//!
+//! | 空间 | 形态 | 谁在用 |
+//! |---|---|---|
+//! | preset id | `rule` / `zhipu` | [`SlotRoute::chain`](crate::router::SlotRoute)、
+//!   [`ChainCandidate::provider_id`](crate::router::ChainCandidate) |
+//! | 实例 id | `rule-v1`（`rule` 行的默认 model 名） | [`ModelProvider::id`](crate::provider::ModelProvider::id)、
+//!   [`FallbackProvider::health_report`](crate::health::FallbackProvider::health_report)、
+//!   [`RouteDecision::provider_id`](crate::router::RouteDecision)（台账） |
+//!
+//! `health_report` 报的是**实例 id**，而 `resolve` 按 **preset id** 匹配
+//! chain。本模块负责这次翻译：按"精确 preset id、再按 preset 默认 model 名"
+//! 两级查找定位声明行（后者命中 `rule-v1 → rule`），**产出的
+//! `provider_id` 一律是 preset id**——这是 `ChainCandidate` 的既有契约，
+//! 不是可选项。实例 id 不进候选视图；包装层回填台账时再从实例上取
+//! `id()`，两个空间各归各位。
+//!
+//! 两级都不中即 `unmatched`，绝不猜、绝不引入硬编码别名表。
+//!
+//! 同一 preset 的多个实例（如两个网关都声明 `zhipu`）会产出同名候选，
+//! `resolve` 取链序首个；需要区分时应给它们不同的 preset 行，而不是
+//! 指望候选视图替装配层裁决。
 
 use crate::health::BreakerState;
 use crate::provider::ProviderPreset;
@@ -78,9 +94,9 @@ fn lookup<'a>(presets: &'a [ProviderPreset], id: &str) -> Option<&'a ProviderPre
 ///
 /// 返回 `(candidates, unmatched)`：
 /// - `candidates` 顺序与 `health` 一致（即装配链序），每项 `provider_id`
-///   是**健康快照里的原始 id**——`resolve` 要按它与 `SlotRoute::chain`
-///   匹配，所以不能替换成 preset id；
-/// - `unmatched` 是查不到声明的 id 清单，调用方据此报装配错误或降级。
+///   是**声明行的 preset id**——`ChainCandidate` 的契约要求它与
+///   `SlotRoute::chain` 对齐，`resolve` 正是按它匹配。实例 id 不进这里；
+/// - `unmatched` 是查不到声明的**实例 id** 清单，调用方据此报装配错误或降级。
 pub fn snapshot_candidates(
     health: &[(&str, BreakerState, u32)],
     presets: &[ProviderPreset],
@@ -92,7 +108,8 @@ pub fn snapshot_candidates(
     for &(id, state, _streak) in health {
         match lookup(presets, id) {
             Some(preset) => candidates.push(ChainCandidate {
-                provider_id: id.to_string(),
+                // preset id，不是实例 id：与 SlotRoute::chain 同一空间。
+                provider_id: preset.id.to_string(),
                 caps: preset.caps,
                 local: preset.local,
                 breaker_open: policy.skips(state),
@@ -130,8 +147,8 @@ mod tests {
         );
         assert_eq!(cands.len(), 1);
         assert_eq!(
-            cands[0].provider_id, "rule-v1",
-            "id stays as health reported it"
+            cands[0].provider_id, "rule",
+            "candidate id must be the PRESET id (chain space), not the instance id"
         );
         assert!(!cands[0].breaker_open);
         let preset = rule_preset();
@@ -237,6 +254,6 @@ mod tests {
             HalfOpenPolicy::default(),
         );
         let ids: Vec<&str> = cands.iter().map(|c| c.provider_id.as_str()).collect();
-        assert_eq!(ids, vec!["rule-v1", "zhipu"]);
+        assert_eq!(ids, vec!["rule", "zhipu"]);
     }
 }
