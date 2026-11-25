@@ -98,6 +98,55 @@ impl UsageMeter {
     }
 }
 
+/// Per-frame accumulated model wait time (µs). v1-a: the frame-level
+/// pressure signal that lets the L2 allocator *see* how long the frame
+/// blocked on the model, separate from engine-side work.
+///
+/// Two meters split the job: this one is the **frame-level pressure**
+/// (how long the frame blocked on the model, fed to regulation); the
+/// [`RouteLedger`](crate::router::RouteLedger) is the **per-call audit**
+/// (which slot/provider served, with what fingerprint). Do not merge
+/// them — regulation needs a per-frame sum, audit needs per-call rows.
+///
+/// **Fold discipline (v1-a):** the sync path blocks inside the system's
+/// `run`, so the scheduler's measured system elapsed already contains
+/// this wait — folding it on top would double count. The meter is read
+/// for observability there. Folding the drained value into
+/// [`Scheduler::observe_extra_cost`](oriera_core::Scheduler::observe_extra_cost)
+/// is reserved for the off-frame async job path (v1-b), where the wait
+/// happens outside `run` and never reaches the wall-clock measurement.
+///
+/// Drain-and-reset by design: one frame's wait is consumed once, then
+/// cleared.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InferWaitMeter {
+    /// Wall-clock time blocked on a model call this frame, µs.
+    pub waited_us: u64,
+}
+
+impl InferWaitMeter {
+    /// Add one call's wait (µs); saturating so a pathological clock can
+    /// not wrap the accumulator.
+    pub fn add_wait_us(&mut self, waited_us: u64) {
+        self.waited_us = self.waited_us.saturating_add(waited_us);
+    }
+
+    /// Take this frame's accumulated wait and reset the meter. On the
+    /// async path the shell folds the drained ms onto the spending system
+    /// via `observe_extra_cost`; on the sync path this value is already
+    /// inside the measured elapsed, so it is read for observability only.
+    pub fn drain_wait_us(&mut self) -> u64 {
+        let v = self.waited_us;
+        self.waited_us = 0;
+        v
+    }
+
+    /// Accumulated wait in ms (the unit the allocator observes in).
+    pub fn wait_ms(&self) -> f32 {
+        self.waited_us as f32 / 1000.0
+    }
+}
+
 /// Cumulative money ledger over model calls (v0.7, PLAN-deepseek-upgrade
 /// B5). Pair with [`UsageMeter`]: usage counts tokens, this counts what
 /// they cost — the cache-hit discount ([`TokenUsage::cached`]) shows up
@@ -679,6 +728,30 @@ mod tests {
         meter.record(p.last_usage());
         assert_eq!(meter.calls, 2);
         assert!(meter.total.total() > 0);
+    }
+
+    // ---- v1-a: InferWaitMeter ----
+
+    #[test]
+    fn wait_meter_accumulates_drains_and_resets_per_frame() {
+        let mut meter = InferWaitMeter::default();
+        assert_eq!(meter.wait_ms(), 0.0);
+        meter.add_wait_us(5_000);
+        meter.add_wait_us(2_500);
+        assert_eq!(meter.waited_us, 7_500);
+        assert_eq!(meter.wait_ms(), 7.5);
+        // Drain-and-reset: one frame's wait is folded once, then cleared.
+        assert_eq!(meter.drain_wait_us(), 7_500);
+        assert_eq!(meter.waited_us, 0);
+        assert_eq!(meter.drain_wait_us(), 0);
+    }
+
+    #[test]
+    fn wait_meter_saturates_instead_of_wrapping() {
+        let mut meter = InferWaitMeter::default();
+        meter.add_wait_us(u64::MAX);
+        meter.add_wait_us(1);
+        assert_eq!(meter.waited_us, u64::MAX);
     }
 
     // ---- v0.7 B5: CostMeter (PLAN-deepseek-upgrade) ----

@@ -11,7 +11,7 @@
 use crate::memory::{Episode, MemoryStore, RecallEvent, RecallLedger};
 use oriera_core::{FrameCtx, System};
 use oriera_ecs::{Entity, World};
-use oriera_infer::{ChatMessage, InferJobs, ModelProvider, UsageMeter};
+use oriera_infer::{ChatMessage, InferJobs, InferWaitMeter, ModelProvider, UsageMeter};
 use std::sync::Arc;
 
 /// NPC identity component (L3, registered by the application).
@@ -372,6 +372,11 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
             return;
         };
 
+        // v1-a: time the blocking call so model wait is separable from
+        // engine work. The sync wait already sits inside the system's
+        // measured elapsed, so this meter is read for observability; the
+        // off-frame async fold lands in v1-b. No fingerprint/state change.
+        let wait_t0 = std::time::Instant::now();
         let reply = self
             .provider
             .complete(&[
@@ -379,6 +384,7 @@ impl<P: ModelProvider + 'static> System<World> for CognitionSystem<P> {
                 ChatMessage::user(user.clone()),
             ])
             .unwrap_or_else(|_| "……".into());
+        meter_wait(world, wait_t0.elapsed().as_micros() as u64);
         meter_usage(world, &*self.provider);
         record_fingerprint(world, self.provider.as_ref(), &sys, &user, &reply);
         Self::land_reply(world, speaker_e, &persona, &partner, reply, turn, day);
@@ -642,6 +648,18 @@ fn meter_usage<P: ModelProvider>(world: &mut World, provider: &P) {
     }
 }
 
+/// Record one model call's wall-clock wait into the frame-level meter
+/// (v1-a). Zero wait adds nothing. On the sync path this wait is already
+/// inside the measured system elapsed, so the meter is read for
+/// observability; the async off-frame drain-and-fold lands in v1-b.
+fn meter_wait(world: &mut World, waited_us: u64) {
+    if waited_us > 0 {
+        world
+            .resource_or_default::<InferWaitMeter>()
+            .add_wait_us(waited_us);
+    }
+}
+
 /// AI director: every `interval` cognition turns, advance the story.
 pub struct DirectorSystem<P: ModelProvider> {
     provider: Arc<P>,
@@ -754,12 +772,16 @@ impl<P: ModelProvider + 'static> System<World> for DirectorSystem<P> {
             return;
         }
         let (sys, user) = Self::director_prompts(world, day);
+        // v1-a: 与认知台词路径同一口径——阻塞等待记入帧级仪表。同步
+        // 等待已在系统实测墙钟内，仪表此处只做拆分观测；异步折叠留 v1-b。
+        let wait_t0 = std::time::Instant::now();
         let beat = self
             .provider
             .complete(&[ChatMessage::system(sys), ChatMessage::user(user)])
             .ok()
             .and_then(Self::shaped_beat)
             .unwrap_or_else(|| self.next_rule_beat());
+        meter_wait(world, wait_t0.elapsed().as_micros() as u64);
         meter_usage(world, &*self.provider);
         self.land_beat(world, beat, turn, day);
     }
@@ -927,6 +949,25 @@ mod tests {
         }
     }
 
+    /// Provider that blocks for a fixed delay before answering — pins that
+    /// the director's sync call also reaches the frame-level wait meter.
+    struct SleepProvider {
+        inner: RuleProvider,
+        delay: std::time::Duration,
+    }
+    impl ModelProvider for SleepProvider {
+        fn id(&self) -> &str {
+            "sleep"
+        }
+        fn complete(
+            &self,
+            messages: &[oriera_infer::ChatMessage],
+        ) -> Result<String, oriera_infer::InferError> {
+            std::thread::sleep(self.delay);
+            self.inner.complete(messages)
+        }
+    }
+
     /// #102: a provider that reports a run-level seed — the ledger must
     /// carry it into the prompt fingerprint (Pinned 对账的前提：同文案
     /// 不同 seed 的两次调用在台账里可区分)。
@@ -1062,6 +1103,27 @@ mod tests {
             w.insert(e, Mood::Neutral);
         }
         w
+    }
+
+    #[test]
+    fn wait_meter_records_call_wait_and_drains_per_frame() {
+        let mut w = cafe_world();
+        meter_wait(&mut w, 5_000);
+        meter_wait(&mut w, 2_500);
+        let m = w
+            .resource::<InferWaitMeter>()
+            .expect("meter inserted by helper");
+        assert_eq!(m.waited_us, 7_500);
+        assert_eq!(m.wait_ms(), 7.5);
+        assert_eq!(
+            w.resource_mut::<InferWaitMeter>().unwrap().drain_wait_us(),
+            7_500
+        );
+        assert_eq!(w.resource::<InferWaitMeter>().unwrap().waited_us, 0);
+        // Zero wait inserts nothing — a rule-backend frame stays clean.
+        let mut w2 = World::new();
+        meter_wait(&mut w2, 0);
+        assert!(w2.resource::<InferWaitMeter>().is_none());
     }
 
     /// 评审 R3 P0 回归钉：单 NPC 卡司 + max_pending=4——修复前的提交
@@ -1210,6 +1272,29 @@ mod tests {
         let s = w.resource::<WorldStory>().unwrap();
         assert_eq!(s.beats.len(), 6);
         assert_eq!(s.day, 3); // every 3rd beat advances the day
+    }
+
+    #[test]
+    fn director_sync_call_feeds_the_wait_meter_too() {
+        // S1 回归钉：导演与台词同口径——阻塞等待都进同一帧级仪表，
+        // 不允许只计量一类模型调用。
+        let mut w = cafe_world();
+        let mut dir = DirectorSystem::new(
+            Arc::new(SleepProvider {
+                inner: RuleProvider::new(),
+                delay: std::time::Duration::from_millis(2),
+            }),
+            1,
+        );
+        dir.run(&ctx(), &mut w);
+        let m = w
+            .resource::<InferWaitMeter>()
+            .expect("director sync call must record its wait");
+        assert!(
+            m.waited_us > 0,
+            "director wait reached meter: {}",
+            m.waited_us
+        );
     }
 
     #[test]

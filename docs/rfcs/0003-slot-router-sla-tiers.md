@@ -1,6 +1,6 @@
 # RFC 0003 — 任务槽位路由 + 服务等级分级：把"等模型的时间"接进帧预算
 
-- 状态 / Status: **v0 已落地 / Landed v0**（2026-11-23：数据类型 + 决策台账在 `oriera-infer/src/router.rs`；v1 接 L2 仲裁、v2 成本/隐私闸待评审）
+- 状态 / Status: **v0 已落地 / Landed v0**；**v1-a 已落地**（2026-11-23：推理等待帧级计量，不选模型）；v1-b 异步折叠与选链熔断接线、v2 成本/隐私闸待评审
 - 影响契约 / Contract: 新增 `oriera.infer.route.v1`（纯数据 schema）；`oriera.infer.provider.v1` **不动**
 - 性质 / Nature: 能力补全（路由分级 + 时延反馈 + 成本闸），非破坏
 - 关联 / See also: RFC 0002（注册表与槽位路由表：本 RFC 只补它没定的"分级与计量"）、`docs/BENCH-CONTRACT.md`（分段计时口径）、`docs/COMPUTE-BUDGET.md`
@@ -25,6 +25,22 @@
 v0 **没做**（按 RFC 分期留给 v1/v2）：包 `FallbackProvider` 的选链与熔断接线、deadline 截断、成本/隐私闸执行、`RouteDecision.waited_us` 进 L2 `BudgetAllocator`、契约 schema 落 `contracts/`。
 
 验收：`oriera-infer` 71 passed、`oriera-agent` 93 passed、clippy `-D warnings` 零告警、fmt 干净、workspace `cargo check` 全过、JS 镜像 43 pass。补丁 `003-router-sla-v0.patch`。
+
+---
+
+## v1-a 落地清单（2026-11-23：推理等待帧级计量，不选模型）
+
+评审拍板把 v1 拆两步：v1-a 低风险只把等待时间计量出来；v1-b 高风险再接选链/熔断与异步折叠。
+
+| 提案 | 落地形态 |
+|---|---|
+| `InferWaitMeter` | infer 资源：`waited_us` 帧级累加；`add_wait_us` 饱和累加、`drain_wait_us` 取走清零、`wait_ms()` µs→ms 换算。与 `RouteLedger` 分工：本仪表是帧级压力合计，台账是每-call 审计行，不合并 |
+| 同步路径计时 | cognition 同步 `complete(...)` 用 `Instant` 包住，返回后 `meter_wait` 写入 meter；**台词与导演 beat 两类调用同口径**，导演路径对称计时。零等待不插资源（rule 后端帧保持干净）。异步 job 路径本轮不接 |
+| 折叠纪律（评审现场核对后修正） | 同步路径的阻塞等待**已包含**在系统 `run` 的实测墙钟内，再折进 `observe_extra_cost` 会重复计数；本轮 meter 只做可观测——把"模型等待"与"引擎工作"拆开可见。off-frame 异步等待的折叠留 v1-b |
+
+v1-a **没做**：provider/选链/熔断接线、tier deadline 截断、异步 job 完成计时、`RouteDecision.waited_us` 回填路由台账、契约 schema 落 `contracts/`。
+
+验收：`oriera-infer` 73 passed（+2）、`oriera-agent` 95 passed（+2：helper 记账 + 导演同口径计时）、clippy `-D warnings` 零告警、fmt 干净、workspace 测试全过、JS 镜像 49 pass。补丁 `004-infer-wait-meter-v1a.patch`。
 
 ---
 
@@ -91,6 +107,8 @@ RouteDecision {
 ### 5. 接 L2：只加数据，不改签名
 
 `InferSystem` 把 `RouteDecision.waited_us` 折进 `BudgetAllocator::observe` 的 `infer` 段。`observe` 签名不动——它本来就吃 `&[(String, f32)]`。Realtime 槽位再加一个 per-frame deadline（帧预算内的硬截断），由帧循环侧传进来。
+
+> v1-a 修订（见上节）：同步阻塞等待已在 `run` 墙钟内，不重复折叠；`InferWaitMeter` 先做拆分计量。off-frame 异步等待经 `drain_wait_us` → `observe_extra_cost` 的折叠与 deadline 截断归 v1-b。
 
 ### 6. 契约
 
