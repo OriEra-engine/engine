@@ -108,44 +108,12 @@ fn fs(in: VSOut) -> @location(0) vec4f {
 }
 "#;
 
-/// #152 第四刀:PBR 最小着色(Cook-Torrance GGX + Smith-Schlick 遮蔽 + Schlick
-/// 菲涅尔 + 半球环境替身)。MR 打包纹理 G=粗糙度 B=金属度与顶点因子相乘;
-/// **无 MR 纹理时顶点 metallic 烘 0**(无 IBL 的金属黑兜底,行业通行)。
-/// 单方向光,光强打包 light_dir.w。世界坐标顶点,UV,顶点色=材质 baseColorFactor。
-const SHADER_VIEW_PBR: &str = r#"
-struct VSOut {
-    @builtin(position) pos: vec4f,
-    @location(0) normal: vec3f,
-    @location(1) uv: vec2f,
-    @location(2) color: vec4f,
-    @location(3) mr: vec2f,
-    @location(4) world: vec3f,
-};
-
-struct Cam {
-    mvp: mat4x4f,
-    cam_pos: vec4f,
-    light_dir: vec4f,
-};
-
-@group(0) @binding(0) var<uniform> cam: Cam;
-@group(1) @binding(0) var base_tex: texture_2d<f32>;
-@group(1) @binding(1) var mr_tex: texture_2d<f32>;
-@group(1) @binding(2) var base_samp: sampler;
-
-@vertex
-fn vs(@location(0) p: vec3f, @location(1) n: vec3f, @location(2) uv: vec2f,
-      @location(3) color: vec4f, @location(4) mr: vec2f) -> VSOut {
-    var out: VSOut;
-    out.pos = cam.mvp * vec4f(p, 1.0);
-    out.world = p;
-    out.normal = n;
-    out.uv = uv;
-    out.color = color;
-    out.mr = mr;
-    return out;
-}
-
+/// PBR 片元:快照路径(`vs`)与持久路径(`gpu::persist` 的 `vs_inst`)共用
+/// 同一份源码,避免改着色器时只改一边(RFC 0004 风险 5)。必须是展开为
+/// 字面量的宏——`concat!` 不接受常量。
+macro_rules! pbr_fragment {
+    () => {
+        r#"
 @fragment
 fn fs(in: VSOut) -> @location(0) vec4f {
     let base = textureSample(base_tex, base_samp, in.uv);
@@ -184,7 +152,59 @@ fn fs(in: VSOut) -> @location(0) vec4f {
     let rgb = diff + spec + ambient;
     return vec4f(rgb, alpha);
 }
+"#
+    };
+}
 
+/// 持久渲染路径(RFC 0004 步 1a):资源跨帧复用 + 实例化 + 显式回读。
+/// 声明在 `pbr_fragment!` 之后——两条路径共用同一份片元着色器源码。
+pub mod persist;
+
+pub use persist::{
+    DrawList, FrameStats, GpuMaterial, GpuMesh, Instance, RenderTarget, DEFAULT_INSTANCE_CAPACITY,
+};
+
+/// #152 第四刀:PBR 最小着色(Cook-Torrance GGX + Smith-Schlick 遮蔽 + Schlick
+/// 菲涅尔 + 半球环境替身)。MR 打包纹理 G=粗糙度 B=金属度与顶点因子相乘;
+/// **无 MR 纹理时顶点 metallic 烘 0**(无 IBL 的金属黑兜底,行业通行)。
+/// 单方向光,光强打包 light_dir.w。世界坐标顶点,UV,顶点色=材质 baseColorFactor。
+const SHADER_VIEW_PBR: &str = concat!(
+    r#"
+struct VSOut {
+    @builtin(position) pos: vec4f,
+    @location(0) normal: vec3f,
+    @location(1) uv: vec2f,
+    @location(2) color: vec4f,
+    @location(3) mr: vec2f,
+    @location(4) world: vec3f,
+};
+
+struct Cam {
+    mvp: mat4x4f,
+    cam_pos: vec4f,
+    light_dir: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> cam: Cam;
+@group(1) @binding(0) var base_tex: texture_2d<f32>;
+@group(1) @binding(1) var mr_tex: texture_2d<f32>;
+@group(1) @binding(2) var base_samp: sampler;
+
+@vertex
+fn vs(@location(0) p: vec3f, @location(1) n: vec3f, @location(2) uv: vec2f,
+      @location(3) color: vec4f, @location(4) mr: vec2f) -> VSOut {
+    var out: VSOut;
+    out.pos = cam.mvp * vec4f(p, 1.0);
+    out.world = p;
+    out.normal = n;
+    out.uv = uv;
+    out.color = color;
+    out.mr = mr;
+    return out;
+}
+"#,
+    pbr_fragment!(),
+    r#"
 /// #153 M1:关节面板(group2 uniform,bind→世界)。MAX_JOINTS=256 与 Rust 侧
 /// 常量一致(256×64B=16KB,远低于默认 max_uniform_buffer_binding_size)。
 struct Joints {
@@ -222,7 +242,8 @@ fn vs_skinned(@location(0) p: vec3f, @location(1) n: vec3f, @location(2) uv: vec
     out.mr = mr;
     return out;
 }
-"#;
+"#,
+);
 
 /// 场景渲染主光方向(#152 第四刀;与 LIGHT 同向,存 w 分量作强度)。
 const SCENE_LIGHT_DIR: [f32; 4] = [-0.45, 0.55, -0.70, 1.0];
@@ -316,6 +337,8 @@ pub struct HeadlessRenderer {
     /// 纹理采样器(LINEAR/CLAMP,PBR 与纹理路径共用)。
     scene_sampler: wgpu::Sampler,
     adapter_info: String,
+    /// 持久渲染路径的管线、常驻缓冲与资源创建计数(RFC 0004 步 1a)。
+    persist: persist::PersistState,
 }
 
 /// 已上传的 sRGB 纹理及视图(与纹理管线配套)。
@@ -795,6 +818,8 @@ impl HeadlessRenderer {
                 ..Default::default()
             });
 
+            let persist = persist::PersistState::new(&device, &camera_bgl);
+
             Ok(HeadlessRenderer {
                 device,
                 queue,
@@ -809,6 +834,7 @@ impl HeadlessRenderer {
                 dummy_mr_view,
                 scene_sampler,
                 adapter_info: format!("{} ({})", info.name, info.backend),
+                persist,
             })
         })
     }

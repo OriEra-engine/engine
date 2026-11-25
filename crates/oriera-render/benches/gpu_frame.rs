@@ -1,4 +1,4 @@
-//! L5 GPU 帧成本微基准 —— `HeadlessRenderer::render_scene_views`。
+//! L5 GPU 帧成本微基准 —— 快照路径 `render_scene_views` 与持久路径 `render_draw_list`。
 //!
 //! 这是渲染层第一个基准。此前的整机基准（`oriera-agent/benches/world_frame`）
 //! 只含物理 / 记忆 / 推理 / 闸口四段，**不含渲染**——所以"OriEra 能不能
@@ -10,6 +10,14 @@
 //! |---|---|---|
 //! | 绘制数 | `draw/n{parts}`：n 个方块平铺在视锥内，互不遮挡 | draw call、顶点上传、bind group 构造 |
 //! | 填充率 | `fill/overdraw{parts}`：n 个方块叠在同一位置 | 片元着色、深度测试 |
+//!
+//! 持久路径（RFC 0004 步 1a）再两根轴，布局与 `draw/n` 相同（同网格、同分辨率、
+//! 同覆盖率），区别只在资源是否跨帧复用、绘制是否实例化：
+//!
+//! | 轴 | 场景 | 量的是什么 |
+//! |---|---|---|
+//! | `persist/n` | `render_draw_list` + 显式 `read_target` | 与 `draw/n` **同口径**：都等到 GPU 出像素 |
+//! | `psubmit/n` | 只 `render_draw_list`，不回读 | 纯 CPU 提交成本（GPU 侧未完成，不含光栅化） |
 //!
 //! 分辨率两档：966×544（对标演示视频）与 1920×1080。
 //!
@@ -36,18 +44,32 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use oriera_render::camera::Camera;
-use oriera_render::gpu::{HeadlessRenderer, ScenePart};
+use oriera_render::gpu::{DrawList, HeadlessRenderer, RenderedImage, ScenePart};
 
 const FRAME_BUDGET_US: f64 = 16_667.0;
 /// 两档分辨率的宽高比相同（约 16:9），网格按它铺满。
 const ASPECT: f32 = 16.0 / 9.0;
 /// QY-Demo 的分辨率，以及常见的 1080p。
 const RESOLUTIONS: [(u32, u32); 2] = [(966, 544), (1920, 1080)];
-/// 两根轴与各自的档位；criterion 主体与 breakdown 共用，避免两边口径不一致。
+/// 四根轴；criterion 主体与 breakdown 共用，避免两边口径不一致。
 /// fill 轴全屏 overdraw 在软件光栅化下每倍约 1–4 ms，档位压到 64 以内保证单帧可测。
-const AXES: [(&str, bool, &[usize]); 2] = [
-    ("draw", true, &[1, 64, 512, 2048]),
-    ("fill", false, &[4, 16, 64]),
+#[derive(Clone, Copy)]
+enum Axis {
+    /// 快照路径，平铺：增长的是绘制数。
+    Draw,
+    /// 快照路径，全叠：增长的是 overdraw 倍数。
+    Fill,
+    /// 持久路径，提交 + 显式回读（与快照路径同口径）。
+    Persist,
+    /// 持久路径，只提交不回读。
+    PersistSubmit,
+}
+
+const AXES: [(&str, Axis, &[usize]); 4] = [
+    ("draw", Axis::Draw, &[1, 64, 512, 2048]),
+    ("fill", Axis::Fill, &[4, 16, 64]),
+    ("persist", Axis::Persist, &[1, 64, 512, 2048]),
+    ("psubmit", Axis::PersistSubmit, &[1, 64, 512, 2048]),
 ];
 
 struct Mesh {
@@ -200,7 +222,82 @@ fn frame_us(
     t.elapsed().as_secs_f64() * 1e6
 }
 
+/// 持久路径的一帧。`readback=true` 时连同显式回读一起计时，
+/// 与快照路径同口径（都等到 GPU 出像素）。
+fn persist_us(
+    r: &HeadlessRenderer,
+    list: &DrawList<'_>,
+    cam: &Camera,
+    target: &oriera_render::gpu::RenderTarget,
+    readback: bool,
+) -> f64 {
+    let t = std::time::Instant::now();
+    let stats = r
+        .render_draw_list(list, cam, target)
+        .expect("persist render must succeed");
+    if readback {
+        let img = r.read_target(target).expect("readback must succeed");
+        black_box(&img.bgra);
+    }
+    black_box(stats.draw_calls);
+    t.elapsed().as_secs_f64() * 1e6
+}
+
+/// 持久路径的场景：单位方块只上传一次，位置与大小走模型矩阵。
+/// 布局与 `scene(n, true, ..)` 逐格相同，所以覆盖率可比。注意 z **不缩放**——
+/// 快照路径只缩放 x、y（方块深度保持 ±1），这里必须一致，否则正面离镜头更近、
+/// 投影变大，两轴的覆盖率就不是一回事了。
+fn with_persist<T>(r: &HeadlessRenderer, n: usize, f: impl FnOnce(&DrawList<'_>) -> T) -> T {
+    let cube = unit_cube();
+    let mesh = r
+        .upload_mesh(&cube.positions, Some(&cube.normals), None, &cube.indices)
+        .expect("upload_mesh must succeed");
+    let mat = r.create_material([0.6, 0.6, 0.62, 1.0], 0.0, 0.8, None, None);
+    // 容量在计时之外显式给足：帧内不重建。
+    r.reserve_instances(n.max(1) as u32);
+    let side = (n as f32).sqrt().ceil().max(1.0);
+    let half_h = 90.0 * 30f32.to_radians().tan() * 0.95;
+    let cell = 2.0 * half_h * ASPECT / side;
+    let half = cell * 0.45;
+    let mut list = DrawList::new();
+    for i in 0..n {
+        let dx = ((i as f32 % side) + 0.5 - side / 2.0) * cell;
+        let dy = ((i as f32 / side) + 0.5 - side / 2.0) * cell;
+        list.push(
+            &mesh,
+            &mat,
+            [
+                [half, 0.0, 0.0, dx],
+                [0.0, half, 0.0, dy],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        );
+    }
+    f(&list)
+}
+
+/// 清屏色的 BGRA 取整值（CLEAR = 0.05 / 0.08 / 0.13）。
+const BACKGROUND: [u8; 4] = [33, 20, 13, 255];
+
 /// 非背景像素占比：确认场景真的被画出来了，而不是整张空图。
+/// 背景色取固定值而不是"左上角像素"——满屏场景里左上角会被盖住，
+/// 那样会把整片正面当成背景，报出一个接近 0 的假覆盖率。
+fn lit_ratio(img: &RenderedImage) -> f64 {
+    let px = |i: usize| -> [u8; 4] {
+        [
+            img.bgra[i],
+            img.bgra[i + 1],
+            img.bgra[i + 2],
+            img.bgra[i + 3],
+        ]
+    };
+    let lit = (0..img.bgra.len() / 4)
+        .filter(|&i| (0..3).any(|k| px(i * 4)[k].abs_diff(BACKGROUND[k]) > 1))
+        .count();
+    lit as f64 / (img.bgra.len() / 4) as f64
+}
+
 fn coverage(
     r: &HeadlessRenderer,
     meshes: &mut Vec<Mesh>,
@@ -212,17 +309,48 @@ fn coverage(
     let img = r
         .render_scene_views(&parts, cam)
         .expect("render must succeed");
-    let px = |i: usize| -> [u8; 4] {
-        [
-            img.bgra[i],
-            img.bgra[i + 1],
-            img.bgra[i + 2],
-            img.bgra[i + 3],
-        ]
-    };
-    let bg = px(0);
-    let lit = (0..img.bgra.len() / 4).filter(|&i| px(i * 4) != bg).count();
-    lit as f64 / (img.bgra.len() / 4) as f64
+    lit_ratio(&img)
+}
+
+/// 一档的测量：预热 5 帧、取 25 个样本的中位数，再单独量一次覆盖率。
+fn measure(
+    r: &HeadlessRenderer,
+    axis: Axis,
+    meshes: &mut Vec<Mesh>,
+    n: usize,
+    cam: &Camera,
+    med: &dyn Fn(Vec<f64>) -> f64,
+) -> (f64, f64) {
+    match axis {
+        Axis::Draw | Axis::Fill => {
+            let spread = matches!(axis, Axis::Draw);
+            for _ in 0..5 {
+                frame_us(r, meshes, n, spread, cam);
+            }
+            let m = med((0..25)
+                .map(|_| frame_us(r, meshes, n, spread, cam))
+                .collect());
+            (m, coverage(r, meshes, n, spread, cam))
+        }
+        Axis::Persist | Axis::PersistSubmit => {
+            let target = r.create_target(cam.width, cam.height).expect("target");
+            let readback = matches!(axis, Axis::Persist);
+            with_persist(r, n, |list| {
+                for _ in 0..5 {
+                    persist_us(r, list, cam, &target, readback);
+                }
+                let m = med((0..25)
+                    .map(|_| persist_us(r, list, cam, &target, readback))
+                    .collect());
+                r.render_draw_list(list, cam, &target)
+                    .expect("persist render must succeed");
+                (
+                    m,
+                    lit_ratio(&r.read_target(&target).expect("readback must succeed")),
+                )
+            })
+        }
+    }
 }
 
 /// 与 `gpu.rs::new` 相同的实例构造与适配器选择，保证标注的就是被测的那个。
@@ -268,13 +396,28 @@ fn bench_gpu_frame(c: &mut Criterion) {
     for (w, h) in RESOLUTIONS {
         let cam = camera(w, h);
         let mut meshes = Vec::new();
-        for &(label, spread, ns) in &AXES {
+        for &(label, axis, ns) in &AXES {
             for &n in ns {
-                g.bench_with_input(
-                    BenchmarkId::new(format!("{label}/{w}x{h}"), n),
-                    &n,
-                    |b, &n| b.iter(|| black_box(frame_us(&renderer, &mut meshes, n, spread, &cam))),
-                );
+                let id = BenchmarkId::new(format!("{label}/{w}x{h}"), n);
+                match axis {
+                    Axis::Draw | Axis::Fill => {
+                        let spread = matches!(axis, Axis::Draw);
+                        g.bench_with_input(id, &n, |b, _| {
+                            b.iter(|| black_box(frame_us(&renderer, &mut meshes, n, spread, &cam)))
+                        });
+                    }
+                    Axis::Persist | Axis::PersistSubmit => {
+                        let target = renderer.create_target(w, h).expect("target");
+                        let readback = matches!(axis, Axis::Persist);
+                        with_persist(&renderer, n, |list| {
+                            g.bench_with_input(id, &n, |b, _| {
+                                b.iter(|| {
+                                    black_box(persist_us(&renderer, list, &cam, &target, readback))
+                                })
+                            });
+                        });
+                    }
+                }
             }
         }
     }
@@ -287,7 +430,7 @@ fn breakdown(r: &HeadlessRenderer) {
     println!("适配器：{}", adapter_label());
     println!("帧预算 60fps = {FRAME_BUDGET_US:.0} µs\n");
     println!(
-        "{:<10} {:>6} {:>12} {:>8} {:>10} {:>9}",
+        "{:<18} {:>6} {:>12} {:>8} {:>10} {:>9}",
         "场景", "parts", "µs/帧", "占预算", "边际µs/单位", "覆盖率"
     );
     let mut meshes = Vec::new();
@@ -297,25 +440,20 @@ fn breakdown(r: &HeadlessRenderer) {
     };
     for (w, h) in RESOLUTIONS {
         let cam = camera(w, h);
-        for &(label, spread, ns) in &AXES {
-            // 与上一档的差值：draw 轴是每个绘制单元的边际成本，fill 轴是每倍 overdraw 的。
-            // 首档没有上一档，固定底噪（建目标 + 清屏 + 回读）无法单独量，见第23刀。
+        for &(label, axis, ns) in &AXES {
+            // 与上一档的差值：draw / persist 轴是每个绘制单元的边际成本，
+            // fill 轴是每倍 overdraw 的。首档没有上一档；固定底噪（清屏 + 回读）
+            // 无法单独量，见第23刀。
             let mut prev: Option<(usize, f64)> = None;
             for &n in ns {
-                for _ in 0..5 {
-                    frame_us(r, &mut meshes, n, spread, &cam);
-                }
-                let m = med((0..25)
-                    .map(|_| frame_us(r, &mut meshes, n, spread, &cam))
-                    .collect());
-                let cov = coverage(r, &mut meshes, n, spread, &cam);
+                let (m, cov) = measure(r, axis, &mut meshes, n, &cam, &med);
                 let marginal = match prev {
                     None => "-".to_string(),
                     Some((pn, pm)) => format!("{:.1}", (m - pm) / (n - pn) as f64),
                 };
                 prev = Some((n, m));
                 println!(
-                    "{:<10} {:>6} {:>12.0} {:>7.1}% {:>10} {:>8.1}%",
+                    "{:<18} {:>6} {:>12.0} {:>7.1}% {:>10} {:>8.1}%",
                     format!("{label}/{w}x{h}"),
                     n,
                     m,
@@ -326,6 +464,10 @@ fn breakdown(r: &HeadlessRenderer) {
             }
         }
     }
+    println!(
+        "\npersist = render_draw_list + 显式回读，与 draw 同口径（都等到 GPU 出像素）；\n\
+         psubmit = 只提交不回读，GPU 侧尚未完成，不含光栅化时间。"
+    );
     // 设备类型取自适配器信息；软件光栅化的读数不能当 GPU 帧时间对外引用。
     if adapter_label().contains("/ Cpu /") {
         println!(

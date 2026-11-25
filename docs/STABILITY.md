@@ -77,6 +77,12 @@
   `HeadlessRenderer::render_mesh_view`(MVP uniform + Depth32Float 深度测试 Less+write;
   本机 GPU 实测:投影落点逐像素吻合 + 近面先画/远面后画仍被近面遮蔽)。
   旧 `render_mesh`/`render_mesh_shaded` 的 CPU 归一化路径行为冻结不变;
+- L5 持久渲染路径(RFC 0004 步 1a,2026-11-25):`gpu::persist` 的 `GpuMesh` / `GpuMaterial` /
+  `DrawList` / `RenderTarget` / `render_draw_list` / `read_target` 是新增公开面,默认 feature 不编译。
+  **仅保证不透明物件正确**(管线无混合;实例按网格与材质排序,会打乱调用方的绘制顺序);
+  模型矩阵只支持刚体变换与均匀缩放(法线按旋转部分变换,非均匀缩放不保证正确);
+  蒙皮网格仍走快照路径。与 `render_scene_views` 的像素等价由测试锁定(软件光栅化下逐像素
+  一致),**尚无真 GPU 读数**;实例缓冲超出容量时 `render_draw_list` 报错而不自动重建;
 - L7 同步 `complete()` 仍是默认路径(离线规则后端零成本);异步作业层 `InferJobs` +
   认知/导演 `with_async()` 已落地(提交-收割,帧不阻塞网络,真 LLM 接入的壳层应启用),
   工具调用(OpenAI/Anthropic 双方言 wire)与 SSE 真流式已随 native-http 落地

@@ -107,6 +107,13 @@ v0.2 落地 `Quality` + `observe_frame` 迟滞调速器：AI 一重就掉帧时�
 有余力再缓慢升档——上层以为画质是恒定的。能力位图已含 3DGS 神经渲染位（未来混合几何）。经典 EWA 泼溅（`oriera-splat`，见下）是确定性传统光栅化，
 **不读**此位——该位留给未来的神经精修 Pass（ADR 0002 的 passthrough 语义）。
 
+2026-11 落地 **持久渲染路径**（RFC 0004 步 1a，`gpu::persist`，同在 `render-wgpu` 内）：
+`GpuMesh` / `GpuMaterial` 上传一次跨帧复用；`DrawList` 带模型矩阵，同网格同材质的实例走一次实例化绘制；
+`RenderTarget` 持久；`render_draw_list` 提交后即返回，像素回读走显式的 `read_target`。它与快照路径
+`render_scene_views` 并存，后者行为冻结不变；两条路径共用同一份 PBR 片元着色器源码（`pbr_fragment!`），
+等价测试锁定像素一致。帧成本基准 `benches/gpu_frame.rs` 分 draw / fill / persist / psubmit 四轴。
+只保证不透明物件的正确性；窗口与交换链未做（RFC 0004 步 2，待单独评审）。
+
 v0.3 落地 **wgpu 最小无头闭环**（feature `render-wgpu`，按 GOVERNANCE 默认关）：
 `gpu::HeadlessRenderer` 走 真 GPU pass（WGSL 顶点渐变着色）→ 索引绘制 → 像素回读，
 配合 L4 `oriera_asset::glb::decode_glb_mesh`（GLB POSITION/索引最小解码，深校验）打通
