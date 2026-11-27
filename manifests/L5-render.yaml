@@ -29,6 +29,39 @@ spec:
         z in [0,1]); consumed by gpu::HeadlessRenderer::render_mesh_view
         (MVP uniform + Depth32Float), by the splat GPU path (PLAN-splat
         M1, via SplatCamera::from_view) and, next, by native glTF'
+    - id: oriera.render.scene_vocab.v1
+      contract: rust:oriera_render::scene::{Bounds,SceneInstance,DrawBatch}
+      stability: unstable
+      note: scene batch — CPU-side vocabulary shared by cull and
+        batching; camera::Mat4 convention (row-major, no second matrix
+        family); DrawBatch order maps 1:1 onto the GPU DrawList of
+        RFC 0004 step 1a (feature `scene-vocab`)
+    - id: oriera.render.cull.v1
+      contract: rust:oriera_render::cull
+      stability: unstable
+      note: scene batch WP3 — frustum + distance cull and LOD pick over
+        SceneInstances, deterministic (feature `cull`)
+    - id: oriera.render.instancing.v1
+      contract: rust:oriera_render::instancing
+      stability: unstable
+      note: scene batch WP4 — deterministic CPU batching by
+        (mesh, material); GPU instancing itself landed in RFC 0004
+        step 1a (feature `instancing`)
+    - id: oriera.render.shadow.v1
+      contract: rust:oriera_render::shadow
+      stability: unstable
+      note: scene batch WP1 — shadow map CPU frame, deterministic
+        (feature `shadow`)
+    - id: oriera.render.ibl.v1
+      contract: rust:oriera_render::ibl
+      stability: unstable
+      note: scene batch WP2 — env radiance + tonemap, deterministic
+        (feature `ibl`)
+    - id: oriera.render.sky.v1
+      contract: rust:oriera_render::sky
+      stability: unstable
+      note: scene batch WP6 — procedural sky radiance (HDR,
+        pre-tonemap), deterministic (feature `sky`)
   requires:
     - id: oriera.core.scheduler.v1
       optional: false

@@ -28,6 +28,20 @@ spec:
         exactly-still world with nothing outside the bounds, skips the
         integration pass bit-identically (clamps count as work, review
         #52); approximation stays the allocator's business, never physics
+    - id: oriera.subsys.anim_clip.v1
+      contract: rust:oriera_subsys::anim_clip
+      stability: unstable
+      note: scene batch WP7 — named-clip state machine layered over
+        `anim` (sampling/blend reused; the velocity tri-state contract
+        of AnimController stays frozen); consumes named-clip requests
+        from L9 mood_anim (#203)
+    - id: oriera.subsys.audio_geom.v1
+      contract: rust:oriera_subsys::audio
+      stability: unstable
+      note: scene batch WP8 — deterministic spatial-audio geometry
+        (listener/source, distance attenuation, directivity, pan);
+        audio devices, decoding and mixing stay out of the engine
+        (feature `audio`)
   requires:
     - id: oriera.core.scheduler.v1
       optional: false

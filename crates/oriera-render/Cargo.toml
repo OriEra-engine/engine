@@ -22,6 +22,17 @@ bytemuck = { version = "1", features = ["derive"], optional = true }
 [features]
 # L5 wgpu 最小无头闭环(GOVERNANCE:不稳的默认关)。真 GPU pass/真 mesh/像素回读。
 render-wgpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+# ── 真实场景批次(scene batch)────────────────────────────────────────
+# 纯 CPU、零新增依赖的五个模块(GOVERNANCE:不稳的默认关),全部 headless
+# 可测:矩阵沿用 camera 的行主序 [[f32;4];4],不依赖 wgpu。与 GPU 侧
+# (render-wgpu,RFC 0004 持久路径)的接线是后续批次,不在这些 feature 内。
+scene-vocab = []   # 剔除与合批共用的最小词汇(实例 / 包围球 / 合批)
+shadow      = []
+ibl         = []
+cull        = ["scene-vocab"]
+instancing  = ["scene-vocab"]
+sky         = []
+scene       = ["shadow", "ibl", "cull", "instancing", "sky"]
 
 [[example]]
 name = "glb_headless"

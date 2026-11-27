@@ -72,6 +72,11 @@ spec = ["rigid3d", "json", "oriera-embodied/spec"]
 # URDF 导入：机器人描述文件 → 关节链 → ArmDescription（M1 设计稿落地）。
 # roxmltree/serde_json live on `oriera-embodied` now (ADR 0004).
 urdf = ["rigid3d", "oriera-embodied/urdf"]
+# 真实场景批次 WP7(issue #203):情绪驱动动画的接线层——把 `mood_anim`
+# 模块算出的"当前应播剪辑"喂给 L6 的通用剪辑状态机。`mood_anim` 的纯
+# 映射逻辑(Mood → 剪辑请求)默认编译、不依赖本 feature;只有需要 L6
+# `anim_clip` 的胶水代码挂在这里(透传 `oriera-subsys/anim`)。
+mood-anim = ["oriera-subsys/anim"]
 
 [dev-dependencies]
 oriera-render = { path = "../oriera-render" }

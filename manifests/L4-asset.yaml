@@ -20,6 +20,23 @@ spec:
       note: 3DGS binary_little_endian PLY mapped by property name;
         stores KHR_gaussian_splatting activated values (linear scale and
         opacity, xyzw unit quaternion); length checked before allocating
+    - id: oriera.asset.refs.v1
+      contract: rust:oriera_asset::refs
+      stability: unstable
+      note: scene batch (#206) — machine-readable per-world asset
+        needs table + preflight completeness report; deterministic
+        order, pure-additive (worlds without a table behave
+        bit-identically); disk access stays with the caller (wasm-safe)
+    - id: oriera.asset.terrain.v1
+      contract: rust:oriera_asset::terrain
+      stability: unstable
+      note: scene batch WP5 — seeded deterministic heightfield, y-up,
+        pure std, wasm32-safe
+    - id: oriera.asset.scatter.v1
+      contract: rust:oriera_asset::scatter
+      stability: unstable
+      note: scene batch WP5 — deterministic instanced placement (LCG
+        seed convention) over an injected height sampler, y-up
   requires: []   # in-memory store today; L1 storage streams land v0.2
 
   budgets:

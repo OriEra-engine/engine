@@ -18,6 +18,10 @@ use std::collections::HashMap;
 
 pub mod glb;
 pub mod ply;
+// ── 真实场景批次:分享链的资产引用图 + 程序化户外资产(默认编译,纯 std)──
+pub mod refs;
+pub mod scatter;
+pub mod terrain;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AssetHandle(pub u64);

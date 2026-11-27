@@ -46,6 +46,20 @@ spec:
         pressure the speak interval stretches by 1/throttle (cap 8x);
         a WakeEvent (player touched the world) restores base cadence
         instantly; utterance content is never touched
+    - id: oriera.agent.mood_anim.v1
+      contract: rust:oriera_agent::mood_anim
+      stability: unstable
+      note: scene batch WP7 (#203) — deterministic Mood →
+        clip-request mapping (emotion groups, idle fallback); the L6
+        glue lives behind feature `mood-anim`, the mapping itself is
+        default-compiled and L6-free
+    - id: oriera.agent.scene_planner.v1
+      contract: rust:oriera_agent::scene_planner
+      stability: unstable
+      note: scene batch WP10 — deterministic layout from a structured
+        scene intent + asset list (model calls stay outside; this
+        module is a pure function); placements use the oriera_common
+        Transform vocabulary, serializable straight into scene specs
     # ── embodied simulation runtime (ADR 0004: lives in the
     # `oriera-embodied` crate; `oriera_agent::` paths keep resolving via
     # the compat re-export) ──
