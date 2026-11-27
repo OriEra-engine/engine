@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 serde_json.workspace = true
+oriera-common.workspace = true # #7 词汇(Transform/Quat/Vec3),散布输出需要;L4→L0 合法,真实场景批次派单授权的一行
 # PNG 纹理解码(feature `texture`,#152 第二刀):纯 Rust,默认关。
 png = { workspace = true, optional = true }
 
