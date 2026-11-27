@@ -77,6 +77,23 @@
   `HeadlessRenderer::render_mesh_view`(MVP uniform + Depth32Float 深度测试 Less+write;
   本机 GPU 实测:投影落点逐像素吻合 + 近面先画/远面后画仍被近面遮蔽)。
   旧 `render_mesh`/`render_mesh_shaded` 的 CPU 归一化路径行为冻结不变;
+- L5 持久渲染路径(RFC 0004 步 1a,2026-11-25):`gpu::persist` 的 `GpuMesh` / `GpuMaterial` /
+  `DrawList` / `RenderTarget` / `render_draw_list` / `read_target` 是新增公开面,默认 feature 不编译。
+  **仅保证不透明物件正确**(管线无混合;实例按网格与材质排序,会打乱调用方的绘制顺序);
+  模型矩阵只支持刚体变换与均匀缩放(法线按旋转部分变换,非均匀缩放不保证正确);
+  蒙皮网格有独立的持久路径(RFC 0004 步 1c,同日):`GpuSkinnedMesh` / `GpuSkeleton` /
+  `SkinnedDrawList` / `render_frame`,顶点在 bind 空间、面板为 bind→世界,**蒙皮实例不带模型矩阵**
+  (模型变换须由调用方预乘进面板),关节上限 256(单个 16KB uniform,超出时 `upload_skinned_mesh`
+  报错),权重按 4 关节写死、**无混合**(半透明蒙皮物件仍只能走快照路径);渲染前逐实例校验
+  `mesh.max_joint < skeleton.joint_count()`,未写面板或写少了都会报错而不是静默画错;
+  关节数据在 `update_skeleton` 里上传,同一骨架被多实例共用时全部实例同步改姿势。与 `render_scene_views` 的像素等价由测试锁定(软件光栅化与
+  真卡下均逐像素一致);真卡上静态持久路径的帧时间与实例数无关,但**读数都是回读口径,没有窗口呈现路径的读数**(见 RFC 0004“真卡复核”);实例缓冲超出容量时 `render_draw_list` 报错而不自动重建;
+  异步回读(`read_target_async` / `poll_read` / `wait_read`,RFC 0004 步 1b)最多 4 张在途,满了就
+  阻塞到最旧的完成;已完成未取的像素同样最多留 4 张,再多丢最旧的,被丢的回执取的时候报错。
+  流水回读**在软件光栅化与真卡上都没有降低单帧时间**,它只保证回读期间不阻塞后续提交;
+  **双显卡机器上默认会选到集成显卡**(适配器按默认电源偏好选,引擎没有“要独显”的表达),
+  同一条持久路径在核显上 1080p 超出 16.6 ms 预算;旧版核显驱动走 Vulkan 会在 wgpu-hal
+  初始化阶段崩溃(访问冲突),同一块卡走 DX12 正常——后端与适配器要由壳层显式指定,不能留给默认值;
 - L6 导航(feature `nav`,2026-11-25):`NavMesh` / `NavAgent` / `NavAgentSystem` 是新增公开面,
   默认 feature 不编译。多边形**必须凸**且共享边整条重合,否则构建期直接报错
   (`NavError`);2D 平面(`Position` 的 x/y,y 向下)、无高度与层间连接、无动态障碍与

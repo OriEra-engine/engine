@@ -107,6 +107,18 @@ v0.2 落地 `Quality` + `observe_frame` 迟滞调速器：AI 一重就掉帧时�
 有余力再缓慢升档——上层以为画质是恒定的。能力位图已含 3DGS 神经渲染位（未来混合几何）。经典 EWA 泼溅（`oriera-splat`，见下）是确定性传统光栅化，
 **不读**此位——该位留给未来的神经精修 Pass（ADR 0002 的 passthrough 语义）。
 
+2026-11 落地 **持久渲染路径**（RFC 0004 步 1a，`gpu::persist`，同在 `render-wgpu` 内）：
+`GpuMesh` / `GpuMaterial` 上传一次跨帧复用；`DrawList` 带模型矩阵，同网格同材质的实例走一次实例化绘制；
+`RenderTarget` 持久；`render_draw_list` 提交后即返回，像素回读走显式的 `read_target`，
+另有不等 GPU 的异步版本（`read_target_async` / `poll_read` / `wait_read`，最多 4 张在途）。它与快照路径
+`render_scene_views` 并存，后者行为冻结不变；两条路径共用同一份 PBR 片元着色器源码（`pbr_fragment!`），
+等价测试锁定像素一致。同日落地 **步 1c 蒙皮网格持久路径**：`GpuSkinnedMesh` / `GpuSkeleton`（16KB 关节
+uniform，256 关节上限）/ `SkinnedDrawList`，`update_skeleton` 写面板、`render_frame(list, skinned_list, …)`
+一帧内先画静态再逐个蒙皮实例；蒙皮实例不带模型矩阵，模型变换由调用方预乘进面板（bind 空间语义）。
+它与静态实例共用同一个片元着色器，等价测试锁定两根骨骼姿势下的逐像素一致。帧成本基准
+`benches/gpu_frame.rs` 分 draw / fill / persist / psubmit / pasync / skindraw / skin 七轴。
+只保证不透明物件的正确性；窗口与交换链未做（RFC 0004 步 2，待单独评审）。
+
 v0.3 落地 **wgpu 最小无头闭环**（feature `render-wgpu`，按 GOVERNANCE 默认关）：
 `gpu::HeadlessRenderer` 走 真 GPU pass（WGSL 顶点渐变着色）→ 索引绘制 → 像素回读，
 配合 L4 `oriera_asset::glb::decode_glb_mesh`（GLB POSITION/索引最小解码，深校验）打通

@@ -35,6 +35,13 @@ required-features = ["render-wgpu"]
 # 仅供 glb_headless/gltf_scene 示例:L4 解码 GLB(texture=纹理解码)、L8 生成占位资产(仅路径依赖,无环)
 oriera-asset = { workspace = true, features = ["texture"] }
 oriera-genai.workspace = true
+# L5 GPU 帧成本微基准（render-wgpu）。
+criterion.workspace = true
+
+[[bench]]
+name = "gpu_frame"
+harness = false
+required-features = ["render-wgpu"]
 
 [[example]]
 name = "skinned_headless"
