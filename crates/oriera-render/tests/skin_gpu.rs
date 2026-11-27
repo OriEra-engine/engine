@@ -7,8 +7,22 @@
 
 use oriera_asset::glb::{decode_glb_rig, joint_matrices_at, GlbRig};
 use oriera_render::camera::Camera;
-use oriera_render::gpu::{HeadlessRenderer, RenderedImage, ScenePart, SkinnedPart};
+use oriera_render::gpu::{GpuError, HeadlessRenderer, RenderedImage, ScenePart, SkinnedPart};
 use std::path::PathBuf;
+
+/// GPU 测试的诚实跳过:无适配器的环境(ubuntu CI runner——scene_build
+/// example 的 dev-dep 把 render-wgpu 带进 workspace 测试图后,本文件在
+/// linux 腿首次被编译运行)跳过而非红;真适配器上的其它初始化错误仍红。
+fn gpu_renderer_or_skip() -> Option<HeadlessRenderer> {
+    match HeadlessRenderer::new() {
+        Ok(r) => Some(r),
+        Err(GpuError::Device(msg)) if msg.contains("no usable adapter") => {
+            eprintln!("skip: no GPU adapter on this runner");
+            None
+        }
+        Err(e) => panic!("gpu init: {e}"),
+    }
+}
 
 fn cesiumman() -> GlbRig {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -259,7 +273,9 @@ fn compare(a: &RenderedImage, b: &RenderedImage) -> Result<(usize, f64, usize), 
 fn cpu_gpu_skinned_frames_agree() {
     let rig = cesiumman();
     let dur = rig.animations[0].duration;
-    let renderer = HeadlessRenderer::new().expect("gpu init");
+    let Some(renderer) = gpu_renderer_or_skip() else {
+        return;
+    };
 
     for frac in [0.0f32, 0.25, 0.5, 0.75] {
         let t = dur * frac;
@@ -287,7 +303,9 @@ fn cpu_gpu_skinned_frames_agree() {
 fn animation_drives_pixel_difference() {
     let rig = cesiumman();
     let dur = rig.animations[0].duration;
-    let renderer = HeadlessRenderer::new().expect("gpu init");
+    let Some(renderer) = gpu_renderer_or_skip() else {
+        return;
+    };
 
     let render_at = |t: f32| {
         let palettes = joint_matrices_at(&rig, Some(0), t);
@@ -322,7 +340,9 @@ fn animation_drives_pixel_difference() {
 #[test]
 fn skinned_path_validates_palette_and_lengths() {
     let rig = cesiumman();
-    let renderer = HeadlessRenderer::new().expect("gpu init");
+    let Some(renderer) = gpu_renderer_or_skip() else {
+        return;
+    };
     let palettes = joint_matrices_at(&rig, Some(0), 0.0);
     let camera = camera_for(&rig.primitives[0].positions);
 

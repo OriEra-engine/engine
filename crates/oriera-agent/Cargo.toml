@@ -79,7 +79,16 @@ urdf = ["rigid3d", "oriera-embodied/urdf"]
 mood-anim = ["oriera-subsys/anim"]
 
 [dev-dependencies]
-oriera-render = { path = "../oriera-render" }
+# scene_build example:真实场景搭建端到端(L9 编排 → L4 地形/散布 → L5 GPU
+# 出图)。features 常开于 example/test 构建(dev-dep 统一),wgpu 头less 出图
+# 在 ubuntu CI 腿也只编译不运行(无 GPU,与既有 glb_headless 同待遇)。
+oriera-render = { path = "../oriera-render", features = [
+    "render-wgpu",
+    "scene",
+    "instancing",
+    "cull",
+] }
+oriera-asset = { path = "../oriera-asset" }
 # golden fixture tests (#98) read contracts/golden/*.json on every test leg
 serde_json = { workspace = true }
 
