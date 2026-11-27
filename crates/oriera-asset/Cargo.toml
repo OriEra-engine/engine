@@ -11,6 +11,7 @@ name = "oriera_asset"
 path = "src/lib.rs"
 
 [dependencies]
+serde.workspace = true
 serde_json.workspace = true
 # PNG 纹理解码(feature `texture`,#152 第二刀):纯 Rust,默认关。
 png = { workspace = true, optional = true }
