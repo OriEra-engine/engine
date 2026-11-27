@@ -99,6 +99,27 @@ jobs:
             build: cargo build -p oriera-subsys --features rigid3d,cam
             test: cargo test -p oriera-subsys --features rigid3d,cam
             clippy: cargo clippy -p oriera-subsys --all-targets --features rigid3d,cam -- -D warnings
+          # 真实场景批次（scene batch 骨架 PR）：L6 导航/动画/空间音频腿。
+          # 顺带补缺口——#208 的 nav/anim 此前没有任何 CI 腿（矩阵里
+          # 没有挂这两个 feature 的条目），2026-11-25 合入后裸奔至今。
+          - name: subsys-nav-anim-audio
+            build: cargo build -p oriera-subsys --features nav,anim,audio
+            test: cargo test -p oriera-subsys --features nav,anim,audio
+            clippy: cargo clippy -p oriera-subsys --all-targets --features nav,anim,audio -- -D warnings
+          # 真实场景批次：L5 场景渲染腿（scene-vocab 词汇 + 五个场景模块，
+          # 全部纯 CPU、默认关）。render-wgpu 不在本腿——它由 windows-check
+          # 覆盖（GPU 编译只能在非 ubuntu 环境过）。
+          - name: render-scene
+            build: cargo build -p oriera-render --features scene
+            test: cargo test -p oriera-render --features scene
+            clippy: cargo clippy -p oriera-render --all-targets --features scene -- -D warnings
+          # 真实场景批次：L9 场景腿（mood_anim / scene_planner 默认编译 +
+          # mood-anim 胶水 feature）。json 同腿带上（scene_planner 的
+          # 场景 spec 序列化走 serde_json）。
+          - name: agent-scene
+            build: cargo build -p oriera-agent --features mood-anim,json
+            test: cargo test -p oriera-agent --features mood-anim,json
+            clippy: cargo clippy -p oriera-agent --all-targets --features mood-anim,json -- -D warnings
           # ADR 0004（oriera-embodied 拆分）：具身面集成测试（slide_drawer/
           # embodied_cam/urdf_robot_spec/gripper_down_smoke）随源码迁到
           # oriera-embodied，本腿跟着改挂 -p oriera-embodied；agent 侧只剩

@@ -292,8 +292,8 @@ impl NavMesh {
             return Some((p, i));
         }
         let mut best: Option<(f32, [f32; 2], usize)> = None;
-        for i in 0..self.polys.len() {
-            let v = &self.polys[i].verts;
+        for (i, poly) in self.polys.iter().enumerate() {
+            let v = &poly.verts;
             let n = v.len();
             for k in 0..n {
                 let q = closest_on_segment(p, v[k], v[(k + 1) % n]);

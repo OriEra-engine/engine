@@ -17,6 +17,23 @@ use oriera_ecs::{Position, World};
 
 pub mod camera;
 
+// ── 真实场景批次(scene batch):纯 CPU 模块,各自 feature 门控、默认关 ──
+// scene-vocab 是 cull / instancing 共用的最小词汇(实例、包围球、合批)。
+// 每个模块只在自己的 feature 下编译,彼此不互相 `use`;跨模块的数据
+// 流(可见性 → 合批 → GPU 侧 DrawList)只经过 scene 词汇。
+#[cfg(feature = "cull")]
+pub mod cull;
+#[cfg(feature = "ibl")]
+pub mod ibl;
+#[cfg(feature = "instancing")]
+pub mod instancing;
+#[cfg(feature = "scene-vocab")]
+pub mod scene;
+#[cfg(feature = "shadow")]
+pub mod shadow;
+#[cfg(feature = "sky")]
+pub mod sky;
+
 #[cfg(feature = "render-wgpu")]
 pub mod gpu;
 

@@ -45,6 +45,14 @@ pub use anim::{
     blend_matrices, trs_matrix, AnimController, AnimationClip, ClipBank, JointTrack, Keyframe,
     Locomotion, IDENTITY,
 };
+// 真实场景批次 WP7:按名请求剪辑的通用状态机(挂在 `anim` 下,复用其
+// 剪辑采样与交叉淡入);`anim` 本体的速度三态契约不变。
+#[cfg(feature = "anim")]
+pub mod anim_clip;
+
+// 真实场景批次 WP8:空间音频的纯几何层(feature `audio`,默认关)。
+#[cfg(feature = "audio")]
+pub mod audio;
 
 #[cfg(feature = "cam")]
 pub mod camera;

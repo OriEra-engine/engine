@@ -39,4 +39,7 @@ rigid3d = ["dep:rapier3d"]
 cam = ["dep:png"]
 nav = []
 anim = []
+# 真实场景批次 WP8:空间音频的纯几何层(听者/声源/距离衰减/指向性/
+# 遮挡衰减/声像)。零依赖、headless 可测;音频设备与混音不在引擎内。
+audio = []
 serde = ["dep:serde"]

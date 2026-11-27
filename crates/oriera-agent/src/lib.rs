@@ -33,9 +33,13 @@ pub mod embodied;
 pub mod genai;
 pub mod goal;
 pub mod memory;
+// 真实场景批次(默认编译、纯逻辑):WP7 情绪驱动动画(#203)、WP10 场景编排。
+// `mood_anim` 里需要 L6 剪辑状态机的胶水挂在 feature `mood-anim` 下。
+pub mod mood_anim;
 pub mod prefab;
 #[cfg(feature = "python")]
 pub mod python;
+pub mod scene_planner;
 pub mod story;
 #[cfg(feature = "json")]
 pub mod tools;
