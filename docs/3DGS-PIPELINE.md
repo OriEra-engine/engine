@@ -10,13 +10,39 @@
 
 ## 依赖安装（一次性）
 
-| 工具 | 许可 | 安装 |
-|---|---|---|
-| [COLMAP](https://github.com/colmap/colmap) | BSD | [最新 release](https://github.com/colmap/colmap/releases) .zip 解压加 PATH |
-| [PyTorch](https://pytorch.org) ≥2.0 CUDA | BSD | `pip install torch --index-url https://download.pytorch.org/whl/cu121` |
-| [gsplat](https://github.com/nerfstudio-project/gsplat) | Apache-2.0 | `pip install gsplat` |
-| [pycolmap](https://github.com/colmap/colmap/blob/main/pycolmap) | BSD | `pip install pycolmap` |
-| [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) | BSD | `pip install imageio-ffmpeg`（动画合成用） |
+| 工具 | 许可 | 安装 | 状态 |
+|---|---|---|---|
+| [COLMAP](https://github.com/colmap/colmap) | BSD | [最新 release](https://github.com/colmap/colmap/releases) .zip 解压加 PATH | ⬜ 待装 |
+| [PyTorch](https://pytorch.org) ≥2.0 CUDA | BSD | Python 3.13 venv + `pip install torch --index-url https://download.pytorch.org/whl/cu124` | ✅ 已装(2.6.0+cu124) |
+| [gsplat](https://github.com/nerfstudio-project/gsplat) | Apache-2.0 | `pip install gsplat` | ✅ 已装(1.5.3) |
+| [pycolmap](https://github.com/colmap/colmap/blob/main/pycolmap) | BSD | `pip install pycolmap` | ✅ 已装(4.2.1) |
+| **CUDA Toolkit**（nvcc 编译器） | NVIDIA | [developer.nvidia.com/cuda-downloads](https://developer.nvidia.com/cuda-downloads) | 🔴 **待装（关键缺口）** |
+| [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) | BSD | `pip install imageio-ffmpeg` | ✅ 已装 |
+
+### Python 3.14 兼容性注意事项
+
+PyTorch CUDA wheel 尚未发布 Python 3.14 版本——**须用 Python 3.13 venv**：
+
+```bash
+py -3.13 -m venv D:/OriEra/3dgs-env
+D:/OriEra/3dgs-env/Scripts/pip install torch --index-url https://download.pytorch.org/whl/cu124 --no-deps
+D:/OriEra/3dgs-env/Scripts/pip install typing_extensions jinja2 fsspec sympy networkx filelock
+D:/OriEra/3dgs-env/Scripts/pip install gsplat pycolmap numpy pillow
+```
+
+已验证（GTX 1650 Ti · CUDA 12.4 · PyTorch 2.6.0）：
+- `torch.cuda.is_available()` = True ✓
+- `gsplat.rasterization()` 前向 = ✓（CUDA kernel 编译须 nvcc，见下）
+
+### CUDA Toolkit 安装（最后一个系统级缺口）
+
+gsplat 的 CUDA kernel 需 nvcc 编译器（CUDA **runtime** 已随 PyTorch cu124 就位，但 **compiler** 需单独安装）。
+
+1. 下载：https://developer.nvidia.com/cuda-downloads（选 Windows ×86_64 → 12.4）
+2. 安装：`cuda_12.4.x_windows.exe`（~3GB，需管理员权限，约 10 分钟）
+3. 安装后 nvcc 位于 `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\nvcc.exe`
+4. 确认：`nvcc --version` 输出版本号
+5. 重跑 `python scripts/3dgs_pipeline.py` — gsplat 会自动用 nvcc JIT 编译 CUDA kernel（首次 ~3-5 分钟，后续缓存）
 
 ## 拍照建议
 
