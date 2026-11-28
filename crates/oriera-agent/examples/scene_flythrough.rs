@@ -733,21 +733,15 @@ fn run() -> Result<(), String> {
         let mut ri = 0usize;
         for (name, buf) in &item_bakes {
             match name.as_str() {
-                "rock" => {
-                    if ri < nr {
-                        rocks.append_raw(buf);
-                        ri += 1;
-                    }
+                "rock" if ri < nr => {
+                    rocks.append_raw(buf);
+                    ri += 1;
                 }
-                "campfire" => {
-                    if nf > 0 {
-                        fires.append_raw(buf);
-                    }
+                "campfire" if nf > 0 => {
+                    fires.append_raw(buf);
                 }
-                "tent" => {
-                    if nt > 0 {
-                        tents.append_raw(buf);
-                    }
+                "tent" if nt > 0 => {
+                    tents.append_raw(buf);
                 }
                 _ => {}
             }
