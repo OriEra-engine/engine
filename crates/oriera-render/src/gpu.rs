@@ -398,6 +398,39 @@ const CLEAR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// 场景渲染的环境参数(真实场景批次白天化):清屏色 + 光向/光强。
+///
+/// - `clear` 是**显示域**(直写 Bgra8Unorm 清屏;外部从 HDR 得到的天空色
+///   应先过 [`crate::ibl::tonemap_aces`] 再填入);
+/// - `light_dir` 指向光源(shader 里做 `max(dot(N, L), 0)` 兰伯特);零
+///   向量/非有限交由渲染端 normalize 兜底,不 panic;
+/// - [`SceneEnv::DEFAULT`] 与既有硬编码常量(`CLEAR`/`SCENE_LIGHT_DIR`)
+///   逐值一致——`render_scene_views` 即 DEFAULT 委托,历史调用逐位不变。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneEnv {
+    /// 清屏色(显示域 RGBA,线性直写)。
+    pub clear: [f32; 4],
+    /// 光方向(指向光源,shader 内 normalize)。
+    pub light_dir: [f32; 3],
+    /// 光强(shader 兰伯特项乘子)。
+    pub light_intensity: f32,
+}
+
+impl SceneEnv {
+    /// 与既有 `CLEAR` + `SCENE_LIGHT_DIR` 逐值一致的默认环境。
+    pub const DEFAULT: Self = Self {
+        clear: [0.05, 0.08, 0.13, 1.0],
+        light_dir: [-0.45, 0.55, -0.70],
+        light_intensity: 1.0,
+    };
+}
+
+impl Default for SceneEnv {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// 默认后端:MinGW(windows-gnu) 下 DX12/Vulkan 的适配器枚举在
 /// wgpu-hal 实测崩溃(30.0.1,2026-10 本机验证),GL 稳定;MSVC 与其他
 /// 平台用 PRIMARY。可用环境变量 `WGPU_BACKEND` 覆盖(vulkan/dx12/gl/metal/all)。
@@ -879,6 +912,18 @@ impl HeadlessRenderer {
         parts: &[ScenePart<'_>],
         camera: &Camera,
     ) -> Result<RenderedImage, GpuError> {
+        self.render_scene_views_env(parts, camera, &SceneEnv::DEFAULT)
+    }
+
+    /// 环境参数化的整场景渲染(真实场景批次白天化):清屏色与光向/光强可调。
+    /// 除清屏与光向 uniform 外与 [`Self::render_scene_views`] 逐命令一致
+    /// ——DEFAULT 环境下两者输出逐位一致(测试钉:tests/scene_gpu.rs)。
+    pub fn render_scene_views_env(
+        &self,
+        parts: &[ScenePart<'_>],
+        camera: &Camera,
+        env: &SceneEnv,
+    ) -> Result<RenderedImage, GpuError> {
         let (width, height) = (camera.width, camera.height);
         if width == 0 || height == 0 || parts.is_empty() {
             return Err(GpuError::Device("empty scene or zero-sized target".into()));
@@ -903,7 +948,12 @@ impl HeadlessRenderer {
                         camera.eye_pos()[2],
                         0.0,
                     ],
-                    light_dir: SCENE_LIGHT_DIR,
+                    light_dir: [
+                        env.light_dir[0],
+                        env.light_dir[1],
+                        env.light_dir[2],
+                        env.light_intensity,
+                    ],
                 }]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -963,7 +1013,12 @@ impl HeadlessRenderer {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(CLEAR),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: env.clear[0] as f64,
+                            g: env.clear[1] as f64,
+                            b: env.clear[2] as f64,
+                            a: env.clear[3] as f64,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,

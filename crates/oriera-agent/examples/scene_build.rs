@@ -30,7 +30,7 @@ use oriera_common::math::{Mat4 as GlamMat4, Quat};
 use oriera_common::{Transform, Vec3};
 use oriera_render::camera::{self, Camera};
 use oriera_render::cull::{cull, CullParams, Frustum};
-use oriera_render::gpu::{HeadlessRenderer, RenderedImage, ScenePart};
+use oriera_render::gpu::{HeadlessRenderer, RenderedImage, SceneEnv, ScenePart};
 use oriera_render::instancing::batch_by_key;
 use oriera_render::scene::{Bounds, SceneInstance};
 
@@ -285,15 +285,34 @@ fn run() -> Result<(), String> {
     );
 
     // ── 6. 渲染(同设备双跑逐像素)+ BMP 落盘 ───────────────────────────
+    // 白天化接入:光向=太阳方向(兰伯特直接受益);清屏=显示域美术天空色。
+    // 诚实边界:SceneEnv.clear 是显示域直写——WP6 的 HDR 天空辐射→背景面
+    // (天空盒/背景 pass)与 WP2 环境项进 shader 属 #207 后续批次,此处不
+    // 过 tonemap 链硬凑(近白 tint 过 ACES 只会更白)。
+    let env = SceneEnv {
+        clear: [0.55, 0.72, 0.98, 1.0],
+        light_dir: norm3([-0.55, 0.5, -0.4]),
+        light_intensity: 1.7,
+    };
+    println!(
+        "stage6 env | clear=({:.2},{:.2},{:.2}) sun=({:.2},{:.2},{:.2}) I={:.1}",
+        env.clear[0],
+        env.clear[1],
+        env.clear[2],
+        env.light_dir[0],
+        env.light_dir[1],
+        env.light_dir[2],
+        env.light_intensity
+    );
     let renderer = HeadlessRenderer::new().map_err(|e| e.to_string())?;
     println!("adapter: {}", renderer.adapter_info());
     let parts = mk_parts(&parts_buf);
     let t4 = std::time::Instant::now();
     let img_a = renderer
-        .render_scene_views(&parts, &cam)
+        .render_scene_views_env(&parts, &cam, &env)
         .map_err(|e| e.to_string())?;
     let img_b = renderer
-        .render_scene_views(&parts, &cam)
+        .render_scene_views_env(&parts, &cam, &env)
         .map_err(|e| e.to_string())?;
     let pixels = pixels_of(&img_a);
     let pixels_b = pixels_of(&img_b);
@@ -840,7 +859,8 @@ fn write_bmp(path: &str, img: &RenderedImage) -> std::io::Result<()> {
     for y in (0..h).rev() {
         for x in 0..w {
             let p = img.pixel(x as u32, y as u32);
-            out.extend_from_slice(&[p[2], p[1], p[0]]);
+            // BMP 逐像素字节序是 B,G,R(pixel() 给的 BGRA 直接取前三)。
+            out.extend_from_slice(&[p[0], p[1], p[2]]);
         }
         out.resize(out.len() + (row - w * 3), 0);
     }
