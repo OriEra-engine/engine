@@ -315,6 +315,10 @@ pub struct HeadlessRenderer {
     dummy_mr_view: wgpu::TextureView,
     /// 纹理采样器(LINEAR/CLAMP,PBR 与纹理路径共用)。
     scene_sampler: wgpu::Sampler,
+    /// 天空背景 bind group layout(group0,144B 相机基 + 天空参数)。
+    sky_bgl: wgpu::BindGroupLayout,
+    /// 天空背景管线(全屏三角形,深度只读)。
+    sky_pipeline: wgpu::RenderPipeline,
     adapter_info: String,
 }
 
@@ -414,6 +418,23 @@ pub struct SceneEnv {
     pub light_dir: [f32; 3],
     /// 光强(shader 兰伯特项乘子)。
     pub light_intensity: f32,
+    /// 程序化天空(WP6 公式的 GPU 移植):Some 时场景 pass 先画全屏天空
+    /// (逐像素按方向算辐射 + ACES,深度只读不写),场景件照常覆盖;
+    /// None 时维持清屏色背景(历史调用兼容)。
+    pub sky: Option<SceneSky>,
+}
+
+/// 天空参数(HDR 辐射域,与 `oriera_render::sky::SkyParams` 同语义——
+/// shader 内逐式移植 [`crate::sky::sky_radiance`] 公式并就地 ACES)。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneSky {
+    pub sun_dir: [f32; 3],
+    pub horizon_tint: [f32; 3],
+    pub zenith_tint: [f32; 3],
+    pub ground_tint: [f32; 3],
+    pub sun_radiance: f32,
+    pub sun_disc_deg: f32,
+    pub overcast: f32,
 }
 
 impl SceneEnv {
@@ -422,6 +443,7 @@ impl SceneEnv {
         clear: [0.05, 0.08, 0.13, 1.0],
         light_dir: [-0.45, 0.55, -0.70],
         light_intensity: 1.0,
+        sky: None,
     };
 }
 
@@ -430,6 +452,69 @@ impl Default for SceneEnv {
         Self::DEFAULT
     }
 }
+
+/// 天空背景 shader(WP6 `sky_radiance` + `ibl::tonemap_aces` 的逐式 wgsl
+/// 移植):全屏三角形按 NDC 反推视线方向,逐像素算辐射 → ACES → 写
+/// Bgra8Unorm。深度只读不写(场景件照常覆盖)。
+const SKY_WGSL: &str = r#"
+struct SkyUniform {
+    eye: vec4f,     // xyz=相机位置
+    right: vec4f,   // xyz=right * tan(fov_x/2)
+    up: vec4f,      // xyz=up * tan(fov_y/2)
+    fwd: vec4f,     // xyz=前向单位向量
+    sun_dir: vec4f, // xyz=指向光源, w=sun_radiance
+    horizon: vec4f, // xyz=tint, w=sun_disc_deg
+    zenith: vec4f,  // xyz=tint, w=overcast
+    ground: vec4f,  // xyz=tint
+};
+@group(0) @binding(0) var<uniform> sky: SkyUniform;
+
+struct VSOut {
+    @builtin(position) pos: vec4f,
+    @location(0) ndc: vec2f,
+};
+
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> VSOut {
+    var p = array(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+    var out: VSOut;
+    out.pos = vec4f(p[i], 0.0, 1.0);
+    out.ndc = p[i];
+    return out;
+}
+
+fn unit3(v: vec3f) -> vec3f {
+    let len = length(v);
+    return select(vec3f(0.0), v / len, len > 1e-6);
+}
+
+fn tonemap(x: f32) -> f32 {
+    let m = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+    return pow(m, 1.0 / 2.2);
+}
+
+@fragment
+fn fs(in: VSOut) -> @location(0) vec4f {
+    let ray = normalize(sky.fwd.xyz + in.ndc.x * sky.right.xyz + in.ndc.y * sky.up.xyz);
+    let d = unit3(ray);
+    let y = d.y;
+    var rad = vec3f(0.0);
+    if (y < 0.0) {
+        rad = sky.ground.xyz;
+    } else {
+        rad = mix(sky.horizon.xyz, sky.zenith.xyz, y);
+        if (sky.zenith.w > 0.0) {
+            rad = mix(rad, (sky.horizon.xyz + sky.zenith.xyz) * 0.5, min(sky.zenith.w, 1.0));
+        }
+    }
+    let cos_thr = cos(min(sky.horizon.w, 180.0) * 0.017453292519943295);
+    let gain = sky.sun_dir.w * (1.0 - min(sky.zenith.w, 1.0));
+    if (sky.sun_dir.w > 0.0 && sky.horizon.w > 0.0 && dot(d, sky.sun_dir.xyz) >= cos_thr && gain > 0.0) {
+        rad = rad + vec3f(gain);
+    }
+    return vec4f(tonemap(rad.x), tonemap(rad.y), tonemap(rad.z), 1.0);
+}
+"#;
 
 /// 默认后端:MinGW(windows-gnu) 下 DX12/Vulkan 的适配器枚举在
 /// wgpu-hal 实测崩溃(30.0.1,2026-10 本机验证),GL 稳定;MSVC 与其他
@@ -828,6 +913,63 @@ impl HeadlessRenderer {
                 ..Default::default()
             });
 
+            // 天空背景管线(scene batch 白天化):全屏三角形逐像素算天空,
+            // 深度只读不写(场景件照常覆盖);无顶点缓冲(vertex_id 三角)。
+            let sky_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("oriera-sky-bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(128),
+                    },
+                    count: None,
+                }],
+            });
+            let shader_sky = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("oriera-sky"),
+                source: wgpu::ShaderSource::Wgsl(SKY_WGSL.into()),
+            });
+            let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("oriera-sky-pipeline"),
+                layout: Some(
+                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("oriera-sky-layout"),
+                        bind_group_layouts: &[Some(&sky_bgl)],
+                        immediate_size: 0,
+                    }),
+                ),
+                vertex: wgpu::VertexState {
+                    module: &shader_sky,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader_sky,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Bgra8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
             Ok(HeadlessRenderer {
                 device,
                 queue,
@@ -841,6 +983,8 @@ impl HeadlessRenderer {
                 dummy_base_view,
                 dummy_mr_view,
                 scene_sampler,
+                sky_bgl,
+                sky_pipeline,
                 adapter_info: format!("{} ({})", info.name, info.backend),
             })
         })
@@ -1035,6 +1179,84 @@ impl HeadlessRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            // 白天化:env.sky 在场 → 先画全屏天空(逐像素 WP6 公式 + ACES;
+            // 深度只读,场景件经深度测试照常覆盖)。
+            if let Some(sky) = &env.sky {
+                #[repr(C)]
+                #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+                struct SkyUniform {
+                    eye: [f32; 4],
+                    right: [f32; 4],
+                    up: [f32; 4],
+                    fwd: [f32; 4],
+                    sun_dir: [f32; 4],
+                    horizon: [f32; 4],
+                    zenith: [f32; 4],
+                    ground: [f32; 4],
+                }
+                let v = camera.view;
+                let right = [v[0][0], v[0][1], v[0][2]];
+                let up = [v[1][0], v[1][1], v[1][2]];
+                let fwd = [-v[2][0], -v[2][1], -v[2][2]];
+                let tan_y = 1.0 / camera.projection[1][1];
+                let tan_x = 1.0 / camera.projection[0][0];
+                let sky_uniform =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("oriera-sky-uniform"),
+                            contents: bytemuck::cast_slice(&[SkyUniform {
+                                eye: [
+                                    camera.eye_pos()[0],
+                                    camera.eye_pos()[1],
+                                    camera.eye_pos()[2],
+                                    0.0,
+                                ],
+                                right: [right[0] * tan_x, right[1] * tan_x, right[2] * tan_x, 0.0],
+                                up: [up[0] * tan_y, up[1] * tan_y, up[2] * tan_y, 0.0],
+                                fwd: [fwd[0], fwd[1], fwd[2], 0.0],
+                                sun_dir: [
+                                    sky.sun_dir[0],
+                                    sky.sun_dir[1],
+                                    sky.sun_dir[2],
+                                    sky.sun_radiance,
+                                ],
+                                horizon: [
+                                    sky.horizon_tint[0],
+                                    sky.horizon_tint[1],
+                                    sky.horizon_tint[2],
+                                    sky.sun_disc_deg,
+                                ],
+                                zenith: [
+                                    sky.zenith_tint[0],
+                                    sky.zenith_tint[1],
+                                    sky.zenith_tint[2],
+                                    sky.overcast,
+                                ],
+                                ground: [
+                                    sky.ground_tint[0],
+                                    sky.ground_tint[1],
+                                    sky.ground_tint[2],
+                                    0.0,
+                                ],
+                            }]),
+                            usage: wgpu::BufferUsages::UNIFORM,
+                        });
+                let sky_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("oriera-sky-bind"),
+                    layout: &self.sky_bgl,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &sky_uniform,
+                            offset: 0,
+                            size: None,
+                        }),
+                    }],
+                });
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.set_bind_group(0, &sky_bind, &[]);
+                pass.draw(0..3, 0..1);
+            }
             for part in parts {
                 if part.positions.is_empty() {
                     continue;

@@ -285,23 +285,28 @@ fn run() -> Result<(), String> {
     );
 
     // ── 6. 渲染(同设备双跑逐像素)+ BMP 落盘 ───────────────────────────
-    // 白天化接入:光向=太阳方向(兰伯特直接受益);清屏=显示域美术天空色。
-    // 诚实边界:SceneEnv.clear 是显示域直写——WP6 的 HDR 天空辐射→背景面
-    // (天空盒/背景 pass)与 WP2 环境项进 shader 属 #207 后续批次,此处不
-    // 过 tonemap 链硬凑(近白 tint 过 ACES 只会更白)。
+    // 白天化接入:太阳光向驱动兰伯特;背景=WP6 天空辐射的 GPU 移植
+    // (render_scene_views_env 的 sky 参数,逐像素梯度+太阳盘+ACES)。
     let env = SceneEnv {
-        clear: [0.55, 0.72, 0.98, 1.0],
+        clear: [0.55, 0.72, 0.98, 1.0], // 仅作天空缺席时的兜底
         light_dir: norm3([-0.55, 0.5, -0.4]),
         light_intensity: 1.7,
+        sky: Some(oriera_render::gpu::SceneSky {
+            sun_dir: norm3([-0.4, 0.62, -0.3]),
+            horizon_tint: [0.52, 0.65, 0.88],
+            zenith_tint: [0.18, 0.34, 0.78],
+            ground_tint: [0.55, 0.58, 0.62],
+            sun_radiance: 26.0,
+            sun_disc_deg: 2.2,
+            overcast: 0.0,
+        }),
     };
     println!(
-        "stage6 env | clear=({:.2},{:.2},{:.2}) sun=({:.2},{:.2},{:.2}) I={:.1}",
-        env.clear[0],
-        env.clear[1],
-        env.clear[2],
-        env.light_dir[0],
-        env.light_dir[1],
-        env.light_dir[2],
+        "stage6 env | sky sun=({:.2},{:.2},{:.2}) rad={:.0} I={:.1} | clear 兜底关闭",
+        env.sky.as_ref().unwrap().sun_dir[0],
+        env.sky.as_ref().unwrap().sun_dir[1],
+        env.sky.as_ref().unwrap().sun_dir[2],
+        env.sky.as_ref().unwrap().sun_radiance,
         env.light_intensity
     );
     let renderer = HeadlessRenderer::new().map_err(|e| e.to_string())?;
