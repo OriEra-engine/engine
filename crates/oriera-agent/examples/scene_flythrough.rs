@@ -43,7 +43,12 @@ struct MeshBuf {
 }
 
 impl MeshBuf {
-    fn push_tri(&mut self, a: ([f32; 3], [f32; 3]), b: ([f32; 3], [f32; 3]), c: ([f32; 3], [f32; 3])) {
+    fn push_tri(
+        &mut self,
+        a: ([f32; 3], [f32; 3]),
+        b: ([f32; 3], [f32; 3]),
+        c: ([f32; 3], [f32; 3]),
+    ) {
         let base = self.pos.len() as u32;
         for (p, n) in [a, b, c] {
             self.pos.push(p);
@@ -108,12 +113,48 @@ type QuadFace = ([f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3]);
 fn box_faces(w: f32, h: f32, d: f32) -> [QuadFace; 6] {
     let (hx, hy, hz) = (w / 2.0, h / 2.0, d / 2.0);
     [
-        ([-hx, -hy, hz], [hx, -hy, hz], [hx, hy, hz], [-hx, hy, hz], [0.0, 0.0, 1.0]),
-        ([hx, -hy, -hz], [-hx, -hy, -hz], [-hx, hy, -hz], [hx, hy, -hz], [0.0, 0.0, -1.0]),
-        ([hx, -hy, hz], [hx, -hy, -hz], [hx, hy, -hz], [hx, hy, hz], [1.0, 0.0, 0.0]),
-        ([-hx, -hy, -hz], [-hx, -hy, hz], [-hx, hy, hz], [-hx, hy, -hz], [-1.0, 0.0, 0.0]),
-        ([-hx, hy, hz], [hx, hy, hz], [hx, hy, -hz], [-hx, hy, -hz], [0.0, 1.0, 0.0]),
-        ([-hx, -hy, -hz], [hx, -hy, -hz], [hx, -hy, hz], [-hx, -hy, hz], [0.0, -1.0, 0.0]),
+        (
+            [-hx, -hy, hz],
+            [hx, -hy, hz],
+            [hx, hy, hz],
+            [-hx, hy, hz],
+            [0.0, 0.0, 1.0],
+        ),
+        (
+            [hx, -hy, -hz],
+            [-hx, -hy, -hz],
+            [-hx, hy, -hz],
+            [hx, hy, -hz],
+            [0.0, 0.0, -1.0],
+        ),
+        (
+            [hx, -hy, hz],
+            [hx, -hy, -hz],
+            [hx, hy, -hz],
+            [hx, hy, hz],
+            [1.0, 0.0, 0.0],
+        ),
+        (
+            [-hx, -hy, -hz],
+            [-hx, -hy, hz],
+            [-hx, hy, hz],
+            [-hx, hy, -hz],
+            [-1.0, 0.0, 0.0],
+        ),
+        (
+            [-hx, hy, hz],
+            [hx, hy, hz],
+            [hx, hy, -hz],
+            [-hx, hy, -hz],
+            [0.0, 1.0, 0.0],
+        ),
+        (
+            [-hx, -hy, -hz],
+            [hx, -hy, -hz],
+            [hx, -hy, hz],
+            [-hx, -hy, hz],
+            [0.0, -1.0, 0.0],
+        ),
     ]
 }
 
@@ -149,8 +190,16 @@ fn cylinder(radius: f32, height: f32, sides: usize) -> MeshBuf {
     let c_bot = [0.0, 0.0, 0.0];
     for s in 0..sides {
         let s2 = (s + 1) % sides;
-        m.push_tri((c_top, [0.0, 1.0, 0.0]), (top[s], [0.0, 1.0, 0.0]), (top[s2], [0.0, 1.0, 0.0]));
-        m.push_tri((c_bot, [0.0, -1.0, 0.0]), (bot[s2], [0.0, -1.0, 0.0]), (bot[s], [0.0, -1.0, 0.0]));
+        m.push_tri(
+            (c_top, [0.0, 1.0, 0.0]),
+            (top[s], [0.0, 1.0, 0.0]),
+            (top[s2], [0.0, 1.0, 0.0]),
+        );
+        m.push_tri(
+            (c_bot, [0.0, -1.0, 0.0]),
+            (bot[s2], [0.0, -1.0, 0.0]),
+            (bot[s], [0.0, -1.0, 0.0]),
+        );
     }
     m
 }
@@ -174,7 +223,11 @@ fn cone(radius: f32, height: f32, sides: usize, base_y: f32) -> MeshBuf {
     let c = [0.0, base_y, 0.0];
     for s in 0..sides {
         let s2 = (s + 1) % sides;
-        m.push_tri((c, [0.0, -1.0, 0.0]), (ring[s2], [0.0, -1.0, 0.0]), (ring[s], [0.0, -1.0, 0.0]));
+        m.push_tri(
+            (c, [0.0, -1.0, 0.0]),
+            (ring[s2], [0.0, -1.0, 0.0]),
+            (ring[s], [0.0, -1.0, 0.0]),
+        );
     }
     m
 }
@@ -184,7 +237,11 @@ fn rock_mesh(seed: u64) -> MeshBuf {
     let (hx, hy, hz) = (0.8f32, 0.6f32, 0.8f32);
     let mut bump = |v: [f32; 3]| -> [f32; 3] {
         let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-        let d = [(v[0] * 41.0) as i64, (v[1] * 43.0) as i64, (v[2] * 47.0) as i64];
+        let d = [
+            (v[0] * 41.0) as i64,
+            (v[1] * 43.0) as i64,
+            (v[2] * 47.0) as i64,
+        ];
         let mut h = 0xcbf2_9ce4_8422_2325u64 ^ seed;
         for x in d {
             h ^= x as u64;
@@ -301,11 +358,41 @@ struct CamKey {
 }
 
 const CAM_KEYS: &[CamKey] = &[
-    CamKey { t: 0.00, angle_deg: 0.0, radius: 75.0, height: 48.0, look_h: 3.0 },
-    CamKey { t: 0.25, angle_deg: 95.0, radius: 55.0, height: 28.0, look_h: 2.0 },
-    CamKey { t: 0.50, angle_deg: 185.0, radius: 28.0, height: 12.0, look_h: 1.0 },
-    CamKey { t: 0.75, angle_deg: 275.0, radius: 14.0, height: 4.5, look_h: 0.5 },
-    CamKey { t: 1.00, angle_deg: 360.0, radius: 10.0, height: 2.8, look_h: 0.3 },
+    CamKey {
+        t: 0.00,
+        angle_deg: 0.0,
+        radius: 75.0,
+        height: 48.0,
+        look_h: 3.0,
+    },
+    CamKey {
+        t: 0.25,
+        angle_deg: 95.0,
+        radius: 55.0,
+        height: 28.0,
+        look_h: 2.0,
+    },
+    CamKey {
+        t: 0.50,
+        angle_deg: 185.0,
+        radius: 28.0,
+        height: 12.0,
+        look_h: 1.0,
+    },
+    CamKey {
+        t: 0.75,
+        angle_deg: 275.0,
+        radius: 14.0,
+        height: 4.5,
+        look_h: 0.5,
+    },
+    CamKey {
+        t: 1.00,
+        angle_deg: 360.0,
+        radius: 10.0,
+        height: 2.8,
+        look_h: 0.3,
+    },
 ];
 
 fn smoothstep(x: f32) -> f32 {
@@ -334,7 +421,11 @@ fn camera_at(t: f32, center: [f32; 2], terrain: &Terrain, width: u32, height: u3
 
     Camera::look_at(
         [eye_x, eye_y, eye_z],
-        [center[0], terrain.sample_bilinear(center[0], center[1]) + look_h, center[1]],
+        [
+            center[0],
+            terrain.sample_bilinear(center[0], center[1]) + look_h,
+            center[1],
+        ],
         [0.0, 1.0, 0.0],
         50.0,
         width,
@@ -373,54 +464,97 @@ struct Parts {
 fn mk_parts(b: &Parts) -> Vec<ScenePart<'_>> {
     vec![
         ScenePart {
-            positions: &b.terrain.pos, normals: Some(&b.terrain.nrm), uvs: None,
-            indices: &b.terrain.idx, base_color: [0.30, 0.40, 0.20, 1.0],
-            metallic: 0.0, roughness: 0.95, base_texture: None, mr_texture: None,
+            positions: &b.terrain.pos,
+            normals: Some(&b.terrain.nrm),
+            uvs: None,
+            indices: &b.terrain.idx,
+            base_color: [0.30, 0.40, 0.20, 1.0],
+            metallic: 0.0,
+            roughness: 0.95,
+            base_texture: None,
+            mr_texture: None,
         },
         ScenePart {
-            positions: &b.trunks.pos, normals: Some(&b.trunks.nrm), uvs: None,
-            indices: &b.trunks.idx, base_color: [0.40, 0.28, 0.18, 1.0],
-            metallic: 0.0, roughness: 0.9, base_texture: None, mr_texture: None,
+            positions: &b.trunks.pos,
+            normals: Some(&b.trunks.nrm),
+            uvs: None,
+            indices: &b.trunks.idx,
+            base_color: [0.40, 0.28, 0.18, 1.0],
+            metallic: 0.0,
+            roughness: 0.9,
+            base_texture: None,
+            mr_texture: None,
         },
         ScenePart {
-            positions: &b.foliage.pos, normals: Some(&b.foliage.nrm), uvs: None,
-            indices: &b.foliage.idx, base_color: [0.20, 0.44, 0.22, 1.0],
-            metallic: 0.0, roughness: 0.9, base_texture: None, mr_texture: None,
+            positions: &b.foliage.pos,
+            normals: Some(&b.foliage.nrm),
+            uvs: None,
+            indices: &b.foliage.idx,
+            base_color: [0.20, 0.44, 0.22, 1.0],
+            metallic: 0.0,
+            roughness: 0.9,
+            base_texture: None,
+            mr_texture: None,
         },
         ScenePart {
-            positions: &b.rocks.pos, normals: Some(&b.rocks.nrm), uvs: None,
-            indices: &b.rocks.idx, base_color: [0.55, 0.55, 0.58, 1.0],
-            metallic: 0.0, roughness: 0.85, base_texture: None, mr_texture: None,
+            positions: &b.rocks.pos,
+            normals: Some(&b.rocks.nrm),
+            uvs: None,
+            indices: &b.rocks.idx,
+            base_color: [0.55, 0.55, 0.58, 1.0],
+            metallic: 0.0,
+            roughness: 0.85,
+            base_texture: None,
+            mr_texture: None,
         },
         ScenePart {
-            positions: &b.fires.pos, normals: Some(&b.fires.nrm), uvs: None,
-            indices: &b.fires.idx, base_color: [0.32, 0.22, 0.14, 1.0],
-            metallic: 0.0, roughness: 0.9, base_texture: None, mr_texture: None,
+            positions: &b.fires.pos,
+            normals: Some(&b.fires.nrm),
+            uvs: None,
+            indices: &b.fires.idx,
+            base_color: [0.32, 0.22, 0.14, 1.0],
+            metallic: 0.0,
+            roughness: 0.9,
+            base_texture: None,
+            mr_texture: None,
         },
         ScenePart {
-            positions: &b.tents.pos, normals: Some(&b.tents.nrm), uvs: None,
-            indices: &b.tents.idx, base_color: [0.74, 0.70, 0.62, 1.0],
-            metallic: 0.0, roughness: 0.9, base_texture: None, mr_texture: None,
+            positions: &b.tents.pos,
+            normals: Some(&b.tents.nrm),
+            uvs: None,
+            indices: &b.tents.idx,
+            base_color: [0.74, 0.70, 0.62, 1.0],
+            metallic: 0.0,
+            roughness: 0.9,
+            base_texture: None,
+            mr_texture: None,
         },
     ]
 }
 
-
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let get = |flag: &str| {
-        args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
     };
     let frame_dir = get("--dir").unwrap_or_else(|| "frames".into());
     let total_frames: usize = get("--frames").and_then(|s| s.parse().ok()).unwrap_or(160);
     let (width, height) = match get("--size") {
         Some(s) => {
             let (w, h) = s.split_once('x').ok_or("--size expects WxH")?;
-            (w.parse::<u32>().map_err(|e| format!("{e}"))?, h.parse::<u32>().map_err(|e| format!("{e}"))?)
+            (
+                w.parse::<u32>().map_err(|e| format!("{e}"))?,
+                h.parse::<u32>().map_err(|e| format!("{e}"))?,
+            )
         }
         None => (960, 540),
     };
-    let seed: u64 = get("--seed").and_then(|s| s.parse().ok()).unwrap_or(20261128);
+    let seed: u64 = get("--seed")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20261128);
 
     self_check_conventions();
     std::fs::create_dir_all(&frame_dir).map_err(|e| format!("{frame_dir}: {e}"))?;
@@ -452,12 +586,31 @@ fn run() -> Result<(), String> {
         area_half: 10.0,
         seed: seed ^ 0xCAFE,
         placements: vec![
-            PlacementIntent { asset_name: "rock".into(), count: 14, min_separation: 3.0, anchor: None },
-            PlacementIntent { asset_name: "campfire".into(), count: 1, min_separation: 0.0, anchor: Some(([0.0; 3], 0.0)) },
-            PlacementIntent { asset_name: "tent".into(), count: 1, min_separation: 0.0, anchor: Some(([5.5, 0.0, 2.5], 35.0)) },
+            PlacementIntent {
+                asset_name: "rock".into(),
+                count: 14,
+                min_separation: 3.0,
+                anchor: None,
+            },
+            PlacementIntent {
+                asset_name: "campfire".into(),
+                count: 1,
+                min_separation: 0.0,
+                anchor: Some(([0.0; 3], 0.0)),
+            },
+            PlacementIntent {
+                asset_name: "tent".into(),
+                count: 1,
+                min_separation: 0.0,
+                anchor: Some(([5.5, 0.0, 2.5], 35.0)),
+            },
         ],
     };
-    let available = vec!["rock".to_string(), "campfire".to_string(), "tent".to_string()];
+    let available = vec![
+        "rock".to_string(),
+        "campfire".to_string(),
+        "tent".to_string(),
+    ];
     let layout = plan(&intent, &available).map_err(|e| e.to_string())?;
     let campsite: Vec<(String, Transform)> = layout
         .items
@@ -496,7 +649,8 @@ fn run() -> Result<(), String> {
             (trk, fol)
         })
         .collect();
-    let lcg_unused = Lcg(seed ^ 0xBADC0DE); let _ = lcg_unused;
+    let lcg_unused = Lcg(seed ^ 0xBADC0DE);
+    let _ = lcg_unused;
     let item_bakes: Vec<(String, MeshBuf)> = campsite
         .iter()
         .map(|(name, tf)| {
@@ -559,7 +713,12 @@ fn run() -> Result<(), String> {
 
         // 可见性(叙事时间轴)
         let nv = visible_count(t, 0.15, 0.52, pine_bakes.len());
-        let nr = visible_count(t, 0.50, 0.66, campsite.iter().filter(|(n, _)| n == "rock").count());
+        let nr = visible_count(
+            t,
+            0.50,
+            0.66,
+            campsite.iter().filter(|(n, _)| n == "rock").count(),
+        );
         let nf = visible_count(t, 0.68, 0.72, 1);
         let nt = visible_count(t, 0.76, 0.80, 1);
 
