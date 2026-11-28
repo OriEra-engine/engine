@@ -92,6 +92,7 @@ fn env_parameterizes_background_and_default_delegates_bit_identically() {
         clear: [1.0, 0.0, 0.0, 1.0],
         light_dir: [-0.45, 0.55, -0.70],
         light_intensity: 1.0,
+        sky: None,
     };
     let red_a = renderer
         .render_scene_views_env(&parts, &camera, &red)
@@ -118,4 +119,49 @@ fn env_parameterizes_background_and_default_delegates_bit_identically() {
         pixels_of(&via_default),
         "DEFAULT 委托不等价——逐位兼容破线"
     );
+}
+
+/// 天空背景(WP6 公式 GPU 移植)证据:梯度方向、太阳盘、确定性。
+#[test]
+fn sky_background_gradient_determinism_and_default_compat() {
+    let Some(renderer) = renderer_or_skip() else {
+        return;
+    };
+    let (_tri, camera, parts) = tri_scene();
+    let sky = oriera_render::gpu::SceneSky {
+        sun_dir: [-0.4, 0.8, -0.3],
+        horizon_tint: [0.75, 0.82, 0.95],
+        zenith_tint: [0.25, 0.42, 0.85],
+        ground_tint: [0.35, 0.33, 0.28],
+        sun_radiance: 24.0,
+        sun_disc_deg: 3.0,
+        overcast: 0.0,
+    };
+    let env = SceneEnv {
+        clear: [0.05, 0.08, 0.13, 1.0],
+        light_dir: [-0.45, 0.55, -0.70],
+        light_intensity: 1.0,
+        sky: Some(sky),
+    };
+    let a = renderer
+        .render_scene_views_env(&parts, &camera, &env)
+        .expect("sky on");
+    let b = renderer
+        .render_scene_views_env(&parts, &camera, &env)
+        .expect("sky on again");
+    assert_eq!(pixels_of(&a), pixels_of(&b), "天空双跑不一致");
+
+    // 梯度方向:顶行(天顶向)蓝主导(pixel[0]=B),底行(地面向)暖主导(pixel[2]=R)。
+    let top = a.pixel(160, 8);
+    let bottom = a.pixel(160, 232);
+    assert!(top[0] > top[2], "顶行应偏蓝 B>R: {top:?}");
+    assert!(bottom[2] >= bottom[0], "底行应偏暖 R≥B: {bottom:?}");
+
+    // 无天空(DEFAULT)委托兼容:既有断言覆盖,此处补一条同 env 域——
+    // 同一 env 关掉天空后回到清屏色背景。
+    let env_off = SceneEnv { sky: None, ..env };
+    let c = renderer
+        .render_scene_views_env(&parts, &camera, &env_off)
+        .expect("sky off");
+    assert_ne!(a.pixel(2, 2), c.pixel(2, 2), "关掉天空背景应回到清屏色");
 }
