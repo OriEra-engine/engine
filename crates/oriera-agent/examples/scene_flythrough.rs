@@ -22,9 +22,7 @@ use oriera_asset::terrain::{Terrain, TerrainSpec};
 use oriera_common::math::Quat;
 use oriera_common::{Transform, Vec3};
 use oriera_render::camera::{self, Camera};
-use oriera_render::gpu::{HeadlessRenderer, RenderedImage, SceneEnv, ScenePart, SceneSky};
-use oriera_render::instancing::batch_by_key;
-use oriera_render::scene::{Bounds, SceneInstance};
+use oriera_render::gpu::{HeadlessRenderer, RenderedImage, SceneEnv, ScenePart};
 
 fn main() {
     if let Err(e) = run() {
@@ -235,7 +233,7 @@ fn cone(radius: f32, height: f32, sides: usize, base_y: f32) -> MeshBuf {
 fn rock_mesh(seed: u64) -> MeshBuf {
     let mut m = MeshBuf::default();
     let (hx, hy, hz) = (0.8f32, 0.6f32, 0.8f32);
-    let mut bump = |v: [f32; 3]| -> [f32; 3] {
+    let bump = |v: [f32; 3]| -> [f32; 3] {
         let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
         let d = [
             (v[0] * 41.0) as i64,
